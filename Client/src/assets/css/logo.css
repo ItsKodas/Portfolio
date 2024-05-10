@@ -1,0 +1,10 @@
+.zoom {
+
+    --z: 0;
+
+    zoom: var(--z);
+    -ms-zoom: var(--z);
+    -webkit-zoom: var(--z);
+    -moz-transform: scale(var(--z), var(--z));
+    -moz-transform-origin: left center;
+}
