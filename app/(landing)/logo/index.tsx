@@ -1,8 +1,12 @@
-import { useEffect, useRef, useState } from 'react'
+'use client'
 
+import Image from 'next/image'
+import { Typography } from '@mui/material'
+import { useEffect, useRef, useState } from 'react'
 import { useSpring, animated } from '@react-spring/web'
 
-import '../assets/css/logo.css'
+import './logo.css'
+import Logo from './logo.png'
 
 
 
@@ -50,39 +54,17 @@ export default function AnimatedLogo({ screenHeight }: { screenHeight?: boolean 
     //? Animations
 
     const translateLogo = useSpring({
-        from: {
-            opacity: 0,
-            marginTop: 1000
-        },
-
-        to: {
-            opacity: 1,
-            marginTop: 0
-        },
-
+        from: { opacity: 0, marginTop: 1000 },
+        to: { opacity: 1, marginTop: 0 },
         delay: 500,
-
-        config: {
-            tension: 250,
-            friction: 100
-        }
+        config: { tension: 250, friction: 100 }
     })
 
     const translateTitleDesktop = useSpring({
-        from: {
-            maxWidth: 0
-        },
-
-        to: {
-            maxWidth: 800
-        },
-
+        from: { maxWidth: 0 },
+        to: { maxWidth: 800 },
         delay: 2000,
-
-        config: {
-            tension: 200,
-            friction: 100
-        }
+        config: { tension: 200, friction: 100 }
     })
 
 
@@ -91,20 +73,15 @@ export default function AnimatedLogo({ screenHeight }: { screenHeight?: boolean 
         <>
             <div className={`flex justify-center items-center gap-5 select-none`} style={{ marginTop: topDistance, transform: `scale(${logoZoom})` }}>
                 <animated.div style={translateLogo}>
-                    <div
-                        className='w-[140px] h-[140px]'
-                        style={{
-                            backgroundImage: `url(/images/logo.png)`,
-                            backgroundSize: 'cover',
-                            backgroundPosition: 'center'
-                        }}
-                    />
+                    <div className='w-[140px] h-[140px] relative'>
+                        <Image src={Logo} alt='Logo' fill className='object-cover' />
+                    </div>
                 </animated.div>
 
                 <animated.div style={translateTitleDesktop}>
                     <div>
-                        <h1 className="text-9xl overflow-hidden" style={{ letterSpacing: '10px' }}>HORIZONS</h1>
-                        <h2 className="ml-2 subtitle text-4xl overflow-hidden text-nowrap" style={{ letterSpacing: '6px' }}>Developed & Designed by Dakoda Lancelot</h2>
+                        <Typography variant='h1' fontSize={'8rem'} letterSpacing={'10px'} fontWeight={700} className="overflow-hidden">HORIZONS</Typography>
+                        <Typography variant='h2' fontSize={'2.25rem'} letterSpacing={'11px'} className="pl-2 subtitle overflow-hidden text-nowrap">Fullstack Web Development</Typography>
                         {/* <h2 className='ml-2 text-2xl overflow-hidden text-nowrap'>Z: {(windowDimensions.width * 0.0006).toFixed(2)} | H: {windowDimensions.height}px | W: {windowDimensions.width}px | R: {(windowDimensions.width / windowDimensions.height).toFixed(2)}</h2> */}
                     </div>
                 </animated.div>
