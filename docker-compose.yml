@@ -1,0 +1,15 @@
+networks:
+  horizons-network:
+    external: true
+
+services:
+  web:
+    build: .
+    container_name: horizons
+    ports:
+      - "5004:3000"
+    restart: unless-stopped
+    networks:
+      - horizons-network
+    environment:
+      - MONGO_URI=mongodb://mongodb:27017/Horizons
