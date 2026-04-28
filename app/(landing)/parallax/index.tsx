@@ -22,7 +22,7 @@ import Trees from './trees.svg'
 export default function ParallaxView({ children }: Readonly<{ children: React.ReactNode }>) {
     return (
         <ThemeProvider theme={DarkTheme}>
-            <Parallax pages={4} className='bg-[#0b101f]'>
+            <Parallax pages={3} className='bg-[#0b101f]'>
 
                 {/* ── Hero scene ─────────────────────────────────────── */}
 
@@ -60,14 +60,28 @@ export default function ParallaxView({ children }: Readonly<{ children: React.Re
 
                 {/* ── Space background (content section) ─────────────── */}
 
-                <ParallaxLayer offset={1} speed={1} factor={3}>
-                    <SpaceBackground />
+                <ParallaxLayer offset={0.99} speed={1} factor={2}>
+                    <div
+                        style={{
+                            height: '100%',
+                            maskImage: 'linear-gradient(to bottom, transparent 0, black 10rem)',
+                            WebkitMaskImage: 'linear-gradient(to bottom, transparent 0, black 10rem)',
+                        }}
+                    >
+                        <SpaceBackground />
+                    </div>
                 </ParallaxLayer>
 
                 {/* ── Content ────────────────────────────────────────── */}
 
-                <ParallaxLayer offset={1} speed={1} factor={3}>
-                    <div className='relative w-full'>
+                <ParallaxLayer offset={0.99} speed={1} factor={2}>
+                    <div
+                        className='relative w-full'
+                        style={{
+                            maskImage: 'linear-gradient(to bottom, transparent 0, black 10rem)',
+                            WebkitMaskImage: 'linear-gradient(to bottom, transparent 0, black 10rem)',
+                        }}
+                    >
                         {children}
                     </div>
                 </ParallaxLayer>

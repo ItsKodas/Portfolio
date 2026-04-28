@@ -120,12 +120,12 @@ function GlowDivider() {
 
 export default function Landing() {
     return (
-        <div className="px-5 pb-20 pt-12 max-w-5xl mx-auto">
+        <div className="px-5 pb-20 pt-20 max-w-5xl mx-auto">
 
             {/* ── Client strip ──────────────────────────────────────── */}
             <div className="mb-12">
                 <p className="text-center text-[10px] tracking-[0.3em] uppercase font-mono mb-6" style={{ color: 'rgba(48,194,255,0.4)' }}>
-                    // trusted by
+                    trusted by
                 </p>
                 <div className="flex items-center justify-center gap-10 flex-wrap">
                     {clients.map((c) => (
