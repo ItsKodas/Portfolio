@@ -6,6 +6,12 @@ import styles from './space.module.css'
 interface Star {
     x: number
     y: number
+    vx: number
+    vy: number
+    homeX: number
+    homeY: number
+    wanderAngle: number
+    wanderSpeed: number  // rad/s
     r: number
     baseOpacity: number
     twinkleSpeed: number
@@ -23,6 +29,12 @@ interface Shooter {
     maxLife: number
 }
 
+const SPRING_K       = 0.0012  // gentle pull back toward home
+const DAMPING        = 0.90    // velocity decay per frame — slow glide
+const ATTRACT_RADIUS = 220     // px — mouse influence zone
+const ATTRACT_STR    = 0.20    // peak force at cursor centre
+const WANDER_FORCE   = 0.010   // random drift force
+
 export default function SpaceBackground() {
     const canvasRef = useRef<HTMLCanvasElement>(null)
 
@@ -38,17 +50,26 @@ export default function SpaceBackground() {
         canvas.width = w
         canvas.height = h
 
+        let mouseX = -9999
+        let mouseY = -9999
+
         const buildStars = (): Star[] =>
             Array.from({ length: 380 }, () => {
                 const layer = Math.floor(Math.random() * 4)
+                const x = Math.random() * w
+                const y = Math.random() * h
                 return {
-                    x: Math.random() * w,
-                    y: Math.random() * h,
-                    r: [0.25, 0.5, 0.85, 1.3][layer],
-                    baseOpacity: [0.2, 0.4, 0.6, 0.9][layer],
+                    x, y,
+                    vx: 0, vy: 0,
+                    homeX: x,
+                    homeY: y,
+                    wanderAngle: Math.random() * Math.PI * 2,
+                    wanderSpeed: 0.3 + Math.random() * 0.8,
+                    r:            [0.25, 0.5, 0.85, 1.3][layer],
+                    baseOpacity:  [0.2, 0.4, 0.6, 0.9][layer],
                     twinkleSpeed: 0.4 + Math.random() * 1.6,
                     twinklePhase: Math.random() * Math.PI * 2,
-                    glow: layer === 3
+                    glow:         layer === 3,
                 }
             })
 
@@ -85,8 +106,33 @@ export default function SpaceBackground() {
             const t = ts * 0.001
 
             for (const star of stars) {
+                // Wander — slowly rotating direction creates organic drift
+                star.wanderAngle += star.wanderSpeed * dt * 0.001
+                star.vx += Math.cos(star.wanderAngle) * WANDER_FORCE
+                star.vy += Math.sin(star.wanderAngle) * WANDER_FORCE
+
+                // Spring back toward home — prevents indefinite drift
+                star.vx += (star.homeX - star.x) * SPRING_K
+                star.vy += (star.homeY - star.y) * SPRING_K
+
+                // Mouse gravity — quadratic falloff for natural feel
+                const mdx = mouseX - star.x
+                const mdy = mouseY - star.y
+                const mdist = Math.sqrt(mdx * mdx + mdy * mdy)
+                if (mdist < ATTRACT_RADIUS && mdist > 1) {
+                    const t2 = 1 - mdist / ATTRACT_RADIUS
+                    const force = t2 * t2 * ATTRACT_STR
+                    star.vx += (mdx / mdist) * force
+                    star.vy += (mdy / mdist) * force
+                }
+
+                star.vx *= DAMPING
+                star.vy *= DAMPING
+                star.x  += star.vx
+                star.y  += star.vy
+
                 const twinkle = 0.78 + 0.22 * Math.sin(t * star.twinkleSpeed + star.twinklePhase)
-                const alpha = star.baseOpacity * twinkle
+                const alpha   = star.baseOpacity * twinkle
 
                 ctx.beginPath()
                 ctx.arc(star.x, star.y, star.r, 0, Math.PI * 2)
@@ -114,23 +160,23 @@ export default function SpaceBackground() {
                 s.life++
                 if (s.life >= s.maxLife) { s.active = false; continue }
 
-                const p = s.life / s.maxLife
-                const alpha = p < 0.15 ? p / 0.15 : Math.max(0, 1 - (p - 0.15) / 0.85)
+                const p       = s.life / s.maxLife
+                const alpha   = p < 0.15 ? p / 0.15 : Math.max(0, 1 - (p - 0.15) / 0.85)
                 const trailLen = 90 + (1 - p) * 80
-                const speed = Math.sqrt(s.vx ** 2 + s.vy ** 2)
-                const tailX = s.x - (s.vx / speed) * trailLen
-                const tailY = s.y - (s.vy / speed) * trailLen
+                const speed    = Math.sqrt(s.vx ** 2 + s.vy ** 2)
+                const tailX    = s.x - (s.vx / speed) * trailLen
+                const tailY    = s.y - (s.vy / speed) * trailLen
 
                 const grad = ctx.createLinearGradient(tailX, tailY, s.x, s.y)
-                grad.addColorStop(0, 'rgba(255,255,255,0)')
+                grad.addColorStop(0,    'rgba(255,255,255,0)')
                 grad.addColorStop(0.65, `rgba(200,240,255,${alpha * 0.35})`)
-                grad.addColorStop(1, `rgba(255,255,255,${alpha})`)
+                grad.addColorStop(1,    `rgba(255,255,255,${alpha})`)
 
                 ctx.beginPath()
                 ctx.moveTo(tailX, tailY)
                 ctx.lineTo(s.x, s.y)
                 ctx.strokeStyle = grad
-                ctx.lineWidth = 1.5
+                ctx.lineWidth   = 1.5
                 ctx.stroke()
 
                 s.x += s.vx
@@ -141,6 +187,16 @@ export default function SpaceBackground() {
         }
 
         animId = requestAnimationFrame(frame)
+
+        const onMouseMove = (e: MouseEvent) => {
+            const rect = canvas.getBoundingClientRect()
+            mouseX = e.clientX - rect.left
+            mouseY = e.clientY - rect.top
+        }
+        const onMouseLeave = () => { mouseX = -9999; mouseY = -9999 }
+
+        window.addEventListener('mousemove', onMouseMove)
+        window.addEventListener('mouseleave', onMouseLeave)
 
         const onResize = () => {
             w = canvas.offsetWidth
@@ -153,6 +209,8 @@ export default function SpaceBackground() {
 
         return () => {
             cancelAnimationFrame(animId)
+            window.removeEventListener('mousemove', onMouseMove)
+            window.removeEventListener('mouseleave', onMouseLeave)
             window.removeEventListener('resize', onResize)
         }
     }, [])
