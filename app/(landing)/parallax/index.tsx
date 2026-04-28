@@ -10,6 +10,7 @@ import DarkTheme from "@/themes/dark"
 import AnimatedLogo from '../logo/index'
 import ScrollIcon from '../scroll/index'
 import SpaceBackground from '../space/index'
+import RotatingStars from '../stars/index'
 
 import Sky from './sky.png'
 import MountainsFar from './mountainsFar.png'
@@ -28,6 +29,7 @@ export default function ParallaxView({ children }: Readonly<{ children: React.Re
 
                 <ParallaxLayer offset={0} speed={0.1} factor={2}>
                     <Image quality={100} src={Sky} alt='Sky' fill className='object-cover' />
+                    <RotatingStars />
                 </ParallaxLayer>
 
                 <ParallaxLayer offset={0} speed={0.2} factor={2}>
