@@ -56,36 +56,36 @@ export default function ParallaxView({ children }: Readonly<{ children: React.Re
 
     return (
         <ThemeProvider theme={DarkTheme}>
-            <Parallax ref={parallaxRef} pages={pages} className='bg-[#0b101f]'>
+            <Parallax ref={parallaxRef} pages={pages} className='bg-[#0b101f] max-h-[100vh]'>
 
                 {/* ── Hero scene ─────────────────────────────────────── */}
 
-                <ParallaxLayer offset={0} speed={0.1} factor={1}>
+                <ParallaxLayer offset={0} speed={0.1} factor={2}>
                     <Image quality={100} src={Sky} alt='Sky' fill className='object-cover' />
                     <RotatingStars />
                 </ParallaxLayer>
 
-                <ParallaxLayer offset={0} speed={0.2} factor={1}>
+                <ParallaxLayer offset={0} speed={0.2} factor={2}>
                     <Image quality={100} src={MountainsFar} alt='MountainsFar' fill className='object-cover' />
                 </ParallaxLayer>
 
-                <ParallaxLayer offset={0} speed={0.005} factor={1}>
+                <ParallaxLayer offset={0} speed={0.005} factor={2}>
                     <AnimatedLogo screenHeight />
                 </ParallaxLayer>
 
-                <ParallaxLayer offset={0} speed={0.5} factor={1}>
+                <ParallaxLayer offset={0} speed={0.5} factor={2}>
                     <Image quality={100} src={MountainsFar2} alt='MountainsFar2' fill className='object-cover' />
                 </ParallaxLayer>
 
-                <ParallaxLayer offset={0} speed={0.6} factor={1}>
+                <ParallaxLayer offset={0} speed={0.6} factor={2}>
                     <Image quality={100} src={Lake} alt='Lake' fill className='object-cover' />
                 </ParallaxLayer>
 
-                <ParallaxLayer offset={0} speed={1} factor={1}>
+                <ParallaxLayer offset={0} speed={1} factor={2}>
                     <Image quality={100} src={Trees} alt='Trees' fill className='object-cover' />
                 </ParallaxLayer>
 
-                <ParallaxLayer offset={0} speed={0.6} factor={1}>
+                <ParallaxLayer offset={0} speed={0.6} factor={2}>
                     <div className="relative h-screen flex justify-center">
                         <div className='absolute bottom-[30%]'>
                             <ScrollIcon />
