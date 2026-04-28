@@ -32,15 +32,13 @@ export default function RotatingStars() {
         const buildStars = (): Star[] => {
             const cx = w / 2
             const cy = h / 2
+            // Disc radius reaches every corner so stars cover all edges during rotation
+            const maxDist = Math.sqrt(cx * cx + cy * cy) * 1.05
             return Array.from({ length: 400 }, () => {
                 const layer = Math.floor(Math.random() * 3)
-                const x = Math.random() * w
-                const y = Math.random() * h
-                const dx = x - cx
-                const dy = y - cy
                 return {
-                    angle: Math.atan2(dy, dx),
-                    dist: Math.sqrt(dx * dx + dy * dy),
+                    angle:        Math.random() * Math.PI * 2,
+                    dist:         maxDist * Math.sqrt(Math.random()), // uniform area distribution
                     r:            [0.6, 1.1, 2.0][layer],
                     baseOpacity:  [0.55, 0.8, 1.0][layer],
                     twinkleSpeed: 0.5 + Math.random() * 2.0,
