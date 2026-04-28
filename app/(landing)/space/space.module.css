@@ -1,0 +1,97 @@
+.wrap {
+    position: absolute;
+    inset: 0;
+    overflow: hidden;
+    pointer-events: none;
+    background: #0b101f;
+}
+
+.wrap::before {
+    content: '';
+    position: absolute;
+    top: 0;
+    left: 0;
+    right: 0;
+    height: 220px;
+    background: linear-gradient(to bottom, #0b101f 0%, transparent 100%);
+    z-index: 2;
+    pointer-events: none;
+}
+
+.canvas {
+    position: absolute;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+}
+
+.nebula {
+    position: absolute;
+    border-radius: 50%;
+    filter: blur(100px);
+    animation: drift linear infinite;
+}
+
+.n1 {
+    width: 800px;
+    height: 800px;
+    background: radial-gradient(circle, #30c2ff 0%, transparent 65%);
+    top: -200px;
+    left: -200px;
+    opacity: 0.07;
+    animation-duration: 38s;
+    animation-delay: 0s;
+}
+
+.n2 {
+    width: 650px;
+    height: 650px;
+    background: radial-gradient(circle, #7c3aed 0%, transparent 65%);
+    top: 40%;
+    right: -150px;
+    opacity: 0.06;
+    animation-duration: 46s;
+    animation-delay: -13s;
+}
+
+.n3 {
+    width: 550px;
+    height: 550px;
+    background: radial-gradient(circle, #1d4ed8 0%, transparent 65%);
+    bottom: 15%;
+    left: 20%;
+    opacity: 0.055;
+    animation-duration: 42s;
+    animation-delay: -22s;
+}
+
+.n4 {
+    width: 380px;
+    height: 380px;
+    background: radial-gradient(circle, #f59e0b 0%, transparent 65%);
+    bottom: 5%;
+    right: 18%;
+    opacity: 0.04;
+    animation-duration: 52s;
+    animation-delay: -7s;
+}
+
+.n5 {
+    width: 450px;
+    height: 450px;
+    background: radial-gradient(circle, #0ea5e9 0%, transparent 65%);
+    top: 60%;
+    left: 55%;
+    opacity: 0.05;
+    animation-duration: 44s;
+    animation-delay: -30s;
+}
+
+@keyframes drift {
+    0%   { transform: translate(0px,   0px)   scale(1);    }
+    20%  { transform: translate(22px, -28px)  scale(1.03); }
+    40%  { transform: translate(-18px, 35px)  scale(0.97); }
+    60%  { transform: translate(38px,  18px)  scale(1.04); }
+    80%  { transform: translate(-25px,-15px)  scale(0.98); }
+    100% { transform: translate(0px,   0px)   scale(1);    }
+}

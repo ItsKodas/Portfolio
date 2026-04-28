@@ -1,7 +1,5 @@
 'use client'
 
-import Head from 'next/head'
-import Link from 'next/link'
 import Image from 'next/image'
 
 import { Parallax, ParallaxLayer } from '@react-spring/parallax'
@@ -11,49 +9,46 @@ import DarkTheme from "@/themes/dark"
 
 import AnimatedLogo from '../logo/index'
 import ScrollIcon from '../scroll/index'
+import SpaceBackground from '../space/index'
 
 import Sky from './sky.png'
 import MountainsFar from './mountainsFar.png'
 import MountainsFar2 from './mountainsFar2.png'
 import Lake from './lake.png'
-import Trees from './trees.png'
+import Trees from './trees.svg'
 
 
 
 export default function ParallaxView({ children }: Readonly<{ children: React.ReactNode }>) {
     return (
         <ThemeProvider theme={DarkTheme}>
-            <Parallax pages={2} className='bg-[#0f1726]'>
+            <Parallax pages={4} className='bg-[#0b101f]'>
+
+                {/* ── Hero scene ─────────────────────────────────────── */}
 
                 <ParallaxLayer offset={0} speed={0.1} factor={2}>
                     <Image quality={100} src={Sky} alt='Sky' fill className='object-cover' />
                 </ParallaxLayer>
 
-
                 <ParallaxLayer offset={0} speed={0.2} factor={2}>
                     <Image quality={100} src={MountainsFar} alt='MountainsFar' fill className='object-cover' />
                 </ParallaxLayer>
-
 
                 <ParallaxLayer offset={0} speed={0.005} factor={1}>
                     <AnimatedLogo screenHeight />
                 </ParallaxLayer>
 
-
                 <ParallaxLayer offset={0} speed={0.5} factor={2}>
                     <Image quality={100} src={MountainsFar2} alt='MountainsFar2' fill className='object-cover' />
                 </ParallaxLayer>
-
 
                 <ParallaxLayer offset={0} speed={0.6} factor={2}>
                     <Image quality={100} src={Lake} alt='Lake' fill className='object-cover' />
                 </ParallaxLayer>
 
-
                 <ParallaxLayer offset={0} speed={1} factor={2}>
                     <Image quality={100} src={Trees} alt='Trees' fill className='object-cover' />
                 </ParallaxLayer>
-
 
                 <ParallaxLayer offset={0} speed={0.6} factor={2}>
                     <div className="relative h-screen flex justify-center">
@@ -63,11 +58,17 @@ export default function ParallaxView({ children }: Readonly<{ children: React.Re
                     </div>
                 </ParallaxLayer>
 
-                <ParallaxLayer offset={0.9} speed={1} factor={1}>
-                    <div className="m-5 relative h-screen flex justify-center text-center">
-                        <div className='absolute top-52'>
-                            {children}
-                        </div>
+                {/* ── Space background (content section) ─────────────── */}
+
+                <ParallaxLayer offset={1} speed={1} factor={3}>
+                    <SpaceBackground />
+                </ParallaxLayer>
+
+                {/* ── Content ────────────────────────────────────────── */}
+
+                <ParallaxLayer offset={1} speed={1} factor={3}>
+                    <div className='relative w-full'>
+                        {children}
                     </div>
                 </ParallaxLayer>
 

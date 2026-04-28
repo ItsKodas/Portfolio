@@ -57,7 +57,7 @@ export default function AnimatedLogo({ screenHeight }: { screenHeight?: boolean 
         from: { opacity: 0, marginTop: 1000 },
         to: { opacity: 1, marginTop: 0 },
         delay: 500,
-        config: { tension: 250, friction: 100 }
+        config: { tension: 300, friction: 100 }
     })
 
     const translateTitleDesktop = useSpring({
