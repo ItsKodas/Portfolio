@@ -22,37 +22,14 @@ import MountainsFar2 from './mountainsFar2.png'
 import Lake from './lake.png'
 import Trees from './trees.svg'
 
-const MAX_PAGES = 4
-
 export default function ParallaxView({ children }: Readonly<{ children: React.ReactNode }>) {
     const parallaxRef = useRef<IParallax>(null)
     const contentRef  = useRef<HTMLDivElement>(null)
-    const [pages, setPages] = useState(3)
 
-    const recalc = useCallback(() => {
-        if (!contentRef.current) return
-        const contentH = contentRef.current.scrollHeight
-        const vh       = window.innerHeight || 1
-        const needed   = 0.99 + contentH / vh + 0.05
-        setPages(Math.min(needed, MAX_PAGES))
-    }, [])
-
-    useEffect(() => {
-        recalc()
-        const ro = new ResizeObserver(recalc)
-        if (contentRef.current) ro.observe(contentRef.current)
-        window.addEventListener('resize', recalc)
-        return () => {
-            ro.disconnect()
-            window.removeEventListener('resize', recalc)
-        }
-    }, [recalc])
-
-    const contentFactor = Math.max(pages - 0.99, 1)
 
     return (
         <ThemeProvider theme={DarkTheme}>
-            <Parallax ref={parallaxRef} pages={pages} className='bg-[#0b101f]'>
+            <Parallax ref={parallaxRef} pages={1.7} className='bg-[#0b101f]'>
 
                 {/* ── Hero scene ─────────────────────────────────────── */}
 
@@ -97,7 +74,7 @@ export default function ParallaxView({ children }: Readonly<{ children: React.Re
 
                 {/* ── Space background ───────────────────────────────── */}
 
-                <ParallaxLayer offset={0.99} speed={1} factor={contentFactor}>
+                <ParallaxLayer offset={0.99} speed={1} factor={1.5}>
                     <div style={{
                         height: '100%',
                         maskImage: 'linear-gradient(to bottom, transparent 0, black 10rem)',
@@ -109,7 +86,7 @@ export default function ParallaxView({ children }: Readonly<{ children: React.Re
 
                 {/* ── Content ────────────────────────────────────────── */}
 
-                <ParallaxLayer offset={0.99} speed={1} factor={contentFactor}>
+                <ParallaxLayer offset={0.99} speed={1} factor={1}>
                     <div
                         ref={contentRef}
                         className='relative w-full'
