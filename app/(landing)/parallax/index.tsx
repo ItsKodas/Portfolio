@@ -13,7 +13,10 @@ import ScrollIcon from '../scroll/index'
 import SpaceBackground from '../space/index'
 import RotatingStars from '../stars/index'
 
+import styles from './parallax.module.css'
+
 import Sky from './sky.png'
+import Clouds from './clouds.png'
 import MountainsFar from './mountainsFar.png'
 import MountainsFar2 from './mountainsFar2.png'
 import Lake from './lake.png'
@@ -63,6 +66,12 @@ export default function ParallaxView({ children }: Readonly<{ children: React.Re
                 <ParallaxLayer offset={0} speed={0.1} factor={2}>
                     <Image quality={100} src={Sky} alt='Sky' fill className='object-cover' />
                     <RotatingStars />
+                </ParallaxLayer>
+
+                <ParallaxLayer offset={0} speed={0.15} factor={2}>
+                    <div className={styles.cloudDrift}>
+                        <Image quality={100} src={Clouds} alt='Clouds' fill className='object-cover' />
+                    </div>
                 </ParallaxLayer>
 
                 <ParallaxLayer offset={0} speed={0.2} factor={2}>

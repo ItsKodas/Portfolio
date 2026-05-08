@@ -1,0 +1,12 @@
+@keyframes cloudDrift {
+    0%   { transform: translateX(0); }
+    50%  { transform: translateX(2.5%); }
+    100% { transform: translateX(0); }
+}
+
+.cloudDrift {
+    animation: cloudDrift 28s ease-in-out infinite;
+    width: 100%;
+    height: 100%;
+    position: relative;
+}
