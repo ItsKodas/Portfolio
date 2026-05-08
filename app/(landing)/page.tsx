@@ -42,7 +42,7 @@ const workExperience = [
 
 const projects = [
     {
-        name: 'ASOT Website',
+        name: 'ASOT Milsim',
         description: 'Full-stack platform for a military-style organisation. Includes member management, automated MILPAC certificate generation, a role-based admin dashboard, and a real-time notification system.',
         tech: ['Next.js', 'TypeScript', 'PostgreSQL', 'Prisma', 'Docker'],
         link: null,

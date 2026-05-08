@@ -22,7 +22,7 @@ import MountainsFar2 from './mountainsFar2.png'
 import Lake from './lake.png'
 import Trees from './trees.svg'
 
-
+const MAX_PAGES = 4
 
 export default function ParallaxView({ children }: Readonly<{ children: React.ReactNode }>) {
     const parallaxRef = useRef<IParallax>(null)
@@ -34,14 +34,7 @@ export default function ParallaxView({ children }: Readonly<{ children: React.Re
         const contentH = contentRef.current.scrollHeight
         const vh       = window.innerHeight || 1
         const needed   = 0.99 + contentH / vh + 0.05
-        setPages(needed)
-
-        // Clamp scroll so the container can never scroll past the content end
-        const container = parallaxRef.current?.container?.current
-        if (container) {
-            const maxScroll = Math.max(0, (needed - 1) * vh)
-            if (container.scrollTop > maxScroll) container.scrollTop = maxScroll
-        }
+        setPages(Math.min(needed, MAX_PAGES))
     }, [])
 
     useEffect(() => {
@@ -59,7 +52,7 @@ export default function ParallaxView({ children }: Readonly<{ children: React.Re
 
     return (
         <ThemeProvider theme={DarkTheme}>
-            <Parallax ref={parallaxRef} pages={pages} className='bg-[#0b101f] max-h-[100vh]'>
+            <Parallax ref={parallaxRef} pages={pages} className='bg-[#0b101f]'>
 
                 {/* ── Hero scene ─────────────────────────────────────── */}
 
@@ -69,7 +62,7 @@ export default function ParallaxView({ children }: Readonly<{ children: React.Re
                 </ParallaxLayer>
 
                 <ParallaxLayer offset={0} speed={0.15} factor={2}>
-                    <div className={styles.cloudDrift}>
+                    <div className={styles.cloudDrift} style={{ position: 'relative', width: '100%', height: '100%' }}>
                         <Image quality={100} src={Clouds} alt='Clouds' fill className='object-cover' />
                     </div>
                 </ParallaxLayer>
@@ -102,16 +95,14 @@ export default function ParallaxView({ children }: Readonly<{ children: React.Re
                     </div>
                 </ParallaxLayer>
 
-                {/* ── Space background (content section) ─────────────── */}
+                {/* ── Space background ───────────────────────────────── */}
 
                 <ParallaxLayer offset={0.99} speed={1} factor={contentFactor}>
-                    <div
-                        style={{
-                            height: '100%',
-                            maskImage: 'linear-gradient(to bottom, transparent 0, black 10rem)',
-                            WebkitMaskImage: 'linear-gradient(to bottom, transparent 0, black 10rem)',
-                        }}
-                    >
+                    <div style={{
+                        height: '100%',
+                        maskImage: 'linear-gradient(to bottom, transparent 0, black 10rem)',
+                        WebkitMaskImage: 'linear-gradient(to bottom, transparent 0, black 10rem)',
+                    }}>
                         <SpaceBackground />
                     </div>
                 </ParallaxLayer>
