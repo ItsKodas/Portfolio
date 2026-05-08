@@ -23,13 +23,62 @@ import Lake from './lake.png'
 import Trees from './trees.svg'
 
 export default function ParallaxView({ children }: Readonly<{ children: React.ReactNode }>) {
-    const parallaxRef = useRef<IParallax>(null)
-    const contentRef  = useRef<HTMLDivElement>(null)
+    const parallaxRef   = useRef<IParallax>(null)
+    const measureRef    = useRef<HTMLDivElement>(null)
+    const [pages, setPages] = useState(2)
+    const [contentFactor, setContentFactor] = useState(1)
+    const [scrollbarW, setScrollbarW] = useState(0)
 
+    useEffect(() => {
+        const el = document.createElement('div')
+        el.style.cssText = 'width:100px;height:100px;overflow:scroll;position:fixed;visibility:hidden;top:-200px'
+        document.body.appendChild(el)
+        setScrollbarW(el.offsetWidth - el.clientWidth)
+        document.body.removeChild(el)
+    }, [])
+
+    const recalc = useCallback(() => {
+        if (!measureRef.current) return
+        const contentH = measureRef.current.offsetHeight
+        const vh       = window.innerHeight || 1
+        const factor   = Math.max(contentH / vh, 1)
+        setContentFactor(factor)
+        setPages(1 + factor)
+    }, [])
+
+    useEffect(() => {
+        recalc()
+        const ro = new ResizeObserver(recalc)
+        if (measureRef.current) ro.observe(measureRef.current)
+        window.addEventListener('resize', recalc)
+        return () => {
+            ro.disconnect()
+            window.removeEventListener('resize', recalc)
+        }
+    }, [recalc])
 
     return (
         <ThemeProvider theme={DarkTheme}>
-            <Parallax ref={parallaxRef} pages={1.7} className='bg-[#0b101f]'>
+
+            {/* Invisible measurement clone — fixed outside the parallax at true viewport width */}
+            <div
+                ref={measureRef}
+                aria-hidden="true"
+                style={{
+                    position: 'fixed',
+                    top: 0,
+                    left: 0,
+                    width: `calc(100% - ${scrollbarW}px)`,
+                    visibility: 'hidden',
+                    pointerEvents: 'none',
+                    zIndex: -9999,
+                    overflow: 'clip',
+                }}
+            >
+                {children}
+            </div>
+
+            <Parallax ref={parallaxRef} pages={pages} className='bg-[#0b101f]'>
 
                 {/* ── Hero scene ─────────────────────────────────────── */}
 
@@ -74,7 +123,7 @@ export default function ParallaxView({ children }: Readonly<{ children: React.Re
 
                 {/* ── Space background ───────────────────────────────── */}
 
-                <ParallaxLayer offset={0.99} speed={1} factor={1.5}>
+                <ParallaxLayer offset={0.99} speed={1} factor={contentFactor}>
                     <div style={{
                         height: '100%',
                         maskImage: 'linear-gradient(to bottom, transparent 0, black 10rem)',
@@ -86,9 +135,8 @@ export default function ParallaxView({ children }: Readonly<{ children: React.Re
 
                 {/* ── Content ────────────────────────────────────────── */}
 
-                <ParallaxLayer offset={0.99} speed={1} factor={1}>
+                <ParallaxLayer offset={0.99} speed={1} factor={contentFactor}>
                     <div
-                        ref={contentRef}
                         className='relative w-full'
                         style={{
                             maskImage: 'linear-gradient(to bottom, transparent 0, black 10rem)',
