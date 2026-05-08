@@ -33,18 +33,39 @@ const skills = [
 const workExperience = [
     {
         company: 'Horizons',
-        role: 'Founder & Lead Developer',
-        period: '2023 — Present',
+        role: 'Fullstack Developer',
+        period: '2019 — Present',
         description: 'Building modern web applications and digital experiences for clients across multiple industries. Full ownership of architecture, design, and delivery.',
         current: true,
+    },
+    {
+        company: 'Spot On Drones',
+        role: 'Fullstack Developer',
+        period: '2024',
+        description: 'Full-stack website and admin dashboard for an agricultural drone services company. Features a YouTube livestream integration with password-protected client access, image gallery management, CASA document handling, and live operational statistics.',
+        current: false,
+    },
+    {
+        company: 'PMPC Group',
+        role: 'Fullstack Developer',
+        period: '2024',
+        description: 'Marketing website for a project management and controls consulting firm. Built with Next.js 15 and Framer Motion, featuring scroll-triggered animations, a 17-service showcase, and responsive desktop and mobile layouts.',
+        current: false,
+    },
+    {
+        company: "Arby's Auto Glass",
+        role: 'Fullstack Developer',
+        period: '2025',
+        description: 'Service website for a Western Australian auto glass repair business. Includes a dynamic pricing table, quote request form with full validation, auto-rotating image carousel, and an embedded Google Maps service area covering a 40km radius.',
+        current: false,
     },
 ]
 
 const projects = [
     {
         name: 'ASOT Milsim',
-        description: 'Full-stack platform for a military-style organisation. Includes member management, automated MILPAC certificate generation, a role-based admin dashboard, and a real-time notification system.',
-        tech: ['Next.js', 'TypeScript', 'PostgreSQL', 'Prisma', 'Docker'],
+        description: 'Community management platform for a military simulation unit. Features real-time collaborative operation briefings (Hocuspocus + Yjs CRDT), automated MILPAC generation with rank and uniform rendering, a 40+ key Discord role-based permission system, 3D terrain visualisation via Babylon.js, and TeamSpeak integration — backed by 27+ MongoDB collections.',
+        tech: ['Next.js 15', 'TypeScript', 'MongoDB', 'Hocuspocus', 'Discord OAuth2', 'Babylon.js', 'MUI'],
         link: null,
         featured: true,
     },
