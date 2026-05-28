@@ -47,7 +47,7 @@ export default function AnimatedLogo({ screenHeight }: { screenHeight?: boolean 
 
     useEffect(() => {
         setLogoZoom(windowDimensions.width >= windowDimensions.height ? (windowDimensions.width * 0.0005) : (windowDimensions.width * 0.0009))
-    }, [topDistance])
+    }, [windowDimensions])
 
 
 

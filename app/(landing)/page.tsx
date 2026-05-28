@@ -8,7 +8,7 @@ import { GitHub, LinkedIn, YouTube, Instagram, OpenInNew, Circle } from '@mui/ic
 import PMPC_Group from '../../public/images/clients/pmpc.svg'
 import SpotOnDrones from '../../public/images/clients/spotondrones.png'
 import Arbys from '../../public/images/clients/arbys.png'
-import ASOT from '../../public/images/clients/ASOT.svg'
+import ASOT from '../../public/images/clients/asot.svg'
 
 const clients = [
     { src: PMPC_Group, name: 'PMPC Group' },
