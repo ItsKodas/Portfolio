@@ -1,0 +1,48 @@
+.stream {
+    position: absolute;
+    inset: 0;
+    pointer-events: none;
+}
+
+/* Right to left, the same way the moon travels. Transform and opacity only, so it stays on the GPU */
+.cloud {
+    position: absolute;
+    left: 0;
+    will-change: transform;
+    animation-name: drift;
+    animation-timing-function: linear;
+    animation-iteration-count: infinite;
+}
+
+.image {
+    position: absolute;
+    inset: 0;
+    background-size: 100% 100%;
+    background-repeat: no-repeat;
+}
+
+.flip {
+    transform: scaleX(-1);
+}
+
+/* Cyan on the right of the sky, pink on the left */
+.cool {
+    will-change: opacity;
+    animation-name: cool;
+    animation-timing-function: linear;
+    animation-iteration-count: infinite;
+}
+
+@keyframes drift {
+    from { transform: translate3d(100vw, 0, 0); }
+    to   { transform: translate3d(-100%, 0, 0); }
+}
+
+@keyframes cool {
+    0%, 30%   { opacity: 1; }
+    70%, 100% { opacity: 0; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .cloud, .cool { animation-play-state: paused; }
+}

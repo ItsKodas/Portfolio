@@ -1,12 +1,9 @@
-@keyframes cloudDrift {
-    0%   { transform: translateX(0); }
-    50%  { transform: translateX(2.5%); }
-    100% { transform: translateX(0); }
-}
-
-.cloudDrift {
-    animation: cloudDrift 28s ease-in-out infinite;
+/* Scenes are two screens tall; the lower half sits behind the fading-in content */
+.layer {
+    position: absolute;
+    top: 0;
+    left: 0;
     width: 100%;
-    height: 100%;
-    position: relative;
+    height: 200svh;
+    will-change: transform;
 }

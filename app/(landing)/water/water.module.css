@@ -1,0 +1,54 @@
+.water {
+    position: absolute;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+    pointer-events: none;
+}
+
+/* Streaks glide gently back and forth and shimmer */
+.streak {
+    fill: #9ad9fb;
+    opacity: var(--opacity);
+    animation: glide ease-in-out infinite alternate;
+}
+
+@keyframes glide {
+    0%   { transform: translateX(calc(var(--drift) * -1)); opacity: calc(var(--opacity) * 0.55); }
+    50%  { opacity: var(--opacity); }
+    100% { transform: translateX(var(--drift)); opacity: calc(var(--opacity) * 0.55); }
+}
+
+/* Shoreline ripples: crisp tapered strokes (same style as the streaks) lapping towards the shore and back */
+.ripple {
+    fill: #9ad9fb;
+    transform-box: view-box;
+    transform-origin: 1900px 1800px; /* centre of the lake */
+    animation: lap 7.2s ease-in-out infinite alternate;
+}
+
+@keyframes lap {
+    0%   { transform: scale(0.975, 0.93); opacity: 0; }
+    50%  { opacity: var(--opacity); }
+    100% { transform: scale(1, 1);        opacity: calc(var(--opacity) * 0.3); }
+}
+
+/* Fog drifts slowly over the water, softened further by a light blur */
+.fog {
+    filter: blur(6px);
+    animation: fogDrift 26s ease-in-out infinite alternate;
+}
+
+.fogSlow {
+    animation-duration: 38s;
+    animation-direction: alternate-reverse;
+}
+
+@keyframes fogDrift {
+    from { transform: translateX(-60px); opacity: 0.85; }
+    to   { transform: translateX(60px);  opacity: 1; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .streak, .fog, .ripple { animation: none; }
+}
