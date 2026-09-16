@@ -34,6 +34,7 @@ const DAMPING        = 0.90    // velocity decay per frame — slow glide
 const ATTRACT_RADIUS = 220     // px — mouse influence zone
 const ATTRACT_STR    = 0.20    // peak force at cursor centre
 const WANDER_FORCE   = 0.010   // random drift force
+const GLOW_SPRITE_R  = 32      // px — prerendered glow, scaled down per star
 
 export default function SpaceBackground() {
     const canvasRef = useRef<HTMLCanvasElement>(null)
@@ -49,6 +50,16 @@ export default function SpaceBackground() {
         let h = canvas.offsetHeight
         canvas.width = w
         canvas.height = h
+
+        // Radial gradients are expensive to build every frame, so draw the glow once and stamp it
+        const glow = document.createElement('canvas')
+        glow.width = glow.height = GLOW_SPRITE_R * 2
+        const glowCtx = glow.getContext('2d')!
+        const glowGrad = glowCtx.createRadialGradient(GLOW_SPRITE_R, GLOW_SPRITE_R, 0, GLOW_SPRITE_R, GLOW_SPRITE_R, GLOW_SPRITE_R)
+        glowGrad.addColorStop(0, 'rgba(190,230,255,0.35)')
+        glowGrad.addColorStop(1, 'rgba(190,230,255,0)')
+        glowCtx.fillStyle = glowGrad
+        glowCtx.fillRect(0, 0, glow.width, glow.height)
 
         let mouseX = -9999
         let mouseY = -9999
@@ -97,13 +108,16 @@ export default function SpaceBackground() {
             s.active = true
         }
 
+        let running = false
+
         const frame = (ts: number) => {
-            const dt = ts - lastTs
+            const dt = lastTs ? Math.min(ts - lastTs, 50) : 0
             lastTs = ts
             elapsed += dt
 
             ctx.clearRect(0, 0, w, h)
             const t = ts * 0.001
+            ctx.fillStyle = '#fff'
 
             for (const star of stars) {
                 // Wander — slowly rotating direction creates organic drift
@@ -134,21 +148,17 @@ export default function SpaceBackground() {
                 const twinkle = 0.78 + 0.22 * Math.sin(t * star.twinkleSpeed + star.twinklePhase)
                 const alpha   = star.baseOpacity * twinkle
 
+                ctx.globalAlpha = alpha
                 ctx.beginPath()
                 ctx.arc(star.x, star.y, star.r, 0, Math.PI * 2)
-                ctx.fillStyle = `rgba(255,255,255,${alpha})`
                 ctx.fill()
 
                 if (star.glow) {
-                    const g = ctx.createRadialGradient(star.x, star.y, 0, star.x, star.y, star.r * 4.5)
-                    g.addColorStop(0, `rgba(190,230,255,${alpha * 0.35})`)
-                    g.addColorStop(1, 'rgba(190,230,255,0)')
-                    ctx.beginPath()
-                    ctx.arc(star.x, star.y, star.r * 4.5, 0, Math.PI * 2)
-                    ctx.fillStyle = g
-                    ctx.fill()
+                    const gr = star.r * 4.5
+                    ctx.drawImage(glow, star.x - gr, star.y - gr, gr * 2, gr * 2)
                 }
             }
+            ctx.globalAlpha = 1
 
             if (elapsed >= nextShootAt) {
                 spawnShooter()
@@ -183,10 +193,21 @@ export default function SpaceBackground() {
                 s.y += s.vy
             }
 
-            animId = requestAnimationFrame(frame)
+            if (running) animId = requestAnimationFrame(frame)
         }
 
-        animId = requestAnimationFrame(frame)
+        // Only animate while the canvas is on screen
+        const observer = new IntersectionObserver(([entry]) => {
+            if (entry.isIntersecting && !running) {
+                running = true
+                lastTs = 0
+                animId = requestAnimationFrame(frame)
+            } else if (!entry.isIntersecting) {
+                running = false
+                cancelAnimationFrame(animId)
+            }
+        })
+        observer.observe(canvas)
 
         const onMouseMove = (e: MouseEvent) => {
             const rect = canvas.getBoundingClientRect()
@@ -198,20 +219,24 @@ export default function SpaceBackground() {
         window.addEventListener('mousemove', onMouseMove)
         window.addEventListener('mouseleave', onMouseLeave)
 
-        const onResize = () => {
+        // The canvas follows the content height, which changes as fonts and images load
+        const resizeObserver = new ResizeObserver(() => {
+            if (canvas.offsetWidth === w && canvas.offsetHeight === h) return
             w = canvas.offsetWidth
             h = canvas.offsetHeight
             canvas.width = w
             canvas.height = h
             stars = buildStars()
-        }
-        window.addEventListener('resize', onResize)
+        })
+        resizeObserver.observe(canvas)
 
         return () => {
+            running = false
             cancelAnimationFrame(animId)
+            observer.disconnect()
+            resizeObserver.disconnect()
             window.removeEventListener('mousemove', onMouseMove)
             window.removeEventListener('mouseleave', onMouseLeave)
-            window.removeEventListener('resize', onResize)
         }
     }, [])
 

@@ -19,7 +19,7 @@ function getWindowDimensions() {
 
 export default function AnimatedLogo({ screenHeight }: { screenHeight?: boolean }) {
 
-    const [windowDimensions, setWindowDimensions] = useState(getWindowDimensions())
+    const [windowDimensions, setWindowDimensions] = useState({ width: 1920, height: 1080 }) // real size is read after mount; window doesn't exist on the server
     const [topDistance, setTopDistance] = useState<number | string>(0)
     const [logoZoom, setLogoZoom] = useState(1)
     const [screenRatio, setScreenRatio] = useState(1)
@@ -30,6 +30,7 @@ export default function AnimatedLogo({ screenHeight }: { screenHeight?: boolean 
             setWindowDimensions(getWindowDimensions())
         }
 
+        handleResize()
         window.addEventListener('resize', handleResize)
         return () => window.removeEventListener('resize', handleResize)
     }, [])
