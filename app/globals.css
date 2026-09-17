@@ -21,6 +21,14 @@ body {
 }
 
 
+/* Lite mode (see app/perf): no frosted glass. Blurring what's behind a panel has to be redone on every scroll frame,
+   which is far too slow without the graphics card. */
+html[data-perf="lite"] * {
+  -webkit-backdrop-filter: none !important;
+  backdrop-filter: none !important;
+}
+
+
 /* Scrollbar: a slim, muted pill floating on the night (a transparent border gives it room on either side). Its colour
    follows the part of the scene on screen: the page sets it in a stylesheet of its own (see parallax/scrollbarTint.tsx);
    these are the starting colours. */

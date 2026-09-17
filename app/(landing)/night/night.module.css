@@ -84,3 +84,7 @@
     .twinkle, .glow, .flame, .spark { animation: none; }
     .spark { opacity: 0; }
 }
+
+/* The same for the lite hero (see app/perf) */
+:global(html[data-perf="lite"]) .twinkle, :global(html[data-perf="lite"]) .glow, :global(html[data-perf="lite"]) .flame, :global(html[data-perf="lite"]) .spark { animation: none; }
+:global(html[data-perf="lite"]) .spark { opacity: 0; }

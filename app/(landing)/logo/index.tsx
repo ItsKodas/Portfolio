@@ -6,6 +6,8 @@ import { SportsEsports, Casino } from '@mui/icons-material'
 import { useEffect, useRef, useState } from 'react'
 import { useSpring, animated, to } from '@react-spring/web'
 
+import { useLite } from '@/app/perf/usePerf'
+
 import styles from './logo.module.css'
 import Logo from './logo.png'
 
@@ -46,7 +48,9 @@ export default function AnimatedLogo() {
     // re-centring jitter): the icon rises up from behind the mountains, then eases over to the left with the title
     // unrolling out of its side, and once the title is out the subtitle slides down from underneath it.
 
-    const reduceMotion = typeof window !== 'undefined' && window.matchMedia('(prefers-reduced-motion: reduce)').matches
+    // (Shown straight away, with no intro, for reduced motion and in the lite hero)
+    const lite = useLite()
+    const reduceMotion = lite || (typeof window !== 'undefined' && window.matchMedia('(prefers-reduced-motion: reduce)').matches)
 
     const rise = useSpring({
         from: { y: 420, opacity: 0 },
@@ -121,16 +125,16 @@ export default function AnimatedLogo() {
             <div className={styles.slot}>
                 <animated.div className="absolute left-1/2 top-0 flex gap-6 select-none" style={{
                     opacity: subtitle.p.to(q => Math.max(0, (q - 0.5) / 0.5)),
-                    transform: subtitle.p.to(q => `translate(-50%, ${((rowHeight / 2 + 14 + (1 - q) * 30) * scale).toFixed(1)}px) scale(${(scale * Math.min(1.6, Math.max(1, 0.55 / scale))).toFixed(3)})`),
+                    transform: subtitle.p.to(q => `translate(-50%, ${((rowHeight / 2 + 4 + (1 - q) * 30) * scale).toFixed(1)}px) scale(${(scale * Math.min(1.6, Math.max(1, 0.55 / scale))).toFixed(3)})`),
                     transformOrigin: 'top center',
                     pointerEvents: subtitle.p.to(q => q > 0.9 ? 'auto' : 'none'),
                 }}>
                     {HERO_LINKS.map(({ label, href, icon: Icon, primary }) => (
                         <a key={label} href={href} target="_blank" rel="noopener noreferrer"
-                            className={`flex items-center gap-3 whitespace-nowrap rounded-full border-2 px-9 py-4 text-[26px] font-semibold tracking-wide backdrop-blur-md transition-all duration-300 hover:-translate-y-1 focus-visible:outline-none focus-visible:ring-4 focus-visible:ring-white/50 ${primary
+                            className={`flex items-center gap-3 whitespace-nowrap rounded-full border-2 px-8 py-3.5 text-[23px] font-semibold tracking-wide backdrop-blur-md transition-all duration-300 hover:-translate-y-1 focus-visible:outline-none focus-visible:ring-4 focus-visible:ring-white/50 ${primary
                                 ? 'border-white/80 bg-white/90 text-[#27336b] hover:bg-white shadow-[0_10px_40px_-10px_rgba(255,255,255,0.45)]'
                                 : 'border-white/60 bg-white/[0.08] text-white hover:bg-white/[0.18] hover:border-white'}`}>
-                            <Icon sx={{ fontSize: 32 }} />
+                            <Icon sx={{ fontSize: 28 }} />
                             {label}
                         </a>
                     ))}

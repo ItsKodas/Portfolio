@@ -59,3 +59,6 @@
 @media (prefers-reduced-motion: reduce) {
     .cloud, .cool { animation-play-state: paused; }
 }
+
+/* The same for the lite hero (see app/perf) */
+:global(html[data-perf="lite"]) .cloud, :global(html[data-perf="lite"]) .cool { animation-play-state: paused; will-change: auto; }

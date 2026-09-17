@@ -48,3 +48,7 @@
     .twinkle, .drift { animation: none; }
     .shoot { display: none; }
 }
+
+/* The same for the lite hero (see app/perf) */
+:global(html[data-perf="lite"]) .twinkle, :global(html[data-perf="lite"]) .drift { animation: none; }
+:global(html[data-perf="lite"]) .shoot { display: none; }

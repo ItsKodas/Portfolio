@@ -31,3 +31,6 @@
 @media (prefers-reduced-motion: reduce) {
     .glow, .window { animation: none; }
 }
+
+/* The same for the lite hero (see app/perf) */
+:global(html[data-perf="lite"]) .glow, :global(html[data-perf="lite"]) .window { animation: none; }

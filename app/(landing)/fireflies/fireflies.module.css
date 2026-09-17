@@ -53,3 +53,6 @@
 @media (prefers-reduced-motion: reduce) {
     .wander, .glow { animation: none; }
 }
+
+/* The same for the lite hero (see app/perf) */
+:global(html[data-perf="lite"]) .wander, :global(html[data-perf="lite"]) .glow { animation: none; }

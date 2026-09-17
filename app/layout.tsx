@@ -1,6 +1,7 @@
 import type { Metadata, Viewport } from "next"
 import { Montserrat } from "next/font/google"
 import "./globals.css"
+import { PERF_SCRIPT } from "./perf/script"
 
 
 
@@ -27,8 +28,10 @@ export const metadata: Metadata = {
 
 export default function RootLayout({ children }: Readonly<{ children: React.ReactNode }>) {
 	return (
-		<html lang="en" className="h-full">
+		// The head script marks the root with the performance mode before hydrating, which React would otherwise flag
+		<html lang="en" className="h-full" suppressHydrationWarning>
 			<head>
+				<script dangerouslySetInnerHTML={{ __html: PERF_SCRIPT }} />
 				<link rel="apple-touch-icon" href="/banner.jpg" />
 			</head>
 
