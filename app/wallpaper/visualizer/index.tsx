@@ -11,11 +11,20 @@ import { useNowPlaying } from '../media'
 import { useSettings } from '../settings'
 import styles from './visualizer.module.css'
 
-const BARS_PER_SIDE = 32   // each from a pair of the 64 levels a channel comes in
+const BARS_PER_SIDE = 12   // each from a share of the 64 levels a channel comes in
+const HIGHEST_BIN = 44     // the levels above this are near enough always silent, so they're left out
 const RISE = 0.55          // how much of the way up to a louder level a bar goes each frame
 const FALL = 0.9           // and how much of its height it keeps each frame as it falls back
 const SILENT = 0.002       // below this everything counts as silent, and nothing's drawn
 const LIFT = 0.7           // levels are raised to this power, lifting the quieter ones (they mostly sit well below 1)
+
+// Which of a channel's levels each bar is the loudness of: the lowest few bins for the bass bar at the outside edge,
+// widening towards the treble, which has less going on to show
+const BINS = Array.from({ length: BARS_PER_SIDE }, (_, bar) => {
+    const edge = (at: number) => Math.round(HIGHEST_BIN * (at / BARS_PER_SIDE) ** 2.2)
+    const from = edge(bar)
+    return [from, Math.max(edge(bar + 1), from + 1)]
+})
 
 // A CSS colour as its red, green and blue, by way of a canvas (which normalises any colour to #rrggbb)
 function rgb(ctx: CanvasRenderingContext2D, color: string) {
@@ -55,8 +64,10 @@ export default function Visualizer({ overscan }: { overscan: number }) {
                 // The left channel's bars run in from the left edge, the right channel's in from the right edge
                 const right = slot >= BARS_PER_SIDE
                 const bar = right ? levels.length - 1 - slot : slot
-                const first = (right ? 64 : 0) + bar * 2
-                const target = audio ? Math.min(1, ((audio[first] ?? 0) + (audio[first + 1] ?? 0)) / 2) ** LIFT : 0
+                const [from, to] = BINS[bar]
+                let level = 0
+                for (let bin = from; bin < to; bin++) level += audio?.[(right ? 64 : 0) + bin] ?? 0
+                const target = audio ? Math.min(1, level / (to - from)) ** LIFT : 0
                 levels[slot] = target > levels[slot] ? levels[slot] + (target - levels[slot]) * RISE : levels[slot] * FALL
                 loudest = Math.max(loudest, levels[slot])
             }
@@ -83,7 +94,7 @@ export default function Visualizer({ overscan }: { overscan: number }) {
                 gradient.addColorStop(0, `rgba(${channels}, 0.95)`)
                 gradient.addColorStop(1, `rgba(${channels}, 0.5)`)
                 ctx.fillStyle = gradient
-                const barWidth = slotWidth * 0.56
+                const barWidth = slotWidth * 0.42
                 const radius = Math.min(barWidth / 2, 6 * scale)
                 ctx.beginPath()
                 levels.forEach((level, slot) => {
