@@ -1,6 +1,6 @@
 import { describe, it } from 'node:test'
 import assert from 'node:assert/strict'
-import { evaluateBootGate, collectWarnings, cycleFailedWarning, resolveIntervalMs } from './health.ts'
+import { evaluateBootGate, bootGateIsRetryable, collectWarnings, cycleFailedWarning, resolveIntervalMs } from './health.ts'
 
 const healthy = {
     outbound: { ok: true, banner: '220 mx.google.com ESMTP' },
@@ -23,7 +23,39 @@ describe('evaluateBootGate', () => {
     })
 
     it('fails when Cloudflare rejects the credentials', () => {
-        assert.deepEqual(evaluateBootGate({ ...healthy, cloudflareOk: false }), ['Cloudflare rejected CF_API_TOKEN or CF_ZONE_ID'])
+        assert.deepEqual(
+            evaluateBootGate({ ...healthy, cloudflareOk: false, cloudflareRejected: true }),
+            ['Cloudflare rejected CF_API_TOKEN or CF_ZONE_ID'],
+        )
+    })
+
+    it('distinguishes an unreachable API from a rejected credential', () => {
+        assert.deepEqual(
+            evaluateBootGate({ ...healthy, cloudflareOk: false, cloudflareRejected: false }),
+            ['the Cloudflare API could not be reached'],
+        )
+    })
+})
+
+describe('bootGateIsRetryable', () => {
+    // A crash-looping mailops on a dynamic IP means the A record goes stale, and after the next
+    // rotation inbound mail stops. That is exactly the lost-mail outcome the two-tier rule exists to
+    // prevent, so every environmental failure is worth waiting out.
+    it('retries a blocked outbound port, which is routinely transient on a residential link', () => {
+        assert.equal(bootGateIsRetryable({ ...healthy, outbound: { ok: false, error: 'timeout' } }), true)
+    })
+
+    it('retries an undeterminable public IP', () => {
+        assert.equal(bootGateIsRetryable({ ...healthy, publicIp: null }), true)
+    })
+
+    it('retries an unreachable Cloudflare API', () => {
+        assert.equal(bootGateIsRetryable({ ...healthy, cloudflareOk: false, cloudflareRejected: false }), true)
+    })
+
+    // Genuine misconfiguration. Retrying cannot fix a bad token, so say so immediately.
+    it('does not retry a credential Cloudflare actively rejected', () => {
+        assert.equal(bootGateIsRetryable({ ...healthy, cloudflareOk: false, cloudflareRejected: true }), false)
     })
 })
 

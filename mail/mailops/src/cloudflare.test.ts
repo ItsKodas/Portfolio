@@ -1,7 +1,8 @@
 import { describe, it } from 'node:test'
 import assert from 'node:assert/strict'
 import {
-    MANAGED_COMMENT, isManaged, matches, normaliseTxtContent, createCloudflareApi, UnmanagedRecordError,
+    MANAGED_COMMENT, isManaged, matches, normaliseTxtContent, createCloudflareApi,
+    UnmanagedRecordError, CloudflareApiError,
     type CloudflareRecord,
 } from './cloudflare.ts'
 import type { DesiredRecord } from './desired.ts'
@@ -184,5 +185,34 @@ describe('createCloudflareApi', () => {
             { status: 403, headers: { 'content-type': 'application/json' } },
         )) as unknown as typeof fetch
         await assert.rejects(() => createCloudflareApi('token', 'zone', impl).list('x', 'A'), /bad token/)
+    })
+
+    // The boot gate uses this type to tell a rejected credential, which retrying cannot fix, from a
+    // request that never got an answer, which retrying usually can.
+    it('throws CloudflareApiError when Cloudflare answered and refused', async () => {
+        const impl = (async () => new Response(
+            JSON.stringify({ success: false, errors: [{ message: 'Invalid API Token' }], result: null }),
+            { status: 403, headers: { 'content-type': 'application/json' } },
+        )) as unknown as typeof fetch
+        await assert.rejects(
+            () => createCloudflareApi('token', 'zone', impl).list('x', 'A'),
+            (error: unknown) => {
+                assert.ok(error instanceof CloudflareApiError)
+                assert.deepEqual(error.messages, ['Invalid API Token'])
+                assert.equal(error.status, 403)
+                return true
+            },
+        )
+    })
+
+    it('does not throw CloudflareApiError when the request itself failed', async () => {
+        const impl = (async () => { throw new TypeError('fetch failed') }) as unknown as typeof fetch
+        await assert.rejects(
+            () => createCloudflareApi('token', 'zone', impl).list('x', 'A'),
+            (error: unknown) => {
+                assert.ok(!(error instanceof CloudflareApiError), 'an unanswered request says nothing about the token')
+                return true
+            },
+        )
     })
 })

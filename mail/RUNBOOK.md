@@ -29,8 +29,16 @@ dashboard, issue a new one with the same scope, and put the new value in `mail/.
 cd mail && docker compose up -d && docker compose logs -f mailops
 ```
 
-Expect `boot gate passed` within a minute. If it exits instead, the log names the failed check. The gate
-fails on configuration problems only: a bad token, an unreachable outbound 25, or an undeterminable IP.
+Expect `boot gate passed` within a minute or two. If it exits instead, the log names the failed check.
+
+The gate retries its environmental probes (outbound 25, the public IP lookup, reaching the Cloudflare
+API) five times over about 75 seconds before giving up, logging each attempt. On a residential link
+those three fail transiently often enough that exiting on the first bad answer would mean a
+crash-looping `mailops`, a stale A record and, after the next IP rotation, inbound mail stopping. That
+is the failure mode the whole design exists to avoid, so the gate waits.
+
+A token Cloudflare actively rejects is different. That is genuine misconfiguration, retrying cannot fix
+it, and the gate exits immediately saying so.
 
 Then confirm the zone. `mail.dev.horizons.gg` A, `dev.horizons.gg` MX and TXT, and `_dmarc.dev.horizons.gg`
 TXT should exist in Cloudflare, each commented `managed-by:mailops`, and the A record must be grey-clouded.

@@ -18,6 +18,17 @@ export type CloudflareRecord = {
     comment?: string
 }
 
+// Cloudflare answered, and the answer was no. That is a definitive verdict on the credentials or the
+// request, and it separates a rejected token from a connection that simply did not get through. The boot
+// gate needs that distinction: retrying a bad token is pointless, retrying a residential link that was
+// not up yet is exactly the right thing to do.
+export class CloudflareApiError extends Error {
+    constructor(readonly messages: string[], readonly status: number) {
+        super(`Cloudflare API error: ${messages.join('; ') || status}`)
+        this.name = 'CloudflareApiError'
+    }
+}
+
 export class UnmanagedRecordError extends Error {
     constructor(record: CloudflareRecord) {
         super(`Refusing to modify ${record.type} ${record.name}: it is not stamped ${MANAGED_COMMENT}`)
@@ -84,7 +95,7 @@ export function createCloudflareApi(token: string, zoneId: string, fetchImpl: ty
         const response = await fetchImpl(url, { ...init, headers, signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS) })
         const payload = await response.json() as { success: boolean, errors?: { message: string }[], result: unknown }
         if (!payload.success) {
-            throw new Error(`Cloudflare API error: ${payload.errors?.map(e => e.message).join('; ') || response.status}`)
+            throw new CloudflareApiError(payload.errors?.map(e => e.message) ?? [], response.status)
         }
         return payload.result
     }

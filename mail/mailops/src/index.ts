@@ -2,12 +2,13 @@
 
 import { loadConfig } from './config.ts'
 import { desiredRecords } from './desired.ts'
-import { createCloudflareApi } from './cloudflare.ts'
+import { createCloudflareApi, CloudflareApiError, type DnsApi } from './cloudflare.ts'
 import { reconcile, createWriteTracker } from './reconcile.ts'
 import { fetchPublicIp, readDkimKey, writeAliasMap, readLogTail } from './adapters.ts'
 import { probeOutboundSmtp, checkSpamhaus, lastInboundConnection } from './probes.ts'
 import type { SpamhausResult } from './probes.ts'
-import { evaluateBootGate, collectWarnings, writeStatus, cycleFailedWarning, resolveIntervalMs, BootGateError } from './health.ts'
+import { evaluateBootGate, bootGateIsRetryable, collectWarnings, writeStatus, cycleFailedWarning, resolveIntervalMs, BootGateError, type BootChecks } from './health.ts'
+import type { Config } from './config.ts'
 import { ensureCertificate, certificateStatus } from './certs.ts'
 
 const log = (message: string) => console.log(`[mailops] ${new Date().toISOString()} ${message}`)
@@ -27,21 +28,57 @@ if (intervalResolution.invalid) {
 }
 const INTERVAL_MS = intervalResolution.ms
 
+const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms))
+
+// Roughly 75 seconds of patience in total. Long enough to ride out a modem still negotiating or a DNS
+// resolver that is not answering yet, short enough that a genuinely broken deployment still tells the
+// operator so promptly.
+const BOOT_GATE_BACKOFF_MS = [5_000, 10_000, 20_000, 40_000]
+
+async function probeEnvironment(api: DnsApi, config: Config): Promise<BootChecks> {
+    const outbound = await probeOutboundSmtp(OUTBOUND_PROBE_HOST)
+
+    let publicIp: string | null = null
+    try { publicIp = await fetchPublicIp() } catch { publicIp = null }
+
+    let cloudflareOk = true
+    let cloudflareRejected = false
+    try {
+        await api.list(config.mailHostname, 'A')
+    } catch (error) {
+        cloudflareOk = false
+        // Only a refusal Cloudflare actually issued counts as a rejected credential. A request that
+        // never got an answer says nothing about the token, and retrying it is the right response.
+        cloudflareRejected = error instanceof CloudflareApiError
+    }
+
+    return { outbound, publicIp, cloudflareOk, cloudflareRejected }
+}
+
+// evaluateBootGate stays pure; the retrying lives out here so it stays that way.
+async function passBootGate(api: DnsApi, config: Config): Promise<BootChecks> {
+    for (let attempt = 0; ; attempt++) {
+        const checks = await probeEnvironment(api, config)
+        const failures = evaluateBootGate(checks)
+        if (failures.length === 0) return checks
+
+        const lastAttempt = attempt >= BOOT_GATE_BACKOFF_MS.length
+        if (lastAttempt || !bootGateIsRetryable(checks)) throw new BootGateError(failures)
+
+        const wait = BOOT_GATE_BACKOFF_MS[attempt]!
+        log(`WARN boot gate attempt ${attempt + 1} failed (${failures.join('; ')}), retrying in ${wait / 1000}s`)
+        await sleep(wait)
+    }
+}
+
 async function main() {
     const config = loadConfig(process.env)
     log(`domain=${config.mailDomain} hostname=${config.mailHostname} relay=${config.relay ? config.relay.host : 'direct'}`)
 
     const api = createCloudflareApi(config.cfApiToken, config.cfZoneId)
 
-    const outbound = await probeOutboundSmtp(OUTBOUND_PROBE_HOST)
-    let publicIp: string | null = null
-    try { publicIp = await fetchPublicIp() } catch { publicIp = null }
-    let cloudflareOk = true
-    try { await api.list(config.mailHostname, 'A') } catch { cloudflareOk = false }
-
-    const failures = evaluateBootGate({ outbound, publicIp, cloudflareOk })
-    if (failures.length > 0) throw new BootGateError(failures)
-    log(`boot gate passed, banner: ${outbound.banner}`)
+    const checks = await passBootGate(api, config)
+    log(`boot gate passed, banner: ${checks.outbound.banner}`)
 
     await writeAliasMap(CONFIG_DIR, config)
 
@@ -108,7 +145,7 @@ async function main() {
             // able to kill the loop that keeps DNS reconciled and mail flowing: log it and move on.
             log(`ERROR failed to write status file: ${(error as Error).message}`)
         }
-        await new Promise(resolve => setTimeout(resolve, INTERVAL_MS))
+        await sleep(INTERVAL_MS)
     }
 }
 

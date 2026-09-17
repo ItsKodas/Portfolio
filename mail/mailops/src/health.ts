@@ -19,14 +19,31 @@ export type BootChecks = {
     outbound: SmtpProbe
     publicIp: string | null
     cloudflareOk: boolean
+    // True only when Cloudflare answered and refused. A request that never got an answer leaves this
+    // false, because an unanswered request says nothing about whether the credentials are good.
+    cloudflareRejected?: boolean
 }
 
 export function evaluateBootGate(checks: BootChecks): string[] {
     const failures: string[] = []
     if (!checks.outbound.ok) failures.push(`outbound port 25 is unreachable: ${checks.outbound.error ?? 'no banner'}`)
     if (!checks.publicIp) failures.push('public IP could not be determined')
-    if (!checks.cloudflareOk) failures.push('Cloudflare rejected CF_API_TOKEN or CF_ZONE_ID')
+    if (!checks.cloudflareOk) {
+        failures.push(checks.cloudflareRejected
+            ? 'Cloudflare rejected CF_API_TOKEN or CF_ZONE_ID'
+            : 'the Cloudflare API could not be reached')
+    }
     return failures
+}
+
+// The spec's whole two-tier principle is "never fail closed on a condition whose failure mode is lost
+// mail", and hard-exiting on a momentarily unreachable network breaks it: a crash-looping mailops on a
+// dynamic IP means the A record goes stale, and after the next rotation inbound mail stops. Everything
+// environmental here is worth retrying. A credential Cloudflare has actively rejected is not: that is
+// genuine misconfiguration, retrying cannot help it, and failing fast is the correct answer.
+// (A malformed MAIL_DOMAIN never reaches this point; loadConfig throws first.)
+export function bootGateIsRetryable(checks: BootChecks): boolean {
+    return !checks.cloudflareRejected
 }
 
 export type Warning = { check: string, detail: string }
