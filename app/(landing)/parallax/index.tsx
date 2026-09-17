@@ -19,6 +19,7 @@ import Watchtower from '../watchtower/index'
 import ForegroundTrees from '../trees/index'
 
 import ScrollbarTint from './scrollbarTint'
+import UiToggle from './uiToggle'
 import styles from './parallax.module.css'
 
 import Sky from './sky.svg'
@@ -58,6 +59,9 @@ function Layer({ speed, className = styles.layer, style, children }: { speed: nu
 export default function ParallaxView({ children }: Readonly<{ children: React.ReactNode }>) {
     const contentRef = useRef<HTMLDivElement>(null)
     const [pageHeight, setPageHeight] = useState<number>()
+    // Whether the hero's title, buttons and note are hidden, leaving just the scenery
+    const [uiHidden, setUiHidden] = useState(false)
+    const ui = `${styles.ui} ${uiHidden ? styles.uiHidden : ''}`
 
     // The content moves at (1 + speed)x the scroll, so the page only needs enough scroll
     // for its bottom to reach the bottom of the screen at that rate
@@ -104,6 +108,7 @@ export default function ParallaxView({ children }: Readonly<{ children: React.Re
     return (
         <ThemeProvider theme={DarkTheme}>
             <ScrollbarTint />
+            <UiToggle hidden={uiHidden} onToggle={() => setUiHidden(h => !h)} />
             <div className='relative overflow-hidden bg-[#0b101f]' style={{ height: pageHeight ?? '100svh' }}>
 
                 {/* ── Hero scene ─────────────────────────────────────── */}
@@ -123,7 +128,9 @@ export default function ParallaxView({ children }: Readonly<{ children: React.Re
                     </Layer>
 
                     <Layer speed={0.005}>
-                        <AnimatedLogo />
+                        <div className={`absolute inset-0 ${ui}`}>
+                            <AnimatedLogo />
+                        </div>
                     </Layer>
 
                     <Layer speed={0.5}>
@@ -139,7 +146,7 @@ export default function ParallaxView({ children }: Readonly<{ children: React.Re
                     {/* The note pointing down to the work, moving with the valley, and behind the forest and trees so they
                         cover it as the page scrolls */}
                     <Layer speed={0.6}>
-                        <div className="relative h-svh flex justify-center">
+                        <div className={`relative h-svh flex justify-center ${ui}`}>
                             <div className='absolute bottom-[20%]'>
                                 <ScrollIcon />
                             </div>

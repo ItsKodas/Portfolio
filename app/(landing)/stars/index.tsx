@@ -46,6 +46,24 @@ function buildStars(): Star[] {
             stars.push({ x: cx + (rand() - 0.5) * 90, y: cy + (rand() - 0.5) * 70, r: 1.5 + rand() * 1, opacity: 0.7 + rand() * 0.3, group: 1 + (i % TWINKLE_GROUPS) })
         }
     }
+    // The very top of the sky, above where the field starts: normally cropped off-screen, but on screens that show the
+    // whole canvas height (full screen, very wide or tall screens) it would be an empty band. Filled at the same density
+    // as the top of the field, from its own seed so the stars below don't move.
+    seed = 7351
+    let top = 0
+    while (top < 90) {
+        const x = rand() * 3840, y = -40 + rand() * 250
+        const density = Math.min(1, 0.2 + 0.5 * Math.pow(x / 3840, 1.5) + 0.6 * Math.exp(-((x - MOON.x) ** 2 + ((y - MOON.y) * 1.3) ** 2) / (2 * 850 ** 2)))
+        if (rand() > density) continue
+        const bright = rand() < 0.06
+        stars.push({
+            x, y,
+            r: bright ? 3.6 + rand() * 0.8 : 1.8 + rand() * 1.2,
+            opacity: bright ? 1 : 0.45 + rand() * 0.5,
+            group: rand() < 0.2 ? 0 : 1 + Math.floor(rand() * TWINKLE_GROUPS),
+        })
+        top++
+    }
     return stars
 }
 
