@@ -1,0 +1,194 @@
+{
+	"title": "Horizons",
+	"description": "A night over the lake: drifting clouds, twinkling stars, a wind-blown forest and fireflies, with layers that follow your mouse, and the time, date and weather above the mountains. From horizons.gg.",
+	"type": "web",
+	"file": "index.html",
+	"preview": "preview.jpg",
+	"tags": [
+		"Landscape",
+		"Nature"
+	],
+	"contentrating": "Everyone",
+	"general": {
+		"properties": {
+			"schemecolor": {
+				"order": 0,
+				"text": "ui_browse_properties_scheme_color",
+				"type": "color",
+				"value": "0.05098 0.08627 0.14902"
+			},
+			"showclock": {
+				"order": 1,
+				"text": "Show time",
+				"type": "bool",
+				"value": true
+			},
+			"clockformat": {
+				"order": 2,
+				"text": "Time format",
+				"type": "combo",
+				"condition": "showclock.value",
+				"options": [
+					{
+						"label": "12-hour (AM/PM)",
+						"value": "12"
+					},
+					{
+						"label": "24-hour",
+						"value": "24"
+					},
+					{
+						"label": "Automatic",
+						"value": "auto"
+					}
+				],
+				"value": "12"
+			},
+			"showseconds": {
+				"order": 3,
+				"text": "Show seconds",
+				"type": "bool",
+				"condition": "showclock.value",
+				"value": false
+			},
+			"showdate": {
+				"order": 4,
+				"text": "Show date",
+				"type": "bool",
+				"value": true
+			},
+			"showweather": {
+				"order": 5,
+				"text": "Show weather",
+				"type": "bool",
+				"value": true
+			},
+			"weatherlocation": {
+				"order": 6,
+				"text": "Weather location (blank to detect)",
+				"type": "textinput",
+				"condition": "showweather.value",
+				"value": ""
+			},
+			"temperatureunits": {
+				"order": 7,
+				"text": "Temperature units",
+				"type": "combo",
+				"condition": "showweather.value",
+				"options": [
+					{
+						"label": "Automatic",
+						"value": "auto"
+					},
+					{
+						"label": "Celsius",
+						"value": "celsius"
+					},
+					{
+						"label": "Fahrenheit",
+						"value": "fahrenheit"
+					}
+				],
+				"value": "auto"
+			},
+			"showhighlow": {
+				"order": 8,
+				"text": "Show today's high and low",
+				"type": "bool",
+				"condition": "showweather.value",
+				"value": true
+			},
+			"showplace": {
+				"order": 9,
+				"text": "Show weather location",
+				"type": "bool",
+				"condition": "showweather.value",
+				"value": true
+			},
+			"textsize": {
+				"order": 10,
+				"text": "Time, date and weather size",
+				"type": "slider",
+				"min": 50,
+				"max": 150,
+				"value": 100
+			},
+			"animatetext": {
+				"order": 11,
+				"text": "Animate time, date and weather in",
+				"type": "bool",
+				"value": true
+			},
+			"mouseparallax": {
+				"order": 12,
+				"text": "Mouse parallax",
+				"type": "bool",
+				"value": true
+			},
+			"parallaxstrength": {
+				"order": 13,
+				"text": "Parallax strength",
+				"type": "slider",
+				"condition": "mouseparallax.value",
+				"min": 0,
+				"max": 100,
+				"value": 50
+			},
+			"stillscenery": {
+				"order": 14,
+				"text": "Still scenery: all animation off (lowest GPU use)",
+				"type": "bool",
+				"value": false
+			},
+			"animateclouds": {
+				"order": 15,
+				"text": "Drifting clouds",
+				"type": "bool",
+				"condition": "!stillscenery.value",
+				"value": true
+			},
+			"animatestars": {
+				"order": 16,
+				"text": "Twinkling stars",
+				"type": "bool",
+				"condition": "!stillscenery.value",
+				"value": true
+			},
+			"shootingstars": {
+				"order": 17,
+				"text": "Shooting stars",
+				"type": "bool",
+				"condition": "!stillscenery.value",
+				"value": true
+			},
+			"animatewind": {
+				"order": 18,
+				"text": "Wind in the trees",
+				"type": "bool",
+				"condition": "!stillscenery.value",
+				"value": true
+			},
+			"animatefireflies": {
+				"order": 19,
+				"text": "Fireflies",
+				"type": "bool",
+				"condition": "!stillscenery.value",
+				"value": true
+			},
+			"animatewater": {
+				"order": 20,
+				"text": "Water and fog",
+				"type": "bool",
+				"condition": "!stillscenery.value",
+				"value": true
+			},
+			"animatewatchtower": {
+				"order": 21,
+				"text": "Watchtower light",
+				"type": "bool",
+				"condition": "!stillscenery.value",
+				"value": true
+			}
+		}
+	}
+}

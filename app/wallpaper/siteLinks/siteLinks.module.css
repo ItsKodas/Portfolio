@@ -1,0 +1,63 @@
+/* Frosted pills in the top right, like the home page's wallpaper button, faded back until hovered or focused so the
+   view stays clear */
+.links {
+    position: fixed;
+    top: 16px;
+    right: 20px;
+    z-index: 50;
+    display: flex;
+    gap: 10px;
+    opacity: 0.55;
+    transition: opacity 0.3s ease;
+}
+
+.links:hover,
+.links:focus-within {
+    opacity: 1;
+}
+
+.link {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    height: 40px;
+    padding: 0 16px;
+    border-radius: 999px;
+    border: 1px solid rgba(255, 255, 255, 0.25);
+    background: rgba(17, 26, 56, 0.35);
+    color: rgba(236, 244, 255, 0.9);
+    font-size: 14px;
+    font-weight: 500;
+    letter-spacing: 0.3px;
+    white-space: nowrap;
+    backdrop-filter: blur(8px);
+    -webkit-backdrop-filter: blur(8px);
+    transition: background-color 0.3s ease, border-color 0.3s ease, transform 0.3s ease;
+}
+
+.link:hover {
+    background: rgba(17, 26, 56, 0.6);
+    border-color: rgba(255, 255, 255, 0.5);
+    transform: translateY(-1px);
+}
+
+.link:focus-visible {
+    outline: 2px solid rgba(255, 255, 255, 0.6);
+    outline-offset: 3px;
+}
+
+/* The Workshop link, as the one to follow */
+.primary {
+    border-color: rgba(255, 255, 255, 0.8);
+    background: rgba(255, 255, 255, 0.9);
+    color: #27336b;
+}
+
+.primary:hover {
+    background: #fff;
+    border-color: #fff;
+}
+
+.icon {
+    font-size: 16px !important;
+}

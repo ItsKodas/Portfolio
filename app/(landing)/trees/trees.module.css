@@ -89,3 +89,7 @@
 /* The same for the lite hero (see app/perf) */
 :global(html[data-perf="lite"]) .sway, :global(html[data-perf="lite"]) .gust, :global(html[data-perf="lite"]) .streak, :global(html[data-perf="lite"]) .leafTravel, :global(html[data-perf="lite"]) .leafFlutter, :global(html[data-perf="lite"]) .leafSpin { animation: none; }
 :global(html[data-perf="lite"]) .streak, :global(html[data-perf="lite"]) .leafTravel { opacity: 0; }
+
+/* And when the desktop wallpaper's settings turn the wind off (see app/wallpaper) */
+:global(html[data-still~="wind"]) .sway, :global(html[data-still~="wind"]) .gust, :global(html[data-still~="wind"]) .streak, :global(html[data-still~="wind"]) .leafTravel, :global(html[data-still~="wind"]) .leafFlutter, :global(html[data-still~="wind"]) .leafSpin { animation: none; }
+:global(html[data-still~="wind"]) .streak, :global(html[data-still~="wind"]) .leafTravel { opacity: 0; }

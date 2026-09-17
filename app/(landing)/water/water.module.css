@@ -92,3 +92,6 @@
 
 /* The same for the lite hero (see app/perf) */
 :global(html[data-perf="lite"]) .streak, :global(html[data-perf="lite"]) .fog, :global(html[data-perf="lite"]) .ripple, :global(html[data-perf="lite"]) .bob, :global(html[data-perf="lite"]) .flicker { animation: none; }
+
+/* And when the desktop wallpaper's settings keep the water still (see app/wallpaper) */
+:global(html[data-still~="water"]) .streak, :global(html[data-still~="water"]) .fog, :global(html[data-still~="water"]) .ripple, :global(html[data-still~="water"]) .bob, :global(html[data-still~="water"]) .flicker { animation: none; }
