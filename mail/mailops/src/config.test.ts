@@ -34,6 +34,20 @@ describe('loadConfig', () => {
         assert.equal(loadConfig(base).dkimSelector, 'mail')
     })
 
+    it('leaves the catch-all off unless it is explicitly turned on', () => {
+        assert.equal(loadConfig(base).acceptCatchall, false)
+        assert.equal(loadConfig({ ...base, ACCEPT_CATCHALL: '0' }).acceptCatchall, false)
+        assert.equal(loadConfig({ ...base, ACCEPT_CATCHALL: '' }).acceptCatchall, false)
+        // A typo must resolve to the safe answer, never to the dangerous one.
+        assert.equal(loadConfig({ ...base, ACCEPT_CATCHALL: 'ture' }).acceptCatchall, false)
+    })
+
+    it('accepts the affirmative spellings of the catch-all opt-in', () => {
+        for (const value of ['1', 'true', 'TRUE', 'yes', ' on ']) {
+            assert.equal(loadConfig({ ...base, ACCEPT_CATCHALL: value }).acceptCatchall, true, value)
+        }
+    })
+
     it('reports a missing MAIL_DOMAIN by name', () => {
         assert.deepEqual(failuresOf({ ...base, MAIL_DOMAIN: undefined }), ['MAIL_DOMAIN is required'])
     })

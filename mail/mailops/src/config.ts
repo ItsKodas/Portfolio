@@ -18,6 +18,7 @@ export type Config = {
     dmarcRua: string
     deliveryTargets: string[]
     dkimSelector: string
+    acceptCatchall: boolean
     relay: RelayConfig | null
 }
 
@@ -31,6 +32,12 @@ export class ConfigError extends Error {
 const DOMAIN = /^(?!-)[a-z0-9-]{1,63}(?<!-)(\.(?!-)[a-z0-9-]{1,63}(?<!-))+$/
 
 type Env = Record<string, string | undefined>
+
+// Anything not explicitly affirmative is off. A catch-all is a decision with real consequences, so a
+// typo in the value must resolve to the safe answer rather than to the dangerous one.
+function boolean(raw: string | undefined): boolean {
+    return ['1', 'true', 'yes', 'on'].includes((raw ?? '').trim().toLowerCase())
+}
 
 function required(env: Env, key: string, failures: string[]): string {
     const value = env[key]?.trim()
@@ -92,6 +99,7 @@ export function loadConfig(env: Env): Config {
         dmarcRua,
         deliveryTargets: (env.DELIVERY_TARGETS?.trim() || 'forward').split(',').map(t => t.trim()),
         dkimSelector: env.DKIM_SELECTOR?.trim() || 'mail',
+        acceptCatchall: boolean(env.ACCEPT_CATCHALL),
         relay,
     }
 }

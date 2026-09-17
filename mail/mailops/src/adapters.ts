@@ -52,10 +52,13 @@ export async function readDkimKey(configDir: string, config: Config): Promise<st
 // produces nothing, so adding it later is additive rather than a rewrite.
 export function aliasMap(config: Config): string {
     if (!config.deliveryTargets.includes('forward')) return ''
-    return [
-        `contact@${config.mailDomain} ${config.forwardTo}`,
-        `@${config.mailDomain} ${config.forwardTo}`,
-    ].join('\n') + '\n'
+    const lines = [`contact@${config.mailDomain} ${config.forwardTo}`]
+    // contact@ is the only address the design ever authorised. A catch-all on a forward-only server
+    // accepts every dictionary-attack recipient and re-sends it to the operator's real inbox from an
+    // address that is permanently on the PBL, which risks the operator's own provider rate-limiting
+    // the single delivery path this whole design depends on. Opt in knowingly or not at all.
+    if (config.acceptCatchall) lines.push(`@${config.mailDomain} ${config.forwardTo}`)
+    return lines.join('\n') + '\n'
 }
 
 export async function writeAliasMap(configDir: string, config: Config): Promise<void> {

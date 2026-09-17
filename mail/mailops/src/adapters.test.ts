@@ -47,8 +47,17 @@ describe('aliasMap', () => {
         assert.ok(aliasMap(config).startsWith('contact@dev.horizons.gg me@example.com\n'))
     })
 
-    it('adds a catch-all so nothing addressed to the domain is refused', () => {
-        assert.equal(aliasMap(config), 'contact@dev.horizons.gg me@example.com\n@dev.horizons.gg me@example.com\n')
+    it('installs no catch-all by default, because only contact@ was ever authorised', () => {
+        assert.equal(aliasMap(config), 'contact@dev.horizons.gg me@example.com\n')
+        assert.ok(!aliasMap(config).includes('@dev.horizons.gg me@example.com\n@'))
+        assert.equal(aliasMap(config).trim().split('\n').length, 1)
+    })
+
+    it('adds the catch-all only when it is explicitly opted into', () => {
+        assert.equal(
+            aliasMap({ ...config, acceptCatchall: true }),
+            'contact@dev.horizons.gg me@example.com\n@dev.horizons.gg me@example.com\n',
+        )
     })
 
     it('produces nothing for a target that is not implemented yet', () => {

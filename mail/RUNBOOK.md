@@ -66,6 +66,19 @@ If delivery to real recipients disappoints, switch to a relay: set `RELAY_HOST`,
 `RELAY_PASSWORD` and `RELAY_SPF_INCLUDE` in `mail/.env`, then `docker compose up -d`. SPF updates itself on
 the next reconcile cycle. No rebuild, no redesign.
 
+## Accepted addresses
+
+By default the server accepts `contact@dev.horizons.gg` and nothing else. Mail to any other address at
+the domain is rejected at SMTP time, which is the correct answer for a forward-only server.
+
+`ACCEPT_CATCHALL=1` in `mail/.env` adds `@dev.horizons.gg` to the alias map, accepting every address at
+the domain. Think before turning it on. On a forward-only server a catch-all means every
+dictionary-attack recipient is accepted and immediately re-sent to `FORWARD_TO` from an address that is
+permanently on the PBL. The likely outcome is your own provider rate-limiting or filtering the one
+delivery path this design depends on. The upside is only that a typo'd address still reaches you.
+
+After changing it, `docker compose up -d` and wait one cycle for `mailops` to rewrite the alias map.
+
 ## Day to day
 
 - Health: `docker compose ps` shows `mailops` healthy or unhealthy, and `/health/status.json` holds the detail.
