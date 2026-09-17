@@ -13,6 +13,7 @@ import DarkTheme from '@/themes/dark'
 import { setPerf } from '@/app/perf/usePerf'
 import { FullScene, type LayerProps } from '@/app/(landing)/parallax'
 import styles from '@/app/(landing)/parallax/parallax.module.css'
+import SceneCurtain from '@/app/(landing)/parallax/curtain'
 
 import Clock from './clock'
 import SiteLinks from './siteLinks'
@@ -81,6 +82,7 @@ export default function Wallpaper() {
                 </section>
             </div>
             <SiteLinks />
+            <SceneCurtain />
         </ThemeProvider>
     )
 }
