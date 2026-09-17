@@ -136,6 +136,17 @@ const base = {
     DMARC_RUA: 'me@example.com',
 }
 
+// node:assert's throws() returns undefined, so the error has to be caught by hand to inspect it.
+function failuresOf(env: Record<string, string | undefined>): string[] {
+    try {
+        loadConfig(env)
+    } catch (error) {
+        assert.ok(error instanceof ConfigError, `expected ConfigError, got ${error}`)
+        return error.failures
+    }
+    assert.fail('expected loadConfig to throw ConfigError')
+}
+
 describe('loadConfig', () => {
     it('derives the mail hostname from the domain', () => {
         assert.equal(loadConfig(base).mailHostname, 'mail.dev.horizons.gg')
@@ -150,18 +161,15 @@ describe('loadConfig', () => {
     })
 
     it('reports a missing MAIL_DOMAIN by name', () => {
-        const error = assert.throws(() => loadConfig({ ...base, MAIL_DOMAIN: undefined }), ConfigError) as ConfigError
-        assert.deepEqual(error.failures, ['MAIL_DOMAIN is required'])
+        assert.deepEqual(failuresOf({ ...base, MAIL_DOMAIN: undefined }), ['MAIL_DOMAIN is required'])
     })
 
     it('rejects a malformed domain', () => {
-        const error = assert.throws(() => loadConfig({ ...base, MAIL_DOMAIN: 'not a domain' }), ConfigError) as ConfigError
-        assert.deepEqual(error.failures, ['MAIL_DOMAIN is not a valid domain name'])
+        assert.deepEqual(failuresOf({ ...base, MAIL_DOMAIN: 'not a domain' }), ['MAIL_DOMAIN is not a valid domain name'])
     })
 
     it('collects every failure rather than stopping at the first', () => {
-        const error = assert.throws(() => loadConfig({}), ConfigError) as ConfigError
-        assert.equal(error.failures.length, 5)
+        assert.equal(failuresOf({}).length, 5)
     })
 
     it('leaves relay null when RELAY_HOST is empty', () => {
@@ -187,13 +195,13 @@ describe('loadConfig', () => {
     })
 
     it('rejects a relay without an SPF include, because SPF would silently break', () => {
-        const error = assert.throws(() => loadConfig({
+        const failures = failuresOf({
             ...base,
             RELAY_HOST: 'smtp.relay.test',
             RELAY_USER: 'user',
             RELAY_PASSWORD: 'pass',
-        }), ConfigError) as ConfigError
-        assert.ok(error.failures.includes('RELAY_SPF_INCLUDE is required when RELAY_HOST is set'))
+        })
+        assert.ok(failures.includes('RELAY_SPF_INCLUDE is required when RELAY_HOST is set'))
     })
 })
 ```
