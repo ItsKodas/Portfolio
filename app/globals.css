@@ -21,9 +21,10 @@ body {
 }
 
 
-/* Lite mode (see app/perf): no frosted glass. Blurring what's behind a panel has to be redone on every scroll frame,
-   which is far too slow without the graphics card. */
-html[data-perf="lite"] * {
+/* Tier 0, the still scene (see app/perf): no frosted glass. Blurring what's behind a panel has to be redone on every
+   scroll frame, which is far too slow without the graphics card, and a machine drawing without one is held at tier 0
+   by the head script's WebGL probe. */
+html:not([data-scene~="depth"]) * {
   -webkit-backdrop-filter: none !important;
   backdrop-filter: none !important;
 }

@@ -106,5 +106,5 @@
     .rise { animation: none; }
 }
 
-:global(html[data-perf="lite"]) .rise { animation: none; }
+:global(html:not([data-scene~="depth"])) .rise { animation: none; }
 :global(html[data-still~="intro"]) .rise { animation: none; }
