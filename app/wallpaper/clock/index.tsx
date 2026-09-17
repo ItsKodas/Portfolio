@@ -86,7 +86,7 @@ export default function Clock() {
                     {clock && clockText && (
                         <div className={`${styles.time} ${styles.rise}`}>
                             {clockText}
-                            {period && <span className={styles.period}>{period}</span>}
+                            {period && <span className={styles.periodAnchor}><span className={styles.period}>{period}</span></span>}
                         </div>
                     )}
                     {date && dateText && <div className={`${styles.date} ${styles.rise}`} style={{ animationDelay: '0.25s' }}>{dateText}</div>}

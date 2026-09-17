@@ -24,6 +24,14 @@
     font-variant-numeric: tabular-nums;
 }
 
+/* AM/PM takes no room in the line, so the digits alone are centred over the date, with it hanging off their right */
+.periodAnchor {
+    display: flex;
+    align-items: baseline;
+    width: 0;
+    overflow: visible;
+}
+
 .period {
     margin-left: 18px;
     font-size: 2.5rem;
