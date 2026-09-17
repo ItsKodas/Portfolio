@@ -86,7 +86,13 @@ async function main() {
             log(`ERROR cycle failed: ${(error as Error).message}`)
             warnings = [cycleFailedWarning(error)]
         }
-        await writeStatus(STATUS_FILE, warnings, new Date())
+        try {
+            await writeStatus(STATUS_FILE, warnings, new Date())
+        } catch (error) {
+            // The status file is the signal, not the mail path. A read-only or full /health mount must not be
+            // able to kill the loop that keeps DNS reconciled and mail flowing: log it and move on.
+            log(`ERROR failed to write status file: ${(error as Error).message}`)
+        }
         await new Promise(resolve => setTimeout(resolve, INTERVAL_MS))
     }
 }
