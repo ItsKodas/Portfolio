@@ -158,6 +158,19 @@ describe('createCloudflareApi', () => {
         assert.match(String(calls[0]?.url), /dns_records\/1$/)
     })
 
+    it('carries an abort signal on every request', async () => {
+        const { impl, calls } = stubFetch(() => [])
+        const api = createCloudflareApi('token', 'zone', impl)
+        await api.list('mail.dev.horizons.gg', 'A')
+        await api.create(desired)
+        await api.update(managed, { ...desired, content: '9.9.9.9' })
+        assert.equal(calls.length, 3)
+        for (const call of calls) {
+            assert.ok(call.init?.signal, `no AbortSignal on ${call.url}`)
+            assert.equal(call.init.signal.aborted, false)
+        }
+    })
+
     it('sends the token as a bearer credential', async () => {
         const { impl, calls } = stubFetch(() => [])
         await createCloudflareApi('token', 'zone', impl).list('mail.dev.horizons.gg', 'A')

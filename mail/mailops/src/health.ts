@@ -36,6 +36,7 @@ export type StatusInput = {
     lastInbound: Date | null
     now: Date
     inboundStaleAfterHours?: number
+    logError?: string | null
 }
 
 export function collectWarnings(input: StatusInput): Warning[] {
@@ -62,6 +63,12 @@ export function collectWarnings(input: StatusInput): Warning[] {
     // Inconclusive is not a listing. Warning on it would fire every cycle behind a public resolver.
     if (input.spamhaus.listed) {
         warnings.push({ check: 'spamhaus', detail: input.spamhaus.meanings.join('; ') })
+    }
+
+    // A log we cannot read looks exactly like a log with nothing in it, which silently disables the
+    // inbound-staleness check below: the only real evidence that inbound 25 still reaches us.
+    if (input.logError) {
+        warnings.push({ check: 'log-unreadable', detail: `${input.logError}, so inbound staleness cannot be checked` })
     }
 
     // Only meaningful once we have received at least once. A fresh stack has no history and is not unhealthy.

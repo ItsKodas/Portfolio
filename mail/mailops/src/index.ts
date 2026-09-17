@@ -1,11 +1,10 @@
 // Boot gate once, then reconcile forever. The loop is deliberately the same code path as the initial setup.
 
-import { readFile } from 'node:fs/promises'
 import { loadConfig } from './config.ts'
 import { desiredRecords } from './desired.ts'
 import { createCloudflareApi } from './cloudflare.ts'
 import { reconcile, createWriteTracker } from './reconcile.ts'
-import { fetchPublicIp, readDkimKey, writeAliasMap } from './adapters.ts'
+import { fetchPublicIp, readDkimKey, writeAliasMap, readLogTail } from './adapters.ts'
 import { probeOutboundSmtp, checkSpamhaus, lastInboundConnection } from './probes.ts'
 import type { SpamhausResult } from './probes.ts'
 import { evaluateBootGate, collectWarnings, writeStatus, cycleFailedWarning, resolveIntervalMs, BootGateError } from './health.ts'
@@ -78,9 +77,10 @@ async function main() {
 
             await ensureCertificate(config, CERT_DIR, new Date())
 
-            const logText = await readFile(LOG_FILE, 'utf8').catch(() => '')
+            const tail = await readLogTail(LOG_FILE)
             warnings = collectWarnings({
-                reconcile: result, spamhaus: lastSpamhaus, lastInbound: lastInboundConnection(logText), now: new Date(),
+                reconcile: result, spamhaus: lastSpamhaus, lastInbound: lastInboundConnection(tail.text),
+                logError: tail.error ?? null, now: new Date(),
             })
             for (const warning of warnings) log(`WARN ${warning.check}: ${warning.detail}`)
         } catch (error) {

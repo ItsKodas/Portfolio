@@ -3,6 +3,7 @@
 // record that does not carry our comment, and no request is sent when they refuse.
 
 import type { DesiredRecord } from './desired.ts'
+import { REQUEST_TIMEOUT_MS } from './adapters.ts'
 
 export const MANAGED_COMMENT = 'managed-by:mailops'
 
@@ -78,7 +79,9 @@ export function createCloudflareApi(token: string, zoneId: string, fetchImpl: ty
     const headers = { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' }
 
     async function call(url: string, init?: RequestInit): Promise<unknown> {
-        const response = await fetchImpl(url, { ...init, headers })
+        // Without this, undici's 300 second default means a stalled request freezes the whole cycle for
+        // five intervals: no log line, no status write, and a healthcheck reading a stale ok: true.
+        const response = await fetchImpl(url, { ...init, headers, signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS) })
         const payload = await response.json() as { success: boolean, errors?: { message: string }[], result: unknown }
         if (!payload.success) {
             throw new Error(`Cloudflare API error: ${payload.errors?.map(e => e.message).join('; ') || response.status}`)

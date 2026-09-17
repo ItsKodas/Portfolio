@@ -70,6 +70,16 @@ describe('collectWarnings', () => {
         assert.deepEqual(warnings.filter(w => w.check === 'spamhaus'), [])
     })
 
+    it('warns when the mail log cannot be read at all', () => {
+        const warnings = collectWarnings({ ...quiet, logError: 'cannot open /mail-logs/mial.log: ENOTDIR' })
+        assert.equal(warnings[0]?.check, 'log-unreadable')
+        assert.match(warnings[0]!.detail, /inbound staleness/)
+    })
+
+    it('stays silent when the log simply has nothing in it yet', () => {
+        assert.deepEqual(collectWarnings({ ...quiet, lastInbound: null, logError: null }), [])
+    })
+
     it('warns when no inbound mail has arrived for longer than the staleness window', () => {
         const warnings = collectWarnings({ ...quiet, now: new Date('2026-09-20T12:00:00Z') })
         assert.equal(warnings[0]?.check, 'inbound-stale')
