@@ -26,15 +26,19 @@ export const BASE = { overdraw: 3.8, layers: 35 }
 export const TILE_MIN = 256 * 256 * 4
 
 export const BUDGETS = {
-    // A touch device is given the larger of a floor and an allowance that grows with its screen, because the one
-    // capability signal iOS withholds is memory: Safari reports no navigator.deviceMemory at all, so a fixed byte
-    // budget would hand every iPhone and iPad the same ceiling while the scene's cost grows with the screen. Within
-    // Apple's range a bigger screen means a newer, more capable device, so a fixed ceiling gets the ordering exactly
-    // backwards: it left an iPad Pro on the still scene and gave an iPhone SE the lot.
-    touchFloor: 120 * 1024 * 1024,
-    touchViewports: 14,          // the area-scaled allowance, in viewports of composited raster
-    pointer: 1024 * 1024 * 1024, // a mouse or trackpad, which in practice means enough memory for the whole scene
-    memDivisor: 4,               // navigator.deviceMemory is scaled against this, so 4GB is the neutral middle
+    // Both branches have the same shape, the larger of a floor and an allowance that grows with the screen, for the
+    // same reason. The scene's cost grows with viewport area times dpr^2, while the one capability signal that could
+    // scale a fixed budget to match is exactly the one Safari withholds: it reports no navigator.deviceMemory on iOS
+    // or on macOS. So a fixed byte ceiling hands every screen the same budget while the cost climbs, and a bigger
+    // screen means a more capable machine far more often than it means a weaker one. That gets the ordering
+    // backwards at both ends: on the touch side a fixed ceiling left an iPad Pro on the still scene and gave an
+    // iPhone SE the lot, and on the pointer side it left a 5K display in Safari with the parallax and nothing else
+    // while a laptop half its size got the whole scene.
+    touchFloor: 120 * 1024 * 1024, // the floor for a phone or tablet, where the renderer gets killed early
+    touchViewports: 14,            // the area-scaled allowance, in viewports of composited raster
+    pointer: 1024 * 1024 * 1024,   // the floor for a mouse or trackpad
+    pointerViewports: 26,          // cumulative full-scene overdraw is 21.9, so this leaves real headroom
+    memDivisor: 4,                 // navigator.deviceMemory is scaled against this, so 4GB is the neutral middle
     memMin: 0.5,
     memMax: 1.5,
 }
@@ -63,7 +67,7 @@ export function ceilingFor(
         : 1
     const allowance = coarsePointer
         ? Math.max(budgets.touchFloor, viewportBytes * budgets.touchViewports)
-        : budgets.pointer
+        : Math.max(budgets.pointer, viewportBytes * budgets.pointerViewports)
     const budget = allowance * factor
 
     let spent = base.overdraw * viewportBytes + base.layers * tileMin

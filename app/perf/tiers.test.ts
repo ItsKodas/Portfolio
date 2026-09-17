@@ -5,6 +5,19 @@ import { BASE, BUDGETS, TIERS, TILE_MIN, ceilingFor } from './tiers'
 const PHONE = [375, 812, 3] as const
 const DESKTOP = [1920, 1080, 2] as const
 
+// Real display geometries, at the logical size and dpr 2 that macOS reports for each panel. 1920x1080 above is the
+// only desktop size the rest of this file covers, and it sits comfortably inside the fixed pointer floor, which is
+// how a fixed pointer ceiling survived here: the two largest of these used to fall to the depth tier alone in
+// Safari, which reports no navigator.deviceMemory on macOS any more than it does on iOS, so the memory multiplier
+// rescued Chrome and did nothing for Safari.
+const DISPLAYS: [string, readonly [number, number, number]][] = [
+    ['a MacBook Pro 16 at its default scaling', [1728, 970, 2]],
+    ['a MacBook Pro 16 scaled for more space', [2056, 1180, 2]],
+    ['an iMac 24', [2240, 1160, 2]],
+    ['a Studio Display', [2560, 1340, 2]],
+    ['a Pro Display XDR', [3008, 1590, 2]],
+]
+
 const ceiling = (
     [vw, vh, dpr]: readonly [number, number, number],
     deviceMemory: number | undefined,
@@ -34,6 +47,29 @@ describe('ceilingFor', () => {
 
     it('gives desktop Chrome every tier', () => {
         expect(ceiling(DESKTOP, 8, false)).toBe(TIERS.length)
+    })
+
+    for (const [name, size] of DISPLAYS) {
+        it(`gives ${name} every tier, whether or not the browser reports memory`, () => {
+            expect(ceiling(size, undefined, false)).toBe(TIERS.length)   // Safari, which reports none
+            expect(ceiling(size, 8, false)).toBe(TIERS.length)           // Chrome, which does
+        })
+    }
+
+    it('does not give a bigger pointer display less scene than a smaller one', () => {
+        // The pointer counterpart of the touch guard below, in the same regime and for the same reason. Both
+        // viewports are past the crossover where the area term overtakes the fixed floor (viewportBytes x
+        // pointerViewports > pointer, so pointer === Math.max(...) never activates for either side), which is the
+        // only place a fixed ceiling can invert the ordering, and the larger is exactly 4x the area of the smaller
+        // at the same dpr. Neither reports deviceMemory, as macOS Safari does not.
+        //
+        // Both land on every tier today, so this cannot yet be strict: cumulative full-scene overdraw is 21.9,
+        // under pointerViewports (26), so once the area term governs, cost and allowance both scale
+        // linearly with area and every viewport in this regime clears all four tiers whatever its size. The
+        // assertion documents that the ordering holds; this comment documents why it cannot yet be strict.
+        const small = ceiling([2000, 1400, 2], undefined, false)
+        const large = ceiling([4000, 2800, 2], undefined, false)
+        expect(large).toBeGreaterThanOrEqual(small)
     })
 
     it('clamps the memory factor at both ends', () => {
