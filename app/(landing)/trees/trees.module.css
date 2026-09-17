@@ -85,3 +85,7 @@
     .sway, .gust, .streak, .leafTravel, .leafFlutter, .leafSpin { animation: none; }
     .streak, .leafTravel { opacity: 0; }
 }
+
+/* The same for the lite hero (see app/perf) */
+:global(html[data-perf="lite"]) .sway, :global(html[data-perf="lite"]) .gust, :global(html[data-perf="lite"]) .streak, :global(html[data-perf="lite"]) .leafTravel, :global(html[data-perf="lite"]) .leafFlutter, :global(html[data-perf="lite"]) .leafSpin { animation: none; }
+:global(html[data-perf="lite"]) .streak, :global(html[data-perf="lite"]) .leafTravel { opacity: 0; }

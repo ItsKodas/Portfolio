@@ -10,10 +10,20 @@
     pointer-events: none;
 }
 
+/* The lite hero's layer that doesn't move (see LiteScene), so it doesn't need a layer of its own */
+.still {
+    will-change: auto;
+}
+
 /* The whole hero, once the content has scrolled up over it: nothing in it needs to keep animating out of sight */
 .paused,
 .paused * {
     animation-play-state: paused !important;
+}
+
+/* The lite hero, once the content's faded top edge has passed too: not drawn at all */
+.gone {
+    visibility: hidden;
 }
 
 /* Parts of the hero that the view toggle hides (the logo and its buttons, the note), fading out and then taken out of

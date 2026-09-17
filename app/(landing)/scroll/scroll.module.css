@@ -101,3 +101,8 @@
     .shaft, .head { animation: none; stroke-dashoffset: 0; }
     .glyph { animation: none; stroke-dashoffset: 0; fill-opacity: 1; }
 }
+
+/* The same for the lite hero (see app/perf) */
+:global(html[data-perf="lite"]) .arrow { animation: none; }
+:global(html[data-perf="lite"]) .shaft, :global(html[data-perf="lite"]) .head { animation: none; stroke-dashoffset: 0; }
+:global(html[data-perf="lite"]) .glyph { animation: none; stroke-dashoffset: 0; fill-opacity: 1; }

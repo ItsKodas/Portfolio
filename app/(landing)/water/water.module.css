@@ -89,3 +89,6 @@
 @media (prefers-reduced-motion: reduce) {
     .streak, .fog, .ripple, .bob, .flicker { animation: none; }
 }
+
+/* The same for the lite hero (see app/perf) */
+:global(html[data-perf="lite"]) .streak, :global(html[data-perf="lite"]) .fog, :global(html[data-perf="lite"]) .ripple, :global(html[data-perf="lite"]) .bob, :global(html[data-perf="lite"]) .flicker { animation: none; }
