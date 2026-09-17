@@ -1,0 +1,70 @@
+# The mail stack, deployed independently of the site. Only port 25 is published: no 587 because the only
+# future sender reaches us over this network, no 993 because there are no mailboxes, and no 80 or 443
+# because certificates come from a DNS challenge.
+
+services:
+  mailserver:
+    image: mailserver/docker-mailserver:15.0
+    container_name: horizons-mailserver
+    hostname: mail.${MAIL_DOMAIN:?set MAIL_DOMAIN in mail/.env}
+    # Only .env. The Cloudflare zone-edit token lives in .env.mailops and must never reach this
+    # container: it terminates untrusted SMTP from the public internet and parses hostile MIME, so it
+    # is the most likely thing here to be compromised, and the managed-by guard exists precisely to
+    # bound what a compromise can do to the live site's DNS.
+    env_file: .env
+    environment:
+      OVERRIDE_HOSTNAME: mail.${MAIL_DOMAIN}
+      ENABLE_SRS: 1
+      SRS_SENDER_CLASSES: envelope_sender
+      ENABLE_RSPAMD: 1
+      ENABLE_OPENDKIM: 1
+      ENABLE_FAIL2BAN: 1
+      ENABLE_IMAP: 0
+      ENABLE_POP3: 0
+      SSL_TYPE: manual
+      SSL_CERT_PATH: /mail-certs/certificates/mail.${MAIL_DOMAIN}.crt
+      SSL_KEY_PATH: /mail-certs/certificates/mail.${MAIL_DOMAIN}.key
+      LOG_LEVEL: info
+    ports:
+      - "25:25"
+    volumes:
+      - mail-data:/var/mail
+      - mail-state:/var/mail-state
+      - mail-config:/tmp/docker-mailserver
+      - mail-logs:/var/log/mail
+      - mail-certs:/mail-certs:ro
+    cap_add:
+      - NET_ADMIN
+    restart: unless-stopped
+
+  mailops:
+    build: ./mailops
+    container_name: horizons-mailops
+    env_file:
+      - .env
+      - .env.mailops
+    environment:
+      MAIL_CONFIG_DIR: /mail-config
+      MAIL_LOG_FILE: /mail-logs/mail.log
+      MAIL_CERT_DIR: /mail-certs
+      MAILOPS_STATUS_FILE: /health/status.json
+    volumes:
+      - mail-config:/mail-config
+      - mail-logs:/mail-logs:ro
+      - mail-certs:/mail-certs
+      - mail-health:/health
+    healthcheck:
+      test: ["CMD", "node", "-e", "process.exit(JSON.parse(require('fs').readFileSync('/health/status.json','utf8')).ok?0:1)"]
+      interval: 60s
+      timeout: 10s
+      retries: 3
+      start_period: 120s
+    restart: unless-stopped
+
+volumes:
+  mail-data:
+  mail-state:
+  mail-config:
+  mail-logs:
+  mail-certs:
+  mail-health:
