@@ -174,6 +174,10 @@ wrapped in `try`/`catch`.
 - Reads the `?scene=` and `?perf=` overrides and the remembered `localStorage` value, as
   today.
 - Computes the ceiling via the inlined `ceilingFor`.
+- **Keeps today's software renderer check.** A machine drawing without a GPU reports
+  `pointer: fine` and so would be handed the large budget and every tier, and because it
+  starts at its ceiling it would never climb and never be frame checked. The existing WebGL
+  probe stays, and forces the ceiling to 0 when it finds no context or a software renderer.
 - Always writes `data-scene-max="<n>"`.
 - Writes `data-scene` to the **full** token set when nothing was cut, that is when the ceiling
   is 4. Otherwise writes `data-scene=""`.
@@ -211,6 +215,14 @@ The climb driver, started from `ParallaxView` on `useRevealed()`.
   and resumes on `visibilitychange`.
 - Returns a cleanup that cancels timers and frames.
 
+**It also keeps a demotion watch, which runs whether or not anything was climbed.** A device
+handed every tier up front never climbs, so without this it would never be frame checked at
+all, losing the safety net `watchFrameRate` provides today. After the climb finishes, or
+immediately when there was nothing to climb, the driver settles for 1000 ms, samples 60
+frames, and drops one token if the median frame exceeds the threshold, repeating until the
+frames are healthy or it reaches tier 0. This is today's `watchFrameRate` behaviour, preserved
+and given somewhere to step down to.
+
 ### Stylesheet migration
 
 Every `:global(html[data-perf="lite"])` rule in the nine scene stylesheets becomes a
@@ -227,13 +239,13 @@ Every `:global(html[data-perf="lite"])` rule in the nine scene stylesheets becom
 | `watchtower/watchtower.module.css` | `water` |
 | `scroll/scroll.module.css` | `depth` |
 
-Plus one new rule, which is what removes the 122 MB pre-hydration cost:
-
-```css
-:global(html:not([data-scene~="depth"])) .layer { will-change: auto; }
-```
-
-in `parallax/parallax.module.css`.
+`parallax/parallax.module.css` needs no tier rule at all. An earlier draft of this design
+gated `.layer`'s `will-change: transform` on the `depth` token to kill the 122 MB
+pre-hydration cost, but the server snapshot change supersedes it: the server now renders
+`LiteScene`, so the markup the browser composites before hydration only ever contains that
+scene's three layers. Worse, such a rule would be actively harmful, because `LiteLayer` also
+uses `.layer` and does animate its transform by writing to it on scroll, so stripping the hint
+would cost repaints on exactly the devices this work is meant to help.
 
 The existing `data-still~=` rules used by the wallpaper are unrelated and stay as they are.
 
@@ -249,10 +261,26 @@ for a return to the top, and abandons the `depth` tier after 30 seconds. The cli
 reveal, when scroll is essentially always 0, so in practice this costs nothing and removes
 the one transition that would look broken.
 
-**Three things are hidden rather than still at tier 0**: `.shoot` uses `display: none`,
-`.streak` and `.leafTravel` use `opacity: 0`. These snap in. They change to opacity
-transitions of about 600 ms in `stars.module.css` and `trees.module.css` so they fade. Every
-other thing a token enables is motion of already visible art, which does not pop.
+**Only the leaves actually pop.** Reading the keyframes, most of what a token enables cannot
+pop by construction. `.twinkle` starts at `opacity: 1`, which is the resting state. `.drift`
+starts at `translate(0, 0)`. The clouds use `animation-play-state: paused` rather than
+`animation: none`, so they hold position and resume seamlessly. `.shoot` and `.streak` sit at
+`opacity: 0` for 94% and 92% of their cycles respectively, so resuming at a negative delay
+almost always lands on an invisible frame, and a shooting star arriving is not a glitch.
+
+`.leafTravel` is the exception: its keyframes hold `opacity: 1` from 8% to 85% of the cycle,
+so about three quarters of the twelve leaves would appear mid flight the instant `forest`
+lands. The fix is on the inner `.leafSpin` element rather than on `.leafTravel` itself,
+because a `transition` and an `animation` cannot both drive opacity on one element, while
+opacity across nested elements multiplies:
+
+```css
+.leafSpin { transition: opacity 600ms ease; }
+:global(html:not([data-scene~="forest"])) .leafSpin { opacity: 0; }
+```
+
+`.shoot` keeps its `display: none` below the `sky` token, which is better than going still,
+because a non-displayed element gets no composited layer at all.
 
 ## Overrides and testing hooks
 
@@ -278,10 +306,13 @@ tier arithmetic and budget boundaries live. Cases: each row of the budget table 
 boundary either side of every tier; `deviceMemory` undefined; `clamp` at both ends; degenerate
 viewports; a `tiers` array of length zero.
 
-**Cost measurement, `scripts/scene-cost.mjs` (new), alongside the existing `wallpaper.mjs`.**
-Drives the page at a given viewport and prints the overdraw and layer count per scene part,
-reproducing the table in this document. Without it the constants in `tiers.ts` will rot the
-first time the scene changes, and the failure mode is silent.
+**Cost measurement, `scripts/scene-cost.js` (new), alongside the existing `wallpaper.mjs`.**
+A browser console snippet, not a Node script: it prints the overdraw and layer count per scene
+part, reproducing the table in this document so the constants in `tiers.ts` can be re-derived
+when the scene changes. Driving a real browser from Node would mean pulling in Playwright or
+Puppeteer, which is a heavy dependency for a project that currently has no browser tooling at
+all, and the snippet needs a real page with real layout either way. Without some form of this
+the constants rot the first time the scene changes, and the failure mode is silent.
 
 **Manual verification, required before merge.** The constants cannot be validated from a
 development machine, because the failure being fixed is an iOS renderer kill. Load the branch
