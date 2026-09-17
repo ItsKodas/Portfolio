@@ -10,6 +10,7 @@
 	],
 	"contentrating": "Everyone",
 	"general": {
+		"supportsaudioprocessing": true,
 		"properties": {
 			"schemecolor": {
 				"order": 0,
@@ -175,14 +176,63 @@
 				"type": "bool",
 				"value": true
 			},
-			"mouseparallax": {
+			"showvisualizer": {
 				"order": 15,
+				"text": "Audio visualiser",
+				"type": "bool",
+				"value": true
+			},
+			"visualizerstyle": {
+				"order": 16,
+				"text": "Visualiser style",
+				"type": "combo",
+				"condition": "showvisualizer.value",
+				"value": "bars",
+				"options": [
+					{
+						"label": "Bars",
+						"value": "bars"
+					},
+					{
+						"label": "Wave",
+						"value": "wave"
+					}
+				]
+			},
+			"visualizerheight": {
+				"order": 17,
+				"text": "Visualiser height",
+				"type": "slider",
+				"condition": "showvisualizer.value",
+				"min": 10,
+				"max": 60,
+				"value": 30
+			},
+			"visualizercolor": {
+				"order": 18,
+				"text": "Visualiser colour",
+				"type": "combo",
+				"condition": "showvisualizer.value",
+				"value": "white",
+				"options": [
+					{
+						"label": "White",
+						"value": "white"
+					},
+					{
+						"label": "Album art colour",
+						"value": "album"
+					}
+				]
+			},
+			"mouseparallax": {
+				"order": 19,
 				"text": "Mouse parallax",
 				"type": "bool",
 				"value": true
 			},
 			"parallaxstrength": {
-				"order": 16,
+				"order": 20,
 				"text": "Parallax strength",
 				"type": "slider",
 				"condition": "mouseparallax.value",
@@ -191,55 +241,55 @@
 				"value": 50
 			},
 			"stillscenery": {
-				"order": 17,
+				"order": 21,
 				"text": "Still scenery: all animation off (lowest GPU use)",
 				"type": "bool",
 				"value": false
 			},
 			"animateclouds": {
-				"order": 18,
+				"order": 22,
 				"text": "Drifting clouds",
 				"type": "bool",
 				"condition": "!stillscenery.value",
 				"value": true
 			},
 			"animatestars": {
-				"order": 19,
+				"order": 23,
 				"text": "Twinkling stars",
 				"type": "bool",
 				"condition": "!stillscenery.value",
 				"value": true
 			},
 			"shootingstars": {
-				"order": 20,
+				"order": 24,
 				"text": "Shooting stars",
 				"type": "bool",
 				"condition": "!stillscenery.value",
 				"value": true
 			},
 			"animatewind": {
-				"order": 21,
+				"order": 25,
 				"text": "Wind in the trees",
 				"type": "bool",
 				"condition": "!stillscenery.value",
 				"value": true
 			},
 			"animatefireflies": {
-				"order": 22,
+				"order": 26,
 				"text": "Fireflies",
 				"type": "bool",
 				"condition": "!stillscenery.value",
 				"value": true
 			},
 			"animatewater": {
-				"order": 23,
+				"order": 27,
 				"text": "Water and fog",
 				"type": "bool",
 				"condition": "!stillscenery.value",
 				"value": true
 			},
 			"animatewatchtower": {
-				"order": 24,
+				"order": 28,
 				"text": "Watchtower light",
 				"type": "bool",
 				"condition": "!stillscenery.value",

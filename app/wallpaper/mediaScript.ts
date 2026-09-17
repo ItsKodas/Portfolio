@@ -1,4 +1,4 @@
-// Registers for what's playing on the computer (see media.ts). Wallpaper Engine asks for its listeners to be registered
+// Registers for what's playing on the computer (see media.ts), and for the sound itself (see visualizer). Wallpaper Engine asks for its listeners to be registered
 // straight away, not once the page has loaded, so this runs as an inline script at the top of the page (see layout.tsx),
 // plain, old-fashioned JavaScript: it keeps the latest of each kind of event (noting when it came, for track details when
 // that track started, and for playback what it was before), and passes new ones on to whatever has subscribed since.
@@ -25,4 +25,11 @@ export const MEDIA_SCRIPT = `(function () {
         timeline: window.wallpaperRegisterMediaTimelineListener
     }
     for (var kind in register) if (typeof register[kind] === 'function') register[kind](keep(kind))
+
+    // The sound, as 128 levels (the left channel's bass to treble, then the right's), about 30 times a second: just the
+    // latest is kept, for the visualiser to read as it draws
+    if (typeof window.wallpaperRegisterAudioListener === 'function') {
+        media.audioSupported = true
+        window.wallpaperRegisterAudioListener(function (levels) { media.audio = levels })
+    }
 })()`

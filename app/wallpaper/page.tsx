@@ -15,6 +15,7 @@ import { FullScene, type LayerProps } from '@/app/(landing)/parallax'
 import styles from '@/app/(landing)/parallax/parallax.module.css'
 
 import Clock from './clock'
+import Visualizer from './visualizer'
 import { NowPlayingCorner } from './nowPlaying'
 import SiteLinks from './siteLinks'
 import { MOTION, useSettings } from './settings'
@@ -75,6 +76,8 @@ export default function Wallpaper() {
                 <section className={`absolute inset-x-0 top-0 h-[200svh] ${paused ? styles.paused : ''}`}
                     style={{ transform: `scale(${overscan})`, transformOrigin: '50% 50svh' }}>
                     <FullScene Layer={MouseLayer} title={null} note={false} />
+                    {/* The sound, along the bottom over the trees, holding still with the screen */}
+                    <Visualizer overscan={overscan} />
                     {/* The time, date and weather, in front of the scenery, drifting at about the valley's depth */}
                     <MouseLayer speed={0.4}>
                         <Clock />

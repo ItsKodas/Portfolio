@@ -20,7 +20,7 @@ type Events = {
 
 declare global {
     interface Window {
-        __wallpaperMedia?: { events: Events, listeners: (() => void)[] }
+        __wallpaperMedia?: { events: Events, listeners: (() => void)[], audioSupported?: boolean, audio?: number[] }
         wallpaperMediaIntegration?: { PLAYBACK_PLAYING: number, PLAYBACK_PAUSED: number, PLAYBACK_STOPPED: number }
     }
 }

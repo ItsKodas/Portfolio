@@ -1,0 +1,15 @@
+/* The screen's area, at the top of the two-screen-tall scene */
+.screen {
+    position: absolute;
+    inset: 0 0 auto 0;
+    height: 100svh;
+    pointer-events: none;
+}
+
+/* Along the bottom, as tall as the setting says */
+.canvas {
+    position: absolute;
+    left: 0;
+    bottom: 0;
+    width: 100%;
+}
