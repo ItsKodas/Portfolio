@@ -1219,7 +1219,7 @@ export function lastInboundConnection(log: string): Date | null {
 - [ ] **Step 4: Run the test to verify it passes**
 
 Run: `cd mail/mailops && npm test`
-Expected: PASS, 57 tests total.
+Expected: PASS, 60 tests total.
 
 - [ ] **Step 5: Commit**
 
@@ -1408,7 +1408,7 @@ export async function writeStatus(path: string, warnings: Warning[], now: Date):
 - [ ] **Step 4: Run the test to verify it passes**
 
 Run: `cd mail/mailops && npm test`
-Expected: PASS, 67 tests total.
+Expected: PASS, 70 tests total.
 
 - [ ] **Step 5: Write the entry point**
 
@@ -1647,7 +1647,7 @@ export async function ensureCertificate(config: Config, certDir: string, now: Da
 - [ ] **Step 4: Run the test to verify it passes**
 
 Run: `cd mail/mailops && npm test`
-Expected: PASS, 74 tests total.
+Expected: PASS, 77 tests total.
 
 - [ ] **Step 5: Verify the whole package type-checks**
 
@@ -1877,7 +1877,7 @@ the next reconcile cycle. No rebuild, no redesign.
 - [ ] **Step 7: Run the full test suite one final time**
 
 Run: `cd mail/mailops && npm test && npx tsc --noEmit`
-Expected: PASS, 74 tests, no type errors.
+Expected: PASS, 77 tests, no type errors.
 
 - [ ] **Step 8: Commit**
 
