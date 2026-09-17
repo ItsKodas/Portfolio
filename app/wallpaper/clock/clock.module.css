@@ -1,13 +1,19 @@
-/* The block of lines, at its natural size: its bottom edge sits on the slot's line (see index.tsx), and it scales
-   from there */
+/* The screen's area, at the top of the two-screen-tall layer */
+.screen {
+    position: absolute;
+    inset: 0 0 auto 0;
+    height: 100svh;
+}
+
+/* The block of lines, at its natural size, centred on the screen and scaled from its centre (see index.tsx) */
 .block {
     position: absolute;
     left: 50%;
-    top: 0;
+    top: 50%;
     display: flex;
     flex-direction: column;
     align-items: center;
-    transform-origin: bottom center;
+    transform-origin: center;
     color: #fff;
     text-shadow: 0 4px 30px rgba(11, 16, 31, 0.35);
     white-space: nowrap;

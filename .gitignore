@@ -15,8 +15,8 @@
 
 # next.js
 /.next/
-/.next-wallpaper/
 /out/
+/.wallpaper-build/
 
 # production
 /build

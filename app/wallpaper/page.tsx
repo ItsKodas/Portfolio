@@ -1,7 +1,7 @@
 'use client'
 
 // The hero scene as a desktop wallpaper for Wallpaper Engine (built into a folder of its own by scripts/wallpaper.mjs).
-// Just the scenery, with the time, date and weather where the site's title is, filling the screen: nothing scrolls, and
+// Just the scenery, with the time, date and weather in the middle of the screen, filling the screen: nothing scrolls, and
 // instead of following the scroll each layer drifts with the mouse by its depth, so the foreground trees move the most
 // and the sky barely at all.
 
@@ -72,7 +72,11 @@ export default function Wallpaper() {
             <div className='relative h-svh overflow-hidden bg-[#0b101f]'>
                 <section className={`absolute inset-x-0 top-0 h-[200svh] ${paused ? styles.paused : ''}`}
                     style={{ transform: `scale(${overscan})`, transformOrigin: '50% 50svh' }}>
-                    <FullScene ui='' Layer={MouseLayer} title={<Clock />} note={false} />
+                    <FullScene ui='' Layer={MouseLayer} title={null} note={false} />
+                    {/* The time, date and weather, in front of the scenery, drifting at about the valley's depth */}
+                    <MouseLayer speed={0.4}>
+                        <Clock />
+                    </MouseLayer>
                 </section>
             </div>
         </ThemeProvider>

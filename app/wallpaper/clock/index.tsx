@@ -1,20 +1,20 @@
 'use client'
 
-// The wallpaper's title: the time, with the day and date and the weather beneath, in the gap above the mountains where
-// the site's logo sits. Laid out at a natural width and scaled with the art like the logo, and anchored by its bottom
-// edge, so however many lines are showing it rises from just above the near mountains' peak.
+// The wallpaper's centrepiece: the time, with the day and date and the weather beneath, centred on the screen. Laid out
+// at a natural size and scaled with the screen (to fit the smaller of its width and height), and centred as a whole, so
+// whichever lines are showing stay in the middle.
 
 import { useEffect, useRef, useState } from 'react'
 import { AcUnit, Cloud, Dehaze, FilterDrama, Grain, NightsStay, Thunderstorm, WaterDrop, WbSunny } from '@mui/icons-material'
-
-import logo from '@/app/(landing)/logo/logo.module.css'
 
 import { useSettings } from '../settings'
 import { describe, useWeather, type Unit, type Weather } from '../weather'
 import styles from './clock.module.css'
 
 const NATURAL_WIDTH = 960
-const BOTTOM = 56 // how far below the logo slot's line the block's bottom sits, at natural size
+// The screen size the block is drawn at its natural size for (a 1080p screen shows it a little smaller)
+const DESIGN_WIDTH = 2000
+const DESIGN_HEIGHT = 1125
 
 // The current time, updated as the minute turns, or each second when they're showing (checked a few times a second, so
 // it catches up straight after a sleep and the seconds never skip one)
@@ -61,14 +61,14 @@ export default function Clock() {
     const now = useNow(clock && seconds)
     const weather = useWeather(showWeather, location, units === 'auto' ? localUnit() : units)
 
-    // Scaled to the slot's width, like the logo
-    const slotRef = useRef<HTMLDivElement>(null)
+    // Scaled with the screen
+    const screenRef = useRef<HTMLDivElement>(null)
     const [scale, setScale] = useState(1)
     useEffect(() => {
-        const slot = slotRef.current
-        if (!slot) return
-        const observer = new ResizeObserver(() => setScale(slot.offsetWidth / NATURAL_WIDTH))
-        observer.observe(slot)
+        const screen = screenRef.current
+        if (!screen) return
+        const observer = new ResizeObserver(() => setScale(Math.min(screen.offsetWidth / DESIGN_WIDTH, screen.offsetHeight / DESIGN_HEIGHT)))
+        observer.observe(screen)
         return () => observer.disconnect()
     }, [])
 
@@ -82,27 +82,25 @@ export default function Clock() {
     const dateText = now && new Intl.DateTimeFormat(undefined, { weekday: 'long', day: 'numeric', month: 'long' }).format(now)
 
     return (
-        <div className={logo.canvas}>
-            <div ref={slotRef} className={logo.slot}>
-                <div className={`${styles.block} select-none`} style={{ width: NATURAL_WIDTH, transform: `translate(-50%, -100%) translateY(${BOTTOM * scale}px) scale(${scale * size / 100})` }}>
-                    {clock && clockText && (
-                        <div className={`${styles.time} ${styles.rise}`}>
-                            {clockText}
-                            {period && <span className={styles.periodAnchor}><span className={styles.period}>{period}</span></span>}
-                        </div>
-                    )}
-                    {date && dateText && <div className={`${styles.date} ${styles.rise}`} style={{ animationDelay: '0.25s' }}>{dateText}</div>}
-                    {/* (room kept for the weather until it arrives, so the lines above don't jump when it does) */}
-                    {showWeather && !weather && <div className={styles.weather} aria-hidden />}
-                    {weather && (
-                        <div className={`${styles.weather} ${styles.rise}`} style={{ animationDelay: '0.5s' }}>
-                            <WeatherIcon weather={weather} />
-                            <span className={styles.temperature}>{weather.temperature}°</span>
-                            <span>{describe(weather.code)}</span>
-                            {highLow && <span className={styles.range}>H {weather.high}° · L {weather.low}°</span>}
-                        </div>
-                    )}
-                </div>
+        <div ref={screenRef} className={styles.screen}>
+            <div className={`${styles.block} select-none`} style={{ width: NATURAL_WIDTH, transform: `translate(-50%, -50%) scale(${scale * size / 100})` }}>
+                {clock && clockText && (
+                    <div className={`${styles.time} ${styles.rise}`}>
+                        {clockText}
+                        {period && <span className={styles.periodAnchor}><span className={styles.period}>{period}</span></span>}
+                    </div>
+                )}
+                {date && dateText && <div className={`${styles.date} ${styles.rise}`} style={{ animationDelay: '0.25s' }}>{dateText}</div>}
+                {/* (room kept for the weather until it arrives, so the lines above don't jump when it does) */}
+                {showWeather && !weather && <div className={styles.weather} aria-hidden />}
+                {weather && (
+                    <div className={`${styles.weather} ${styles.rise}`} style={{ animationDelay: '0.5s' }}>
+                        <WeatherIcon weather={weather} />
+                        <span className={styles.temperature}>{weather.temperature}°</span>
+                        <span>{describe(weather.code)}</span>
+                        {highLow && <span className={styles.range}>H {weather.high}° · L {weather.low}°</span>}
+                    </div>
+                )}
             </div>
         </div>
     )
