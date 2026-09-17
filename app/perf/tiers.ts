@@ -15,7 +15,7 @@ export const TIERS: Tier[] = [
     { token: 'depth',  overdraw: 7.0,  layers: 7 },   // the ten layer parallax, in place of the lite three
     { token: 'sky',    overdraw: 10.0, layers: 26 },  // star twinkle, drift, shooting stars, cloud drift
     { token: 'water',  overdraw: 0.9,  layers: 21 },  // ripples, streaks, fog, boat bob, lantern flicker
-    { token: 'forest', overdraw: 0.2,  layers: 162 }, // tree sway, gusts, wind streaks, leaves, fireflies, campfire
+    { token: 'forest', overdraw: 0.2,  layers: 162 }, // tree sway, gusts, wind streaks, leaves, fireflies
 ]
 
 // The still scene every device gets, which is not free either

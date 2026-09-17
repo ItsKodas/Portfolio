@@ -76,7 +76,7 @@ wallpaper.
 | 1 | `depth` | the ten layer parallax | +7.0 | +7 |
 | 2 | `sky` | star twinkle, drift, shooting stars, cloud drift | +10.0 | +26 |
 | 3 | `water` | ripples, streaks, fog, boat bob, lantern flicker | +0.9 | +21 |
-| 4 | `forest` | tree sway, gusts, wind streaks, leaves, fireflies, campfire | +0.2 | +162 |
+| 4 | `forest` | tree sway, gusts, wind streaks, leaves, fireflies | +0.2 | +162 |
 
 Tokens are cumulative and always applied in this order. `data-scene="depth sky"` means tiers
 0 through 2.
@@ -119,6 +119,35 @@ figures, computed from the formula above rather than measured:
 | 2 `sky` | about 111 MiB | about 234 MiB |
 | 3 `water` | about 15 MiB | about 249 MiB |
 | 4 `forest` | about 43 MiB | about 292 MiB |
+
+### Known limitation: `night`'s layers are booked against the wrong tier
+
+The layer counts above were measured with `night/night.module.css` gated on the `forest`
+token, the same as the other footer elements, so its animated layers were counted into
+`forest`'s +162. `night` has since moved to the `depth` token instead (see Stylesheet
+migration and Components, below), because the campfire and the content area's background
+stars sit below the hero and gained nothing from being frozen on every phone. The counts in
+`TIERS` have not been re-derived to match.
+
+`night` puts 43 animated elements on screen (30 twinkling stars, one glow, three flames, nine
+sparks), which `scripts/scene-cost.js` would count as 43 layers, about 10.8 MiB at `TILE_MIN`.
+After the move, tier 1 `depth` carries that weight and tier 4 `forest` no longer does, but
+`TIERS` still books it the old way.
+
+This is an accounting inaccuracy, not an observed problem. No modelled device in the table
+below changes tier as a result: a device that clears all four tiers spends the same total
+either way, since moving a layer count between tiers does not change the sum across all of
+them, and every device that stops short of `forest` keeps a positive margin. The tightest is
+the iPhone SE, which stops at `water` (see the residual below): its headroom there against the
+120 MiB touch floor falls from about 14.9 MiB to about 4.2 MiB once the 43 layers are counted
+where they now belong, closer to the floor but not past it.
+
+The real-browser effect is smaller than the model suggests, because a composited layer outside
+the viewport gets no backing store allocated until it scrolls into view, and the crash this
+design fixes happens at the top of the page, before the footer is anywhere near the viewport.
+
+Re-running `scripts/scene-cost.js` with `night` on `depth` would settle this properly; until
+then, treat `depth` and `forest`'s layer counts in `TIERS` as approximate.
 
 ## The budget
 
@@ -297,11 +326,17 @@ The climb driver, started from `ParallaxView` on `useRevealed()`.
 
 - Does nothing when `data-perf-forced` is present, or when `data-scene` already holds every
   token up to `data-scene-max`.
-- Adds one token every 450 ms, then samples frame time for 350 ms.
-- If the sampled median frame time exceeds the slow frame threshold, it removes the token it
-  just added and stops. This is the second gate.
-- Pauses while `document.hidden` is true, since `requestAnimationFrame` does not fire then,
-  and resumes on `visibilitychange`.
+- Applies a tier, waits `STEP_MS` (450 ms), then samples `CLIMB_FRAMES` (20) drawn frames and
+  takes their median. The wait comes before the sample at every step, the first included, so
+  the `depth` tier settles the same way a later one does: sampling it immediately would catch
+  the scene's remount while the curtain fade and the logo's intro were still in flight, and
+  the one way ratchet would make that false demotion permanent for the rest of the visit.
+- If the sampled median frame time exceeds the slow frame threshold, it reverts to the tier it
+  had before this step, then hands off to the demotion watch below rather than climbing
+  further. This is the second gate.
+- Effectively pauses while `document.hidden` is true: `sampleFrames` resets its baseline the
+  next time it ticks while hidden rather than counting the gap as a frame delta. It does not
+  listen for `visibilitychange`.
 - Returns a cleanup that cancels timers and frames.
 
 **It also keeps a demotion watch, which runs whether or not anything was climbed.** A device
@@ -324,7 +359,7 @@ Every `:global(html[data-perf="lite"])` rule in the nine scene stylesheets becom
 | `water/water.module.css` | `water` |
 | `trees/trees.module.css` | `forest` |
 | `fireflies/fireflies.module.css` | `forest` |
-| `night/night.module.css` | `forest` |
+| `night/night.module.css` | `depth` |
 | `watchtower/watchtower.module.css` | `water` |
 | `scroll/scroll.module.css` | `depth` |
 
@@ -371,6 +406,13 @@ opacity across nested elements multiplies:
 `.shoot` keeps its `display: none` below the `sky` token, which is better than going still,
 because a non-displayed element gets no composited layer at all.
 
+One more consequence of the `:not()` form worth writing down: `html:not([data-scene~="depth"])
+*` in `app/globals.css` (the rule that strips `backdrop-filter` below `depth`) matches just as
+much when `data-scene` is absent as when it is present without the token. With JavaScript
+disabled the head script never runs, so `data-scene` is never written, and the site now renders
+without the frosted glass panels it used to keep in that case. That is the intended direction,
+consistent with tier 0 being the no-JS state, but it was never stated outright until now.
+
 ## Overrides and testing hooks
 
 - `?perf=lite` and `?perf=full` keep working, mapping to no tokens and all tokens, and keep
@@ -384,8 +426,8 @@ because a non-displayed element gets no composited layer at all.
 | head script throws | falls back to tier 0, the safe state |
 | `localStorage` unavailable | caught and ignored, detection proceeds |
 | `navigator.deviceMemory` undefined | `memFactor` of 1, the conservative middle |
-| tab hidden during climb | climb pauses, resumes on `visibilitychange` |
-| frame sample exceeds threshold | last token removed, climb stops permanently |
+| tab hidden during climb | `sampleFrames` resets its baseline on the next tick, effectively pausing |
+| frame sample exceeds threshold | reverts to the tier before, then hands off to the demotion watch |
 | visitor scrolled before `depth` applies | waits for `scrollY === 0`, gives up after 30 s |
 
 ## Testing
