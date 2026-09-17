@@ -5,11 +5,12 @@
     height: 100svh;
 }
 
-/* The block of lines, at its natural size, centred on the screen and scaled from its centre (see index.tsx) */
+/* The block of lines, at its natural size, centred across the screen and a little above halfway down it, and scaled
+   from its centre (see index.tsx) */
 .block {
     position: absolute;
     left: 50%;
-    top: 50%;
+    top: 40%;
     display: flex;
     flex-direction: column;
     align-items: center;
