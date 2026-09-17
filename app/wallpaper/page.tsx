@@ -15,6 +15,7 @@ import { FullScene, type LayerProps } from '@/app/(landing)/parallax'
 import styles from '@/app/(landing)/parallax/parallax.module.css'
 
 import Clock from './clock'
+import { NowPlayingCorner } from './nowPlaying'
 import SiteLinks from './siteLinks'
 import { MOTION, useSettings } from './settings'
 
@@ -80,6 +81,7 @@ export default function Wallpaper() {
                     </MouseLayer>
                 </section>
             </div>
+            <NowPlayingCorner />
             <SiteLinks />
         </ThemeProvider>
     )

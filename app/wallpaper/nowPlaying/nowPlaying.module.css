@@ -1,14 +1,36 @@
-/* Hung below the block of lines it's placed in (at the block's natural size), centred under them */
 .nowPlaying {
-    position: absolute;
-    top: 100%;
-    left: 50%;
     display: flex;
     align-items: center;
     gap: 24px;
+    transition: opacity 0.6s ease;
+}
+
+/* Hung below the block of lines it's placed in (at the block's natural size), centred under them */
+.center {
+    position: absolute;
+    top: 100%;
+    left: 50%;
     margin-top: 56px;
     transform: translateX(-50%);
-    transition: opacity 0.6s ease;
+}
+
+/* A corner of the screen to pin it in (placed and scaled in index.tsx), with the same shadow as the lines in the middle */
+.corner {
+    position: fixed;
+    z-index: 40;
+    color: #fff;
+    text-shadow: 0 4px 30px rgba(11, 16, 31, 0.35);
+    white-space: nowrap;
+    pointer-events: none;
+}
+
+/* In the right-hand corners the album art goes to the outside edge, and the words line up against it */
+.right {
+    flex-direction: row-reverse;
+}
+
+.right .details {
+    align-items: flex-end;
 }
 
 .hidden {

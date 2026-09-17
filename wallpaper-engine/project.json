@@ -132,8 +132,37 @@
 				"condition": "nowplaying.value != 'off'",
 				"value": true
 			},
-			"textsize": {
+			"musicposition": {
 				"order": 12,
+				"text": "What's playing position",
+				"type": "combo",
+				"condition": "nowplaying.value != 'off'",
+				"value": "center",
+				"options": [
+					{
+						"label": "Under the time",
+						"value": "center"
+					},
+					{
+						"label": "Top left",
+						"value": "top-left"
+					},
+					{
+						"label": "Top right",
+						"value": "top-right"
+					},
+					{
+						"label": "Bottom left",
+						"value": "bottom-left"
+					},
+					{
+						"label": "Bottom right",
+						"value": "bottom-right"
+					}
+				]
+			},
+			"textsize": {
+				"order": 13,
 				"text": "Time, date and weather size",
 				"type": "slider",
 				"min": 50,
@@ -141,19 +170,19 @@
 				"value": 100
 			},
 			"animatetext": {
-				"order": 13,
+				"order": 14,
 				"text": "Animate time, date and weather in",
 				"type": "bool",
 				"value": true
 			},
 			"mouseparallax": {
-				"order": 14,
+				"order": 15,
 				"text": "Mouse parallax",
 				"type": "bool",
 				"value": true
 			},
 			"parallaxstrength": {
-				"order": 15,
+				"order": 16,
 				"text": "Parallax strength",
 				"type": "slider",
 				"condition": "mouseparallax.value",
@@ -162,55 +191,55 @@
 				"value": 50
 			},
 			"stillscenery": {
-				"order": 16,
+				"order": 17,
 				"text": "Still scenery: all animation off (lowest GPU use)",
 				"type": "bool",
 				"value": false
 			},
 			"animateclouds": {
-				"order": 17,
+				"order": 18,
 				"text": "Drifting clouds",
 				"type": "bool",
 				"condition": "!stillscenery.value",
 				"value": true
 			},
 			"animatestars": {
-				"order": 18,
+				"order": 19,
 				"text": "Twinkling stars",
 				"type": "bool",
 				"condition": "!stillscenery.value",
 				"value": true
 			},
 			"shootingstars": {
-				"order": 19,
+				"order": 20,
 				"text": "Shooting stars",
 				"type": "bool",
 				"condition": "!stillscenery.value",
 				"value": true
 			},
 			"animatewind": {
-				"order": 20,
+				"order": 21,
 				"text": "Wind in the trees",
 				"type": "bool",
 				"condition": "!stillscenery.value",
 				"value": true
 			},
 			"animatefireflies": {
-				"order": 21,
+				"order": 22,
 				"text": "Fireflies",
 				"type": "bool",
 				"condition": "!stillscenery.value",
 				"value": true
 			},
 			"animatewater": {
-				"order": 22,
+				"order": 23,
 				"text": "Water and fog",
 				"type": "bool",
 				"condition": "!stillscenery.value",
 				"value": true
 			},
 			"animatewatchtower": {
-				"order": 23,
+				"order": 24,
 				"text": "Watchtower light",
 				"type": "bool",
 				"condition": "!stillscenery.value",

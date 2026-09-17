@@ -3,11 +3,12 @@ import { useSyncExternalStore } from 'react'
 // The wallpaper's settings, as chosen in Wallpaper Engine's properties panel (see wallpaper-engine/project.json).
 // Wallpaper Engine hands them over through window.wallpaperPropertyListener, once on load and again whenever one is
 // changed. In a normal browser the same settings can be tried from the address bar by their names here, e.g.
-// /wallpaper?hours=24&seconds=1&location=Perth, AU&units=fahrenheit&music=playing&size=80&wind=0&still=1
+// /wallpaper?hours=24&seconds=1&location=Perth, AU&units=fahrenheit&music=playing&musicPosition=bottom-left&size=80&wind=0&still=1
 
 const HOURS = ['12', '24', 'auto'] as const
 const UNITS = ['auto', 'celsius', 'fahrenheit'] as const
 const MUSIC = ['always', 'playing', 'off'] as const
+export const MUSIC_POSITIONS = ['center', 'top-left', 'top-right', 'bottom-left', 'bottom-right'] as const
 
 const DEFAULTS = {
     // The time, date and weather
@@ -22,6 +23,7 @@ const DEFAULTS = {
     place: true,                                // the town the weather is for
     music: 'always' as typeof MUSIC[number],    // what's playing under all that: whenever a track's loaded, only while it plays, or never
     progress: true,                             // how far into the track it is
+    musicPosition: 'center' as typeof MUSIC_POSITIONS[number], // under the time, date and weather, or in a corner of the screen
     size: 100,                                  // the size of all that, as a percentage
 
     // Motion
@@ -49,7 +51,7 @@ export const MOTION = ['clouds', 'stars', 'shooting', 'wind', 'fireflies', 'wate
 const PROPERTIES: Record<string, keyof WallpaperSettings> = {
     showclock: 'clock', clockformat: 'hours', showseconds: 'seconds', showdate: 'date', showweather: 'weather',
     weatherlocation: 'location', temperatureunits: 'units', showhighlow: 'highLow', showplace: 'place',
-    nowplaying: 'music', musicprogress: 'progress', textsize: 'size',
+    nowplaying: 'music', musicprogress: 'progress', musicposition: 'musicPosition', textsize: 'size',
     mouseparallax: 'parallax', parallaxstrength: 'strength', stillscenery: 'still',
     animateclouds: 'clouds', animatestars: 'stars', shootingstars: 'shooting', animatewind: 'wind',
     animatefireflies: 'fireflies', animatewater: 'water', animatewatchtower: 'watchtower', animatetext: 'intro',
@@ -67,6 +69,7 @@ function read(key: keyof WallpaperSettings, value: unknown): unknown {
     if (key === 'hours') return HOURS.find(o => o === String(value))
     if (key === 'units') return UNITS.find(o => o === String(value))
     if (key === 'music') return MUSIC.find(o => o === String(value))
+    if (key === 'musicPosition') return MUSIC_POSITIONS.find(o => o === String(value))
     return String(value ?? '')
 }
 

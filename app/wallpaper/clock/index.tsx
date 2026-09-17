@@ -4,18 +4,16 @@
 // at a natural size and scaled with the screen (to fit the smaller of its width and height), and centred as a whole, so
 // whichever lines are showing stay in the middle.
 
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useState } from 'react'
 import { AcUnit, Cloud, Dehaze, FilterDrama, Grain, NightsStay, Place, Thunderstorm, WaterDrop, WbSunny } from '@mui/icons-material'
 
 import NowPlaying from '../nowPlaying'
 import { useSettings } from '../settings'
+import { useScreenScale } from '../useScreenScale'
 import { describe, useWeather, type Unit, type Weather } from '../weather'
 import styles from './clock.module.css'
 
 const NATURAL_WIDTH = 960
-// The screen size the block is drawn at its natural size for (a 1080p screen shows it a little smaller)
-const DESIGN_WIDTH = 2000
-const DESIGN_HEIGHT = 1125
 
 // The current time, updated as the minute turns, or each second when they're showing (checked a few times a second, so
 // it catches up straight after a sleep and the seconds never skip one)
@@ -62,16 +60,7 @@ export default function Clock() {
     const now = useNow(clock && seconds)
     const weather = useWeather(showWeather, location, units === 'auto' ? localUnit() : units)
 
-    // Scaled with the screen
-    const screenRef = useRef<HTMLDivElement>(null)
-    const [scale, setScale] = useState(1)
-    useEffect(() => {
-        const screen = screenRef.current
-        if (!screen) return
-        const observer = new ResizeObserver(() => setScale(Math.min(screen.offsetWidth / DESIGN_WIDTH, screen.offsetHeight / DESIGN_HEIGHT)))
-        observer.observe(screen)
-        return () => observer.disconnect()
-    }, [])
+    const scale = useScreenScale()
 
     // (a 24-hour clock reads 09:05, a 12-hour one 9:05 am)
     const hour12 = hours === 'auto' ? new Intl.DateTimeFormat(undefined, { hour: 'numeric' }).resolvedOptions().hour12 : hours === '12'
@@ -83,7 +72,7 @@ export default function Clock() {
     const dateText = now && new Intl.DateTimeFormat(undefined, { weekday: 'long', day: 'numeric', month: 'long' }).format(now)
 
     return (
-        <div ref={screenRef} className={styles.screen}>
+        <div className={styles.screen}>
             <div className={`${styles.block} select-none`} style={{ width: NATURAL_WIDTH, transform: `translate(-50%, -50%) scale(${scale * size / 100})` }}>
                 {clock && clockText && (
                     <div className={`${styles.time} ${styles.rise}`}>
@@ -105,7 +94,7 @@ export default function Clock() {
                         )}
                     </div>
                 )}
-                <NowPlaying />
+                <NowPlaying placement='center' />
             </div>
         </div>
     )
