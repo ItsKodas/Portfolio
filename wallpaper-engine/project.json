@@ -105,8 +105,35 @@
 				"condition": "showweather.value",
 				"value": true
 			},
-			"textsize": {
+			"nowplaying": {
 				"order": 10,
+				"text": "Show what's playing (turn on Media Integration in Wallpaper Engine's settings)",
+				"type": "combo",
+				"value": "always",
+				"options": [
+					{
+						"label": "While a track is loaded",
+						"value": "always"
+					},
+					{
+						"label": "Only while playing",
+						"value": "playing"
+					},
+					{
+						"label": "Never",
+						"value": "off"
+					}
+				]
+			},
+			"musicprogress": {
+				"order": 11,
+				"text": "Show track progress",
+				"type": "bool",
+				"condition": "nowplaying.value != 'off'",
+				"value": true
+			},
+			"textsize": {
+				"order": 12,
 				"text": "Time, date and weather size",
 				"type": "slider",
 				"min": 50,
@@ -114,19 +141,19 @@
 				"value": 100
 			},
 			"animatetext": {
-				"order": 11,
+				"order": 13,
 				"text": "Animate time, date and weather in",
 				"type": "bool",
 				"value": true
 			},
 			"mouseparallax": {
-				"order": 12,
+				"order": 14,
 				"text": "Mouse parallax",
 				"type": "bool",
 				"value": true
 			},
 			"parallaxstrength": {
-				"order": 13,
+				"order": 15,
 				"text": "Parallax strength",
 				"type": "slider",
 				"condition": "mouseparallax.value",
@@ -135,55 +162,55 @@
 				"value": 50
 			},
 			"stillscenery": {
-				"order": 14,
+				"order": 16,
 				"text": "Still scenery: all animation off (lowest GPU use)",
 				"type": "bool",
 				"value": false
 			},
 			"animateclouds": {
-				"order": 15,
+				"order": 17,
 				"text": "Drifting clouds",
 				"type": "bool",
 				"condition": "!stillscenery.value",
 				"value": true
 			},
 			"animatestars": {
-				"order": 16,
+				"order": 18,
 				"text": "Twinkling stars",
 				"type": "bool",
 				"condition": "!stillscenery.value",
 				"value": true
 			},
 			"shootingstars": {
-				"order": 17,
+				"order": 19,
 				"text": "Shooting stars",
 				"type": "bool",
 				"condition": "!stillscenery.value",
 				"value": true
 			},
 			"animatewind": {
-				"order": 18,
+				"order": 20,
 				"text": "Wind in the trees",
 				"type": "bool",
 				"condition": "!stillscenery.value",
 				"value": true
 			},
 			"animatefireflies": {
-				"order": 19,
+				"order": 21,
 				"text": "Fireflies",
 				"type": "bool",
 				"condition": "!stillscenery.value",
 				"value": true
 			},
 			"animatewater": {
-				"order": 20,
+				"order": 22,
 				"text": "Water and fog",
 				"type": "bool",
 				"condition": "!stillscenery.value",
 				"value": true
 			},
 			"animatewatchtower": {
-				"order": 21,
+				"order": 23,
 				"text": "Watchtower light",
 				"type": "bool",
 				"condition": "!stillscenery.value",

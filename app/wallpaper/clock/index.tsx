@@ -7,6 +7,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { AcUnit, Cloud, Dehaze, FilterDrama, Grain, NightsStay, Place, Thunderstorm, WaterDrop, WbSunny } from '@mui/icons-material'
 
+import NowPlaying from '../nowPlaying'
 import { useSettings } from '../settings'
 import { describe, useWeather, type Unit, type Weather } from '../weather'
 import styles from './clock.module.css'
@@ -104,6 +105,7 @@ export default function Clock() {
                         )}
                     </div>
                 )}
+                <NowPlaying />
             </div>
         </div>
     )
