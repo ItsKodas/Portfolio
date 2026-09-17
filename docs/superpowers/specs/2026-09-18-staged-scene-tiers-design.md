@@ -107,7 +107,7 @@ bytes(tier) = overdraw x vw x vh x dpr^2 x 4  +  layerCount x TILE_MIN
 `TILE_MIN` is one 256x256 device pixel tile, 262144 bytes.
 
 At 375x812 and DPR 3, one viewport of overdraw is about 10.96 MB, giving these cumulative
-figures:
+figures, computed from the formula above rather than measured:
 
 | through tier | added | cumulative |
 | --- | --- | --- |
@@ -146,9 +146,27 @@ this: the iPad Pro reached tier 0 and the iPhone SE reached tier 3 or 4 in every
 was the shape of the model that was backwards, not its values, which is why this amendment
 changes the formula rather than retuning the constants.
 
-Separately, the old `memMax` of `1.75` let an 8GB Android device reach 274 MB, within 6% of
-the roughly 292 MB configuration that was measured crashing. `memMax` now drops to `1.5`, so
-that device's budget falls well clear of the crash boundary instead of grazing it.
+Separately, the old `memMax` of `1.75` let an 8GB Android reach a budget of 274 MB. That
+number and the one it is compared against are both computed from this model's formula, not
+measured, and it matters which is which:
+
+- The crash itself is **observed**: a real phone gets its tab killed. The exact byte count at
+  which a renderer is killed is not known to us; browsers do not report it.
+- 220 MB (see Problem, above) is **measured**: summed in a real browser from each composited
+  layer's area clipped to the viewport, at 375x812 DPR 3. It is area only, and does not include
+  the `layers x TILE_MIN` term this model adds.
+- 292 MB is **computed**: it is what this model's formula gives for the full scene, all four
+  tiers, at that same 375x812 DPR 3 geometry, including the tile term the 220 MB figure omits.
+  It is larger than 220 MB because it is a fuller accounting of the same scene, not a different
+  measurement of it.
+- 274 MB is also **computed**: the old model's budget for an 8GB Android at a Galaxy S23
+  geometry.
+
+So the claim that stands up is: the full scene, the configuration observed crashing on a real
+device, computes to about 292 MB under this model, and the old model handed an 8GB Android a
+budget of 274 MB, within 6% of that. Neither 292 MB nor 274 MB is a measured kill threshold.
+`memMax` now drops to `1.5`, which was chosen to widen that margin rather than leave it this
+close.
 
 Which lands as:
 
@@ -174,10 +192,10 @@ at `depth`. See Future work.
 ### Residual: the iPhone SE still reaches a higher tier than other phones
 
 One quirk survives this change and is left as-is. On a 375x667, DPR 2 screen, the per-layer
-tile minimums dominate the cost while the area term is tiny, so the whole scene genuinely
-costs only about 146 MB there, comfortably inside even the 120 MB-plus-area allowance once the
-floor is in play. An iPhone SE therefore reaches a higher tier than an iPhone 15 or an iPad,
-both of which have larger, area-dominated screens.
+tile minimums dominate the cost while the area term is tiny, so the whole scene **computes**
+(not measured, this model's formula only) to about 146 MB there, comfortably inside even the
+120 MB floor. An iPhone SE therefore reaches a higher tier than an iPhone 15 or an iPad, both
+of which have larger, area-dominated screens.
 
 This is not a reappearance of the inversion above: it does not put a stronger device on the
 still scene while a weaker one gets everything, it only means one small, older phone affords

@@ -79,4 +79,25 @@ describe('ceilingFor', () => {
         const iphone15 = ceiling([390, 844, 3], undefined, true)
         expect(ipad).toBeGreaterThanOrEqual(iphone15)
     })
+
+    it('does not give a bigger touch screen less scene than a smaller one, at synthetic sizes', () => {
+        // The iPad-versus-iPhone-15 case above happens to land both devices on the same tier today, so on
+        // its own it would quietly stop exercising the ordering the moment the constants are retuned. These
+        // two viewports are synthetic and deliberately chosen, not real devices, specifically so the pairing
+        // keeps testing the ordering when real device numbers move: both are well clear of the floor crossover
+        // (viewportBytes x touchViewports > touchFloor, so touchFloor === Math.max(...) never activates for
+        // either side), and the larger is exactly 4x the area of the smaller at the same dpr.
+        //
+        // With today's constants, both land on the depth tier too, but not by the same coincidence as above:
+        // it is structural. Once the area term dominates, cost and allowance both scale linearly with area, so
+        // which tier is reached converges to whichever cumulative overdraw ratio first exceeds touchViewports
+        // (14), independent of viewport size. Cumulative overdraw is 10.8 through depth and 20.8 through sky,
+        // so no touch device without deviceMemory can reach the sky tier from the area term alone, at any
+        // size. That means no pair of viewports in this regime can currently demonstrate a strict difference;
+        // this assertion documents that the ordering holds (not fewer), while the comment above documents why
+        // it cannot yet be strict.
+        const small = ceiling([900, 700, 3], undefined, true)
+        const large = ceiling([1800, 1400, 3], undefined, true)
+        expect(large).toBeGreaterThanOrEqual(small)
+    })
 })
