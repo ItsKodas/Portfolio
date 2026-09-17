@@ -98,16 +98,40 @@ describe('PERF_SCRIPT', () => {
         expect(attrs['data-perf-forced']).toBe('')
     })
 
-    it('forces an exact token set from ?scene=', () => {
+    it('forces an exact token set from ?scene=, with a ceiling that matches it', () => {
         const attrs = run({ search: '?scene=depth+sky', coarse: true })
         expect(attrs['data-scene']).toBe('depth sky')
-        expect(attrs['data-scene-max']).toBe(String(TIERS.length))
+        expect(attrs['data-scene-max']).toBe('2')   // what was forced, not the whole scale
         expect(attrs['data-perf-forced']).toBe('')
+    })
+
+    it('gives ?scene= with no tokens a ceiling of zero', () => {
+        const attrs = run({ search: '?scene=', coarse: true })
+        expect(attrs['data-scene']).toBe('')
+        expect(attrs['data-scene-max']).toBe('0')
     })
 
     it('still detects when localStorage throws', () => {
         const attrs = run({ coarse: true, storageThrows: true })
         expect(attrs['data-scene-max']).toBe('1')
+    })
+
+    it('honours ?perf= on the load where storage throws, not just on the next one', () => {
+        // The override and the attempt to remember it used to share one try, so a browser blocking storage lost
+        // both: setItem threw, the catch swallowed it, and the load carried on detecting as if nothing was asked.
+        const attrs = run({ search: '?perf=full', coarse: true, storageThrows: true })
+        expect(attrs['data-scene']).toBe(ALL)
+        expect(attrs['data-scene-max']).toBe(String(TIERS.length))
+        expect(attrs['data-perf-forced']).toBe('')
+    })
+
+    it('honours ?perf=auto over a remembered mode even when storage throws', () => {
+        // Nothing can be forgotten here, so the most this load can do is ignore what it cannot read: it must
+        // detect rather than fall back to a stored mode it has no way of clearing.
+        const attrs = run({ search: '?perf=auto', coarse: true, stored: 'full', storageThrows: true })
+        expect(attrs['data-scene']).toBe('')
+        expect(attrs['data-scene-max']).toBe('1')
+        expect(attrs['data-perf-forced']).toBeUndefined()
     })
 
     it('falls back to the still scene when detection throws', () => {

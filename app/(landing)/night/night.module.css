@@ -85,6 +85,8 @@
     .spark { opacity: 0; }
 }
 
-/* Until the forest tier is in (see app/perf) */
-:global(html:not([data-scene~="forest"])) .twinkle, :global(html:not([data-scene~="forest"])) .glow, :global(html:not([data-scene~="forest"])) .flame, :global(html:not([data-scene~="forest"])) .spark { animation: none; }
-:global(html:not([data-scene~="forest"])) .spark { opacity: 0; }
+/* Off only at tier 0, the still scene, as the scroll cue is (see app/perf). The campfire and these stars sit at the
+   bottom of the page, outside the hero's composited area and outside the budget the tiers were measured against, so
+   gating them on the forest tier would freeze them on every phone for no memory back. */
+:global(html:not([data-scene~="depth"])) .twinkle, :global(html:not([data-scene~="depth"])) .glow, :global(html:not([data-scene~="depth"])) .flame, :global(html:not([data-scene~="depth"])) .spark { animation: none; }
+:global(html:not([data-scene~="depth"])) .spark { opacity: 0; }

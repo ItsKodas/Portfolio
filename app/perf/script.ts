@@ -10,10 +10,11 @@ import { BASE, BUDGETS, TIERS, TILE_MIN, ceilingFor } from './tiers'
 // to composite more than it can hold, and the old fallback could not switch for another 7 to 12 seconds, by which
 // time the tab was already dead.
 //
-// Lite is also forced when the browser is drawing without the graphics card (hardware acceleration turned off, or a
-// blocked driver): WebGL then either refuses a context flagged failIfMajorPerformanceCaveat, or reports a software
-// renderer. Such a machine reports a fine pointer, so without this check it would be handed the whole scene and,
-// because it starts at its ceiling, would never be frame checked either.
+// Tier 0, the still scene, is also forced when the browser is drawing without the graphics card (hardware
+// acceleration turned off, or a blocked driver): WebGL then either refuses a context flagged
+// failIfMajorPerformanceCaveat, or reports a software renderer. Such a machine reports a fine pointer, so without
+// this check it would be handed the whole scene and, because it starts at its ceiling, would never be frame checked
+// either.
 //
 // For testing, ?perf=lite or ?perf=full forces a mode and remembers it in this browser; ?perf=auto goes back to
 // detecting; ?scene=depth+sky forces an exact set of tokens for this load only.
@@ -34,13 +35,25 @@ export const PERF_SCRIPT = `(function () {
         var params = new URLSearchParams(location.search)
         var scene = params.get('scene')
         if (scene !== null) {
-            apply(scene.trim(), count, true)
+            // The ceiling is what was actually forced, not the whole scale: ?scene=depth with a max of 4 describes a
+            // document with three unclaimed tiers above it, which is nonsense however inert data-perf-forced makes it.
+            var tokens = scene.trim()
+            apply(tokens, tokens ? tokens.split(/\\s+/).length : 0, true)
             return
         }
         var asked = params.get('perf')
-        if (asked === 'lite' || asked === 'full') localStorage.setItem('perf', asked)
-        else if (asked === 'auto') localStorage.removeItem('perf')
-        forced = localStorage.getItem('perf')
+        if (asked === 'lite' || asked === 'full' || asked === 'auto') {
+            // The override takes effect on this load whether or not it could be remembered for the next one. A
+            // browser blocking storage throws below, and the right answer to that is to lose the memory, not the
+            // override, so the persisting gets a try of its own.
+            forced = asked === 'auto' ? null : asked
+            try {
+                if (asked === 'auto') localStorage.removeItem('perf')
+                else localStorage.setItem('perf', asked)
+            } catch (e2) {}
+        } else {
+            forced = localStorage.getItem('perf')
+        }
     } catch (e) {}
 
     if (forced === 'lite' || forced === 'full') {
