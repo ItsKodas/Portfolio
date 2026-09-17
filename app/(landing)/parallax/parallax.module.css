@@ -9,3 +9,9 @@
     /* The scenery never takes clicks, so the links under the hero title can be clicked through the layers in front */
     pointer-events: none;
 }
+
+/* The whole hero, once the content has scrolled up over it: nothing in it needs to keep animating out of sight */
+.paused,
+.paused * {
+    animation-play-state: paused !important;
+}

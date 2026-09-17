@@ -80,6 +80,27 @@ export default function ParallaxView({ children }: Readonly<{ children: React.Re
         }
     }, [recalc])
 
+    // Pause the hero's animations once the content has scrolled up over it and the scene is out of sight (the content
+    // top sits CONTENT_OFFSET screens down and rises 1 + CONTENT_SPEED pixels per pixel scrolled)
+    const heroRef = useRef<HTMLElement>(null)
+    useEffect(() => {
+        let frame = 0
+        const update = () => {
+            frame = 0
+            const covered = window.scrollY * (1 + CONTENT_SPEED) > CONTENT_OFFSET * window.innerHeight + 40
+            heroRef.current?.classList.toggle(styles.paused, covered)
+        }
+        const onScroll = () => { if (!frame) frame = requestAnimationFrame(update) }
+        update()
+        window.addEventListener('scroll', onScroll, { passive: true })
+        window.addEventListener('resize', onScroll)
+        return () => {
+            window.removeEventListener('scroll', onScroll)
+            window.removeEventListener('resize', onScroll)
+            if (frame) cancelAnimationFrame(frame)
+        }
+    }, [])
+
     return (
         <ThemeProvider theme={DarkTheme}>
             <ScrollbarTint />
@@ -87,7 +108,7 @@ export default function ParallaxView({ children }: Readonly<{ children: React.Re
 
                 {/* ── Hero scene ─────────────────────────────────────── */}
 
-                <section className='absolute inset-x-0 top-0 h-[200svh]'>
+                <section ref={heroRef} className='absolute inset-x-0 top-0 h-[200svh]'>
                     <Layer speed={0.1}>
                         <Image priority src={Sky} alt='Sky' fill className='object-cover' />
                         <NightSky />

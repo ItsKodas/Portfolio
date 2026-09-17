@@ -1,12 +1,14 @@
-.sky {
+/* Every moving part here is its own element, moved only with transform and opacity, so the graphics card can animate
+   it without repainting */
+
+.layer {
     position: absolute;
     inset: 0;
     width: 100%;
     height: 100%;
-    pointer-events: none;
 }
 
-/* A gentle shimmer: opacity only, so it stays cheap */
+/* A gentle shimmer */
 .twinkle {
     animation: twinkle ease-in-out infinite alternate;
 }
@@ -16,20 +18,21 @@
     to   { opacity: 0.25; }
 }
 
-/* Shooting star: invisible most of the cycle, then a quick streak along its direction that fades out */
+/* Shooting star: invisible most of the cycle, then a quick streak along its direction that fades out (--travel is a
+   percentage of the streak's own width) */
 .shoot {
     opacity: 0;
     animation: shoot linear infinite;
 }
 
 @keyframes shoot {
-    0%       { transform: translateX(0);     opacity: 0; }
-    1%       { opacity: 1; }
-    6%       { transform: translateX(900px); opacity: 0; }
-    6.1%, 100% { transform: translateX(900px); opacity: 0; }
+    0%         { transform: translateX(0);              opacity: 0; }
+    1%         { opacity: 1; }
+    6%         { transform: translateX(var(--travel)); opacity: 0; }
+    6.1%, 100% { transform: translateX(var(--travel)); opacity: 0; }
 }
 
-/* Slow wander around a small loop, back to where it started */
+/* Slow wander around a small loop, back to where it started (--dx and --dy are percentages of the group's box) */
 .drift {
     animation: drift ease-in-out infinite;
 }

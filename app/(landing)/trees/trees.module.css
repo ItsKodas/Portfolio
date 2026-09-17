@@ -1,22 +1,19 @@
-.trees {
+/* Every moving part here is its own element, moved only with transform and opacity, so the graphics card can animate
+   it without repainting */
+
+.layer {
     position: absolute;
     inset: 0;
     width: 100%;
     height: 100%;
-    pointer-events: none;
 }
 
-/* Bending from the base: skewing around the ground line moves the treetops most and the trunks hardly at all */
-.bend {
-    transform-box: view-box;
-}
-
-/* Everyday sway: small, slightly irregular back and forth (each tree sets its own duration and delay) */
+/* Everyday sway: small, slightly irregular back and forth, bending from the tree's base (its transform origin).
+   --amp scales each tree's movement */
 .sway {
     animation: sway 7s ease-in-out infinite;
 }
 
-/* --amp scales each tree's movement */
 @keyframes sway {
     0%, 100% { transform: skewX(calc(var(--amp, 1) * 0.35deg)); }
     30%      { transform: skewX(calc(var(--amp, 1) * -0.5deg)); }
@@ -38,30 +35,31 @@
     80%           { transform: skewX(calc(var(--amp, 1) * -0.2deg)); }
 }
 
-/* Wind streaks: invisible until the gust, then a faint sweep across the screen */
+/* Wind streaks: invisible until the gust, then a faint sweep across the screen (--from and --to are percentages of
+   the streak's own width) */
 .streak {
     opacity: 0;
-    transform-box: view-box;
     animation: streak 16s ease-out infinite;
 }
 
 @keyframes streak {
-    0%, 56%  { transform: translateX(-800px); opacity: 0; }
+    0%, 56%  { transform: translateX(var(--from)); opacity: 0; }
     60%      { opacity: 0.12; }
-    68%      { transform: translateX(4000px); opacity: 0; }
-    100%     { transform: translateX(4000px); opacity: 0; }
+    68%      { transform: translateX(var(--to)); opacity: 0; }
+    100%     { transform: translateX(var(--to)); opacity: 0; }
 }
 
 /* Leaves: carried along with the wind, rising and dipping, tumbling end over end, fading in and out */
 .leafTravel {
+    opacity: 0;
     animation: leafTravel linear infinite;
 }
 
 @keyframes leafTravel {
-    0%   { transform: translate(0, 0);        opacity: 0; }
+    0%   { transform: translate(0, 0);                 opacity: 0; }
     8%   { opacity: 1; }
     85%  { opacity: 1; }
-    100% { transform: translate(1400px, 260px); opacity: 0; }
+    100% { transform: translate(var(--tx), var(--ty)); opacity: 0; }
 }
 
 .leafFlutter {
@@ -69,13 +67,11 @@
 }
 
 @keyframes leafFlutter {
-    from { transform: translateY(-40px); }
-    to   { transform: translateY(40px); }
+    from { transform: translateY(calc(var(--fy) * -1)); }
+    to   { transform: translateY(var(--fy)); }
 }
 
 .leafSpin {
-    transform-box: fill-box;
-    transform-origin: center;
     animation: leafSpin linear infinite;
 }
 

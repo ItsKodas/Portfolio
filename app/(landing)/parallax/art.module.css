@@ -1,0 +1,22 @@
+/* The art canvas: 3840x4320, covering the two-screen-tall layer and centred, like object-cover on the other layers */
+.canvas {
+    position: absolute;
+    left: 50%;
+    top: 50%;
+    width: max(100%, calc(200svh * 3840 / 4320));
+    aspect-ratio: 3840 / 4320;
+    transform: translate(-50%, -50%);
+    pointer-events: none;
+}
+
+.piece {
+    position: absolute;
+}
+
+.fill {
+    position: absolute;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+    overflow: visible;
+}

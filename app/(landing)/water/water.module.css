@@ -1,14 +1,30 @@
-.water {
+/* Every moving part here is its own element, moved only with transform and opacity, so the graphics card can animate
+   it without repainting */
+
+.full {
     position: absolute;
     inset: 0;
     width: 100%;
     height: 100%;
-    pointer-events: none;
 }
 
-/* Streaks glide gently back and forth and shimmer */
+.layer {
+    position: absolute;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+}
+
+/* Containers kept to the water's shape (their mask image is set inline) */
+.masked {
+    mask-size: 100% 100%;
+    -webkit-mask-size: 100% 100%;
+    mask-repeat: no-repeat;
+    -webkit-mask-repeat: no-repeat;
+}
+
+/* Streaks glide gently back and forth and shimmer (--drift is a percentage of the streak's own width) */
 .streak {
-    fill: #9ad9fb;
     opacity: var(--opacity);
     animation: glide ease-in-out infinite alternate;
 }
@@ -19,11 +35,8 @@
     100% { transform: translateX(var(--drift)); opacity: calc(var(--opacity) * 0.55); }
 }
 
-/* Shoreline ripples: crisp tapered strokes (same style as the streaks) lapping towards the shore and back */
+/* Shoreline ripples: lapping towards the shore and back, scaled about the middle of the lake */
 .ripple {
-    fill: #9ad9fb;
-    transform-box: view-box;
-    transform-origin: 1900px 1800px; /* centre of the lake */
     animation: lap 7.2s ease-in-out infinite alternate;
 }
 
@@ -33,7 +46,7 @@
     100% { transform: scale(1, 1);        opacity: calc(var(--opacity) * 0.3); }
 }
 
-/* Fog drifts slowly over the water, softened further by a light blur */
+/* Fog drifts slowly over the water, softened further by a light blur (--fog is a percentage of the bank's width) */
 .fog {
     filter: blur(6px);
     animation: fogDrift 26s ease-in-out infinite alternate;
@@ -45,24 +58,23 @@
 }
 
 @keyframes fogDrift {
-    from { transform: translateX(-60px); opacity: 0.85; }
-    to   { transform: translateX(60px);  opacity: 1; }
+    from { transform: translateX(calc(var(--fog) * -1)); opacity: 0.85; }
+    to   { transform: translateX(var(--fog));            opacity: 1; }
 }
 
-/* Boat rocking gently on the water */
+/* Boat rocking gently on the water, from the bottom of the hull */
 .bob {
-    transform-box: fill-box;
-    transform-origin: 50% 100%;
+    transform-origin: 45% 72%;
     animation: bob 5.5s ease-in-out infinite;
 }
 
 @keyframes bob {
     0%, 100% { transform: translateY(0) rotate(-1.5deg); }
-    50%      { transform: translateY(3px) rotate(1.5deg); }
+    50%      { transform: translateY(3%) rotate(1.5deg); }
 }
 
 /* Lantern flame flicker */
-.lanternFlicker {
+.flicker {
     animation: flicker 2.3s ease-in-out infinite;
 }
 
@@ -75,5 +87,5 @@
 }
 
 @media (prefers-reduced-motion: reduce) {
-    .streak, .fog, .ripple, .bob, .lanternFlicker { animation: none; }
+    .streak, .fog, .ripple, .bob, .flicker { animation: none; }
 }
