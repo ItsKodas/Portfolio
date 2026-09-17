@@ -73,6 +73,9 @@
 
 .leafSpin {
     animation: leafSpin linear infinite;
+    /* Faded in when the forest tier arrives, since leafTravel is mid-flight by then and would otherwise pop
+       (the fade is here rather than on leafTravel because a transition and an animation can't share a property) */
+    transition: opacity 600ms ease;
 }
 
 @keyframes leafSpin {
@@ -93,3 +96,5 @@
 /* And when the desktop wallpaper's settings turn the wind off (see app/wallpaper) */
 :global(html[data-still~="wind"]) .sway, :global(html[data-still~="wind"]) .gust, :global(html[data-still~="wind"]) .streak, :global(html[data-still~="wind"]) .leafTravel, :global(html[data-still~="wind"]) .leafFlutter, :global(html[data-still~="wind"]) .leafSpin { animation: none; }
 :global(html[data-still~="wind"]) .streak, :global(html[data-still~="wind"]) .leafTravel { opacity: 0; }
+
+:global(html:not([data-scene~="forest"])) .leafSpin { opacity: 0; }
