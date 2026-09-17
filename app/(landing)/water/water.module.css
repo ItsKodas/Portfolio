@@ -90,8 +90,8 @@
     .streak, .fog, .ripple, .bob, .flicker { animation: none; }
 }
 
-/* The same for the lite hero (see app/perf) */
-:global(html[data-perf="lite"]) .streak, :global(html[data-perf="lite"]) .fog, :global(html[data-perf="lite"]) .ripple, :global(html[data-perf="lite"]) .bob, :global(html[data-perf="lite"]) .flicker { animation: none; }
+/* Until the water tier is in (see app/perf) */
+:global(html:not([data-scene~="water"])) .streak, :global(html:not([data-scene~="water"])) .fog, :global(html:not([data-scene~="water"])) .ripple, :global(html:not([data-scene~="water"])) .bob, :global(html:not([data-scene~="water"])) .flicker { animation: none; }
 
 /* And when the desktop wallpaper's settings keep the water still (see app/wallpaper) */
 :global(html[data-still~="water"]) .streak, :global(html[data-still~="water"]) .fog, :global(html[data-still~="water"]) .ripple, :global(html[data-still~="water"]) .bob, :global(html[data-still~="water"]) .flicker { animation: none; }

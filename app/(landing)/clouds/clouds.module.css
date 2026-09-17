@@ -60,8 +60,8 @@
     .cloud, .cool { animation-play-state: paused; }
 }
 
-/* The same for the lite hero (see app/perf) */
-:global(html[data-perf="lite"]) .cloud, :global(html[data-perf="lite"]) .cool { animation-play-state: paused; will-change: auto; }
+/* Until the sky tier is in (see app/perf) */
+:global(html:not([data-scene~="sky"])) .cloud, :global(html:not([data-scene~="sky"])) .cool { animation-play-state: paused; will-change: auto; }
 
 /* And when the desktop wallpaper's settings keep the clouds still (see app/wallpaper) */
 :global(html[data-still~="clouds"]) .cloud, :global(html[data-still~="clouds"]) .cool { animation-play-state: paused; }

@@ -116,11 +116,6 @@ describe('PERF_SCRIPT', () => {
         expect(attrs['data-scene-max']).toBe('0')
     })
 
-    it('keeps the data-perf bridge in step with the tokens', () => {
-        expect(run({ innerWidth: 1920, innerHeight: 1080, dpr: 2 })['data-perf']).toBe('full')
-        expect(run({ coarse: true })['data-perf']).toBe('lite')
-    })
-
     it('inlines the real ceilingFor rather than a second copy of the arithmetic', () => {
         expect(PERF_SCRIPT).toContain('budgets.memDivisor')
     })

@@ -49,9 +49,9 @@
     .shoot { display: none; }
 }
 
-/* The same for the lite hero (see app/perf) */
-:global(html[data-perf="lite"]) .twinkle, :global(html[data-perf="lite"]) .drift { animation: none; }
-:global(html[data-perf="lite"]) .shoot { display: none; }
+/* Until the sky tier is in (see app/perf) */
+:global(html:not([data-scene~="sky"])) .twinkle, :global(html:not([data-scene~="sky"])) .drift { animation: none; }
+:global(html:not([data-scene~="sky"])) .shoot { display: none; }
 
 /* And when the desktop wallpaper's settings keep the stars still, or leave out shooting stars (see app/wallpaper) */
 :global(html[data-still~="stars"]) .twinkle, :global(html[data-still~="stars"]) .drift { animation: none; }

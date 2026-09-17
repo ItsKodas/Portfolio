@@ -27,8 +27,6 @@ export const PERF_SCRIPT = `(function () {
     function apply(scene, max, isForced) {
         root.setAttribute('data-scene', scene)
         root.setAttribute('data-scene-max', String(max))
-        // (bridge for the stylesheets until they've moved over to data-scene)
-        root.setAttribute('data-perf', scene === all ? 'full' : 'lite')
         if (isForced) root.setAttribute('data-perf-forced', '')
     }
 

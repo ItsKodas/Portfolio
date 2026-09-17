@@ -54,8 +54,8 @@
     .wander, .glow { animation: none; }
 }
 
-/* The same for the lite hero (see app/perf) */
-:global(html[data-perf="lite"]) .wander, :global(html[data-perf="lite"]) .glow { animation: none; }
+/* Until the forest tier is in (see app/perf) */
+:global(html:not([data-scene~="forest"])) .wander, :global(html:not([data-scene~="forest"])) .glow { animation: none; }
 
 /* And when the desktop wallpaper's settings keep the fireflies still (see app/wallpaper) */
 :global(html[data-still~="fireflies"]) .wander, :global(html[data-still~="fireflies"]) .glow { animation: none; }
