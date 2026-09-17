@@ -51,16 +51,16 @@ export function ceilingFor(
     tileMin: number,
     budgets: Budgets,
 ): number {
-    var viewportBytes = vw * vh * dpr * dpr * 4
-    var factor = deviceMemory
+    const viewportBytes = vw * vh * dpr * dpr * 4
+    const factor = deviceMemory
         ? Math.min(budgets.memMax, Math.max(budgets.memMin, deviceMemory / budgets.memDivisor))
         : 1
-    var budget = (coarsePointer ? budgets.touch : budgets.pointer) * factor
+    const budget = (coarsePointer ? budgets.touch : budgets.pointer) * factor
 
-    var spent = base.overdraw * viewportBytes + base.layers * tileMin
-    var reached = 0
-    for (var i = 0; i < tiers.length; i++) {
-        var next = spent + tiers[i].overdraw * viewportBytes + tiers[i].layers * tileMin
+    let spent = base.overdraw * viewportBytes + base.layers * tileMin
+    let reached = 0
+    for (let i = 0; i < tiers.length; i++) {
+        const next = spent + tiers[i].overdraw * viewportBytes + tiers[i].layers * tileMin
         if (next > budget) break
         spent = next
         reached++
