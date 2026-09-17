@@ -51,6 +51,12 @@ To learn more about Next.js, take a look at the following resources:
 
 You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
 
+## Measuring the scene
+
+The hero is served in tiers, and how far a browser climbs depends on cost constants in `app/perf/tiers.ts`. If you
+add or remove moving parts, re-derive them: paste `scripts/scene-cost.js` into the browser console on the home page
+and compare runs at different `?scene=` token sets. The difference between two runs is what that tier costs.
+
 ## Deploy on Vercel
 
 The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.

@@ -57,7 +57,7 @@ export default function SceneCurtain() {
         const lift = () => { if (!cancelled) reveal() }
 
         const limit = window.setTimeout(lift, MAX_WAIT_MS)
-        // (a frame's wait first, so a switch to the lite hero straight after hydrating has put its own images in)
+        // (a frame's wait first, so a switch to the full hero straight after hydrating has put its own images in)
         const frame = requestAnimationFrame(() => { sceneLoaded().then(lift) })
 
         return () => {

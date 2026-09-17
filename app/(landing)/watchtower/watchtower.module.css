@@ -32,8 +32,8 @@
     .glow, .window { animation: none; }
 }
 
-/* The same for the lite hero (see app/perf) */
-:global(html[data-perf="lite"]) .glow, :global(html[data-perf="lite"]) .window { animation: none; }
+/* Until the water tier is in (see app/perf) */
+:global(html:not([data-scene~="water"])) .glow, :global(html:not([data-scene~="water"])) .window { animation: none; }
 
 /* And when the desktop wallpaper's settings keep the watchtower's light steady (see app/wallpaper) */
 :global(html[data-still~="watchtower"]) .glow, :global(html[data-still~="watchtower"]) .window { animation: none; }

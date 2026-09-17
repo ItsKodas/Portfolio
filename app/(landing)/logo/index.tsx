@@ -6,7 +6,7 @@ import { SportsEsports, Casino } from '@mui/icons-material'
 import { useEffect, useRef, useState } from 'react'
 import { useSpring, animated, to } from '@react-spring/web'
 
-import { useLite } from '@/app/perf/usePerf'
+import { useScene } from '@/app/perf/usePerf'
 import { SITE } from '@/app/site'
 import { useRevealed } from '../parallax/curtain'
 
@@ -51,7 +51,7 @@ export default function AnimatedLogo() {
     // unrolling out of its side, and once the title is out the subtitle slides down from underneath it.
 
     // (Shown straight away, with no intro, for reduced motion and in the lite hero)
-    const lite = useLite()
+    const lite = !useScene('depth')
     const reduceMotion = lite || (typeof window !== 'undefined' && window.matchMedia('(prefers-reduced-motion: reduce)').matches)
     // (held until the loading curtain lifts, so it isn't played out unseen behind it)
     const revealed = useRevealed()
