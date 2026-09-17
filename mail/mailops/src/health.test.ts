@@ -1,6 +1,6 @@
 import { describe, it } from 'node:test'
 import assert from 'node:assert/strict'
-import { evaluateBootGate, collectWarnings } from './health.ts'
+import { evaluateBootGate, collectWarnings, cycleFailedWarning, resolveIntervalMs } from './health.ts'
 
 const healthy = {
     outbound: { ok: true, banner: '220 mx.google.com ESMTP' },
@@ -68,5 +68,38 @@ describe('collectWarnings', () => {
 
     it('does not warn when inbound mail has never arrived, because a new stack has no history', () => {
         assert.deepEqual(collectWarnings({ ...quiet, lastInbound: null }), [])
+    })
+})
+
+describe('cycleFailedWarning', () => {
+    it('turns a thrown Error into a cycle-failed warning carrying its message', () => {
+        assert.deepEqual(cycleFailedWarning(new Error('ETIMEDOUT')), { check: 'cycle-failed', detail: 'ETIMEDOUT' })
+    })
+
+    it('stringifies a non-Error throw rather than losing it', () => {
+        assert.deepEqual(cycleFailedWarning('boom'), { check: 'cycle-failed', detail: 'boom' })
+    })
+})
+
+describe('resolveIntervalMs', () => {
+    it('defaults quietly when the value is unset, because that is not a typo', () => {
+        assert.deepEqual(resolveIntervalMs(undefined), { ms: 60_000, invalid: false })
+    })
+
+    it('parses a valid numeric string', () => {
+        assert.deepEqual(resolveIntervalMs('30000'), { ms: 30_000, invalid: false })
+    })
+
+    it('falls back and flags invalid when the value is not a number', () => {
+        assert.deepEqual(resolveIntervalMs('60s'), { ms: 60_000, invalid: true })
+    })
+
+    it('falls back and flags invalid when the value is zero or negative', () => {
+        assert.deepEqual(resolveIntervalMs('0'), { ms: 60_000, invalid: true })
+        assert.deepEqual(resolveIntervalMs('-500'), { ms: 60_000, invalid: true })
+    })
+
+    it('honors a custom fallback', () => {
+        assert.deepEqual(resolveIntervalMs('NaN', 15_000), { ms: 15_000, invalid: true })
     })
 })

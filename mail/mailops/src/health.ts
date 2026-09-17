@@ -69,3 +69,22 @@ export async function writeStatus(path: string, warnings: Warning[], now: Date):
     await mkdir(dirname(path), { recursive: true })
     await writeFile(path, JSON.stringify({ ok: warnings.length === 0, checkedAt: now.toISOString(), warnings }, null, 2), 'utf8')
 }
+
+// Turns a caught cycle error into the one warning the status file gets that cycle, so a failed
+// cycle still writes ok: false rather than leaving the previous cycle's ok: true file in place.
+export function cycleFailedWarning(error: unknown): Warning {
+    const detail = error instanceof Error ? error.message : String(error)
+    return { check: 'cycle-failed', detail }
+}
+
+export type IntervalResolution = { ms: number, invalid: boolean }
+
+// A value the operator never set is not a typo, so it resolves quietly to the default. A value
+// that is set but is not a finite positive number is the typo case: fall back, but flag it as
+// invalid so the caller can log it instead of silently running a hot loop.
+export function resolveIntervalMs(raw: string | undefined, fallback = 60_000): IntervalResolution {
+    if (raw === undefined || raw === '') return { ms: fallback, invalid: false }
+    const parsed = Number(raw)
+    if (Number.isFinite(parsed) && parsed > 0) return { ms: parsed, invalid: false }
+    return { ms: fallback, invalid: true }
+}

@@ -7,17 +7,26 @@ import { createCloudflareApi } from './cloudflare.ts'
 import { reconcile } from './reconcile.ts'
 import { fetchPublicIp, readDkimKey, writeAliasMap } from './adapters.ts'
 import { probeOutboundSmtp, checkSpamhaus, lastInboundConnection } from './probes.ts'
-import { evaluateBootGate, collectWarnings, writeStatus, BootGateError } from './health.ts'
+import type { SpamhausResult } from './probes.ts'
+import { evaluateBootGate, collectWarnings, writeStatus, cycleFailedWarning, resolveIntervalMs, BootGateError } from './health.ts'
 import { ensureCertificate } from './certs.ts'
+
+const log = (message: string) => console.log(`[mailops] ${new Date().toISOString()} ${message}`)
 
 const CONFIG_DIR = process.env.MAIL_CONFIG_DIR ?? '/mail-config'
 const LOG_FILE = process.env.MAIL_LOG_FILE ?? '/mail-logs/mail.log'
 const STATUS_FILE = process.env.MAILOPS_STATUS_FILE ?? '/health/status.json'
 const CERT_DIR = process.env.MAIL_CERT_DIR ?? '/mail-certs'
-const INTERVAL_MS = Number(process.env.MAILOPS_INTERVAL_MS ?? 60_000)
 const OUTBOUND_PROBE_HOST = process.env.MAILOPS_PROBE_HOST ?? 'gmail-smtp-in.l.google.com'
 
-const log = (message: string) => console.log(`[mailops] ${new Date().toISOString()} ${message}`)
+// A malformed value here is a configuration error knowable before we accept anything, but
+// crashing the loop over it is the wrong response: fall back and log, rather than let a typo
+// turn setTimeout(NaN) into a hot loop that hammers Cloudflare every tick.
+const intervalResolution = resolveIntervalMs(process.env.MAILOPS_INTERVAL_MS)
+if (intervalResolution.invalid) {
+    log(`WARN invalid MAILOPS_INTERVAL_MS=${process.env.MAILOPS_INTERVAL_MS}, falling back to ${intervalResolution.ms}ms`)
+}
+const INTERVAL_MS = intervalResolution.ms
 
 async function main() {
     const config = loadConfig(process.env)
@@ -38,7 +47,14 @@ async function main() {
     await writeAliasMap(CONFIG_DIR, config)
 
     let lastIp: string | null = null
+    // Genuinely unknown until the first real lookup runs below, which happens unconditionally on the
+    // first cycle since lastIp starts null. Never overwritten with a fabricated value afterward: it
+    // only changes when checkSpamhaus actually runs, so a listing found once keeps being reported
+    // in status.json until a later real lookup clears it.
+    let lastSpamhaus: SpamhausResult = { listed: false, inconclusive: true, codes: [], meanings: [] }
+
     for (;;) {
+        let warnings
         try {
             const ip = await fetchPublicIp()
             const dkim = await readDkimKey(CONFIG_DIR, config)
@@ -50,26 +66,27 @@ async function main() {
 
             // Only on change: a rotated address can arrive carrying a previous occupant's XBL listing, and that
             // is something to find out from a log line rather than from mail quietly failing.
-            const spamhaus = ip === lastIp
-                ? { listed: false, inconclusive: true, codes: [], meanings: [] }
-                : await checkSpamhaus(ip)
             if (ip !== lastIp) {
-                log(`public IP is ${ip}, spamhaus: ${spamhaus.listed ? spamhaus.meanings.join('; ') : 'not listed'}`)
+                lastSpamhaus = await checkSpamhaus(ip)
+                log(`public IP is ${ip}, spamhaus: ${lastSpamhaus.listed ? lastSpamhaus.meanings.join('; ') : 'not listed'}`)
                 lastIp = ip
             }
 
             await ensureCertificate(config, CERT_DIR, new Date())
 
             const logText = await readFile(LOG_FILE, 'utf8').catch(() => '')
-            const warnings = collectWarnings({
-                reconcile: result, spamhaus, lastInbound: lastInboundConnection(logText), now: new Date(),
+            warnings = collectWarnings({
+                reconcile: result, spamhaus: lastSpamhaus, lastInbound: lastInboundConnection(logText), now: new Date(),
             })
             for (const warning of warnings) log(`WARN ${warning.check}: ${warning.detail}`)
-            await writeStatus(STATUS_FILE, warnings, new Date())
         } catch (error) {
             // A failed cycle must never stop the loop. Mail keeps flowing while DNS or certificates are broken.
+            // It must also not leave the previous cycle's ok: true status behind: the health file is the only
+            // signal an operator (or the container healthcheck) has that a cycle is failing.
             log(`ERROR cycle failed: ${(error as Error).message}`)
+            warnings = [cycleFailedWarning(error)]
         }
+        await writeStatus(STATUS_FILE, warnings, new Date())
         await new Promise(resolve => setTimeout(resolve, INTERVAL_MS))
     }
 }
