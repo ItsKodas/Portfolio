@@ -2,6 +2,7 @@
 
 import Image from 'next/image'
 import { Typography } from '@mui/material'
+import { SportsEsports, Casino } from '@mui/icons-material'
 import { useEffect, useRef, useState } from 'react'
 import { useSpring, animated, to } from '@react-spring/web'
 
@@ -21,13 +22,19 @@ const TITLE_WITH_SUBTITLE_Y = -12
 
 export default function AnimatedLogo() {
     const slotRef = useRef<HTMLDivElement>(null)
+    const rowRef = useRef<HTMLDivElement>(null)
     const [scale, setScale] = useState(1)
+    const [rowHeight, setRowHeight] = useState(0)
+
 
     // The slot is positioned and sized in the art's own coordinates (see logo.module.css); scale the logo to fill it
     useEffect(() => {
         const slot = slotRef.current
         if (!slot) return
-        const observer = new ResizeObserver(() => setScale(slot.offsetWidth / NATURAL_WIDTH))
+        const observer = new ResizeObserver(() => {
+            setScale(slot.offsetWidth / NATURAL_WIDTH)
+            setRowHeight(rowRef.current?.offsetHeight ?? 0)
+        })
         observer.observe(slot)
         return () => observer.disconnect()
     }, [])
@@ -73,7 +80,7 @@ export default function AnimatedLogo() {
     return (
         <div className={styles.canvas}>
             <div ref={slotRef} className={styles.slot}>
-                <div className={`${styles.row} flex justify-center items-center select-none`} style={{ gap: GAP, transform: `translate(-50%, -50%) scale(${scale})` }}>
+                <div ref={rowRef} className={`${styles.row} flex justify-center items-center select-none`} style={{ gap: GAP, transform: `translate(-50%, -50%) scale(${scale})` }}>
                     <animated.div style={{
                         opacity: rise.opacity,
                         transform: to([rise.y, unroll.p], (y, p) => `translate(${(1 - p) * ICON_SHIFT}px, ${y}px)`),
@@ -107,6 +114,34 @@ export default function AnimatedLogo() {
                     </animated.div>
                 </div>
             </div>
+
+            {/* Links under the title, rising into place as the subtitle finishes coming in: just below the logo row, scaled
+                with it, and like the logo tucked slightly behind the near mountains. On small screens the logo is scaled right
+                down, so the buttons get some of that back to stay easy to tap. */}
+            <div className={styles.slot}>
+                <animated.div className="absolute left-1/2 top-0 flex gap-6 select-none" style={{
+                    opacity: subtitle.p.to(q => Math.max(0, (q - 0.5) / 0.5)),
+                    transform: subtitle.p.to(q => `translate(-50%, ${((rowHeight / 2 + 14 + (1 - q) * 30) * scale).toFixed(1)}px) scale(${(scale * Math.min(1.6, Math.max(1, 0.55 / scale))).toFixed(3)})`),
+                    transformOrigin: 'top center',
+                    pointerEvents: subtitle.p.to(q => q > 0.9 ? 'auto' : 'none'),
+                }}>
+                    {HERO_LINKS.map(({ label, href, icon: Icon, primary }) => (
+                        <a key={label} href={href} target="_blank" rel="noopener noreferrer"
+                            className={`flex items-center gap-3 whitespace-nowrap rounded-full border-2 px-9 py-4 text-[26px] font-semibold tracking-wide backdrop-blur-md transition-all duration-300 hover:-translate-y-1 focus-visible:outline-none focus-visible:ring-4 focus-visible:ring-white/50 ${primary
+                                ? 'border-white/80 bg-white/90 text-[#27336b] hover:bg-white shadow-[0_10px_40px_-10px_rgba(255,255,255,0.45)]'
+                                : 'border-white/60 bg-white/[0.08] text-white hover:bg-white/[0.18] hover:border-white'}`}>
+                            <Icon sx={{ fontSize: 32 }} />
+                            {label}
+                        </a>
+                    ))}
+                </animated.div>
+            </div>
         </div>
     )
 }
+
+// Buttons under the hero title (drawn at the logo's natural size, and scaled with it)
+const HERO_LINKS = [
+    { label: 'Game Panel', href: 'https://pelican.horizons.gg', icon: SportsEsports, primary: true },
+    { label: 'The Back Room', href: 'https://thebackroom.dev', icon: Casino, primary: false },
+]

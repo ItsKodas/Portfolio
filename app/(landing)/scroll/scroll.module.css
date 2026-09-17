@@ -1,70 +1,103 @@
-.arrows {
-    width: 60px;
-    height: 72px;
-    left: 50%;
+/* The note and its arrow: soft white, like chalk on the night */
+.note {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    color: rgba(236, 244, 255, 0.95);
+    filter: drop-shadow(0 2px 8px rgba(10, 20, 50, 0.45));
+    pointer-events: auto;
+    cursor: pointer;
+    transition: transform 0.3s ease, color 0.3s ease;
+    transform: rotate(-3deg);
 }
 
-.arrows path {
-    stroke: #30c2ff;
-    fill: transparent;
-    stroke-width: 1px;
-    animation: arrow 2s infinite;
-    -webkit-animation: arrow 2s infinite;
+.note:hover {
+    color: #ffffff;
+    transform: rotate(-3deg) translateY(-2px);
 }
 
-@keyframes arrow {
-    0% {
-        opacity: 0
-    }
-
-    40% {
-        opacity: 1
-    }
-
-    80% {
-        opacity: 0
-    }
-
-    100% {
-        opacity: 0
-    }
+.note:focus-visible {
+    outline: 2px solid rgba(255, 255, 255, 0.5);
+    outline-offset: 8px;
+    border-radius: 12px;
 }
 
-@-webkit-keyframes arrow
-
-/*Safari and Chrome*/
-    {
-    0% {
-        opacity: 0
-    }
-
-    40% {
-        opacity: 1
-    }
-
-    80% {
-        opacity: 0
-    }
-
-    100% {
-        opacity: 0
-    }
+/* Each line is an svg of letter outlines, sized by its height (the paths are drawn at a font size of 100) */
+.line1 {
+    height: clamp(26px, 2.5vw, 40px);
+    width: auto;
+    overflow: visible;
 }
 
-.arrows path.a1 {
-    animation-delay: -1s;
-    -webkit-animation-delay: -1s;
-    /* Safari 和 Chrome */
+.line2 {
+    height: clamp(17px, 1.65vw, 26px);
+    width: auto;
+    margin-top: 2px;
+    overflow: visible;
+    opacity: 0.8;
 }
 
-.arrows path.a2 {
-    animation-delay: -0.5s;
-    -webkit-animation-delay: -0.5s;
-    /* Safari 和 Chrome */
+/* A letter being written: its outline traced with a pen stroke, then filled in as the pen moves on */
+.glyph {
+    fill: currentColor;
+    fill-opacity: 0;
+    stroke: currentColor;
+    stroke-width: 2.4;
+    stroke-linejoin: round;
+    stroke-linecap: round;
+    stroke-dasharray: 1;
+    stroke-dashoffset: 1;
+    animation: trace 0.45s ease-in-out forwards, fill 0.35s ease-out forwards;
 }
 
-.arrows path.a3 {
-    animation-delay: 0s;
-    -webkit-animation-delay: 0s;
-    /* Safari 和 Chrome */
+@keyframes trace {
+    to { stroke-dashoffset: 0; }
+}
+
+@keyframes fill {
+    to { fill-opacity: 1; }
+}
+
+.arrow {
+    width: clamp(40px, 3.4vw, 56px);
+    height: auto;
+    margin-top: 6px;
+    overflow: visible;
+    animation: bob 3.2s ease-in-out calc(var(--arrow-start, 1.6s) + 1.3s) infinite;
+}
+
+.arrow path {
+    fill: none;
+    stroke: currentColor;
+    stroke-width: 4;
+    stroke-linecap: round;
+    stroke-linejoin: round;
+}
+
+/* Once the words are written, the arrow draws itself in: first the stroke, then the head */
+.shaft {
+    stroke-dasharray: 130;
+    stroke-dashoffset: 130;
+    animation: draw 0.9s ease-out var(--arrow-start, 0.4s) forwards;
+}
+
+.head {
+    stroke-dasharray: 60;
+    stroke-dashoffset: 60;
+    animation: draw 0.35s ease-out calc(var(--arrow-start, 0.4s) + 0.85s) forwards;
+}
+
+@keyframes draw {
+    to { stroke-dashoffset: 0; }
+}
+
+@keyframes bob {
+    0%, 100% { transform: translateY(0); }
+    50%      { transform: translateY(3px); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .arrow { animation: none; }
+    .shaft, .head { animation: none; stroke-dashoffset: 0; }
+    .glyph { animation: none; stroke-dashoffset: 0; fill-opacity: 1; }
 }
