@@ -11,6 +11,16 @@ import type { Config } from './config.ts'
 
 const run = promisify(execFile)
 const RENEWAL_WINDOW_DAYS = 30
+const INITIAL_BACKOFF_MS = 60_000
+const MAX_BACKOFF_MS = 3_600_000
+
+// Backoff state persists across calls within the same process, tracking consecutive lego failures.
+// On success, the count resets. This prevents hammering Let's Encrypt rate limits (5 per hostname per hour)
+// when transient DNS or ACME issues occur.
+const backoffState: { lastFailureTime: number | null; consecutiveFailures: number } = {
+    lastFailureTime: null,
+    consecutiveFailures: 0,
+}
 
 export function needsRenewal(notAfter: Date | null, now: Date, windowDays = RENEWAL_WINDOW_DAYS): boolean {
     if (!notAfter) return true
@@ -18,35 +28,74 @@ export function needsRenewal(notAfter: Date | null, now: Date, windowDays = RENE
     return daysLeft < windowDays
 }
 
-export function legoArgs(config: Config, certDir: string): string[] {
+export function backoffMs(consecutiveFailures: number): number {
+    if (consecutiveFailures === 0) return 0
+    // Exponential: 1min, 2min, 4min, 8min, 16min, 32min, 60min (capped)
+    const exponential = INITIAL_BACKOFF_MS * Math.pow(2, consecutiveFailures - 1)
+    return Math.min(exponential, MAX_BACKOFF_MS)
+}
+
+export function legoArgs(config: Config, certDir: string, mode: 'run' | 'renew'): string[] {
     return [
         '--accept-tos',
         '--email', config.dmarcRua,
         '--dns', 'cloudflare',
         '--domains', config.mailHostname,
         '--path', certDir,
-        'run',
+        mode,
     ]
 }
 
 async function currentNotAfter(config: Config, certDir: string): Promise<Date | null> {
+    const path = join(certDir, 'certificates', `${config.mailHostname}.crt`)
     try {
-        const pem = await readFile(join(certDir, 'certificates', `${config.mailHostname}.crt`), 'utf8')
+        const pem = await readFile(path, 'utf8')
         return new Date(new X509Certificate(pem).validTo)
-    } catch {
+    } catch (err) {
+        // ENOENT is the normal state before issuance. Log nothing for it.
+        if (err instanceof Error && 'code' in err && err.code === 'ENOENT') {
+            return null
+        }
+        // Any other error is anomalous (permissions, corrupt cert, etc). Warn the operator.
+        const errorCode = err instanceof Error && 'code' in err ? err.code : 'unknown'
+        console.warn(`Warning: cannot read certificate from ${path}: ${errorCode}`)
         return null
     }
 }
 
 export async function ensureCertificate(config: Config, certDir: string, now: Date): Promise<void> {
     const notAfter = await currentNotAfter(config, certDir)
-    if (!needsRenewal(notAfter, now)) return
+    if (!needsRenewal(notAfter, now)) {
+        // Reset backoff on successful discovery of a valid cert. Errors only trigger backoff if they
+        // occur during the lego invocation, not during cert inspection.
+        backoffState.consecutiveFailures = 0
+        return
+    }
 
-    const args = notAfter
-        ? legoArgs(config, certDir).map(arg => arg === 'run' ? 'renew' : arg)
-        : legoArgs(config, certDir)
+    // Check if we are currently in backoff from a recent failure.
+    const currentBackoffMs = backoffMs(backoffState.consecutiveFailures)
+    if (backoffState.lastFailureTime && now.getTime() - backoffState.lastFailureTime < currentBackoffMs) {
+        const msUntilRetry = currentBackoffMs - (now.getTime() - backoffState.lastFailureTime)
+        const minutesUntilRetry = Math.round(msUntilRetry / 60_000)
+        console.log(`[mailops] Deferring lego attempt due to ${backoffState.consecutiveFailures} consecutive failure(s), next try in ~${minutesUntilRetry}m`)
+        return
+    }
 
-    // lego reads the Cloudflare credential from CF_DNS_API_TOKEN, so the same scoped token serves both the
-    // record reconciliation and the certificate challenge.
-    await run('lego', args, { env: { ...process.env, CF_DNS_API_TOKEN: config.cfApiToken } })
+    const mode = notAfter ? 'renew' : 'run'
+    const args = legoArgs(config, certDir, mode)
+
+    try {
+        // lego reads the Cloudflare credential from CF_DNS_API_TOKEN, so the same scoped token serves both the
+        // record reconciliation and the certificate challenge.
+        await run('lego', args, { env: { ...process.env, CF_DNS_API_TOKEN: config.cfApiToken } })
+        // Success: reset backoff counter.
+        backoffState.consecutiveFailures = 0
+        backoffState.lastFailureTime = null
+    } catch (error) {
+        // Failure: increment counter and record the time so backoff applies to the next attempt.
+        backoffState.consecutiveFailures += 1
+        backoffState.lastFailureTime = now.getTime()
+        // Re-throw so the caller logs the error via their own error handler.
+        throw error
+    }
 }
