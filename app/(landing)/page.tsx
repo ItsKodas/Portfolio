@@ -12,6 +12,8 @@ import SpotOnDrones from '../../public/images/clients/spotondrones-mono.png'
 import Arbys from '../../public/images/clients/arbys-mark.png'
 import ASOT from '../../public/images/clients/asot.svg'
 
+import { SKILLS as skills, SOCIALS } from '../site'
+
 // Logos as light marks on the night, each sized so they carry about the same visual weight. The single-colour SVGs are
 // turned white here; Spot On Drones and Arby's have prepared white versions (two-tone, and the mark lifted off its
 // tile) since turning the originals white loses their detail.
@@ -24,14 +26,8 @@ const clients: { src: typeof PMPC_Group, name: string, href?: string, box: strin
     { src: ASOT, name: 'ASOT', href: 'https://www.asotmilsim.com/', box: 'h-10 w-28', style: WHITE },
 ]
 
-const socials = [
-    { label: 'GitHub', href: 'https://github.com/ItsKodas', icon: GitHub },
-    { label: 'LinkedIn', href: 'https://www.linkedin.com/in/dakoda-lancelot', icon: LinkedIn },
-    { label: 'YouTube', href: 'https://www.youtube.com/channel/UC_3OvoziBu-ztAK9PlAz9Mw', icon: YouTube },
-    { label: 'Instagram', href: 'https://www.instagram.com/itskodas', icon: Instagram },
-]
-
-const skills = ['Next.js', 'React', 'TypeScript', 'Node.js', 'Tailwind CSS', 'PostgreSQL', 'MongoDB', 'Docker', 'Prisma', 'MUI', 'Git']
+const ICONS = { GitHub, LinkedIn, YouTube, Instagram }
+const socials = SOCIALS.map(s => ({ ...s, icon: ICONS[s.label] }))
 
 // Projects, each with a short blurb and links to where it lives: the live site and/or the code (either can be left out)
 const projects: { name: string, year?: string, blurb: string, website?: string, github?: string }[] = [
@@ -133,7 +129,7 @@ export default function Landing() {
                     <p className="mb-4 text-xs font-semibold uppercase tracking-[0.25em] text-[#b597cc]/80">Find me on</p>
                     <div className="flex flex-col gap-1">
                         {socials.map(({ label, href, icon: Icon }) => (
-                            <Link key={label} href={href} target="_blank"
+                            <Link key={label} href={href} target="_blank" rel="me noopener noreferrer"
                                 className="group flex items-center gap-3 rounded-2xl px-3 py-2.5 text-[#b4c3dc] transition-colors hover:bg-white/[0.04] hover:text-white">
                                 <Icon sx={{ fontSize: 20 }} className="text-[#8fd4f5]/70 transition-colors group-hover:text-[#8fd4f5]" />
                                 <span className="text-sm font-medium">{label}</span>
@@ -195,7 +191,7 @@ export default function Landing() {
                 </p>
                 <div className="flex flex-wrap justify-center gap-3">
                     {socials.map(({ label, href, icon: Icon }) => (
-                        <Link key={label} href={href} target="_blank" aria-label={label}
+                        <Link key={label} href={href} target="_blank" rel="me noopener noreferrer" aria-label={label}
                             className="flex h-12 w-12 items-center justify-center rounded-full border border-[#8fd4f5]/15 bg-[#111a38]/55 text-[#a9e0fc] backdrop-blur-md transition-all hover:-translate-y-0.5 hover:border-[#8fd4f5]/40 hover:text-white">
                             <Icon sx={{ fontSize: 20 }} />
                         </Link>
