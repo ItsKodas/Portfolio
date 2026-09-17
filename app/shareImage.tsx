@@ -6,6 +6,9 @@ import { SITE } from './site'
 
 // The link preview for the site (see opengraph-image.tsx and twitter-image.tsx): the night scene with the hero's logo
 // row over it, set the way the hero sets it. Made once, at build time.
+//
+// The backdrop, app/scene.jpg, is the landing page's own hero captured at this size by `npm run scene`, stars,
+// clouds, fireflies and all. Run that again if the scene's art changes.
 
 export const SHARE_SIZE = { width: 1200, height: 630 }
 export const SHARE_ALT = `${SITE.name}: ${SITE.tagline}`
@@ -44,7 +47,7 @@ async function montserrat(weight: typeof TITLE.weight | typeof SUBTITLE.weight, 
 export async function renderShareImage() {
     const title = SITE.name.toUpperCase()
     const [backdrop, logo, bold, light] = await Promise.all([
-        dataUrl('public/images/mountains.jpg', 'image/jpeg'),
+        dataUrl('app/scene.jpg', 'image/jpeg'),
         dataUrl('public/images/logo.png', 'image/png'),
         montserrat(TITLE.weight, title),
         montserrat(SUBTITLE.weight, SITE.tagline),
@@ -53,9 +56,11 @@ export async function renderShareImage() {
     return new ImageResponse(
         (
             <div style={{ position: 'relative', display: 'flex', width: '100%', height: '100%', backgroundColor: SITE.colour, color: 'white', fontFamily: 'Montserrat' }}>
-                {/* The scene, and a soft darkening behind the text so it reads at thumbnail size */}
+                {/* The scene, and a soft darkening behind the text so it reads at thumbnail size. It is the hero as the
+                    landing page actually draws it, captured at this very size by scripts/scene.mjs, so it needs no
+                    reframing here. */}
                 {/* eslint-disable-next-line @next/next/no-img-element, jsx-a11y/alt-text */}
-                <img src={backdrop} width={1200} height={675} style={{ position: 'absolute', top: -20, left: 0 }} />
+                <img src={backdrop} width={SHARE_SIZE.width} height={SHARE_SIZE.height} style={{ position: 'absolute', top: 0, left: 0 }} />
                 <div style={{ position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, display: 'flex', background: 'radial-gradient(ellipse 70% 55% at 50% 44%, rgba(11,16,31,0.55), rgba(11,16,31,0) 100%)' }} />
 
                 <div style={{ position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, display: 'flex', alignItems: 'center', justifyContent: 'center', paddingBottom: RISE }}>
