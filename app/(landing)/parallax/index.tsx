@@ -8,6 +8,7 @@ import { animated, config, useSpring } from '@react-spring/web'
 
 import DarkTheme from "@/themes/dark"
 import { useScene } from '@/app/perf/usePerf'
+import { runScene } from '@/app/perf/climb'
 
 import AnimatedLogo from '../logo/index'
 import CloudStream from '../clouds/index'
@@ -193,6 +194,9 @@ export default function ParallaxView({ children }: Readonly<{ children: React.Re
     const [pageHeight, setPageHeight] = useState<number>()
 
     const revealed = useRevealed()
+
+    // Put the rest of the scene in once it's showing, so loading doesn't count against the frame timing
+    useEffect(() => { if (revealed) return runScene() }, [revealed])
 
     // The content moves at (1 + speed)x the scroll, so the page only needs enough scroll
     // for its bottom to reach the bottom of the screen at that rate. (Switching modes remounts the content, so it's
