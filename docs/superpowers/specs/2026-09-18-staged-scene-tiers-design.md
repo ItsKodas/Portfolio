@@ -24,9 +24,9 @@ first paint. Measured in the browser at a 375x812 viewport:
 | elements with an animated transform/opacity or `will-change` | 252 | 39 |
 | composited layers intersecting the viewport | 85 | 35 |
 | overdraw | 20.93 viewports | 3.8 viewports |
-| raster memory at DPR 3 | about 220 MB | about 39 MB |
+| raster memory at DPR 3 | about 220 MiB | about 39 MiB |
 
-220 MB of compositor raster is past the point where mobile Safari and Chrome kill the
+220 MiB of compositor raster is past the point where mobile Safari and Chrome kill the
 renderer process. This is a memory ceiling, not a framerate ceiling, which matters because
 the only existing fallback watches frame rate.
 
@@ -38,7 +38,7 @@ before any of that.
 
 A secondary contributor: `.layer` in `app/(landing)/parallax/parallax.module.css` carries
 `will-change: transform` unconditionally. Even with `data-perf="lite"` set by the head script,
-the pre-hydration window still costs 21 layers, 11.7 viewports of overdraw and about 122 MB,
+the pre-hydration window still costs 21 layers, 11.7 viewports of overdraw and about 122 MiB,
 because only the hydrated `LiteScene` swaps those elements for `.still`.
 
 ## Approach
@@ -57,7 +57,7 @@ window, which is the crash window.
 
 **Rejected: pure React tiers.** A `useTier()` hook with each component rendering or omitting
 its own animated parts is a cleaner single source of truth, but React cannot act before first
-paint. The server HTML is composited before hydration, measured at about 122 MB even with
+paint. The server HTML is composited before hydration, measured at about 122 MiB even with
 lite CSS active, so this reintroduces the crash it is meant to fix.
 
 **Rejected: server-side tier from Client Hints or user agent.** Produces the smallest HTML,
@@ -106,96 +106,127 @@ bytes(tier) = overdraw x vw x vh x dpr^2 x 4  +  layerCount x TILE_MIN
 
 `TILE_MIN` is one 256x256 device pixel tile, 262144 bytes.
 
-At 375x812 and DPR 3, one viewport of overdraw is about 10.96 MB, giving these cumulative
+**Every byte figure in this document is MiB**, that is 1024 x 1024 bytes, which is the unit the
+budget constants in `tiers.ts` are written in (`120 * 1024 * 1024`). Nothing here is decimal MB.
+
+At 375x812 and DPR 3, one viewport of overdraw is about 10.5 MiB, giving these cumulative
 figures, computed from the formula above rather than measured:
 
 | through tier | added | cumulative |
 | --- | --- | --- |
-| 0 base | about 50 MB | about 50 MB |
-| 1 `depth` | about 78 MB | about 128 MB |
-| 2 `sky` | about 116 MB | about 244 MB |
-| 3 `water` | about 15 MB | about 259 MB |
-| 4 `forest` | about 43 MB | about 302 MB |
+| 0 base | about 48 MiB | about 48 MiB |
+| 1 `depth` | about 75 MiB | about 123 MiB |
+| 2 `sky` | about 111 MiB | about 234 MiB |
+| 3 `water` | about 15 MiB | about 249 MiB |
+| 4 `forest` | about 43 MiB | about 292 MiB |
 
 ## The budget
 
 ```
 budget    = allowance x memFactor
-allowance = coarsePointer ? max(120 MB, viewportBytes x 14) : 1024 MB
+allowance = coarsePointer ? max(120 MiB, viewportBytes x 14)
+                          : max(1024 MiB, viewportBytes x 26)
 memFactor = navigator.deviceMemory ? clamp(deviceMemory / 4, 0.5, 1.5) : 1
 ```
 
-A touch device gets the larger of a 120 MB floor and an allowance that scales with its own
-screen: 14 viewports of the same `vw x vh x dpr^2 x 4` term the cost model uses. The floor
-exists so a small phone is not starved down to nothing; the area term exists so a large
-screen is not held to the same ceiling as a small one.
+Both branches have the same shape: the larger of a floor and an allowance that scales with the
+device's own screen, in viewports of the same `vw x vh x dpr^2 x 4` term the cost model uses.
+The floor exists so a small screen is not starved down to nothing; the area term exists so a
+large screen is not held to the same ceiling as a small one.
+
+The touch floor is 120 MiB over 14 viewports; the pointer floor is 1024 MiB over 26. 26 sits
+above the 21.9 viewports of cumulative full-scene overdraw, so a pointer device in the area
+regime keeps real headroom over the whole scene rather than scraping it.
 
 ### Why the shape changed
 
-An earlier version of this budget was one fixed byte ceiling for every touch device,
-`160 MB`, with `memMax` at `1.75`. That was wrong in a way that only shows up once you check
-it against real device geometries rather than one synthetic viewport.
+An earlier version of this budget was one fixed byte ceiling per pointer kind: `160 MiB` for
+touch, `1024 MiB` for a mouse, with `memMax` at `1.75`. That was wrong in a way that only shows
+up once you check it against real device geometries rather than one synthetic viewport.
 
-Safari reports no `navigator.deviceMemory` at all, on any iOS device. So every iPhone and
-iPad shared that one fixed ceiling, while the scene's cost scales with viewport area times
-`dpr^2`. Within Apple's own lineup, a bigger screen means a newer, more capable device, not a
-weaker one. A fixed ceiling therefore penalised exactly the devices best able to cope: an
-iPhone SE landed at the top tier while an iPad Pro, the strongest device in the sweep, landed
-on the still scene with nothing. Sweeping the old constants found no combination that avoided
-this: the iPad Pro reached tier 0 and the iPhone SE reached tier 3 or 4 in every one tried. It
-was the shape of the model that was backwards, not its values, which is why this amendment
+Safari reports no `navigator.deviceMemory` at all: not on iOS, and not on macOS either. So
+every device in Safari shared its one fixed ceiling, while the scene's cost scales with
+viewport area times `dpr^2`. A bigger screen means a newer, more capable device far more often
+than it means a weaker one. A fixed ceiling therefore penalised exactly the devices best able
+to cope, at both ends of the range:
+
+- On touch, an iPhone SE landed at the top tier while an iPad Pro, the strongest device in the
+  sweep, landed on the still scene with nothing. Sweeping the old constants found no
+  combination that avoided this: the iPad Pro reached tier 0 and the iPhone SE reached tier 3
+  or 4 in every one tried.
+- On pointer, a Studio Display (2560x1340, DPR 2) and a Pro Display XDR (3008x1590, DPR 2) both
+  fell to the `depth` tier alone in Safari, while a MacBook Pro 16 at half the area reached all
+  four. The `memFactor` multiplier hid this in Chrome, which does report `deviceMemory`, and
+  did nothing at all in Safari, which does not.
+
+It was the shape of the model that was backwards, not its values, which is why this amendment
 changes the formula rather than retuning the constants.
 
-Separately, the old `memMax` of `1.75` let an 8GB Android reach a budget of 274 MB. That
-number and the one it is compared against are both computed from this model's formula, not
-measured, and it matters which is which:
+Separately, the old `memMax` of `1.75` let an 8GB Android reach a budget of 280 MiB
+(`160 MiB x 1.75`). That number and the one it is compared against are both computed from this
+model's formula, not measured, and it matters which is which:
 
 - The crash itself is **observed**: a real phone gets its tab killed. The exact byte count at
   which a renderer is killed is not known to us; browsers do not report it.
-- 220 MB (see Problem, above) is **measured**: summed in a real browser from each composited
+- 220 MiB (see Problem, above) is **measured**: summed in a real browser from each composited
   layer's area clipped to the viewport, at 375x812 DPR 3. It is area only, and does not include
   the `layers x TILE_MIN` term this model adds.
-- 292 MB is **computed**: it is what this model's formula gives for the full scene, all four
-  tiers, at that same 375x812 DPR 3 geometry, including the tile term the 220 MB figure omits.
-  It is larger than 220 MB because it is a fuller accounting of the same scene, not a different
+- 292 MiB is **computed**: it is what this model's formula gives for the full scene, all four
+  tiers, at that same 375x812 DPR 3 geometry, including the tile term the 220 MiB figure omits.
+  It is larger than 220 MiB because it is a fuller accounting of the same scene, not a different
   measurement of it.
-- 274 MB is also **computed**: the old model's budget for an 8GB Android at a Galaxy S23
-  geometry.
+- 280 MiB is also **computed**: the old model's fixed touch ceiling at its old `memMax`. The
+  old touch branch ignored geometry entirely, so this was every 8GB Android's budget, whatever
+  its screen.
 
 So the claim that stands up is: the full scene, the configuration observed crashing on a real
-device, computes to about 292 MB under this model, and the old model handed an 8GB Android a
-budget of 274 MB, within 6% of that. Neither 292 MB nor 274 MB is a measured kill threshold.
+device, computes to about 292 MiB under this model, and the old model handed an 8GB Android a
+budget of 280 MiB, within 4% of that. Neither 292 MiB nor 280 MiB is a measured kill threshold.
 `memMax` now drops to `1.5`, which was chosen to widen that margin rather than leave it this
 close.
 
 Which lands as:
 
-| device | signals | tier reached |
-| --- | --- | --- |
-| iPhone 15 | coarse, no `deviceMemory` | 1, `depth` |
-| iPhone 15 Pro Max | coarse, no `deviceMemory` | 1, `depth` |
-| iPad 10.9 | coarse, no `deviceMemory` | 1, `depth` |
-| Pixel 8 | coarse, `deviceMemory` 8 | 1, `depth` |
-| mid range Android | coarse, `deviceMemory` 4 | 1, `depth` |
-| low end Android | coarse, `deviceMemory` 2 | 0, still scene |
-| desktop Safari | fine, no `deviceMemory` | 4, all tiers |
-| desktop Chrome | fine, `deviceMemory` 8 | 4, all tiers |
+| device | geometry | signals | tier reached |
+| --- | --- | --- | --- |
+| iPhone SE | 375x667, DPR 2 | coarse, no `deviceMemory` | 3, `water` |
+| iPhone 15 | 393x852, DPR 3 | coarse, no `deviceMemory` | 1, `depth` |
+| iPhone 15 Pro Max | 430x932, DPR 3 | coarse, no `deviceMemory` | 1, `depth` |
+| iPad 10.9 | 820x1180, DPR 2 | coarse, no `deviceMemory` | 1, `depth` |
+| Pixel 8 | 412x915, DPR 2.625 | coarse, `deviceMemory` 8 | 1, `depth` |
+| mid range Android | 375x812, DPR 3 | coarse, `deviceMemory` 4 | 1, `depth` |
+| low end Android | 360x800, DPR 3 | coarse, `deviceMemory` 2 | 0, still scene |
+| MacBook Pro 16 | 1728x970, DPR 2 | fine, no `deviceMemory` | 4, all tiers |
+| Studio Display | 2560x1340, DPR 2 | fine, no `deviceMemory` | 4, all tiers |
+| Pro Display XDR | 3008x1590, DPR 2 | fine, no `deviceMemory` | 4, all tiers |
+| desktop Chrome | 1920x1080, DPR 2 | fine, `deviceMemory` 8 | 4, all tiers |
+
+**Touch devices do not all land on tier 1**, and which regime a device falls in is what decides
+it. Most phones and tablets are in the area regime, where the screen is big enough that
+`viewportBytes x 14` beats the 120 MiB floor, and they settle at `depth`: there the tier
+reached converges on whichever cumulative overdraw ratio first exceeds 14, independent of size,
+and cumulative overdraw is 10.8 through `depth` but 20.8 through `sky`. Either side of that
+regime the answer differs. A small enough screen sits under the floor and reaches tier 3 (see
+the residual below), and a device whose `deviceMemory` drags `memFactor` down to 0.5 can fall
+short of even `depth` and stay on the still scene.
 
 These are starting values. They are chosen so that no touch device reaches the state that
 currently crashes, and so that every pointer driven device clears all four tiers and behaves
 exactly as the site does today. They will need tuning against real hardware, which is why
 they live in one file with their reasoning in comments.
 
-Note that `sky` is expensive enough (8.43 viewports on its own) that most phones will settle
-at `depth`. See Future work.
+Note that `sky` is expensive enough (10.0 viewports, of which the stars alone are 8.43) that
+most phones will settle at `depth`. See Future work.
 
 ### Residual: the iPhone SE still reaches a higher tier than other phones
 
-One quirk survives this change and is left as-is. On a 375x667, DPR 2 screen, the per-layer
-tile minimums dominate the cost while the area term is tiny, so the whole scene **computes**
-(not measured, this model's formula only) to about 146 MB there, comfortably inside even the
-120 MB floor. An iPhone SE therefore reaches a higher tier than an iPhone 15 or an iPad, both
-of which have larger, area-dominated screens.
+One quirk survives this change and is left as-is. On a 375x667, DPR 2 screen, the area term is
+small enough that the 120 MiB floor governs rather than `viewportBytes x 14`, and the per-layer
+tile minimums dominate the cost. Cumulatively, and **computed** (not measured, this model's
+formula only), that screen holds the scene through `water` at about 105 MiB, inside the floor.
+It stops there: `forest`'s 162 layers are almost no area but 162 tiles, which takes the total to
+about 146 MiB, past the floor. So the SE reaches tier 3, `water`, where an iPhone 15 or an iPad,
+both of which have larger, area-dominated screens, reach tier 1.
 
 This is not a reappearance of the inversion above: it does not put a stronger device on the
 still scene while a weaker one gets everything, it only means one small, older phone affords
@@ -298,7 +329,7 @@ Every `:global(html[data-perf="lite"])` rule in the nine scene stylesheets becom
 | `scroll/scroll.module.css` | `depth` |
 
 `parallax/parallax.module.css` needs no tier rule at all. An earlier draft of this design
-gated `.layer`'s `will-change: transform` on the `depth` token to kill the 122 MB
+gated `.layer`'s `will-change: transform` on the `depth` token to kill the 122 MiB
 pre-hydration cost, but the server snapshot change supersedes it: the server now renders
 `LiteScene`, so the markup the browser composites before hydration only ever contains that
 scene's three layers. Worse, such a rule would be actively harmful, because `LiteLayer` also
@@ -384,8 +415,9 @@ head script, that the climb driver does not run, and that the scene is visually 
 
 ## Future work, out of scope
 
-The `sky` tier costs 8.43 viewports, more than everything except the parallax itself. The
-reason is that each twinkle group's stars are assigned randomly across the whole sky, so every
+The `sky` tier adds 10.0 viewports, more than any other tier adds, and 8.43 of those are the
+stars alone, the clouds making up the rest. The reason the stars are that expensive is that
+each twinkle group's stars are assigned randomly across the whole sky, so every
 group's bounding box is nearly the full canvas width and each of the 14 star layers is roughly
 a full viewport. Grouping stars spatially rather than randomly would shrink those boxes
 dramatically and could bring `sky` within reach of a normal phone. That is a change to
