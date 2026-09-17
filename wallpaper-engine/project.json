@@ -1,6 +1,6 @@
 {
-	"title": "Horizons",
-	"description": "A night over the lake: drifting clouds, twinkling stars, a wind-blown forest and fireflies, with layers that follow your mouse, and the time, date and weather above the mountains. From horizons.gg.",
+	"title": "Quiet Hours",
+	"description": "A quiet night over the lake. Clouds drift, stars turn and twinkle, the odd one falls, wind moves through the pines, fireflies wander over the water and a lone watchtower keeps its light on. The layers follow your mouse.\n\nThe time, date and real weather sit above the mountains, for your own town or any place you name.\n\nDrawn entirely as vector art, so it stays pixel sharp at any resolution and any shape of screen, from 1080p to 4K and wider.\n\nEverything can be turned off or tuned: the clock format and seconds, the date, the weather and its units, text size, mouse parallax and its strength, and each piece of motion on its own. There is a still mode that stops all animation for the lowest GPU use.\n\nFrom horizons.gg.",
 	"type": "web",
 	"file": "index.html",
 	"preview": "preview.jpg",
