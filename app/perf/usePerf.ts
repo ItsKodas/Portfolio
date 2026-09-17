@@ -1,7 +1,10 @@
 import { useSyncExternalStore } from 'react'
 
-// The page's performance mode, as set on the root by the head script (see script.ts), for components to follow. The
-// server always renders the full page; the browser switches to lite straight after hydrating when it needs to.
+import { TIERS } from './tiers'
+
+// How much of the hero scene is showing, as the cumulative tokens the head script put on the root (see script.ts),
+// for components to follow. The server always renders the still scene, and the browser climbs from there once it
+// knows what it can hold (see climb.ts).
 
 const listeners = new Set<() => void>()
 
@@ -10,60 +13,29 @@ const subscribe = (listener: () => void) => {
     return () => { listeners.delete(listener) }
 }
 
-const isLite = () => document.documentElement.dataset.perf === 'lite'
+const tokens = () => (document.documentElement.getAttribute('data-scene') || '').split(/\s+/).filter(Boolean)
 
-export function useLite() {
-    return useSyncExternalStore(subscribe, isLite, () => false)
+// Whether a part of the scene is in yet, for example useScene('depth')
+export function useScene(token: string) {
+    return useSyncExternalStore(subscribe, () => tokens().indexOf(token) !== -1, () => false)
 }
 
-function goLite() {
-    if (isLite()) return
-    document.documentElement.dataset.perf = 'lite'
+// How many tiers are in, and the most this browser was judged able to hold
+export const currentTier = () => tokens().length
+export const sceneMax = () => Number(document.documentElement.getAttribute('data-scene-max') || 0)
+
+// Puts the first n tiers in, in TIERS order
+export function setTier(n: number) {
+    const root = document.documentElement
+    const next = TIERS.slice(0, n).map(t => t.token).join(' ')
+    if (root.getAttribute('data-scene') === next) return
+    root.setAttribute('data-scene', next)
     listeners.forEach(l => l())
 }
 
-// Sets the mode outright, as the desktop wallpaper's settings do (and marks it forced, so frame timing leaves it alone)
+// Sets the scene outright, as the desktop wallpaper's settings do (and marks it forced, so the climb and the frame
+// watch leave it alone)
 export function setPerf(mode: 'full' | 'lite') {
-    const root = document.documentElement
-    root.setAttribute('data-perf-forced', '')
-    if (root.dataset.perf === mode) return
-    root.dataset.perf = mode
-    listeners.forEach(l => l())
-}
-
-// A frame slower than this, at the median, means the browser can't keep up with the full hero. It's above a 30Hz
-// display's 33ms, so a slow screen alone doesn't count.
-const SLOW_FRAME_MS = 36
-const SAMPLE_FRAMES = 60
-const SETTLE_MS = 1000 // leave the load and hydration out of it
-
-// Times a second or so of frames once the page has settled, and switches to lite if they're too slow. Only for
-// browsers the head script left on full by detection (not when a mode was forced). Returns a cleanup.
-export function watchFrameRate() {
-    const root = document.documentElement
-    if (isLite() || root.hasAttribute('data-perf-forced')) return () => {}
-
-    let frame = 0, timer = 0, last = 0
-    const deltas: number[] = []
-
-    const tick = (now: number) => {
-        // A hidden tab doesn't draw; start over from the next frame it does
-        if (document.hidden) { last = 0; frame = requestAnimationFrame(tick); return }
-        if (last) deltas.push(now - last)
-        last = now
-        if (deltas.length < SAMPLE_FRAMES) { frame = requestAnimationFrame(tick); return }
-
-        deltas.sort((a, b) => a - b)
-        if (deltas[deltas.length >> 1] > SLOW_FRAME_MS) goLite()
-    }
-
-    const start = () => { timer = window.setTimeout(() => { frame = requestAnimationFrame(tick) }, SETTLE_MS) }
-    if (document.readyState === 'complete') start()
-    else window.addEventListener('load', start, { once: true })
-
-    return () => {
-        window.removeEventListener('load', start)
-        clearTimeout(timer)
-        cancelAnimationFrame(frame)
-    }
+    document.documentElement.setAttribute('data-perf-forced', '')
+    setTier(mode === 'full' ? TIERS.length : 0)
 }

@@ -7,7 +7,7 @@ import { ThemeProvider } from '@mui/material'
 import { animated, config, useSpring } from '@react-spring/web'
 
 import DarkTheme from "@/themes/dark"
-import { useLite, watchFrameRate } from '@/app/perf/usePerf'
+import { useScene } from '@/app/perf/usePerf'
 
 import AnimatedLogo from '../logo/index'
 import CloudStream from '../clouds/index'
@@ -187,15 +187,12 @@ function LiteScene() {
 }
 
 export default function ParallaxView({ children }: Readonly<{ children: React.ReactNode }>) {
-    const lite = useLite()
+    const lite = !useScene('depth')
     const ContentLayer = lite ? LiteLayer : ScrollLayer
 
     const [pageHeight, setPageHeight] = useState<number>()
 
-    // Time the first frames once the scene is showing (so loading doesn't count against it), and fall back to the lite
-    // hero if the browser can't keep up
     const revealed = useRevealed()
-    useEffect(() => { if (revealed) return watchFrameRate() }, [revealed])
 
     // The content moves at (1 + speed)x the scroll, so the page only needs enough scroll
     // for its bottom to reach the bottom of the screen at that rate. (Switching modes remounts the content, so it's
