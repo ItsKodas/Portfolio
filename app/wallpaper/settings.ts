@@ -31,7 +31,7 @@ const DEFAULTS = {
     // The sound
     visualizer: true,                                          // the sound's levels along the bottom of the screen
     visualizerStyle: 'bars' as typeof VISUALIZER_STYLES[number], // as bars, or a smooth wave
-    visualizerHeight: 30,                                      // how high the loudest reaches, as a percentage of the screen
+    visualizerHeight: 18,                                      // how high the loudest reaches, as a percentage of the screen
     visualizerColor: 'white' as typeof VISUALIZER_COLORS[number], // white, or the playing album art's colour
 
     // Motion

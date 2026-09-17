@@ -94,7 +94,7 @@ export default function Visualizer({ overscan }: { overscan: number }) {
                 gradient.addColorStop(0, `rgba(${channels}, 0.95)`)
                 gradient.addColorStop(1, `rgba(${channels}, 0.5)`)
                 ctx.fillStyle = gradient
-                const barWidth = slotWidth * 0.42
+                const barWidth = slotWidth * 0.26
                 const radius = Math.min(barWidth / 2, 6 * scale)
                 ctx.beginPath()
                 levels.forEach((level, slot) => {

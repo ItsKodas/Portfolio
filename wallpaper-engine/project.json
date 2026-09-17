@@ -204,9 +204,9 @@
 				"text": "Visualiser height",
 				"type": "slider",
 				"condition": "showvisualizer.value",
-				"min": 10,
+				"min": 5,
 				"max": 60,
-				"value": 30
+				"value": 18
 			},
 			"visualizercolor": {
 				"order": 18,
