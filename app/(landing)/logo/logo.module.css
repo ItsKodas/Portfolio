@@ -1,0 +1,31 @@
+/* The art canvas: 3840x4320, covering the two-screen-tall layer and centred, like object-cover on the other layers */
+.canvas {
+    position: absolute;
+    left: 50%;
+    top: 50%;
+    width: max(100%, calc(200svh * 3840 / 4320));
+    aspect-ratio: 3840 / 4320;
+    transform: translate(-50%, -50%);
+    container-type: size;
+    pointer-events: none;
+}
+
+/* Where the logo sits: horizontally centred, in the gap above the mountains. Its width follows the art (so it keeps
+   the same fit between the peaks on every screen), but never wider than the screen itself */
+.slot {
+    position: absolute;
+    left: 50%;
+    top: calc(1010 / 4320 * 100%);
+    width: min(48cqw, 90vw);
+    transform: translateX(-50%);
+}
+
+/* The logo row, at its natural size, centred on the slot and scaled to the slot's width */
+.row {
+    position: absolute;
+    left: 50%;
+    top: 0;
+    width: 960px;
+    transform-origin: center center;
+    pointer-events: auto;
+}

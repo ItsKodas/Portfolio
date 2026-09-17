@@ -41,6 +41,10 @@ const strokePath = ({ x, y, length, thickness }: Streak) => {
 // Tapered strokes like the water streaks, laid along the shore a little way out on the water
 
 const LAKE_CENTRE = [1900, 1800]
+
+// Crest of the valley's right hill (from build_valley.js), raised a bit, from the water arm on: the water running on
+// behind the hill gets no shore rim or ripples
+const RIGHT_HILL_EDGE = 'M2560 4320 L2560 1800 L2660 1730 L2700 1660 L2780 1638 L2830 1626 L2870 1592 L2920 1546 L2980 1482 L3040 1430 L3100 1372 L3200 1265 L3232 1225 L3300 1176 L3345 1164 L3395 1115 L3480 1100 L3520 1088 L3840 1002 L3840 4320Z'
 const SHORE = [...LAKE_OUTLINE.matchAll(/(-?\d+(?:\.\d+)?) (-?\d+(?:\.\d+)?)/g)].map(m => [Number(m[1]), Number(m[2])])
 
 // Cumulative distance along the shoreline, for placing strokes at even spacing
@@ -92,6 +96,9 @@ export default function Water() {
         <svg className={styles.water} viewBox="0 0 3840 4320" preserveAspectRatio="xMidYMid slice" aria-hidden="true">
             <defs>
                 <clipPath id="lakeClip"><path d={LAKE_OUTLINE} /></clipPath>
+                {/* Everything except a strip along the right hill, so the shore rim and ripples don't outline the water
+                    where it runs on behind the hill (it should look like it continues, not stop at a shoreline) */}
+                <clipPath id="notRightHill"><path clipRule="evenodd" d={`M0 0 H3840 V4320 H0Z ${RIGHT_HILL_EDGE}`} /></clipPath>
                 {/* Streaks may also run over the far water under the fog bank (the outline stops below it) */}
                 <clipPath id="streakClip"><path d={LAKE_OUTLINE} /><path d="M1300 1640 L2700 1640 L2700 1702 L1300 1702Z" /></clipPath>
                 {/* The water fill is only needed behind the trees; above that the valley layer already shows the lake */}
@@ -111,6 +118,16 @@ export default function Water() {
                     <stop offset="0" stopColor="#a9e0fc" stopOpacity="0" />
                     <stop offset="1" stopColor="#a9e0fc" stopOpacity="1" />
                 </linearGradient>
+                {/* Warm lantern light: bright core, soft halo, and a long flickering reflection on the water */}
+                <radialGradient id="lanternGlow">
+                    <stop offset="0" stopColor="#ffe3a3" stopOpacity="0.95" />
+                    <stop offset="0.25" stopColor="#ffb85c" stopOpacity="0.45" />
+                    <stop offset="1" stopColor="#ff9a3c" stopOpacity="0" />
+                </radialGradient>
+                <radialGradient id="lanternReflection">
+                    <stop offset="0" stopColor="#ffc774" stopOpacity="0.6" />
+                    <stop offset="1" stopColor="#ffc774" stopOpacity="0" />
+                </radialGradient>
                 <radialGradient id="fog">
                     <stop offset="0" stopColor="#cdeaff" stopOpacity="0.75" />
                     <stop offset="0.45" stopColor="#b3dcfb" stopOpacity="0.4" />
@@ -123,14 +140,16 @@ export default function Water() {
 
             {/* Constant light rim right at the water's edge (the outline stroke is clipped to the lake, so only its
                 water side shows) */}
-            <path d={LAKE_OUTLINE} clipPath="url(#lakeClip)" fill="none" stroke="url(#shoreRim)" strokeWidth="18" strokeLinejoin="round" opacity="0.5" />
+            <g clipPath="url(#notRightHill)">
+                <path d={LAKE_OUTLINE} clipPath="url(#lakeClip)" fill="none" stroke="url(#shoreRim)" strokeWidth="18" strokeLinejoin="round" opacity="0.5" />
+            </g>
 
             {/* Shoreline ripples: rings of tapered strokes lapping in towards the shore and back out */}
-            <g clipPath="url(#lakeClip)">
+            <g clipPath="url(#notRightHill)"><g clipPath="url(#lakeClip)">
                 {RIPPLES.map((ring, i) => (
                     <path key={i} d={ring.d} className={styles.ripple} style={{ '--opacity': ring.opacity, animationDelay: `${ring.delay}s` } as React.CSSProperties} />
                 ))}
-            </g>
+            </g></g>
 
             {/* Streaks gliding across the water */}
             <g clipPath="url(#streakClip)">
@@ -160,26 +179,49 @@ export default function Water() {
 
             <image href={Island.src} x="0" y="0" width="3840" height="4320" />
 
-            {/* Fog bank along the far shore, where the water meets the ridges */}
+            {/* A small fishing boat out on the water: a fisher sitting with a rod out, and a lantern on a pole glowing
+                warm against the blue. The boat bobs gently; the lantern and its reflection flicker */}
+            <g transform="translate(1560 1795) scale(0.25)">
+                <ellipse cx="0" cy="12" rx="62" ry="6" fill="#0b1a3a" opacity="0.35" />
+                <ellipse className={styles.lanternFlicker} cx="36" cy="30" rx="10" ry="34" fill="url(#lanternReflection)" />
+                <g className={styles.bob}>
+                    {/* fishing line, rod, fisher */}
+                    <path d="M76 -66 L84 4" stroke="#cfe6ff" strokeWidth="0.8" opacity="0.35" />
+                    <path d="M-8 -24 L76 -66" stroke="#0c1730" strokeWidth="2.2" strokeLinecap="round" />
+                    <path d="M-24 -6 L-24 -22 Q-22 -32 -14 -32 Q-6 -32 -6 -22 L-4 -6Z" fill="#0c1730" />
+                    <circle cx="-15" cy="-38" r="6" fill="#0c1730" />
+                    <path d="M-23 -40 Q-15 -50 -7 -40Z" fill="#0c1730" />
+                    {/* lantern pole and lantern */}
+                    <path d="M36 -6 L36 -40 L44 -40" stroke="#0c1730" strokeWidth="2" fill="none" />
+                    <circle className={styles.lanternFlicker} cx="44" cy="-32" r="52" fill="url(#lanternGlow)" />
+                    <rect x="40" y="-38" width="8" height="10" rx="1.5" fill="#ffd98a" />
+                    <path d="M39 -38 L49 -38 L44 -42Z" fill="#0c1730" />
+                    {/* hull */}
+                    <path d="M-58 -8 L58 -12 Q52 6 32 10 L-40 10 Q-54 6 -58 -8Z" fill="#0a1531" />
+                    <path d="M-58 -8 L58 -12" stroke="#2a4a7a" strokeWidth="1.5" opacity="0.6" />
+                </g>
+            </g>
+
+            {/* Fog bank along the far shore, where the water meets the ridges (kept off the right-hand hillside) */}
             <g className={`${styles.fog} ${styles.fogSlow}`}>
                 {/* Tall, soft layer so the ridges' bases dissolve into the mist instead of showing dark edges */}
-                <ellipse cx="1950" cy="1650" rx="1400" ry="120" fill="url(#fog)" opacity="0.6" />
+                <ellipse cx="1850" cy="1650" rx="1000" ry="120" fill="url(#fog)" opacity="0.6" />
                 <ellipse cx="1300" cy="1660" rx="650" ry="95" fill="url(#fog)" opacity="0.5" />
-                <ellipse cx="2650" cy="1655" rx="650" ry="95" fill="url(#fog)" opacity="0.5" />
-                <ellipse cx="1950" cy="1668" rx="1050" ry="46" fill="url(#fog)" opacity="0.7" />
+                <ellipse cx="2350" cy="1655" rx="420" ry="95" fill="url(#fog)" opacity="0.5" />
+                <ellipse cx="1850" cy="1668" rx="850" ry="46" fill="url(#fog)" opacity="0.7" />
                 <ellipse cx="1500" cy="1690" rx="700" ry="38" fill="url(#fog)" opacity="0.5" />
-                <ellipse cx="2450" cy="1682" rx="650" ry="36" fill="url(#fog)" opacity="0.5" />
+                <ellipse cx="2300" cy="1682" rx="400" ry="36" fill="url(#fog)" opacity="0.5" />
             </g>
 
             {/* Fog rolling out from the base of the island */}
             <g className={styles.fog}>
                 <ellipse cx="1990" cy="1852" rx="560" ry="48" fill="url(#fog)" />
                 <ellipse cx="1880" cy="1880" rx="920" ry="78" fill="url(#fog)" opacity="0.55" />
-                <ellipse cx="2380" cy="1838" rx="520" ry="42" fill="url(#fog)" opacity="0.5" />
+                <ellipse cx="2250" cy="1838" rx="380" ry="42" fill="url(#fog)" opacity="0.5" />
             </g>
             <g className={`${styles.fog} ${styles.fogSlow}`}>
                 <ellipse cx="1600" cy="1905" rx="700" ry="60" fill="url(#fog)" opacity="0.4" />
-                <ellipse cx="2250" cy="1790" rx="620" ry="40" fill="url(#fog)" opacity="0.3" />
+                <ellipse cx="2150" cy="1790" rx="480" ry="40" fill="url(#fog)" opacity="0.3" />
             </g>
         </svg>
     )

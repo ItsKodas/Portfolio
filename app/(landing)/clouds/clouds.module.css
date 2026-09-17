@@ -1,7 +1,20 @@
 .stream {
     position: absolute;
     inset: 0;
+    overflow: hidden;
     pointer-events: none;
+}
+
+/* The art canvas: 3840x4320, covering the two-screen-tall layer and centred, like object-cover on the other layers.
+   Clouds are sized and moved in its container units (cqw), not the viewport's */
+.canvas {
+    position: absolute;
+    left: 50%;
+    top: 50%;
+    width: max(100%, calc(200svh * 3840 / 4320));
+    aspect-ratio: 3840 / 4320;
+    transform: translate(-50%, -50%);
+    container-type: size;
 }
 
 /* Right to left, the same way the moon travels. Transform and opacity only, so it stays on the GPU */
@@ -34,7 +47,7 @@
 }
 
 @keyframes drift {
-    from { transform: translate3d(100vw, 0, 0); }
+    from { transform: translate3d(100cqw, 0, 0); }
     to   { transform: translate3d(-100%, 0, 0); }
 }
 

@@ -49,6 +49,31 @@
     to   { transform: translateX(60px);  opacity: 1; }
 }
 
+/* Boat rocking gently on the water */
+.bob {
+    transform-box: fill-box;
+    transform-origin: 50% 100%;
+    animation: bob 5.5s ease-in-out infinite;
+}
+
+@keyframes bob {
+    0%, 100% { transform: translateY(0) rotate(-1.5deg); }
+    50%      { transform: translateY(3px) rotate(1.5deg); }
+}
+
+/* Lantern flame flicker */
+.lanternFlicker {
+    animation: flicker 2.3s ease-in-out infinite;
+}
+
+@keyframes flicker {
+    0%, 100% { opacity: 1; }
+    20%      { opacity: 0.8; }
+    35%      { opacity: 0.95; }
+    60%      { opacity: 0.75; }
+    80%      { opacity: 0.9; }
+}
+
 @media (prefers-reduced-motion: reduce) {
-    .streak, .fog, .ripple { animation: none; }
+    .streak, .fog, .ripple, .bob, .lanternFlicker { animation: none; }
 }

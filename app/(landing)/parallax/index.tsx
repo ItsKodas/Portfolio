@@ -13,7 +13,10 @@ import CloudStream from '../clouds/index'
 import Water from '../water/index'
 import ScrollIcon from '../scroll/index'
 import SpaceBackground from '../space/index'
-import RotatingStars from '../stars/index'
+import NightSky from '../stars/index'
+import Fireflies from '../fireflies/index'
+import Watchtower from '../watchtower/index'
+import ForegroundTrees from '../trees/index'
 
 import styles from './parallax.module.css'
 
@@ -22,7 +25,6 @@ import MountainsFar from './mountainsFar.svg'
 import MountainsNear from './mountainsNear.svg'
 import Valley from './valley.svg'
 import Forest from './forest.svg'
-import Trees from './trees.svg'
 
 const CONTENT_OFFSET = 0.99 // screens from the top where the content starts
 const CONTENT_SPEED  = 1
@@ -53,7 +55,7 @@ function Layer({ speed, hidden, className = styles.layer, style, children }: { s
 }
 
 // Dev-only toolbar for toggling hero layers
-const LAYER_NAMES = ['Sky', 'Clouds', 'Far mountains', 'Logo', 'Near mountains', 'Valley', 'Water', 'Forest', 'Trees'] as const
+const LAYER_NAMES = ['Sky', 'Clouds', 'Far mountains', 'Logo', 'Near mountains', 'Valley', 'Water', 'Forest', 'Fireflies', 'Trees'] as const
 type LayerName = typeof LAYER_NAMES[number]
 
 function LayerToggles({ hidden, toggle }: { hidden: Set<LayerName>, toggle: (name: LayerName) => void }) {
@@ -114,7 +116,7 @@ export default function ParallaxView({ children }: Readonly<{ children: React.Re
                 <section className='absolute inset-x-0 top-0 h-[200svh]'>
                     <Layer speed={0.1} hidden={off('Sky')}>
                         <Image priority src={Sky} alt='Sky' fill className='object-cover' />
-                        <RotatingStars />
+                        <NightSky />
                     </Layer>
 
                     <Layer speed={0.15} hidden={off('Clouds')}>
@@ -126,7 +128,7 @@ export default function ParallaxView({ children }: Readonly<{ children: React.Re
                     </Layer>
 
                     <Layer speed={0.005} hidden={off('Logo')}>
-                        <AnimatedLogo screenHeight />
+                        <AnimatedLogo />
                     </Layer>
 
                     <Layer speed={0.5} hidden={off('Near mountains')}>
@@ -135,6 +137,7 @@ export default function ParallaxView({ children }: Readonly<{ children: React.Re
 
                     <Layer speed={0.6} hidden={off('Valley')}>
                         <Image priority src={Valley} alt='' fill className='object-cover' />
+                        <Watchtower />
                         {/* visibility: visible keeps the water showing even when the valley itself is hidden */}
                         {!off('Water') && <div className='absolute inset-0' style={{ visibility: 'visible' }}><Water /></div>}
                     </Layer>
@@ -143,8 +146,13 @@ export default function ParallaxView({ children }: Readonly<{ children: React.Re
                         <Image priority src={Forest} alt='' fill className='object-cover' />
                     </Layer>
 
+                    {/* Same speed as the valley, so they stay over the slopes they were painted on */}
+                    <Layer speed={0.6} hidden={off('Fireflies')}>
+                        <Fireflies />
+                    </Layer>
+
                     <Layer speed={1} hidden={off('Trees')}>
-                        <Image priority src={Trees} alt='Trees' fill className='object-cover' />
+                        <ForegroundTrees />
                     </Layer>
 
                     <Layer speed={0.6}>
