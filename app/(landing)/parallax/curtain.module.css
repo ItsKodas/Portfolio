@@ -1,0 +1,104 @@
+/* The loading cover: the page's own navy over everything, fading out once the scene has loaded (see curtain.tsx) */
+.curtain {
+    position: fixed;
+    inset: 0;
+    z-index: 100;
+    display: flex;
+    flex-direction: column;
+    gap: 24px;
+    align-items: center;
+    justify-content: center;
+    background: #0b101f;
+    pointer-events: none;
+    transition: opacity 0.8s ease;
+}
+
+.lifted {
+    opacity: 0;
+}
+
+/* The spinner, only fading in if the load takes a moment, so a quick one doesn't flash it */
+.hills {
+    width: 72px;
+    height: 48px;
+    opacity: 0;
+    animation: appear 0.5s ease 0.3s forwards;
+    filter: drop-shadow(0 10px 24px rgba(0, 0, 0, 0.35));
+}
+
+/* Each paper layer bobs up in turn, back to front */
+.hill {
+    transform-box: view-box;
+    animation: bob 1.6s ease-in-out infinite;
+}
+
+.hill path:first-child {
+    filter: drop-shadow(0 -1px 1.5px rgba(0, 0, 0, 0.25));
+}
+
+/* The loading message: soft chalky white, like the hero's note, tilted a touch as if written by hand */
+.note {
+    height: clamp(20px, 1.9vw, 28px);
+    width: auto;
+    overflow: visible;
+    color: rgba(236, 244, 255, 0.75);
+    filter: drop-shadow(0 2px 8px rgba(10, 20, 50, 0.45));
+    transform: rotate(-2deg);
+}
+
+/* A letter being written: its outline traced with a pen stroke, then filled in as the pen moves on (as in scroll/) */
+.glyph {
+    fill: currentColor;
+    fill-opacity: 0;
+    stroke: currentColor;
+    stroke-width: 2.4;
+    stroke-linejoin: round;
+    stroke-linecap: round;
+    stroke-dasharray: 1;
+    stroke-dashoffset: 1;
+    animation: trace 0.45s ease-in-out forwards, fill 0.35s ease-out forwards;
+}
+
+/* The trailing dots, once written, dimming and brightening one after another while the scene loads */
+.dot {
+    animation: trace 0.45s ease-in-out forwards, fill 0.35s ease-out forwards, pulse 1.5s ease-in-out infinite;
+}
+
+@keyframes trace {
+    to { stroke-dashoffset: 0; }
+}
+
+@keyframes fill {
+    to { fill-opacity: 1; }
+}
+
+@keyframes pulse {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.25; }
+}
+
+@keyframes appear {
+    to { opacity: 1; }
+}
+
+@keyframes bob {
+    0%, 100% { transform: translateY(0); }
+    50% { transform: translateY(-4px); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .curtain {
+        transition-duration: 0.2s;
+    }
+
+    .hill {
+        animation: none;
+    }
+
+    .glyph,
+    .dot {
+        animation: none;
+        stroke-dashoffset: 0;
+        fill-opacity: 1;
+    }
+}
