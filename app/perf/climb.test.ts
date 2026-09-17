@@ -109,15 +109,15 @@ describe('a full climb', () => {
         expect(h.scene()).toBe(withTiers(1))
 
         for (let n = 2; n <= TIERS.length; n++) {
-            h.flush(CLIMB_FRAMES, FAST)      // resolves the previous step's sample, arming the STEP_MS timer
-            vi.advanceTimersByTime(STEP_MS)  // fires climb() again, which applies the next tier
+            vi.advanceTimersByTime(STEP_MS)  // the settle the previous tier gets before it is timed
+            h.flush(CLIMB_FRAMES, FAST)      // resolves its sample, and climb() applies the next tier at once
             expect(h.scene()).toBe(withTiers(n))
         }
 
-        // One more sample, for the tier the loop just applied (forest). This time climb() finds it's already at
-        // the ceiling and moves to the watch instead of reaching for a fifth tier.
-        h.flush(CLIMB_FRAMES, FAST)
+        // One more settle and sample, for the tier the loop just applied (forest). This time climb() finds it's
+        // already at the ceiling and moves to the watch instead of reaching for a fifth tier.
         vi.advanceTimersByTime(STEP_MS)
+        h.flush(CLIMB_FRAMES, FAST)
         expect(h.scene()).toBe(ALL)
         expect(h.pendingFrameCount()).toBe(0)
         expect(vi.getTimerCount()).toBe(1)   // the watch's SETTLE_MS timer, and nothing besides it
@@ -141,11 +141,12 @@ describe('a slow frame mid-climb', () => {
         expect(h.scene()).toBe(withTiers(1))   // depth, applied synchronously
 
         // The depth step's own frames measure fine, so it proceeds to sky
-        h.flush(CLIMB_FRAMES, FAST)
         vi.advanceTimersByTime(STEP_MS)
+        h.flush(CLIMB_FRAMES, FAST)
         expect(h.scene()).toBe(withTiers(2))   // depth sky
 
         // But the sky step's own frames come back slow
+        vi.advanceTimersByTime(STEP_MS)
         h.flush(CLIMB_FRAMES, SLOW)
         expect(h.scene()).toBe(withTiers(1))   // back to depth exactly, not all the way to the still scene
         expect(h.pendingFrameCount()).toBe(0)  // it doesn't retry immediately...
@@ -188,7 +189,14 @@ describe('whenAtTop', () => {
         h.scrollTo(0)                            // back at the top: now it applies
         expect(h.scene()).toBe(DEPTH)
         expect(h.pendingScrollListenerCount()).toBe(0)   // the listener cleans itself up
-        expect(vi.getTimerCount()).toBe(0)               // ...and so does the give-up timer
+        expect(vi.getTimerCount()).toBe(1)               // just the settle before depth's frames are timed
+
+        // ...and the give-up timer really is gone, rather than merely being outnumbered by the settle: once the
+        // settle fires and hands over to a frame sample, nothing is left pending. Were the 30 second give-up still
+        // armed it would still be counted here, since STEP_MS is nowhere near long enough to have fired it.
+        vi.advanceTimersByTime(STEP_MS)
+        expect(h.pendingFrameCount()).toBe(1)
+        expect(vi.getTimerCount()).toBe(0)
     })
 
     it('gives up waiting for the top after TOP_WAIT_MS and hands off to the watch, rather than leaving nothing running', () => {
@@ -254,6 +262,7 @@ describe('stop', () => {
 
         const stop = runScene()
         expect(h.scene()).toBe(DEPTH)
+        vi.advanceTimersByTime(STEP_MS)   // past depth's settle, so its own frame sample is now in flight
         expect(h.pendingFrameCount()).toBe(1)
         const writesBeforeStop = h.attributeWriteCount()
 
@@ -274,9 +283,9 @@ describe('stop', () => {
         h.setScene('')
         h.setMax(TIERS.length)
 
-        const stop = runScene()
-        h.flush(CLIMB_FRAMES, FAST)   // resolves the depth step, arming the STEP_MS timer
+        const stop = runScene()       // depth is in, and the STEP_MS settle before its sample is armed
         expect(vi.getTimerCount()).toBe(1)
+        expect(h.pendingFrameCount()).toBe(0)   // nothing sampling yet: this is the other half of the step
         const writesBeforeStop = h.attributeWriteCount()
 
         stop()
@@ -356,8 +365,9 @@ describe('a hidden tab', () => {
         h.setMax(TIERS.length)
 
         runScene()
-        expect(h.scene()).toBe(DEPTH)   // depth applied synchronously; its own sample is now running
+        expect(h.scene()).toBe(DEPTH)   // depth applied synchronously
 
+        vi.advanceTimersByTime(STEP_MS)   // past its settle, so its own sample is now running
         h.tick(FAST)   // establishes sampleFrames' baseline (its first tick never pushes a delta)
 
         h.setHidden(true)
@@ -372,14 +382,13 @@ describe('a hidden tab', () => {
         // slowest sample in the batch.
         for (let i = 0; i < CLIMB_FRAMES; i++) h.tick(FAST)
         expect(h.scene()).toBe(DEPTH)          // still not resolved
-        expect(vi.getTimerCount()).toBe(0)     // no STEP_MS timer yet: the sample is still open
+        expect(vi.getTimerCount()).toBe(0)     // nothing armed yet: the sample is still open
 
         h.tick(FAST)   // the one further tick the reset baseline costs
-        expect(vi.getTimerCount()).toBe(1)     // now it has resolved, and resolved fast
-
-        vi.advanceTimersByTime(STEP_MS)
-        // Proceeded to sky rather than reverting: the median really was computed from only the good frames
-        // gathered after the hidden gap, not dragged up by a 100-second delta.
+        // Now it has resolved, and resolved fast: it proceeded to sky rather than reverting, so the median really
+        // was computed from only the good frames gathered after the hidden gap, not dragged up by a 100-second
+        // delta. The armed timer is sky's own settle, the next step already under way.
         expect(h.scene()).toBe(withTiers(2))
+        expect(vi.getTimerCount()).toBe(1)
     })
 })

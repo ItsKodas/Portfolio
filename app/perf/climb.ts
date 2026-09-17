@@ -8,7 +8,7 @@ import { currentTier, sceneMax, setTier } from './usePerf'
 // A frame slower than this, at the median, means the browser can't keep up with what's on screen. It's above a 30Hz
 // display's 33ms, so a slow screen alone doesn't count.
 const SLOW_FRAME_MS = 36
-const STEP_MS = 450         // between one tier settling and the next going in
+const STEP_MS = 450         // between a tier going in and its frames being timed, so it is settled when sampled
 const CLIMB_FRAMES = 20     // timed after each tier, enough to catch one that hurts without holding things up
 const SETTLE_MS = 1000      // before the watch below, to leave the load and hydration out of it
 const WATCH_FRAMES = 60
@@ -75,15 +75,22 @@ export function runScene() {
         const at = currentTier()
         if (at >= sceneMax() || at >= TIERS.length) return watch()
 
+        // Every step waits the same STEP_MS between putting a tier in and timing it, the first one included. On a
+        // phone that first step is the whole scene arriving at once, with the curtain still fading and the logo's
+        // intro mid-flight, so sampling it from the same frame it lands on measures the remount rather than the
+        // tier. The ratchet only goes one way, so that reads as a false demotion for the rest of the visit.
         const step = () => {
             if (stopped) return
             setTier(at + 1)
-            cancelSample = sampleFrames(CLIMB_FRAMES, median => {
+            timer = window.setTimeout(() => {
                 if (stopped) return
-                // Slower than the budget promised: put the tier back and stop climbing, but keep watching
-                if (median > SLOW_FRAME_MS) { setTier(at); return watch() }
-                timer = window.setTimeout(climb, STEP_MS)
-            })
+                cancelSample = sampleFrames(CLIMB_FRAMES, median => {
+                    if (stopped) return
+                    // Slower than the budget promised: put the tier back and stop climbing, but keep watching
+                    if (median > SLOW_FRAME_MS) { setTier(at); return watch() }
+                    climb()
+                })
+            }, STEP_MS)
         }
 
         if (TIERS[at].token === 'depth') whenAtTop(step)
