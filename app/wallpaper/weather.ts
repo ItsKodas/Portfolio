@@ -14,13 +14,14 @@ export type Weather = {
     code: number  // WMO weather code
     day: boolean
     unit: Unit
+    place?: string // the town it's for
 }
 
 const REFRESH_MS = 30 * 60 * 1000
 const RETRY_MS = 5 * 60 * 1000
-const STORAGE_KEY = 'wallpaper-weather'
+const STORAGE_KEY = 'wallpaper-weather-2' // (renamed whenever the stored reading changes shape)
 
-type Place = { latitude: number, longitude: number }
+type Place = { latitude: number, longitude: number, name?: string }
 
 async function json(url: string) {
     const response = await fetch(url)
@@ -32,7 +33,7 @@ async function locate(location: string): Promise<Place> {
     const [name, ...rest] = location.split(',').map(s => s.trim())
     if (!name) {
         const geo = await json('https://get.geojs.io/v1/ip/geo.json')
-        return { latitude: Number(geo.latitude), longitude: Number(geo.longitude) }
+        return { latitude: Number(geo.latitude), longitude: Number(geo.longitude), name: geo.city || geo.region || geo.country }
     }
 
     const { results = [] } = await json(`https://geocoding-api.open-meteo.com/v1/search?count=10&name=${encodeURIComponent(name)}`)
@@ -47,7 +48,7 @@ async function locate(location: string): Promise<Place> {
 }
 
 async function fetchWeather(location: string, unit: Unit): Promise<Weather> {
-    const { latitude, longitude } = await locate(location)
+    const { latitude, longitude, name } = await locate(location)
     const data = await json('https://api.open-meteo.com/v1/forecast?' + new URLSearchParams({
         latitude: String(latitude),
         longitude: String(longitude),
@@ -64,6 +65,7 @@ async function fetchWeather(location: string, unit: Unit): Promise<Weather> {
         code: data.current.weather_code,
         day: data.current.is_day === 1,
         unit,
+        place: name,
     }
 }
 

@@ -78,6 +78,19 @@
     color: rgba(236, 244, 255, 0.6);
 }
 
+/* The town the weather is for, set apart at the end of the line */
+.place {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    margin-left: 10px;
+    color: rgba(236, 244, 255, 0.6);
+}
+
+.pin {
+    font-size: 1.9rem !important;
+}
+
 /* Each line rises gently into place as it first appears */
 .rise {
     animation: rise 1.4s cubic-bezier(0.2, 0.7, 0.2, 1) both;

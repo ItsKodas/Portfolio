@@ -18,6 +18,7 @@ const DEFAULTS = {
     location: '',                               // a place name for the weather, e.g. "Perth, AU" (blank finds it from the IP address)
     units: 'auto' as typeof UNITS[number],      // temperature units (auto follows the system's region)
     highLow: true,                              // today's high and low beside the weather
+    place: true,                                // the town the weather is for
     size: 100,                                  // the size of all that, as a percentage
 
     // Motion
@@ -44,7 +45,7 @@ export const MOTION = ['clouds', 'stars', 'shooting', 'wind', 'fireflies', 'wate
 // Wallpaper Engine's property names (in project.json) for each setting
 const PROPERTIES: Record<string, keyof WallpaperSettings> = {
     showclock: 'clock', clockformat: 'hours', showseconds: 'seconds', showdate: 'date', showweather: 'weather',
-    weatherlocation: 'location', temperatureunits: 'units', showhighlow: 'highLow', textsize: 'size',
+    weatherlocation: 'location', temperatureunits: 'units', showhighlow: 'highLow', showplace: 'place', textsize: 'size',
     mouseparallax: 'parallax', parallaxstrength: 'strength', stillscenery: 'still',
     animateclouds: 'clouds', animatestars: 'stars', shootingstars: 'shooting', animatewind: 'wind',
     animatefireflies: 'fireflies', animatewater: 'water', animatewatchtower: 'watchtower', animatetext: 'intro',

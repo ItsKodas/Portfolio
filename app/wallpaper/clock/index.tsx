@@ -5,7 +5,7 @@
 // whichever lines are showing stay in the middle.
 
 import { useEffect, useRef, useState } from 'react'
-import { AcUnit, Cloud, Dehaze, FilterDrama, Grain, NightsStay, Thunderstorm, WaterDrop, WbSunny } from '@mui/icons-material'
+import { AcUnit, Cloud, Dehaze, FilterDrama, Grain, NightsStay, Place, Thunderstorm, WaterDrop, WbSunny } from '@mui/icons-material'
 
 import { useSettings } from '../settings'
 import { describe, useWeather, type Unit, type Weather } from '../weather'
@@ -57,7 +57,7 @@ function WeatherIcon({ weather }: { weather: Weather }) {
 }
 
 export default function Clock() {
-    const { clock, hours, seconds, date, weather: showWeather, location, units, highLow, size } = useSettings()
+    const { clock, hours, seconds, date, weather: showWeather, location, units, highLow, place, size } = useSettings()
     const now = useNow(clock && seconds)
     const weather = useWeather(showWeather, location, units === 'auto' ? localUnit() : units)
 
@@ -99,6 +99,9 @@ export default function Clock() {
                         <span className={styles.temperature}>{weather.temperature}°</span>
                         <span>{describe(weather.code)}</span>
                         {highLow && <span className={styles.range}>H {weather.high}° · L {weather.low}°</span>}
+                        {place && weather.place && (
+                            <span className={styles.place}><Place className={styles.pin} />{weather.place}</span>
+                        )}
                     </div>
                 )}
             </div>
