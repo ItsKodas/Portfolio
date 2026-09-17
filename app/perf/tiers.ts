@@ -26,11 +26,17 @@ export const BASE = { overdraw: 3.8, layers: 35 }
 export const TILE_MIN = 256 * 256 * 4
 
 export const BUDGETS = {
-    touch: 160 * 1024 * 1024,    // a phone or tablet, where the renderer gets killed well before a desktop's would
+    // A touch device is given the larger of a floor and an allowance that grows with its screen, because the one
+    // capability signal iOS withholds is memory: Safari reports no navigator.deviceMemory at all, so a fixed byte
+    // budget would hand every iPhone and iPad the same ceiling while the scene's cost grows with the screen. Within
+    // Apple's range a bigger screen means a newer, more capable device, so a fixed ceiling gets the ordering exactly
+    // backwards: it left an iPad Pro on the still scene and gave an iPhone SE the lot.
+    touchFloor: 120 * 1024 * 1024,
+    touchViewports: 14,          // the area-scaled allowance, in viewports of composited raster
     pointer: 1024 * 1024 * 1024, // a mouse or trackpad, which in practice means enough memory for the whole scene
     memDivisor: 4,               // navigator.deviceMemory is scaled against this, so 4GB is the neutral middle
     memMin: 0.5,
-    memMax: 1.75,
+    memMax: 1.5,
 }
 
 export type Budgets = typeof BUDGETS
@@ -55,7 +61,10 @@ export function ceilingFor(
     const factor = deviceMemory
         ? Math.min(budgets.memMax, Math.max(budgets.memMin, deviceMemory / budgets.memDivisor))
         : 1
-    const budget = (coarsePointer ? budgets.touch : budgets.pointer) * factor
+    const allowance = coarsePointer
+        ? Math.max(budgets.touchFloor, viewportBytes * budgets.touchViewports)
+        : budgets.pointer
+    const budget = allowance * factor
 
     let spent = base.overdraw * viewportBytes + base.layers * tileMin
     let reached = 0

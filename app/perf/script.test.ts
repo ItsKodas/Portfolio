@@ -101,6 +101,7 @@ describe('PERF_SCRIPT', () => {
     it('forces an exact token set from ?scene=', () => {
         const attrs = run({ search: '?scene=depth+sky', coarse: true })
         expect(attrs['data-scene']).toBe('depth sky')
+        expect(attrs['data-scene-max']).toBe(String(TIERS.length))
         expect(attrs['data-perf-forced']).toBe('')
     })
 

@@ -120,21 +120,48 @@ figures:
 ## The budget
 
 ```
-budget = base x memFactor
-base      = coarsePointer ? 160 MB : 1024 MB
-memFactor = navigator.deviceMemory ? clamp(deviceMemory / 4, 0.5, 1.75) : 1
+budget    = allowance x memFactor
+allowance = coarsePointer ? max(120 MB, viewportBytes x 14) : 1024 MB
+memFactor = navigator.deviceMemory ? clamp(deviceMemory / 4, 0.5, 1.5) : 1
 ```
+
+A touch device gets the larger of a 120 MB floor and an allowance that scales with its own
+screen: 14 viewports of the same `vw x vh x dpr^2 x 4` term the cost model uses. The floor
+exists so a small phone is not starved down to nothing; the area term exists so a large
+screen is not held to the same ceiling as a small one.
+
+### Why the shape changed
+
+An earlier version of this budget was one fixed byte ceiling for every touch device,
+`160 MB`, with `memMax` at `1.75`. That was wrong in a way that only shows up once you check
+it against real device geometries rather than one synthetic viewport.
+
+Safari reports no `navigator.deviceMemory` at all, on any iOS device. So every iPhone and
+iPad shared that one fixed ceiling, while the scene's cost scales with viewport area times
+`dpr^2`. Within Apple's own lineup, a bigger screen means a newer, more capable device, not a
+weaker one. A fixed ceiling therefore penalised exactly the devices best able to cope: an
+iPhone SE landed at the top tier while an iPad Pro, the strongest device in the sweep, landed
+on the still scene with nothing. Sweeping the old constants found no combination that avoided
+this: the iPad Pro reached tier 0 and the iPhone SE reached tier 3 or 4 in every one tried. It
+was the shape of the model that was backwards, not its values, which is why this amendment
+changes the formula rather than retuning the constants.
+
+Separately, the old `memMax` of `1.75` let an 8GB Android device reach 274 MB, within 6% of
+the roughly 292 MB configuration that was measured crashing. `memMax` now drops to `1.5`, so
+that device's budget falls well clear of the crash boundary instead of grazing it.
 
 Which lands as:
 
-| device | signals | budget | tier reached |
-| --- | --- | --- | --- |
-| iPhone | coarse, `deviceMemory` undefined | 160 MB | 1, `depth` |
-| Android flagship | coarse, `deviceMemory` 8 | 280 MB | 3, `water` |
-| mid range Android | coarse, `deviceMemory` 4 | 160 MB | 1, `depth` |
-| low end Android | coarse, `deviceMemory` 2 | 80 MB | 0, still scene |
-| desktop Safari | fine, `deviceMemory` undefined | 1024 MB | 4, all tiers |
-| desktop Chrome | fine, `deviceMemory` 8 | 1792 MB | 4, all tiers |
+| device | signals | tier reached |
+| --- | --- | --- |
+| iPhone 15 | coarse, no `deviceMemory` | 1, `depth` |
+| iPhone 15 Pro Max | coarse, no `deviceMemory` | 1, `depth` |
+| iPad 10.9 | coarse, no `deviceMemory` | 1, `depth` |
+| Pixel 8 | coarse, `deviceMemory` 8 | 1, `depth` |
+| mid range Android | coarse, `deviceMemory` 4 | 1, `depth` |
+| low end Android | coarse, `deviceMemory` 2 | 0, still scene |
+| desktop Safari | fine, no `deviceMemory` | 4, all tiers |
+| desktop Chrome | fine, `deviceMemory` 8 | 4, all tiers |
 
 These are starting values. They are chosen so that no touch device reaches the state that
 currently crashes, and so that every pointer driven device clears all four tiers and behaves
@@ -143,6 +170,19 @@ they live in one file with their reasoning in comments.
 
 Note that `sky` is expensive enough (8.43 viewports on its own) that most phones will settle
 at `depth`. See Future work.
+
+### Residual: the iPhone SE still reaches a higher tier than other phones
+
+One quirk survives this change and is left as-is. On a 375x667, DPR 2 screen, the per-layer
+tile minimums dominate the cost while the area term is tiny, so the whole scene genuinely
+costs only about 146 MB there, comfortably inside even the 120 MB-plus-area allowance once the
+floor is in play. An iPhone SE therefore reaches a higher tier than an iPhone 15 or an iPad,
+both of which have larger, area-dominated screens.
+
+This is not a reappearance of the inversion above: it does not put a stronger device on the
+still scene while a weaker one gets everything, it only means one small, older phone affords
+more of the scene than its larger, newer siblings. Real device testing should settle whether
+that is acceptable or whether the floor needs its own separate tuning pass.
 
 ## Components
 
