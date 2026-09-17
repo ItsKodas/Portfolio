@@ -8,7 +8,7 @@ import { fetchPublicIp, readDkimKey, writeAliasMap, readLogTail } from './adapte
 import { probeOutboundSmtp, checkSpamhaus, lastInboundConnection } from './probes.ts'
 import type { SpamhausResult } from './probes.ts'
 import { evaluateBootGate, collectWarnings, writeStatus, cycleFailedWarning, resolveIntervalMs, BootGateError } from './health.ts'
-import { ensureCertificate } from './certs.ts'
+import { ensureCertificate, certificateStatus } from './certs.ts'
 
 const log = (message: string) => console.log(`[mailops] ${new Date().toISOString()} ${message}`)
 
@@ -75,12 +75,23 @@ async function main() {
                 lastIp = ip
             }
 
-            await ensureCertificate(config, CERT_DIR, new Date())
-
             const tail = await readLogTail(LOG_FILE)
+
+            // Deliberately after the log read, and in its own try/catch. Certificate trouble used to abort
+            // the whole cycle, so status.json collapsed to a single generic cycle-failed warning and the
+            // Spamhaus state, the DNS conflict list and the inbound-staleness check all disappeared with
+            // it. A failing renewal is its own degrade-and-shout condition, not a reason to go blind.
+            let certError: string | null = null
+            try {
+                await ensureCertificate(config, CERT_DIR, new Date())
+            } catch (error) {
+                certError = (error as Error).message
+            }
+            const cert = await certificateStatus(config, CERT_DIR)
+
             warnings = collectWarnings({
                 reconcile: result, spamhaus: lastSpamhaus, lastInbound: lastInboundConnection(tail.text),
-                logError: tail.error ?? null, now: new Date(),
+                logError: tail.error ?? null, certError, cert, now: new Date(),
             })
             for (const warning of warnings) log(`WARN ${warning.check}: ${warning.detail}`)
         } catch (error) {

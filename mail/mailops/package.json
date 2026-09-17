@@ -5,7 +5,8 @@
   "type": "module",
   "scripts": {
     "test": "node --import tsx --test src/*.test.ts",
-    "start": "node --import tsx src/index.ts"
+    "start": "node --import tsx src/index.ts",
+    "ack-cert": "node --import tsx src/ack-cert.ts"
   },
   "devDependencies": {
     "@types/node": "^22.7.0",

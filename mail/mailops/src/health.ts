@@ -6,6 +6,7 @@ import { writeFile, mkdir } from 'node:fs/promises'
 import { dirname } from 'node:path'
 import type { SmtpProbe, SpamhausResult } from './probes.ts'
 import type { ReconcileResult } from './reconcile.ts'
+import type { CertStatus } from './certs.ts'
 
 export class BootGateError extends Error {
     constructor(readonly failures: string[]) {
@@ -37,7 +38,11 @@ export type StatusInput = {
     now: Date
     inboundStaleAfterHours?: number
     logError?: string | null
+    certError?: string | null
+    cert?: CertStatus | null
 }
+
+export const ACK_CERT_COMMAND = 'docker compose restart mailserver && docker compose exec mailops npm run ack-cert'
 
 export function collectWarnings(input: StatusInput): Warning[] {
     const warnings: Warning[] = []
@@ -63,6 +68,32 @@ export function collectWarnings(input: StatusInput): Warning[] {
     // Inconclusive is not a listing. Warning on it would fire every cycle behind a public resolver.
     if (input.spamhaus.listed) {
         warnings.push({ check: 'spamhaus', detail: input.spamhaus.meanings.join('; ') })
+    }
+
+    // The spec lists "certificate approaching expiry with renewal failing" as its own degrade-and-shout
+    // condition. It used to be invisible here: ensureCertificate threw, the cycle aborted, and the whole
+    // status file collapsed to one generic cycle-failed warning that hid the Spamhaus state, the DNS
+    // conflict list and the inbound-staleness check along with it.
+    if (input.certError) {
+        warnings.push({ check: 'cert-renewal', detail: `certificate renewal failed: ${input.certError}` })
+    }
+
+    // mailserver runs SSL_TYPE=manual and does not reliably notice the certificate file changing, so a
+    // renewal around day 60 that nobody restarts for means Postfix keeps serving the old certificate
+    // until it expires on the wire around day 90, while the file mailops checks looks perfectly fine.
+    // Checking the file rather than what is actually being served is precisely how that stays invisible.
+    if (input.cert?.onDiskNotAfter) {
+        const onDisk = input.cert.onDiskNotAfter
+        const acked = input.cert.acknowledgedNotAfter
+        if (!acked || acked.getTime() !== onDisk.getTime()) {
+            const serving = acked
+                ? `mailserver was last restarted for a certificate expiring ${acked.toISOString()}`
+                : 'mailserver has never been restarted for a certificate mailops issued'
+            warnings.push({
+                check: 'cert-reload-needed',
+                detail: `${serving}, but the certificate on disk expires ${onDisk.toISOString()}. Until they agree, assume Postfix is serving the older one. Run: ${ACK_CERT_COMMAND}`,
+            })
+        }
     }
 
     // A log we cannot read looks exactly like a log with nothing in it, which silently disables the

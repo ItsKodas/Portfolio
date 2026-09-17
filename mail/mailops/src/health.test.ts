@@ -70,6 +70,53 @@ describe('collectWarnings', () => {
         assert.deepEqual(warnings.filter(w => w.check === 'spamhaus'), [])
     })
 
+    it('warns that renewal is failing without losing every other check that cycle', () => {
+        const warnings = collectWarnings({
+            ...quiet,
+            certError: 'lego exited 1',
+            reconcile: { ...quiet.reconcile, conflicts: ['TXT dev.horizons.gg'] },
+            spamhaus: { listed: true, inconclusive: false, codes: ['127.0.0.4'], meanings: ['XBL: exploited or compromised host'] },
+            now: new Date('2026-09-20T12:00:00Z'),
+        })
+        const checks = warnings.map(w => w.check)
+        assert.ok(checks.includes('cert-renewal'))
+        assert.ok(checks.includes('dns-conflict'), 'a cert failure must not hide the DNS conflict list')
+        assert.ok(checks.includes('spamhaus'), 'a cert failure must not hide the Spamhaus state')
+        assert.ok(checks.includes('inbound-stale'), 'a cert failure must not hide the inbound staleness check')
+    })
+
+    // The expiry-on-the-wire case: mailops renewed into the shared volume, mailserver runs
+    // SSL_TYPE=manual and did not notice, and nothing restarted it. status.json must not say ok.
+    it('warns that a renewed certificate has not been picked up', () => {
+        const warnings = collectWarnings({
+            ...quiet,
+            cert: { onDiskNotAfter: new Date('2026-12-01T00:00:00Z'), acknowledgedNotAfter: new Date('2026-10-01T00:00:00Z') },
+        })
+        assert.equal(warnings[0]?.check, 'cert-reload-needed')
+        assert.match(warnings[0]!.detail, /2026-12-01/)
+        assert.match(warnings[0]!.detail, /restart mailserver/)
+    })
+
+    it('warns when no certificate has ever been acknowledged', () => {
+        const warnings = collectWarnings({
+            ...quiet,
+            cert: { onDiskNotAfter: new Date('2026-12-01T00:00:00Z'), acknowledgedNotAfter: null },
+        })
+        assert.equal(warnings[0]?.check, 'cert-reload-needed')
+        assert.match(warnings[0]!.detail, /never been restarted/)
+    })
+
+    it('is quiet once the acknowledged certificate matches the one on disk', () => {
+        assert.deepEqual(collectWarnings({
+            ...quiet,
+            cert: { onDiskNotAfter: new Date('2026-12-01T00:00:00Z'), acknowledgedNotAfter: new Date('2026-12-01T00:00:00Z') },
+        }), [])
+    })
+
+    it('does not raise a reload warning before the first certificate exists', () => {
+        assert.deepEqual(collectWarnings({ ...quiet, cert: { onDiskNotAfter: null, acknowledgedNotAfter: null } }), [])
+    })
+
     it('warns when the mail log cannot be read at all', () => {
         const warnings = collectWarnings({ ...quiet, logError: 'cannot open /mail-logs/mial.log: ENOTDIR' })
         assert.equal(warnings[0]?.check, 'log-unreadable')

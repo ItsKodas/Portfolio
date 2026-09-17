@@ -66,6 +66,40 @@ If delivery to real recipients disappoints, switch to a relay: set `RELAY_HOST`,
 `RELAY_PASSWORD` and `RELAY_SPF_INCLUDE` in `mail/.env`, then `docker compose up -d`. SPF updates itself on
 the next reconcile cycle. No rebuild, no redesign.
 
+## Certificates: renewal needs a manual restart
+
+**This is currently a manual step, and skipping it eventually breaks TLS on the wire.**
+
+`mailops` renews the certificate over ACME DNS-01 around day 60 and writes it into the `mail-certs`
+volume. `mailserver` runs `SSL_TYPE=manual` and does not reliably notice a manually supplied certificate
+changing on disk, so Postfix carries on presenting the old one until it expires around day 90, while the
+file `mailops` checks looks perfectly healthy. Nothing in the stack restarts `mailserver` on its own.
+
+It could: the operator container would only need the Docker socket. That was rejected deliberately. It
+would hand the most privileged capability in the stack to the process that already holds a zone-edit
+token, to save one command every two months. A documented manual step is the better trade.
+
+So `mailops` tracks it instead. It records the expiry of the certificate on disk and the expiry the
+operator last confirmed `mailserver` picked up, and it raises a `cert-reload-needed` warning, which
+flips the healthcheck unhealthy, for as long as the two disagree. An expired-on-the-wire certificate
+therefore cannot sit behind `ok: true`.
+
+**After any certificate renewal, and once after the very first issuance:**
+
+```bash
+cd mail
+docker compose restart mailserver
+docker compose exec mailops npm run ack-cert
+```
+
+The first command makes Postfix load the new certificate. The second records that it happened, which
+clears the warning. Run them together; acknowledging without restarting is lying to yourself, and the
+next renewal will simply raise the warning again.
+
+A `cert-renewal` warning is different: it means `lego` itself is failing. `mailops` backs off
+exponentially rather than hammering Let's Encrypt's rate limits, and the rest of the cycle keeps running
+and keeps reporting, so the Spamhaus and DNS checks stay visible while you investigate.
+
 ## Accepted addresses
 
 By default the server accepts `contact@dev.horizons.gg` and nothing else. Mail to any other address at
@@ -85,6 +119,12 @@ After changing it, `docker compose up -d` and wait one cycle for `mailops` to re
 - Warnings: `docker compose logs mailops | grep WARN`.
 - A `dns-conflict` warning means something unmanaged sits at a name we want. Nothing is overwritten. Remove
   the conflicting record by hand, or rename ours.
+- A `cert-reload-needed` warning means the certificate on disk is not the one `mailserver` is serving.
+  See the certificates section above. Left alone, TLS on the wire expires.
+- A `cert-renewal` warning means `lego` is failing. The rest of the cycle still ran and still reported.
+- A `log-unreadable` warning means `MAIL_LOG_FILE` does not point at a readable file, so the
+  inbound-staleness check, the only real evidence inbound 25 works, is not running. Check the path and
+  the `mail-logs` mount.
 - A `dns-write-loop` warning means a record was rewritten on three consecutive cycles with unchanged
   desired content and never came back matching, so `mailops` stopped writing it rather than PATCH the
   production zone forever. The named record is now stale. Compare the desired value against what
