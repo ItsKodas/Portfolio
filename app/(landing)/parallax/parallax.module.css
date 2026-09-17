@@ -6,4 +6,6 @@
     width: 100%;
     height: 200svh;
     will-change: transform;
+    /* The scenery never takes clicks, so the links under the hero title can be clicked through the layers in front */
+    pointer-events: none;
 }

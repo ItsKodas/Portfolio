@@ -15,7 +15,7 @@
 .slot {
     position: absolute;
     left: 50%;
-    top: calc(1010 / 4320 * 100%);
+    top: calc(975 / 4320 * 100%);
     width: min(48cqw, 90vw);
     transform: translateX(-50%);
 }
