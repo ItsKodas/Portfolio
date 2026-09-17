@@ -1,0 +1,81 @@
+/* The block of lines, at its natural size: its bottom edge sits on the slot's line (see index.tsx), and it scales
+   from there */
+.block {
+    position: absolute;
+    left: 50%;
+    top: 0;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    transform-origin: bottom center;
+    color: #fff;
+    text-shadow: 0 4px 30px rgba(11, 16, 31, 0.35);
+    white-space: nowrap;
+}
+
+/* The time, set like the site's title */
+.time {
+    display: flex;
+    align-items: baseline;
+    font-size: 11rem;
+    line-height: 1;
+    font-weight: 700;
+    letter-spacing: 6px;
+    font-variant-numeric: tabular-nums;
+}
+
+.period {
+    margin-left: 18px;
+    font-size: 2.5rem;
+    font-weight: 500;
+    letter-spacing: 8px;
+    text-transform: uppercase;
+}
+
+/* The day and date, set like the site's subtitle */
+.date {
+    margin-top: 14px;
+    font-size: 2.25rem;
+    letter-spacing: 11px;
+}
+
+.weather {
+    display: flex;
+    align-items: center;
+    gap: 16px;
+    min-height: 2.4rem;
+    margin-top: 22px;
+    font-size: 1.75rem;
+    letter-spacing: 3px;
+    color: rgba(236, 244, 255, 0.9);
+}
+
+.icon {
+    font-size: 2.4rem !important;
+    filter: drop-shadow(0 4px 20px rgba(11, 16, 31, 0.35));
+}
+
+.temperature {
+    font-weight: 600;
+}
+
+.range {
+    margin-left: 10px;
+    color: rgba(236, 244, 255, 0.6);
+}
+
+/* Each line rises gently into place as it first appears */
+.rise {
+    animation: rise 1.4s cubic-bezier(0.2, 0.7, 0.2, 1) both;
+}
+
+@keyframes rise {
+    from { opacity: 0; transform: translateY(24px); }
+    to   { opacity: 1; transform: none; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .rise { animation: none; }
+}
+
+:global(html[data-perf="lite"]) .rise { animation: none; }

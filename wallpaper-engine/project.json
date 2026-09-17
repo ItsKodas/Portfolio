@@ -1,6 +1,6 @@
 {
 	"title": "Horizons",
-	"description": "A night over the lake: drifting clouds, twinkling stars, a wind-blown forest and fireflies, with layers that follow your mouse. From horizons.gg.",
+	"description": "A night over the lake: drifting clouds, twinkling stars, a wind-blown forest and fireflies, with layers that follow your mouse, and the time, date and weather above the mountains. From horizons.gg.",
 	"type": "web",
 	"file": "index.html",
 	"preview": "preview.jpg",
@@ -14,20 +14,63 @@
 				"type": "color",
 				"value": "0.30588 0.8 0.98039"
 			},
-			"showlogo": {
+			"showclock": {
 				"order": 1,
-				"text": "Show title",
+				"text": "Show time",
 				"type": "bool",
 				"value": true
 			},
-			"mouseparallax": {
+			"clockformat": {
 				"order": 2,
+				"text": "Clock format",
+				"type": "combo",
+				"condition": "showclock.value",
+				"value": "12",
+				"options": [
+					{ "label": "12-hour", "value": "12" },
+					{ "label": "24-hour", "value": "24" },
+					{ "label": "Automatic", "value": "auto" }
+				]
+			},
+			"showdate": {
+				"order": 3,
+				"text": "Show date",
+				"type": "bool",
+				"value": true
+			},
+			"showweather": {
+				"order": 4,
+				"text": "Show weather",
+				"type": "bool",
+				"value": true
+			},
+			"weatherlocation": {
+				"order": 5,
+				"text": "Weather location (blank to detect)",
+				"type": "textinput",
+				"condition": "showweather.value",
+				"value": ""
+			},
+			"temperatureunits": {
+				"order": 6,
+				"text": "Temperature units",
+				"type": "combo",
+				"condition": "showweather.value",
+				"value": "auto",
+				"options": [
+					{ "label": "Automatic", "value": "auto" },
+					{ "label": "Celsius", "value": "celsius" },
+					{ "label": "Fahrenheit", "value": "fahrenheit" }
+				]
+			},
+			"mouseparallax": {
+				"order": 7,
 				"text": "Mouse parallax",
 				"type": "bool",
 				"value": true
 			},
 			"parallaxstrength": {
-				"order": 3,
+				"order": 8,
 				"text": "Parallax strength",
 				"type": "slider",
 				"condition": "mouseparallax.value",
@@ -36,7 +79,7 @@
 				"value": 50
 			},
 			"stillscenery": {
-				"order": 4,
+				"order": 9,
 				"text": "Still scenery (lowest GPU use)",
 				"type": "bool",
 				"value": false

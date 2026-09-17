@@ -23,16 +23,19 @@ This project uses [`next/font`](https://nextjs.org/docs/app/building-your-applic
 ## Wallpaper Engine
 
 The hero scene is also a [Wallpaper Engine](https://www.wallpaperengine.io/) web wallpaper (`app/wallpaper`, viewable at
-`/wallpaper`), with the layers following the mouse instead of the scroll.
+`/wallpaper`), with the layers following the mouse instead of the scroll, and the time, date and weather in place of the
+title. The weather is from [Open-Meteo](https://open-meteo.com/), for a place set in the wallpaper's settings or, when
+none is, roughly located from the IP address with [GeoJS](https://www.geojs.io/).
 
 ```bash
 npm run wallpaper
 ```
 
 This builds it into `dist/wallpaper-engine`. In Wallpaper Engine, open the editor ("Create Wallpaper"), choose
-`dist/wallpaper-engine/index.html`, and it can be saved or published to the Workshop from there. Its settings (title,
-mouse parallax and strength, still scenery) are defined in `wallpaper-engine/project.json`, and can be tried in a
-browser with query parameters, e.g. `/wallpaper?logo=0&strength=80&still=1`.
+`dist/wallpaper-engine/index.html`, and it can be saved or published to the Workshop from there. Its settings (which of
+the time, date and weather show, clock format, weather location and units, mouse parallax and strength, still scenery)
+are defined in `wallpaper-engine/project.json`, and can be tried in a browser with query parameters, e.g.
+`/wallpaper?hours=24&location=Perth, AU&units=fahrenheit&weather=0&strength=80&still=1`.
 
 ## Learn More
 

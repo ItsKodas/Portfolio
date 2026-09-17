@@ -1,8 +1,9 @@
 'use client'
 
 // The hero scene as a desktop wallpaper for Wallpaper Engine (built into a folder of its own by scripts/wallpaper.mjs).
-// Just the scenery and the title, filling the screen: nothing scrolls, and instead of following the scroll each layer
-// drifts with the mouse by its depth, so the foreground trees move the most and the sky barely at all.
+// Just the scenery, with the time, date and weather where the site's title is, filling the screen: nothing scrolls, and
+// instead of following the scroll each layer drifts with the mouse by its depth, so the foreground trees move the most
+// and the sky barely at all.
 
 import { useEffect } from 'react'
 import { ThemeProvider } from '@mui/material'
@@ -13,6 +14,7 @@ import { setPerf } from '@/app/perf/usePerf'
 import { FullScene, type LayerProps } from '@/app/(landing)/parallax'
 import styles from '@/app/(landing)/parallax/parallax.module.css'
 
+import Clock from './clock'
 import { useSettings } from './settings'
 
 // How far the nearest layer drifts at full strength, as a share of the screen's width (the scene is scaled up by
@@ -53,20 +55,19 @@ function MouseLayer({ speed, className = styles.layer, style, children }: LayerP
 }
 
 export default function Wallpaper() {
-    const { logo, parallax, strength, still, paused } = useSettings()
+    const { parallax, strength, still, paused } = useSettings()
 
     useEffect(() => setPerf(still ? 'lite' : 'full'), [still])
 
     // (plus a hair, so rounding never leaves a sliver of edge showing)
     const overscan = parallax ? 1.005 + 2 * MAX_SHIFT * strength / 100 : 1
-    const ui = `${styles.ui} ${logo ? '' : styles.uiHidden}`
 
     return (
         <ThemeProvider theme={DarkTheme}>
             <div className='relative h-svh overflow-hidden bg-[#0b101f]'>
                 <section className={`absolute inset-x-0 top-0 h-[200svh] ${paused ? styles.paused : ''}`}
                     style={{ transform: `scale(${overscan})`, transformOrigin: '50% 50svh' }}>
-                    <FullScene ui={ui} Layer={MouseLayer} wallpaper />
+                    <FullScene ui='' Layer={MouseLayer} title={<Clock />} note={false} />
                 </section>
             </div>
         </ThemeProvider>

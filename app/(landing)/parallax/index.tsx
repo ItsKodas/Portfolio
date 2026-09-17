@@ -78,8 +78,9 @@ function LiteLayer({ speed, className = styles.layer, style, children }: LayerPr
 }
 
 // The full hero: every part of the scene at its own depth, each springing after the scroll. The desktop wallpaper
-// (app/wallpaper) shows the same scene with layers that follow the mouse instead, and without the hero's links and note.
-export function FullScene({ ui, Layer = ScrollLayer, wallpaper = false }: { ui: string, Layer?: React.ComponentType<LayerProps>, wallpaper?: boolean }) {
+// (app/wallpaper) shows the same scene with layers that follow the mouse instead, its own title, and no note.
+type SceneProps = { ui: string, Layer?: React.ComponentType<LayerProps>, title?: React.ReactNode, note?: boolean }
+export function FullScene({ ui, Layer = ScrollLayer, title = <AnimatedLogo />, note = true }: SceneProps) {
     return (
         <>
             <Layer speed={0.1}>
@@ -97,7 +98,7 @@ export function FullScene({ ui, Layer = ScrollLayer, wallpaper = false }: { ui: 
 
             <Layer speed={0.005}>
                 <div className={`absolute inset-0 ${ui}`}>
-                    <AnimatedLogo links={!wallpaper} />
+                    {title}
                 </div>
             </Layer>
 
@@ -113,7 +114,7 @@ export function FullScene({ ui, Layer = ScrollLayer, wallpaper = false }: { ui: 
 
             {/* The note pointing down to the work, moving with the valley, and behind the forest and trees so they
                 cover it as the page scrolls */}
-            {!wallpaper && (
+            {note && (
                 <Layer speed={0.6}>
                     <div className={`relative h-svh flex justify-center ${ui}`}>
                         <div className='absolute bottom-[20%]'>

@@ -22,8 +22,7 @@ const SUBTITLE_TUCK = 16 // the subtitle is pulled up into the space below the t
 const TITLE_ALONE_Y = 12.7
 const TITLE_WITH_SUBTITLE_Y = -12
 
-// (links: whether the buttons under the title are shown; the desktop wallpaper leaves them out)
-export default function AnimatedLogo({ links = true }: { links?: boolean }) {
+export default function AnimatedLogo() {
     const slotRef = useRef<HTMLDivElement>(null)
     const rowRef = useRef<HTMLDivElement>(null)
     const [scale, setScale] = useState(1)
@@ -123,7 +122,7 @@ export default function AnimatedLogo({ links = true }: { links?: boolean }) {
             {/* Links under the title, rising into place as the subtitle finishes coming in: just below the logo row, scaled
                 with it, and like the logo tucked slightly behind the near mountains. On small screens the logo is scaled right
                 down, so the buttons get some of that back to stay easy to tap. */}
-            {links && <div className={styles.slot}>
+            <div className={styles.slot}>
                 <animated.div className="absolute left-1/2 top-0 flex gap-6 select-none" style={{
                     opacity: subtitle.p.to(q => Math.max(0, (q - 0.5) / 0.5)),
                     transform: subtitle.p.to(q => `translate(-50%, ${((rowHeight / 2 + 4 + (1 - q) * 30) * scale).toFixed(1)}px) scale(${(scale * Math.min(1.6, Math.max(1, 0.55 / scale))).toFixed(3)})`),
@@ -140,7 +139,7 @@ export default function AnimatedLogo({ links = true }: { links?: boolean }) {
                         </a>
                     ))}
                 </animated.div>
-            </div>}
+            </div>
         </div>
     )
 }
