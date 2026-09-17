@@ -15,3 +15,82 @@
 .paused * {
     animation-play-state: paused !important;
 }
+
+/* Parts of the hero that the view toggle hides (the logo and its buttons, the note), fading out and then taken out of
+   reach so nothing hidden can be clicked or tabbed to */
+.ui {
+    transition: opacity 0.6s ease, visibility 0s linear 0s;
+}
+
+.uiHidden {
+    opacity: 0;
+    visibility: hidden;
+    transition: opacity 0.6s ease, visibility 0s linear 0.6s;
+}
+
+/* The view toggle: a small frosted round button in the top right */
+.uiToggle {
+    position: fixed;
+    top: 16px;
+    right: 20px;
+    z-index: 50;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 40px;
+    height: 40px;
+    border-radius: 999px;
+    border: 1px solid rgba(255, 255, 255, 0.25);
+    background: rgba(17, 26, 56, 0.35);
+    color: rgba(236, 244, 255, 0.9);
+    backdrop-filter: blur(8px);
+    -webkit-backdrop-filter: blur(8px);
+    cursor: pointer;
+    transition: opacity 0.3s ease, background-color 0.3s ease, border-color 0.3s ease, transform 0.3s ease;
+}
+
+.uiToggle:hover {
+    background: rgba(17, 26, 56, 0.6);
+    border-color: rgba(255, 255, 255, 0.5);
+    transform: translateY(-1px);
+}
+
+.uiToggle:focus-visible {
+    outline: 2px solid rgba(255, 255, 255, 0.6);
+    outline-offset: 3px;
+}
+
+/* While the view is clear, the toggle stays out of the way until hovered or focused */
+.uiToggleQuiet {
+    opacity: 0.35;
+}
+
+.uiToggleQuiet:hover,
+.uiToggleQuiet:focus-visible {
+    opacity: 1;
+}
+
+/* The toggle's two icons, stacked; the one not in use is faded out with a slight turn */
+.uiIcon {
+    position: absolute;
+    inset: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    transition: opacity 0.35s ease, transform 0.35s ease;
+}
+
+.uiIcon svg {
+    width: 20px;
+    height: 20px;
+}
+
+.uiIconOut {
+    opacity: 0;
+    transform: rotate(-45deg) scale(0.6);
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .uiIcon { transition: opacity 0.2s ease; }
+    .uiIconOut { transform: none; }
+}
