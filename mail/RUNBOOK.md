@@ -42,7 +42,41 @@ it, and the gate exits immediately saying so.
 
 Then confirm the zone. `mail.dev.horizons.gg` A, `dev.horizons.gg` MX and TXT, and `_dmarc.dev.horizons.gg`
 TXT should exist in Cloudflare, each commented `managed-by:mailops`, and the A record must be grey-clouded.
-The DKIM record appears a cycle or two later, once docker-mailserver has generated the key.
+
+There is **no DKIM record yet**, and there will not be one until you do the next step. Do not wait for it.
+
+## Generate the DKIM key
+
+`docker-mailserver` does **not** create an OpenDKIM keypair by itself. It has to be told to, once, and
+it has to be restarted afterwards. Until you do this, OpenDKIM has no key, nothing is signed, and
+`mail._domainkey.dev.horizons.gg` never appears no matter how long you wait.
+
+This matters more here than it would elsewhere. On an address with no forward-confirmed reverse DNS and
+a permanent PBL listing, DKIM is the only authentication signal this design can actually win.
+
+**Wait until `mailops` has written the alias map before running this.** `setup config dkim` derives its
+domain list from the accounts and virtual alias files, so running it before `mailops` has written
+`postfix-virtual.cf` produces a key for no domains, or for the wrong ones. `mailops` writes that file
+immediately after the boot gate passes, so seeing `boot gate passed` in the log is the signal to go.
+
+```bash
+cd mail
+docker compose exec mailserver setup config dkim keysize 2048
+docker compose restart mailserver
+```
+
+Then wait one reconcile cycle (60 seconds) and confirm `mail._domainkey.dev.horizons.gg` TXT now exists
+in Cloudflare, commented `managed-by:mailops`. `mailops` polls for the key file and publishes the public
+half on the first cycle it finds one, so no further action is needed.
+
+If the record does not appear, check that the key was written:
+
+```bash
+docker compose exec mailserver cat /tmp/docker-mailserver/opendkim/keys/dev.horizons.gg/mail.txt
+```
+
+This step is needed again after wiping the `mail-config` volume, and only then. The key survives
+ordinary restarts.
 
 ## Open relay verification, before the port stays open
 

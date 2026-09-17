@@ -196,9 +196,12 @@ the token does not additionally need `Zone:Read`.
 
 ### The DKIM handshake
 
-`mailserver` generates the OpenDKIM keypair on first start and writes it into `mail-config`. `mailops`
-polls for the key file, and publishes the public half once it appears. Neither container orchestrates
-the other, and a wiped volume regenerates and republishes without intervention.
+`mailserver` holds the OpenDKIM keypair in `mail-config`. `mailops` polls for the key file, and
+publishes the public half once it appears. Neither container orchestrates the other.
+
+The half of this paragraph that said the keypair appears on first start was wrong. See
+**Corrections after implementation** below: the key is created by an explicit operator command, and
+the runbook carries the step.
 
 ### Certificates
 
@@ -370,3 +373,75 @@ Out of scope here, recorded so the seam is built in the right shape.
 2. **Contact form.** A route handler on the site sending outbound through this stack over the Docker
    network. This is the point at which port 587 may become relevant internally.
 3. **Tightening policy.** Moving SPF to `-all` and DMARC to `p=quarantine` once reports justify it.
+
+## Corrections after implementation
+
+Added 2026-09-18, after the branch was built and reviewed. The design above is left as it was written,
+including the reasoning that produced it. This section records where that reasoning rested on something
+untrue, and what is true instead. Nothing above has been quietly rewritten to match.
+
+### The DKIM key is not generated on first start
+
+**The spec said:** "`mailserver` generates the OpenDKIM keypair on first start and writes it into
+`mail-config`", and that "a wiped volume regenerates and republishes without intervention".
+
+**What is actually true:** `docker-mailserver` does not create a keypair on its own, ever. It requires
+an explicit `setup config dkim` run, after which the container must be restarted for OpenDKIM to load
+the key. Nothing in the compose file or `mailops` performs either action, and nothing can: `mailops`
+does not orchestrate `mailserver`, by design.
+
+**Why it mattered:** on an address with no forward-confirmed reverse DNS and a permanent PBL listing,
+DKIM is the only authentication signal this design can actually win. The stack signed nothing, the
+record was never published, and the runbook instructed the operator to wait for something that was
+never going to happen. Nothing in the health checks noticed, because nothing was looking for it.
+
+**What was done:** `mail/RUNBOOK.md` gained a "Generate the DKIM key" step between first start and the
+open-relay test. The order is load-bearing and is stated there: `setup config dkim` derives its domain
+list from the accounts and virtual alias files, so it must run after `mailops` has written
+`postfix-virtual.cf`. The step is needed again after wiping `mail-config`, and only then.
+
+The rest of the handshake description is accurate. `mailops` genuinely does poll for the key file and
+publish the public half on the first cycle it finds one, with no orchestration in either direction.
+
+### The certificate needs a manual restart to reach the wire
+
+**The spec said, implicitly:** that writing a renewed certificate into `mail-certs` was sufficient,
+since "`mailserver` runs `SSL_TYPE=manual` pointing at those files".
+
+**What is actually true:** `SSL_TYPE=manual` does not reliably detect the certificate files changing.
+`mailops` renews around day 60 and Postfix carries on serving the previous certificate until it expires
+around day 90. `mailops` was checking the file on disk rather than what was being served, so
+`status.json` reported healthy throughout.
+
+**What was done:** `mailops` records the expiry of the certificate it caused to be issued and the expiry
+the operator has confirmed `mailserver` picked up, and raises `cert-reload-needed` while the two
+disagree, which flips the healthcheck unhealthy. The reload itself stays a documented manual step. The
+alternative, giving `mailops` the Docker socket so it could restart `mailserver` itself, was rejected:
+it would hand the most privileged capability in the stack to the process that already holds a zone-edit
+token, to save one command every two months.
+
+### The boot gate retries environmental probes
+
+**The spec said:** outbound port 25 unreachable, Cloudflare token rejected and public IP undeterminable
+are hard gate conditions, listed under "Configuration errors knowable before accepting anything".
+
+**Why that needed adjusting:** two of those three are not knowable configuration errors at all. On a
+residential link, a momentarily unreachable outbound 25 or trace endpoint is an environmental condition,
+and the gate treating it as fatal produced a crash-looping `mailops`, a stale A record, and inbound mail
+stopping after the next IP rotation. That is the "failure mode is lost mail" outcome the two-tier
+principle in **Health assertion and failure behaviour** exists to prevent, caused by the gate that
+principle was written for.
+
+**What was done:** the gate's environmental probes now retry five times over roughly 75 seconds before
+the process exits. A credential Cloudflare actively rejects still fails immediately, because retrying
+cannot fix it, and so does a malformed `MAIL_DOMAIN`, which never reaches the gate at all. The principle
+is unchanged; its application to these two checks is.
+
+### `contact@` only, no catch-all
+
+The implementation installed `@<domain>` alongside `contact@<domain>` in the alias map, accepting mail
+for every address at the domain. The spec only ever authorised `contact@`, and **Delivery seam** above
+still describes exactly that. The catch-all is now behind `ACCEPT_CATCHALL`, off by default. The reason
+it matters on this particular stack: forward-only means every accepted dictionary-attack recipient is
+re-sent to the operator's real inbox from an address permanently on the PBL, which risks the operator's
+own provider rate-limiting the single delivery path the design depends on.
