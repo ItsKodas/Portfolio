@@ -7,6 +7,7 @@ import { useEffect, useRef, useState } from 'react'
 import { useSpring, animated, to } from '@react-spring/web'
 
 import { useLite } from '@/app/perf/usePerf'
+import { useRevealed } from '../parallax/curtain'
 
 import styles from './logo.module.css'
 import Logo from './logo.png'
@@ -51,10 +52,12 @@ export default function AnimatedLogo() {
     // (Shown straight away, with no intro, for reduced motion and in the lite hero)
     const lite = useLite()
     const reduceMotion = lite || (typeof window !== 'undefined' && window.matchMedia('(prefers-reduced-motion: reduce)').matches)
+    // (held until the loading curtain lifts, so it isn't played out unseen behind it)
+    const revealed = useRevealed()
 
     const rise = useSpring({
         from: { y: 420, opacity: 0 },
-        to: { y: 0, opacity: 1 },
+        to: revealed ? { y: 0, opacity: 1 } : { y: 420, opacity: 0 },
         delay: 400,
         immediate: reduceMotion,
         config: { mass: 1.4, tension: 120, friction: 26 },
@@ -66,7 +69,7 @@ export default function AnimatedLogo() {
     const [subtitle, subtitleApi] = useSpring(() => ({ p: 0, config: { tension: 90, friction: 20, clamp: true } }))
     const unroll = useSpring({
         from: { p: 0 },
-        to: { p: 1 },
+        to: { p: revealed ? 1 : 0 },
         delay: 1500,
         immediate: reduceMotion,
         config: { tension: 38, friction: 17, clamp: true },
@@ -90,7 +93,7 @@ export default function AnimatedLogo() {
                         transform: to([rise.y, unroll.p], (y, p) => `translate(${(1 - p) * ICON_SHIFT}px, ${y}px)`),
                     }}>
                         <div className='w-[140px] h-[140px] relative'>
-                            <Image src={Logo} alt='Logo' fill className='object-cover' />
+                            <Image priority src={Logo} alt='Horizons logo' fill className='object-cover' />
                         </div>
                     </animated.div>
 
@@ -104,7 +107,7 @@ export default function AnimatedLogo() {
                         <animated.div style={{
                             clipPath: unroll.p.to(p => `inset(0 ${((1 - p) * 100).toFixed(2)}% 0 0)`),
                         }}>
-                            <Typography variant='h1' fontSize={'8rem'} letterSpacing={'10px'} fontWeight={700} className="text-nowrap">HORIZONS</Typography>
+                            <Typography variant='h1' component='p' fontSize={'8rem'} letterSpacing={'10px'} fontWeight={700} className="text-nowrap">HORIZONS</Typography>
                         </animated.div>
                         {/* Hidden above its own top edge (tucked under the title) and slides down into place */}
                         <div className="overflow-hidden" style={{ marginTop: -SUBTITLE_TUCK }}>
@@ -112,7 +115,7 @@ export default function AnimatedLogo() {
                                 transform: subtitle.p.to(p => `translateY(${((1 - p) * -100).toFixed(2)}%)`),
                                 opacity: subtitle.p,
                             }}>
-                                <Typography variant='h2' fontSize={'2.25rem'} letterSpacing={'11px'} className="pl-2 subtitle text-nowrap">Fullstack Web Development</Typography>
+                                <Typography variant='h2' component='p' fontSize={'2.25rem'} letterSpacing={'11px'} className="pl-2 subtitle text-nowrap">Fullstack Web Development</Typography>
                             </animated.div>
                         </div>
                     </animated.div>

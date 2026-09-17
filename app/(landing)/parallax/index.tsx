@@ -20,6 +20,7 @@ import Watchtower from '../watchtower/index'
 import ForegroundTrees from '../trees/index'
 
 import ScrollbarTint from './scrollbarTint'
+import SceneCurtain, { useRevealed } from './curtain'
 import WallpaperLink from './wallpaperLink'
 import styles from './parallax.module.css'
 
@@ -191,8 +192,10 @@ export default function ParallaxView({ children }: Readonly<{ children: React.Re
 
     const [pageHeight, setPageHeight] = useState<number>()
 
-    // Time the first frames, and fall back to the lite hero if the browser can't keep up
-    useEffect(() => watchFrameRate(), [])
+    // Time the first frames once the scene is showing (so loading doesn't count against it), and fall back to the lite
+    // hero if the browser can't keep up
+    const revealed = useRevealed()
+    useEffect(() => { if (revealed) return watchFrameRate() }, [revealed])
 
     // The content moves at (1 + speed)x the scroll, so the page only needs enough scroll
     // for its bottom to reach the bottom of the screen at that rate. (Switching modes remounts the content, so it's
@@ -245,6 +248,7 @@ export default function ParallaxView({ children }: Readonly<{ children: React.Re
         <ThemeProvider theme={DarkTheme}>
             <ScrollbarTint />
             <WallpaperLink />
+            <SceneCurtain />
             <div className='relative overflow-hidden bg-[#0b101f]' style={{ height: pageHeight ?? '100svh' }}>
 
                 {/* ── Hero scene ─────────────────────────────────────── */}
