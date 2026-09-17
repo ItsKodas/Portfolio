@@ -77,4 +77,51 @@ describe('loadConfig', () => {
         })
         assert.ok(failures.includes('RELAY_SPF_INCLUDE is required when RELAY_HOST is set'))
     })
+
+    it('defaults to port 587 when RELAY_PORT is unset', () => {
+        const config = loadConfig({
+            ...base,
+            RELAY_HOST: 'smtp.relay.test',
+            RELAY_USER: 'user',
+            RELAY_PASSWORD: 'pass',
+            RELAY_SPF_INCLUDE: '_spf.relay.test',
+        })
+        assert.equal(config.relay?.port, 587)
+    })
+
+    it('rejects a non-numeric RELAY_PORT', () => {
+        const failures = failuresOf({
+            ...base,
+            RELAY_HOST: 'smtp.relay.test',
+            RELAY_PORT: 'abc',
+            RELAY_USER: 'user',
+            RELAY_PASSWORD: 'pass',
+            RELAY_SPF_INCLUDE: '_spf.relay.test',
+        })
+        assert.ok(failures.includes('RELAY_PORT must be a number between 1 and 65535'))
+    })
+
+    it('rejects RELAY_PORT out of range (too high)', () => {
+        const failures = failuresOf({
+            ...base,
+            RELAY_HOST: 'smtp.relay.test',
+            RELAY_PORT: '70000',
+            RELAY_USER: 'user',
+            RELAY_PASSWORD: 'pass',
+            RELAY_SPF_INCLUDE: '_spf.relay.test',
+        })
+        assert.ok(failures.includes('RELAY_PORT must be a number between 1 and 65535'))
+    })
+
+    it('rejects RELAY_PORT out of range (zero)', () => {
+        const failures = failuresOf({
+            ...base,
+            RELAY_HOST: 'smtp.relay.test',
+            RELAY_PORT: '0',
+            RELAY_USER: 'user',
+            RELAY_PASSWORD: 'pass',
+            RELAY_SPF_INCLUDE: '_spf.relay.test',
+        })
+        assert.ok(failures.includes('RELAY_PORT must be a number between 1 and 65535'))
+    })
 })

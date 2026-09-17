@@ -59,9 +59,22 @@ export function loadConfig(env: Env): Config {
         // Without this, flipping the relay on would leave SPF authorising only our own address, and every
         // relayed message would soft-fail. Refuse to start rather than half-configure it.
         if (!spfInclude) failures.push('RELAY_SPF_INCLUDE is required when RELAY_HOST is set')
+
+        // Validate port: use default 587 if unset/empty, otherwise must be a valid number in range 1-65535
+        let port = 587
+        const portStr = env.RELAY_PORT?.trim()
+        if (portStr) {
+            const parsed = Number(portStr)
+            if (!Number.isFinite(parsed) || parsed < 1 || parsed > 65535) {
+                failures.push('RELAY_PORT must be a number between 1 and 65535')
+            } else {
+                port = parsed
+            }
+        }
+
         relay = {
             host: relayHost,
-            port: Number(env.RELAY_PORT?.trim() || '587'),
+            port,
             user: env.RELAY_USER?.trim() ?? '',
             password: env.RELAY_PASSWORD?.trim() ?? '',
             spfInclude,
