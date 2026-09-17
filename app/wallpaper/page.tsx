@@ -75,9 +75,7 @@ export default function Wallpaper() {
             <div className='relative h-svh overflow-hidden bg-[#0b101f]'>
                 <section className={`absolute inset-x-0 top-0 h-[200svh] ${paused ? styles.paused : ''}`}
                     style={{ transform: `scale(${overscan})`, transformOrigin: '50% 50svh' }}>
-                    <FullScene Layer={MouseLayer} title={null} note={false} />
-                    {/* The sound, along the bottom over the trees, holding still with the screen */}
-                    <Visualizer overscan={overscan} />
+                    <FullScene Layer={MouseLayer} title={null} sound={<Visualizer />} note={false} />
                     {/* The time, date and weather, in front of the scenery, drifting at about the valley's depth */}
                     <MouseLayer speed={0.4}>
                         <Clock />

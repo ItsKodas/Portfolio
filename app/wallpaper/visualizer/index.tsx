@@ -1,9 +1,12 @@
 'use client'
 
-// The sound playing on the computer, drawn along the bottom of the screen over the trees: the left channel on the left
-// and the right channel mirrored on the right, bass at the outside edges rising in towards the treble in the middle.
-// From Wallpaper Engine's audio listener (see mediaScript.ts), so only in Wallpaper Engine; elsewhere nothing's drawn and
-// nothing runs. As bars, or a smooth wave, in white or the colour of the album art that's playing.
+// The sound playing on the computer, rising out of the mountains: the left channel on the left and the right channel
+// mirrored on the right, the bass in the middle running out to the treble at the edges (the loudest lines are then over
+// the valley, where the skyline is lowest and there's sky for them to climb into). It's drawn behind the far
+// mountains (see the scene's sound layer), starting well below the skyline, so the lines climb up out of the ridge, and
+// each fades in from its base to its tip. From Wallpaper Engine's audio listener (see mediaScript.ts), so only in
+// Wallpaper Engine; elsewhere nothing's drawn and nothing runs. As bars, or a smooth wave, in white or the colour of
+// the album art that's playing.
 
 import { useEffect, useRef } from 'react'
 
@@ -17,6 +20,8 @@ const RISE = 0.55          // how much of the way up to a louder level a bar goe
 const FALL = 0.9           // and how much of its height it keeps each frame as it falls back
 const SILENT = 0.002       // below this everything counts as silent, and nothing's drawn
 const LIFT = 0.7           // levels are raised to this power, lifting the quieter ones (they mostly sit well below 1)
+const BASE = 0.62          // where the lines stand, down the screen, far enough below the skyline to be hidden there
+const FADE = 0.45          // the share of a line, from its base up, over which it fades in from nothing
 
 // Which of a channel's levels each bar is the loudness of: the lowest few bins for the bass bar at the outside edge,
 // widening towards the treble, which has less going on to show
@@ -35,8 +40,7 @@ function rgb(ctx: CanvasRenderingContext2D, color: string) {
     return hex.startsWith('#') && hex.length === 7 ? `${n >> 16}, ${(n >> 8) & 255}, ${n & 255}` : '255, 255, 255'
 }
 
-// (overscan: how much the scene it's placed in is scaled up, which it undoes, so it spans the screen exactly)
-export default function Visualizer({ overscan }: { overscan: number }) {
+export default function Visualizer() {
     const { visualizer, visualizerStyle, visualizerHeight, visualizerColor, paused } = useSettings()
     const track = useNowPlaying()
     const color = (visualizerColor === 'album' && track?.color) || '#ffffff'
@@ -61,9 +65,9 @@ export default function Visualizer({ overscan }: { overscan: number }) {
             const audio = window.__wallpaperMedia?.audio
             let loudest = 0
             for (let slot = 0; slot < levels.length; slot++) {
-                // The left channel's bars run in from the left edge, the right channel's in from the right edge
+                // Both channels' bass meets in the middle: the left channel runs out to the left edge, the right to the right
                 const right = slot >= BARS_PER_SIDE
-                const bar = right ? levels.length - 1 - slot : slot
+                const bar = right ? slot - BARS_PER_SIDE : BARS_PER_SIDE - 1 - slot
                 const [from, to] = BINS[bar]
                 let level = 0
                 for (let bin = from; bin < to; bin++) level += audio?.[(right ? 64 : 0) + bin] ?? 0
@@ -90,20 +94,22 @@ export default function Visualizer({ overscan }: { overscan: number }) {
             const slotWidth = width / levels.length
 
             if (style === 'bars') {
-                const gradient = ctx.createLinearGradient(0, 0, 0, height)
-                gradient.addColorStop(0, `rgba(${channels}, 0.95)`)
-                gradient.addColorStop(1, `rgba(${channels}, 0.5)`)
-                ctx.fillStyle = gradient
                 const barWidth = slotWidth * 0.26
                 const radius = Math.min(barWidth / 2, 6 * scale)
-                ctx.beginPath()
                 levels.forEach((level, slot) => {
                     const barHeight = level * height
                     if (barHeight < 1) return
                     const x = slot * slotWidth + (slotWidth - barWidth) / 2
+                    // Each line fades in from its own base, so it seems to climb out of the mountains
+                    const gradient = ctx.createLinearGradient(0, height, 0, height - barHeight)
+                    gradient.addColorStop(0, `rgba(${channels}, 0)`)
+                    gradient.addColorStop(Math.min(FADE, 1), `rgba(${channels}, 0.5)`)
+                    gradient.addColorStop(1, `rgba(${channels}, 0.95)`)
+                    ctx.fillStyle = gradient
+                    ctx.beginPath()
                     ctx.roundRect(x, height - barHeight, barWidth, barHeight + radius, [radius, radius, 0, 0])
+                    ctx.fill()
                 })
-                ctx.fill()
             } else {
                 // A smooth line through the top of each slot, curving through the midpoints between them, filled below
                 const points = Array.from(levels, (level, slot) => [(slot + 0.5) * slotWidth, height - level * height])
@@ -125,8 +131,8 @@ export default function Visualizer({ overscan }: { overscan: number }) {
                 ctx.lineTo(0, height)
                 ctx.closePath()
                 const gradient = ctx.createLinearGradient(0, 0, 0, height)
-                gradient.addColorStop(0, `rgba(${channels}, 0.55)`)
-                gradient.addColorStop(1, `rgba(${channels}, 0.12)`)
+                gradient.addColorStop(0, `rgba(${channels}, 0.5)`)
+                gradient.addColorStop(1, `rgba(${channels}, 0)`)
                 ctx.fillStyle = gradient
                 ctx.fill()
             }
@@ -141,8 +147,9 @@ export default function Visualizer({ overscan }: { overscan: number }) {
 
     if (!visualizer) return null
     return (
-        <div className={styles.screen} style={{ transform: `scale(${1 / overscan})`, transformOrigin: '50% 50svh' }}>
-            <canvas ref={canvasRef} className={styles.canvas} style={{ height: `${visualizerHeight}%` }} />
+        <div className={styles.screen}>
+            <canvas ref={canvasRef} className={styles.canvas}
+                style={{ height: `${visualizerHeight}%`, bottom: `${(1 - BASE) * 100}%` }} />
         </div>
     )
 }

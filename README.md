@@ -27,8 +27,8 @@ The hero scene is also a [Wallpaper Engine](https://www.wallpaperengine.io/) web
 title. The weather is from [Open-Meteo](https://open-meteo.com/), for a place set in the wallpaper's settings or, when
 none is, roughly located from the IP address with [GeoJS](https://www.geojs.io/). Beneath those it shows what's playing on the
 computer (Spotify, a browser or most music apps) through Wallpaper Engine's media integration, which is switched on in
-Wallpaper Engine's own settings. The sound itself is drawn along the bottom of the screen over the
-trees, as bars or a wave.
+Wallpaper Engine's own settings. The sound itself rises out of the mountains, behind the far ones
+so only what clears the skyline shows, as bars or a wave.
 
 ```bash
 npm run wallpaper

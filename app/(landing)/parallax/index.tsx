@@ -79,8 +79,8 @@ function LiteLayer({ speed, className = styles.layer, style, children }: LayerPr
 
 // The full hero: every part of the scene at its own depth, each springing after the scroll. The desktop wallpaper
 // (app/wallpaper) shows the same scene with layers that follow the mouse instead, and no title or note.
-type SceneProps = { Layer?: React.ComponentType<LayerProps>, title?: React.ReactNode, note?: boolean }
-export function FullScene({ Layer = ScrollLayer, title = <AnimatedLogo />, note = true }: SceneProps) {
+type SceneProps = { Layer?: React.ComponentType<LayerProps>, title?: React.ReactNode, sound?: React.ReactNode, note?: boolean }
+export function FullScene({ Layer = ScrollLayer, title = <AnimatedLogo />, sound, note = true }: SceneProps) {
     return (
         <>
             <Layer speed={0.1}>
@@ -91,6 +91,10 @@ export function FullScene({ Layer = ScrollLayer, title = <AnimatedLogo />, note 
             <Layer speed={0.15}>
                 <CloudStream />
             </Layer>
+
+            {/* Anything rising out of the mountains (the wallpaper's sound, see app/wallpaper), at their depth so it
+                keeps its place against the ridge, and behind them so it only shows where it clears the skyline */}
+            {sound && <Layer speed={0.2}>{sound}</Layer>}
 
             <Layer speed={0.2}>
                 <Image priority src={MountainsFar} alt='MountainsFar' fill className='object-cover' />

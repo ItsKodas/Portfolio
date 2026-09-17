@@ -6,10 +6,9 @@
     pointer-events: none;
 }
 
-/* Along the bottom, as tall as the setting says */
+/* Standing on the line the lines rise from (set in index.tsx), as tall as the setting says */
 .canvas {
     position: absolute;
     left: 0;
-    bottom: 0;
     width: 100%;
 }

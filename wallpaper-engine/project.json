@@ -205,8 +205,8 @@
 				"type": "slider",
 				"condition": "showvisualizer.value",
 				"min": 5,
-				"max": 60,
-				"value": 18
+				"max": 40,
+				"value": 20
 			},
 			"visualizercolor": {
 				"order": 18,
