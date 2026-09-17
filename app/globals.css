@@ -21,18 +21,13 @@ body {
 }
 
 
-/* Scrollbar: a slim, muted pill floating on the night (a transparent border gives it room on either side). Its colour,
-   --scrollbar-thumb, is set by the page to suit the part of the scene on screen (see parallax/scrollbarTint.tsx). */
-:root {
-  --scrollbar-thumb: #3e5892;
-}
-
-/* (Firefox only understands plain colours; they're kept to Firefox because Chrome ignores the pill styles below
-   whenever these are set) */
+/* Scrollbar: a slim, muted pill floating on the night (a transparent border gives it room on either side). Its colour
+   follows the part of the scene on screen: the page sets it in a stylesheet of its own (see parallax/scrollbarTint.tsx);
+   these are the starting colours. */
 @supports (-moz-appearance: none) {
   html {
     scrollbar-width: thin;
-    scrollbar-color: var(--scrollbar-thumb) #0b101f;
+    scrollbar-color: #5c68a0 #0b101f;
   }
 }
 
@@ -45,16 +40,14 @@ body {
 }
 
 ::-webkit-scrollbar-thumb {
-  background: var(--scrollbar-thumb);
+  background-color: #5c68a0;
   border: 3px solid transparent;
   border-radius: 999px;
   background-clip: padding-box;
 }
 
 ::-webkit-scrollbar-thumb:hover {
-  background: color-mix(in srgb, var(--scrollbar-thumb), white 18%);
-  border: 3px solid transparent;
-  background-clip: padding-box;
+  background-color: #7f89b8;
 }
 
 ::-webkit-scrollbar-corner {

@@ -1,12 +1,14 @@
-.fireflies {
+/* Every firefly is its own element, moved only with transform and opacity, so the graphics card can animate it without
+   repainting */
+
+.layer {
     position: absolute;
     inset: 0;
     width: 100%;
     height: 100%;
-    pointer-events: none;
 }
 
-/* Lazy wandering loops around each firefly's spot (canvas units; about half that in screen pixels) */
+/* Lazy wandering loops around each firefly's spot, as percentages of its 40-unit box (so 100% is 40 canvas units) */
 .wander {
     animation-timing-function: ease-in-out;
     animation-iteration-count: infinite;
@@ -18,23 +20,23 @@
 
 @keyframes wander0 {
     0%, 100% { transform: translate(0, 0); }
-    30%      { transform: translate(22px, -14px); }
-    60%      { transform: translate(8px, -30px); }
-    80%      { transform: translate(-14px, -12px); }
+    30%      { transform: translate(55%, -35%); }
+    60%      { transform: translate(20%, -75%); }
+    80%      { transform: translate(-35%, -30%); }
 }
 
 @keyframes wander1 {
     0%, 100% { transform: translate(0, 0); }
-    25%      { transform: translate(-20px, -8px); }
-    55%      { transform: translate(-6px, 18px); }
-    80%      { transform: translate(18px, 6px); }
+    25%      { transform: translate(-50%, -20%); }
+    55%      { transform: translate(-15%, 45%); }
+    80%      { transform: translate(45%, 15%); }
 }
 
 @keyframes wander2 {
     0%, 100% { transform: translate(0, 0); }
-    35%      { transform: translate(14px, 20px); }
-    65%      { transform: translate(-18px, 10px); }
-    85%      { transform: translate(-8px, -16px); }
+    35%      { transform: translate(35%, 50%); }
+    65%      { transform: translate(-45%, 25%); }
+    85%      { transform: translate(-20%, -40%); }
 }
 
 /* Glowing on and off */
