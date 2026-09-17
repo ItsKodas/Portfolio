@@ -32,10 +32,11 @@ npm run wallpaper
 ```
 
 This builds it into `dist/wallpaper-engine`. In Wallpaper Engine, open the editor ("Create Wallpaper"), choose
-`dist/wallpaper-engine/index.html`, and it can be saved or published to the Workshop from there. Its settings (which of
-the time, date and weather show, clock format, weather location and units, mouse parallax and strength, still scenery)
-are defined in `wallpaper-engine/project.json`, and can be tried in a browser with query parameters, e.g.
-`/wallpaper?hours=24&location=Perth, AU&units=fahrenheit&weather=0&strength=80&still=1`.
+`dist/wallpaper-engine/index.html`, and it can be saved or published to the Workshop from there. Its settings are defined
+in `wallpaper-engine/project.json`: the time (12- or 24-hour, seconds), date and weather (location, units, high and low)
+and their size, mouse parallax and its strength, and the scene's motion, all at once or part by part (clouds, stars,
+shooting stars, wind, fireflies, water, the watchtower's light). They can be tried in a browser with query parameters
+named as in `app/wallpaper/settings.ts`, e.g. `/wallpaper?hours=24&seconds=1&location=Perth, AU&size=80&wind=0&still=1`.
 
 ## Learn More
 

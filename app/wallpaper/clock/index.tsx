@@ -16,18 +16,20 @@ import styles from './clock.module.css'
 const NATURAL_WIDTH = 960
 const BOTTOM = 56 // how far below the logo slot's line the block's bottom sits, at natural size
 
-// The current time, updated as the minute turns (checked each second, so it catches up straight after a sleep)
-function useNow() {
+// The current time, updated as the minute turns, or each second when they're showing (checked a few times a second, so
+// it catches up straight after a sleep and the seconds never skip one)
+function useNow(seconds: boolean) {
     const [now, setNow] = useState<Date | null>(null)
     useEffect(() => {
+        const step = seconds ? 1000 : 60_000
         const tick = () => setNow(last => {
             const next = new Date()
-            return last && last.getMinutes() === next.getMinutes() && next.getTime() - last.getTime() < 60_000 ? last : next
+            return last && Math.floor(last.getTime() / step) === Math.floor(next.getTime() / step) ? last : next
         })
         tick()
-        const timer = setInterval(tick, 1000)
+        const timer = setInterval(tick, 250)
         return () => clearInterval(timer)
-    }, [])
+    }, [seconds])
     return now
 }
 
@@ -55,8 +57,8 @@ function WeatherIcon({ weather }: { weather: Weather }) {
 }
 
 export default function Clock() {
-    const { clock, date, weather: showWeather, hours, location, units } = useSettings()
-    const now = useNow()
+    const { clock, hours, seconds, date, weather: showWeather, location, units, highLow, size } = useSettings()
+    const now = useNow(clock && seconds)
     const weather = useWeather(showWeather, location, units === 'auto' ? localUnit() : units)
 
     // Scaled to the slot's width, like the logo
@@ -73,8 +75,8 @@ export default function Clock() {
     // (a 24-hour clock reads 09:05, a 12-hour one 9:05 am)
     const hour12 = hours === 'auto' ? new Intl.DateTimeFormat(undefined, { hour: 'numeric' }).resolvedOptions().hour12 : hours === '12'
     const time = now && new Intl.DateTimeFormat(undefined, hour12
-        ? { hour: 'numeric', minute: '2-digit', hour12: true }
-        : { hour: '2-digit', minute: '2-digit', hourCycle: 'h23' }).formatToParts(now)
+        ? { hour: 'numeric', minute: '2-digit', ...(seconds && { second: '2-digit' as const }), hour12: true }
+        : { hour: '2-digit', minute: '2-digit', ...(seconds && { second: '2-digit' as const }), hourCycle: 'h23' }).formatToParts(now)
     const clockText = time?.filter(p => p.type !== 'dayPeriod').map(p => p.value).join('').trim()
     const period = time?.find(p => p.type === 'dayPeriod')?.value
     const dateText = now && new Intl.DateTimeFormat(undefined, { weekday: 'long', day: 'numeric', month: 'long' }).format(now)
@@ -82,7 +84,7 @@ export default function Clock() {
     return (
         <div className={logo.canvas}>
             <div ref={slotRef} className={logo.slot}>
-                <div className={`${styles.block} select-none`} style={{ width: NATURAL_WIDTH, transform: `translate(-50%, -100%) translateY(${BOTTOM * scale}px) scale(${scale})` }}>
+                <div className={`${styles.block} select-none`} style={{ width: NATURAL_WIDTH, transform: `translate(-50%, -100%) translateY(${BOTTOM * scale}px) scale(${scale * size / 100})` }}>
                     {clock && clockText && (
                         <div className={`${styles.time} ${styles.rise}`}>
                             {clockText}
@@ -97,7 +99,7 @@ export default function Clock() {
                             <WeatherIcon weather={weather} />
                             <span className={styles.temperature}>{weather.temperature}°</span>
                             <span>{describe(weather.code)}</span>
-                            <span className={styles.range}>H {weather.high}° · L {weather.low}°</span>
+                            {highLow && <span className={styles.range}>H {weather.high}° · L {weather.low}°</span>}
                         </div>
                     )}
                 </div>

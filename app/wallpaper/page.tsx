@@ -15,7 +15,7 @@ import { FullScene, type LayerProps } from '@/app/(landing)/parallax'
 import styles from '@/app/(landing)/parallax/parallax.module.css'
 
 import Clock from './clock'
-import { useSettings } from './settings'
+import { MOTION, useSettings } from './settings'
 
 // How far the nearest layer drifts at full strength, as a share of the screen's width (the scene is scaled up by
 // twice this so its edges never come into view). Layers drift half as far up and down as they do sideways.
@@ -55,9 +55,14 @@ function MouseLayer({ speed, className = styles.layer, style, children }: LayerP
 }
 
 export default function Wallpaper() {
-    const { parallax, strength, still, paused } = useSettings()
+    const settings = useSettings()
+    const { parallax, strength, still, paused } = settings
 
     useEffect(() => setPerf(still ? 'lite' : 'full'), [still])
+
+    // The parts of the scene switched off in the settings, for the stylesheets' html[data-still~="..."] rules
+    const held = MOTION.filter(part => !settings[part]).join(' ')
+    useEffect(() => { document.documentElement.dataset.still = held }, [held])
 
     // (plus a hair, so rounding never leaves a sliver of edge showing)
     const overscan = parallax ? 1.005 + 2 * MAX_SHIFT * strength / 100 : 1
