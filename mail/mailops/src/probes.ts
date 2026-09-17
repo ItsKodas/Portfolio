@@ -16,12 +16,20 @@ export function probeOutboundSmtp(host: string, port = 25, timeoutMs = 8000): Pr
             socket.destroy()
             resolve(result)
         }
+        let buffer = Buffer.alloc(0)
         socket.setTimeout(timeoutMs)
         socket.once('timeout', () => done({ ok: false, error: `no banner from ${host}:${port} within ${timeoutMs}ms` }))
         socket.once('error', error => done({ ok: false, error: (error as Error).message }))
-        socket.once('data', chunk => {
-            const banner = chunk.toString('ascii').trim()
-            done({ ok: banner.startsWith('220'), banner })
+        socket.on('data', chunk => {
+            buffer = Buffer.concat([buffer, chunk])
+            const bannerText = buffer.toString('ascii')
+            const lineEnd = bannerText.indexOf('\r\n')
+            if (lineEnd >= 0) {
+                const banner = bannerText.substring(0, lineEnd).trim()
+                socket.removeAllListeners()
+                socket.destroy()
+                resolve({ ok: banner.startsWith('220'), banner })
+            }
         })
     })
 }
@@ -70,14 +78,18 @@ const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', '
 
 // Evidence that inbound 25 actually reaches us. We cannot test that ourselves from inside the network, since
 // NAT loopback would report success regardless, so real deliveries are the honest signal.
-export function lastInboundConnection(log: string): Date | null {
+export function lastInboundConnection(log: string, now = new Date()): Date | null {
     let latest: Date | null = null
+    const currentMonth = now.getMonth()
+    const currentYear = now.getFullYear()
     for (const line of log.split('\n')) {
         const match = CONNECT.exec(line)
         if (!match) continue
         const month = MONTHS.indexOf(match[1]!)
         if (month < 0) continue
-        const when = new Date(new Date().getFullYear(), month, Number(match[2]), Number(match[3]), Number(match[4]), Number(match[5]))
+        // If the parsed month is later than the current month, attribute it to the previous year
+        const year = month > currentMonth ? currentYear - 1 : currentYear
+        const when = new Date(year, month, Number(match[2]), Number(match[3]), Number(match[4]), Number(match[5]))
         if (!latest || when > latest) latest = when
     }
     return latest
