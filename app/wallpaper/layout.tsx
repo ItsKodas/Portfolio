@@ -1,6 +1,7 @@
 import type { Metadata } from 'next'
 
 import { SITE } from '../site'
+import { MEDIA_SCRIPT } from './mediaScript'
 
 const title = 'Live Wallpaper for Wallpaper Engine'
 const description = 'The Horizons night scene as a free animated desktop wallpaper: drifting clouds, twinkling stars, a wind-blown forest and fireflies, with parallax that follows your mouse and the time, date and weather above the mountains.'
@@ -17,5 +18,11 @@ export const metadata: Metadata = {
 }
 
 export default function WallpaperLayout({ children }: Readonly<{ children: React.ReactNode }>) {
-    return children
+    return (
+        <>
+            {/* Registers for what's playing before anything else runs, as Wallpaper Engine asks (see media.ts) */}
+            <script dangerouslySetInnerHTML={{ __html: MEDIA_SCRIPT }} />
+            {children}
+        </>
+    )
 }

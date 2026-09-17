@@ -1,0 +1,130 @@
+.nowPlaying {
+    display: flex;
+    align-items: center;
+    gap: 24px;
+    transition: opacity 0.6s ease;
+}
+
+/* Hung below the block of lines it's placed in (at the block's natural size), centred under them */
+.center {
+    position: absolute;
+    top: 100%;
+    left: 50%;
+    margin-top: 56px;
+    transform: translateX(-50%);
+}
+
+/* A corner of the screen to pin it in (placed and scaled in index.tsx), with the same shadow as the lines in the middle */
+.corner {
+    position: fixed;
+    z-index: 40;
+    color: #fff;
+    text-shadow: 0 4px 30px rgba(11, 16, 31, 0.35);
+    white-space: nowrap;
+    pointer-events: none;
+}
+
+/* In the right-hand corners the album art goes to the outside edge, and the words line up against it */
+.right {
+    flex-direction: row-reverse;
+}
+
+.right .details {
+    align-items: flex-end;
+}
+
+.hidden {
+    opacity: 0;
+}
+
+/* Paused, it steps back a little */
+.paused {
+    opacity: 0.7;
+}
+
+.hidden.paused {
+    opacity: 0;
+}
+
+.art {
+    flex: none;
+    width: 96px;
+    height: 96px;
+    border-radius: 14px;
+    object-fit: cover;
+    box-shadow: 0 12px 40px -12px rgba(11, 16, 31, 0.7);
+}
+
+/* In place of album art, when the player gives none */
+.noArt {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    border: 1px solid rgba(255, 255, 255, 0.2);
+    background: rgba(17, 26, 56, 0.35);
+}
+
+.noArtIcon {
+    font-size: 44px !important;
+    color: rgba(236, 244, 255, 0.7);
+}
+
+.details {
+    display: flex;
+    flex-direction: column;
+    min-width: 0;
+    max-width: 560px;
+}
+
+.title {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 1.75rem;
+    font-weight: 600;
+    letter-spacing: 1px;
+}
+
+.pauseIcon {
+    flex: none;
+    font-size: 1.9rem !important;
+}
+
+.artist {
+    margin-top: 2px;
+    font-size: 1.4rem;
+    letter-spacing: 1px;
+    color: rgba(236, 244, 255, 0.7);
+}
+
+.ellipsis {
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.timeline {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    margin-top: 12px;
+    font-size: 1.05rem;
+    letter-spacing: 1px;
+    font-variant-numeric: tabular-nums;
+    color: rgba(236, 244, 255, 0.6);
+}
+
+.bar {
+    width: 320px;
+    height: 4px;
+    border-radius: 999px;
+    background: rgba(255, 255, 255, 0.2);
+    overflow: hidden;
+}
+
+/* Moves on smoothly between the once-a-second updates */
+.fill {
+    height: 100%;
+    border-radius: inherit;
+    background: rgba(255, 255, 255, 0.9);
+    transition: width 1s linear;
+}

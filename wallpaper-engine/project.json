@@ -10,6 +10,7 @@
 	],
 	"contentrating": "Everyone",
 	"general": {
+		"supportsaudioprocessing": true,
 		"properties": {
 			"schemecolor": {
 				"order": 0,
@@ -105,8 +106,64 @@
 				"condition": "showweather.value",
 				"value": true
 			},
-			"textsize": {
+			"nowplaying": {
 				"order": 10,
+				"text": "Show what's playing (turn on Media Integration in Wallpaper Engine's settings)",
+				"type": "combo",
+				"value": "always",
+				"options": [
+					{
+						"label": "While a track is loaded",
+						"value": "always"
+					},
+					{
+						"label": "Only while playing",
+						"value": "playing"
+					},
+					{
+						"label": "Never",
+						"value": "off"
+					}
+				]
+			},
+			"musicprogress": {
+				"order": 11,
+				"text": "Show track progress",
+				"type": "bool",
+				"condition": "nowplaying.value != 'off'",
+				"value": true
+			},
+			"musicposition": {
+				"order": 12,
+				"text": "What's playing position",
+				"type": "combo",
+				"condition": "nowplaying.value != 'off'",
+				"value": "center",
+				"options": [
+					{
+						"label": "Under the time",
+						"value": "center"
+					},
+					{
+						"label": "Top left",
+						"value": "top-left"
+					},
+					{
+						"label": "Top right",
+						"value": "top-right"
+					},
+					{
+						"label": "Bottom left",
+						"value": "bottom-left"
+					},
+					{
+						"label": "Bottom right",
+						"value": "bottom-right"
+					}
+				]
+			},
+			"textsize": {
+				"order": 13,
 				"text": "Time, date and weather size",
 				"type": "slider",
 				"min": 50,
@@ -114,19 +171,77 @@
 				"value": 100
 			},
 			"animatetext": {
-				"order": 11,
+				"order": 14,
 				"text": "Animate time, date and weather in",
 				"type": "bool",
 				"value": true
 			},
+			"showvisualizer": {
+				"order": 15,
+				"text": "Audio visualiser",
+				"type": "bool",
+				"value": true
+			},
+			"visualizerstyle": {
+				"order": 16,
+				"text": "Visualiser style",
+				"type": "combo",
+				"condition": "showvisualizer.value",
+				"value": "bars",
+				"options": [
+					{
+						"label": "Bars",
+						"value": "bars"
+					},
+					{
+						"label": "Wave",
+						"value": "wave"
+					}
+				]
+			},
+			"visualizerheight": {
+				"order": 17,
+				"text": "Visualiser height",
+				"type": "slider",
+				"condition": "showvisualizer.value",
+				"min": 5,
+				"max": 40,
+				"value": 20
+			},
+			"visualizercolor": {
+				"order": 18,
+				"text": "Visualiser colour",
+				"type": "combo",
+				"condition": "showvisualizer.value",
+				"value": "white",
+				"options": [
+					{
+						"label": "White",
+						"value": "white"
+					},
+					{
+						"label": "Album art colour",
+						"value": "album"
+					}
+				]
+			},
+			"visualizeropacity": {
+				"order": 19,
+				"text": "Visualiser opacity",
+				"type": "slider",
+				"condition": "showvisualizer.value",
+				"min": 10,
+				"max": 100,
+				"value": 100
+			},
 			"mouseparallax": {
-				"order": 12,
+				"order": 20,
 				"text": "Mouse parallax",
 				"type": "bool",
 				"value": true
 			},
 			"parallaxstrength": {
-				"order": 13,
+				"order": 21,
 				"text": "Parallax strength",
 				"type": "slider",
 				"condition": "mouseparallax.value",
@@ -135,55 +250,55 @@
 				"value": 50
 			},
 			"stillscenery": {
-				"order": 14,
+				"order": 22,
 				"text": "Still scenery: all animation off (lowest GPU use)",
 				"type": "bool",
 				"value": false
 			},
 			"animateclouds": {
-				"order": 15,
+				"order": 23,
 				"text": "Drifting clouds",
 				"type": "bool",
 				"condition": "!stillscenery.value",
 				"value": true
 			},
 			"animatestars": {
-				"order": 16,
+				"order": 24,
 				"text": "Twinkling stars",
 				"type": "bool",
 				"condition": "!stillscenery.value",
 				"value": true
 			},
 			"shootingstars": {
-				"order": 17,
+				"order": 25,
 				"text": "Shooting stars",
 				"type": "bool",
 				"condition": "!stillscenery.value",
 				"value": true
 			},
 			"animatewind": {
-				"order": 18,
+				"order": 26,
 				"text": "Wind in the trees",
 				"type": "bool",
 				"condition": "!stillscenery.value",
 				"value": true
 			},
 			"animatefireflies": {
-				"order": 19,
+				"order": 27,
 				"text": "Fireflies",
 				"type": "bool",
 				"condition": "!stillscenery.value",
 				"value": true
 			},
 			"animatewater": {
-				"order": 20,
+				"order": 28,
 				"text": "Water and fog",
 				"type": "bool",
 				"condition": "!stillscenery.value",
 				"value": true
 			},
 			"animatewatchtower": {
-				"order": 21,
+				"order": 29,
 				"text": "Watchtower light",
 				"type": "bool",
 				"condition": "!stillscenery.value",

@@ -3,10 +3,14 @@ import { useSyncExternalStore } from 'react'
 // The wallpaper's settings, as chosen in Wallpaper Engine's properties panel (see wallpaper-engine/project.json).
 // Wallpaper Engine hands them over through window.wallpaperPropertyListener, once on load and again whenever one is
 // changed. In a normal browser the same settings can be tried from the address bar by their names here, e.g.
-// /wallpaper?hours=24&seconds=1&location=Perth, AU&units=fahrenheit&size=80&wind=0&still=1
+// /wallpaper?hours=24&seconds=1&location=Perth, AU&units=fahrenheit&music=playing&musicPosition=bottom-left&visualizerStyle=wave&size=80&wind=0&still=1
 
 const HOURS = ['12', '24', 'auto'] as const
 const UNITS = ['auto', 'celsius', 'fahrenheit'] as const
+const MUSIC = ['always', 'playing', 'off'] as const
+export const MUSIC_POSITIONS = ['center', 'top-left', 'top-right', 'bottom-left', 'bottom-right'] as const
+const VISUALIZER_STYLES = ['bars', 'wave'] as const
+const VISUALIZER_COLORS = ['white', 'album'] as const
 
 const DEFAULTS = {
     // The time, date and weather
@@ -19,7 +23,17 @@ const DEFAULTS = {
     units: 'auto' as typeof UNITS[number],      // temperature units (auto follows the system's region)
     highLow: true,                              // today's high and low beside the weather
     place: true,                                // the town the weather is for
+    music: 'always' as typeof MUSIC[number],    // what's playing under all that: whenever a track's loaded, only while it plays, or never
+    progress: true,                             // how far into the track it is
+    musicPosition: 'center' as typeof MUSIC_POSITIONS[number], // under the time, date and weather, or in a corner of the screen
     size: 100,                                  // the size of all that, as a percentage
+
+    // The sound
+    visualizer: true,                                          // the sound's levels along the bottom of the screen
+    visualizerStyle: 'bars' as typeof VISUALIZER_STYLES[number], // as bars, or a smooth wave
+    visualizerHeight: 20,                                      // how high the loudest reaches, as a percentage of the screen
+    visualizerColor: 'white' as typeof VISUALIZER_COLORS[number], // white, or the playing album art's colour
+    visualizerOpacity: 100,                                    // how solid the lines are, as a percentage
 
     // Motion
     parallax: true,       // layers drifting with the mouse
@@ -45,7 +59,10 @@ export const MOTION = ['clouds', 'stars', 'shooting', 'wind', 'fireflies', 'wate
 // Wallpaper Engine's property names (in project.json) for each setting
 const PROPERTIES: Record<string, keyof WallpaperSettings> = {
     showclock: 'clock', clockformat: 'hours', showseconds: 'seconds', showdate: 'date', showweather: 'weather',
-    weatherlocation: 'location', temperatureunits: 'units', showhighlow: 'highLow', showplace: 'place', textsize: 'size',
+    weatherlocation: 'location', temperatureunits: 'units', showhighlow: 'highLow', showplace: 'place',
+    nowplaying: 'music', musicprogress: 'progress', musicposition: 'musicPosition', textsize: 'size',
+    showvisualizer: 'visualizer', visualizerstyle: 'visualizerStyle', visualizerheight: 'visualizerHeight',
+    visualizercolor: 'visualizerColor', visualizeropacity: 'visualizerOpacity',
     mouseparallax: 'parallax', parallaxstrength: 'strength', stillscenery: 'still',
     animateclouds: 'clouds', animatestars: 'stars', shootingstars: 'shooting', animatewind: 'wind',
     animatefireflies: 'fireflies', animatewater: 'water', animatewatchtower: 'watchtower', animatetext: 'intro',
@@ -62,6 +79,10 @@ function read(key: keyof WallpaperSettings, value: unknown): unknown {
     if (typeof current === 'number') return value === '' || value == null || isNaN(Number(value)) ? undefined : Number(value)
     if (key === 'hours') return HOURS.find(o => o === String(value))
     if (key === 'units') return UNITS.find(o => o === String(value))
+    if (key === 'music') return MUSIC.find(o => o === String(value))
+    if (key === 'musicPosition') return MUSIC_POSITIONS.find(o => o === String(value))
+    if (key === 'visualizerStyle') return VISUALIZER_STYLES.find(o => o === String(value))
+    if (key === 'visualizerColor') return VISUALIZER_COLORS.find(o => o === String(value))
     return String(value ?? '')
 }
 

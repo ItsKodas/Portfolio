@@ -16,6 +16,8 @@ import styles from '@/app/(landing)/parallax/parallax.module.css'
 import SceneCurtain from '@/app/(landing)/parallax/curtain'
 
 import Clock from './clock'
+import Visualizer from './visualizer'
+import { NowPlayingCorner } from './nowPlaying'
 import SiteLinks from './siteLinks'
 import { MOTION, useSettings } from './settings'
 
@@ -74,13 +76,14 @@ export default function Wallpaper() {
             <div className='relative h-svh overflow-hidden bg-[#0b101f]'>
                 <section className={`absolute inset-x-0 top-0 h-[200svh] ${paused ? styles.paused : ''}`}
                     style={{ transform: `scale(${overscan})`, transformOrigin: '50% 50svh' }}>
-                    <FullScene Layer={MouseLayer} title={null} note={false} />
+                    <FullScene Layer={MouseLayer} title={null} sound={<Visualizer />} note={false} />
                     {/* The time, date and weather, in front of the scenery, drifting at about the valley's depth */}
                     <MouseLayer speed={0.4}>
                         <Clock />
                     </MouseLayer>
                 </section>
             </div>
+            <NowPlayingCorner />
             <SiteLinks />
             <SceneCurtain />
         </ThemeProvider>

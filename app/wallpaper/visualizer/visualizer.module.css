@@ -1,0 +1,7 @@
+/* Filling its piece of the art canvas (see index.tsx), where it's drawn in the art's own units */
+.canvas {
+    position: absolute;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+}
