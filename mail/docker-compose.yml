@@ -7,6 +7,10 @@ services:
     image: mailserver/docker-mailserver:15.0
     container_name: horizons-mailserver
     hostname: mail.${MAIL_DOMAIN:?set MAIL_DOMAIN in mail/.env}
+    # Only .env. The Cloudflare zone-edit token lives in .env.mailops and must never reach this
+    # container: it terminates untrusted SMTP from the public internet and parses hostile MIME, so it
+    # is the most likely thing here to be compromised, and the managed-by guard exists precisely to
+    # bound what a compromise can do to the live site's DNS.
     env_file: .env
     environment:
       OVERRIDE_HOSTNAME: mail.${MAIL_DOMAIN}
@@ -36,7 +40,9 @@ services:
   mailops:
     build: ./mailops
     container_name: horizons-mailops
-    env_file: .env
+    env_file:
+      - .env
+      - .env.mailops
     environment:
       MAIL_CONFIG_DIR: /mail-config
       MAIL_LOG_FILE: /mail-logs/mail.log

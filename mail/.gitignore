@@ -1,3 +1,10 @@
 # The root .gitignore uses /node_modules, which is root-only, so mailops' dependencies would sit in
 # git status forever and a single `git add -A` would commit them.
 node_modules/
+
+# The root .gitignore's `.env*` correctly hides mail/.env and mail/.env.mailops, but it also hides the
+# committed templates. mail/.env.example predates the rule and survives only because it is already
+# tracked. Re-include the templates explicitly so a new one cannot be silently un-committable.
+# The real files stay ignored: no negation is added for them.
+!.env.example
+!.env.mailops.example

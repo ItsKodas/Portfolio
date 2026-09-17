@@ -3,8 +3,25 @@
 ## Before first start
 
 1. Create a Cloudflare API token scoped to **Zone:DNS:Edit on `horizons.gg` only**. Nothing else.
-2. Copy `mail/.env.example` to `mail/.env` and fill in `CF_API_TOKEN`, `CF_ZONE_ID`, `FORWARD_TO` and `DMARC_RUA`.
-3. Do **not** forward port 25 on the modem yet.
+2. Copy `mail/.env.example` to `mail/.env` and fill in `FORWARD_TO` and `DMARC_RUA`.
+3. Copy `mail/.env.mailops.example` to `mail/.env.mailops` and fill in `CF_API_TOKEN` and `CF_ZONE_ID`.
+4. Do **not** forward port 25 on the modem yet.
+
+Both files are gitignored. The split is deliberate and is a security boundary, not tidiness.
+
+### Why the credentials live in a second file
+
+`mail/.env` is read by both containers. `mail/.env.mailops` is read only by `mailops`.
+
+The token can edit every DNS record in the `horizons.gg` zone, including the ones serving the live
+site. The `mailserver` container terminates untrusted SMTP from the public internet and parses hostile
+MIME through Rspamd, so it is the most likely component in this stack to be compromised, and it has no
+use whatsoever for the Cloudflare values. Keeping them out of its environment is what bounds the blast
+radius, alongside the `managed-by` guard.
+
+**If a real token has ever been present in the `mailserver` container's environment, rotate it.** Moving
+the value to a different file does not undo the exposure. Revoke the old token in the Cloudflare
+dashboard, issue a new one with the same scope, and put the new value in `mail/.env.mailops`.
 
 ## First start
 
