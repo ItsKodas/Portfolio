@@ -27,8 +27,8 @@ The hero scene is also a [Wallpaper Engine](https://www.wallpaperengine.io/) web
 title. The weather is from [Open-Meteo](https://open-meteo.com/), for a place set in the wallpaper's settings or, when
 none is, roughly located from the IP address with [GeoJS](https://www.geojs.io/). Beneath those it shows what's playing on the
 computer (Spotify, a browser or most music apps) through Wallpaper Engine's media integration, which is switched on in
-Wallpaper Engine's own settings. The sound itself rises out of the mountains, behind the far ones
-so only what clears the skyline shows, as bars or a wave.
+Wallpaper Engine's own settings. The sound itself rises out of the mountains, each line standing
+below the skyline where it is so only what clears it shows, as bars or a wave.
 
 ```bash
 npm run wallpaper
@@ -38,7 +38,7 @@ This builds it into `dist/wallpaper-engine`. In Wallpaper Engine, open the edito
 `dist/wallpaper-engine/index.html`, and it can be saved or published to the Workshop from there. Its settings are defined
 in `wallpaper-engine/project.json`: the time (12- or 24-hour, seconds), date and weather (location, units, high and low)
 what's playing, its progress and where it sits, the audio visualiser's style,
-height and colour, and their size, mouse parallax and its strength, and the scene's motion, all at once or part by part (clouds, stars,
+height, colour and opacity, and their size, mouse parallax and its strength, and the scene's motion, all at once or part by part (clouds, stars,
 shooting stars, wind, fireflies, water, the watchtower's light). They can be tried in a browser with query parameters
 named as in `app/wallpaper/settings.ts`, e.g. `/wallpaper?hours=24&seconds=1&location=Perth, AU&size=80&wind=0&still=1`.
 

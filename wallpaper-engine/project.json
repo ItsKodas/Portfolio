@@ -225,14 +225,23 @@
 					}
 				]
 			},
-			"mouseparallax": {
+			"visualizeropacity": {
 				"order": 19,
+				"text": "Visualiser opacity",
+				"type": "slider",
+				"condition": "showvisualizer.value",
+				"min": 10,
+				"max": 100,
+				"value": 100
+			},
+			"mouseparallax": {
+				"order": 20,
 				"text": "Mouse parallax",
 				"type": "bool",
 				"value": true
 			},
 			"parallaxstrength": {
-				"order": 20,
+				"order": 21,
 				"text": "Parallax strength",
 				"type": "slider",
 				"condition": "mouseparallax.value",
@@ -241,55 +250,55 @@
 				"value": 50
 			},
 			"stillscenery": {
-				"order": 21,
+				"order": 22,
 				"text": "Still scenery: all animation off (lowest GPU use)",
 				"type": "bool",
 				"value": false
 			},
 			"animateclouds": {
-				"order": 22,
+				"order": 23,
 				"text": "Drifting clouds",
 				"type": "bool",
 				"condition": "!stillscenery.value",
 				"value": true
 			},
 			"animatestars": {
-				"order": 23,
+				"order": 24,
 				"text": "Twinkling stars",
 				"type": "bool",
 				"condition": "!stillscenery.value",
 				"value": true
 			},
 			"shootingstars": {
-				"order": 24,
+				"order": 25,
 				"text": "Shooting stars",
 				"type": "bool",
 				"condition": "!stillscenery.value",
 				"value": true
 			},
 			"animatewind": {
-				"order": 25,
+				"order": 26,
 				"text": "Wind in the trees",
 				"type": "bool",
 				"condition": "!stillscenery.value",
 				"value": true
 			},
 			"animatefireflies": {
-				"order": 26,
+				"order": 27,
 				"text": "Fireflies",
 				"type": "bool",
 				"condition": "!stillscenery.value",
 				"value": true
 			},
 			"animatewater": {
-				"order": 27,
+				"order": 28,
 				"text": "Water and fog",
 				"type": "bool",
 				"condition": "!stillscenery.value",
 				"value": true
 			},
 			"animatewatchtower": {
-				"order": 28,
+				"order": 29,
 				"text": "Watchtower light",
 				"type": "bool",
 				"condition": "!stillscenery.value",

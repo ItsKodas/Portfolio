@@ -33,6 +33,7 @@ const DEFAULTS = {
     visualizerStyle: 'bars' as typeof VISUALIZER_STYLES[number], // as bars, or a smooth wave
     visualizerHeight: 20,                                      // how high the loudest reaches, as a percentage of the screen
     visualizerColor: 'white' as typeof VISUALIZER_COLORS[number], // white, or the playing album art's colour
+    visualizerOpacity: 100,                                    // how solid the lines are, as a percentage
 
     // Motion
     parallax: true,       // layers drifting with the mouse
@@ -61,7 +62,7 @@ const PROPERTIES: Record<string, keyof WallpaperSettings> = {
     weatherlocation: 'location', temperatureunits: 'units', showhighlow: 'highLow', showplace: 'place',
     nowplaying: 'music', musicprogress: 'progress', musicposition: 'musicPosition', textsize: 'size',
     showvisualizer: 'visualizer', visualizerstyle: 'visualizerStyle', visualizerheight: 'visualizerHeight',
-    visualizercolor: 'visualizerColor',
+    visualizercolor: 'visualizerColor', visualizeropacity: 'visualizerOpacity',
     mouseparallax: 'parallax', parallaxstrength: 'strength', stillscenery: 'still',
     animateclouds: 'clouds', animatestars: 'stars', shootingstars: 'shooting', animatewind: 'wind',
     animatefireflies: 'fireflies', animatewater: 'water', animatewatchtower: 'watchtower', animatetext: 'intro',
