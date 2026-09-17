@@ -49,6 +49,16 @@ export function collectWarnings(input: StatusInput): Warning[] {
         })
     }
 
+    // A record we keep rewriting with unchanged desired content is never going to converge on its own.
+    // The guard in reconcile has stopped writing it; this is what tells the operator that happened,
+    // and it also means the record is now stale until someone looks.
+    if (input.reconcile.loops.length > 0) {
+        warnings.push({
+            check: 'dns-write-loop',
+            detail: `stopped rewriting records that never converge, so they are now stale: ${input.reconcile.loops.join(', ')}`,
+        })
+    }
+
     // Inconclusive is not a listing. Warning on it would fire every cycle behind a public resolver.
     if (input.spamhaus.listed) {
         warnings.push({ check: 'spamhaus', detail: input.spamhaus.meanings.join('; ') })

@@ -85,6 +85,11 @@ After changing it, `docker compose up -d` and wait one cycle for `mailops` to re
 - Warnings: `docker compose logs mailops | grep WARN`.
 - A `dns-conflict` warning means something unmanaged sits at a name we want. Nothing is overwritten. Remove
   the conflicting record by hand, or rename ours.
+- A `dns-write-loop` warning means a record was rewritten on three consecutive cycles with unchanged
+  desired content and never came back matching, so `mailops` stopped writing it rather than PATCH the
+  production zone forever. The named record is now stale. Compare the desired value against what
+  Cloudflare actually holds and work out why the two never agree. This is a `mailops` bug, not an
+  operator mistake, and the stack stays up while you look at it.
 - A `spamhaus` warning after an IP change means the new address arrived with inherited reputation damage.
   Switching to a relay is the remedy.
 - An `inbound-stale` warning means nothing has connected for 48 hours. Usually the modem's port forward.

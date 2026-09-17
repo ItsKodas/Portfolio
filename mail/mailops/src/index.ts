@@ -4,7 +4,7 @@ import { readFile } from 'node:fs/promises'
 import { loadConfig } from './config.ts'
 import { desiredRecords } from './desired.ts'
 import { createCloudflareApi } from './cloudflare.ts'
-import { reconcile } from './reconcile.ts'
+import { reconcile, createWriteTracker } from './reconcile.ts'
 import { fetchPublicIp, readDkimKey, writeAliasMap } from './adapters.ts'
 import { probeOutboundSmtp, checkSpamhaus, lastInboundConnection } from './probes.ts'
 import type { SpamhausResult } from './probes.ts'
@@ -46,6 +46,10 @@ async function main() {
 
     await writeAliasMap(CONFIG_DIR, config)
 
+    // Lives across cycles on purpose: it is what notices a record being rewritten every single cycle
+    // without ever converging, which reconcile itself cannot see from one pass.
+    const writeTracker = createWriteTracker()
+
     let lastIp: string | null = null
     // Genuinely unknown until the first real lookup runs below, which happens unconditionally on the
     // first cycle since lastIp starts null. Never overwritten with a fabricated value afterward: it
@@ -58,7 +62,7 @@ async function main() {
         try {
             const ip = await fetchPublicIp()
             const dkim = await readDkimKey(CONFIG_DIR, config)
-            const result = await reconcile(api, desiredRecords(config, ip, dkim))
+            const result = await reconcile(api, desiredRecords(config, ip, dkim), writeTracker)
 
             if (result.created.length || result.updated.length) {
                 log(`created=[${result.created}] updated=[${result.updated}]`)

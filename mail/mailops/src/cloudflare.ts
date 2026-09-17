@@ -28,8 +28,28 @@ export function isManaged(record: CloudflareRecord): boolean {
     return record.comment === MANAGED_COMMENT
 }
 
+// DNS splits a TXT string longer than 255 characters into multiple strings, and Cloudflare hands the
+// result back in `content` as `"chunk one" "chunk two"` rather than as the concatenated value that was
+// sent. A 2048-bit DKIM record is roughly 430 characters, so it always comes back chunked. Comparing
+// the raw strings means the record never agrees with itself and reconcile PATCHes it every cycle,
+// forever, using the token that can edit the production zone. Compare the values, not the wire form.
+export function normaliseTxtContent(raw: string): string {
+    const trimmed = raw.trim()
+    // Only a fully quoted value is in the chunked wire form. Anything else is returned untouched, so a
+    // plain value that merely happens to contain a quote cannot be mangled.
+    if (trimmed.length < 2 || !trimmed.startsWith('"') || !trimmed.endsWith('"')) return raw
+    const chunks = trimmed.match(/"[^"]*"/g)
+    if (!chunks) return raw
+    return chunks.map(chunk => chunk.slice(1, -1)).join('')
+}
+
+function contentMatches(existing: CloudflareRecord, desired: DesiredRecord): boolean {
+    if (desired.type !== 'TXT') return existing.content === desired.content
+    return normaliseTxtContent(existing.content) === normaliseTxtContent(desired.content)
+}
+
 export function matches(existing: CloudflareRecord, desired: DesiredRecord): boolean {
-    return existing.content === desired.content
+    return contentMatches(existing, desired)
         && existing.ttl === desired.ttl
         && (existing.proxied ?? false) === (desired.proxied ?? false)
         && (existing.priority ?? null) === (desired.priority ?? null)

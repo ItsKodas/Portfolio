@@ -28,7 +28,7 @@ describe('evaluateBootGate', () => {
 })
 
 const quiet = {
-    reconcile: { created: [], updated: [], unchanged: ['A mail.dev.horizons.gg'], conflicts: [] },
+    reconcile: { created: [], updated: [], unchanged: ['A mail.dev.horizons.gg'], conflicts: [], loops: [] },
     spamhaus: { listed: false, inconclusive: false, codes: [], meanings: [] },
     lastInbound: new Date('2026-09-18T10:00:00Z'),
     now: new Date('2026-09-18T12:00:00Z'),
@@ -42,6 +42,15 @@ describe('collectWarnings', () => {
     it('warns about a DNS conflict, which means a record is not being maintained', () => {
         const warnings = collectWarnings({ ...quiet, reconcile: { ...quiet.reconcile, conflicts: ['A mail.dev.horizons.gg'] } })
         assert.equal(warnings[0]?.check, 'dns-conflict')
+    })
+
+    it('warns when a record is being rewritten forever without converging', () => {
+        const warnings = collectWarnings({
+            ...quiet,
+            reconcile: { ...quiet.reconcile, loops: ['TXT mail._domainkey.dev.horizons.gg'] },
+        })
+        assert.equal(warnings[0]?.check, 'dns-write-loop')
+        assert.match(warnings[0]!.detail, /mail\._domainkey\.dev\.horizons\.gg/)
     })
 
     it('warns about a Spamhaus listing, which is how an inherited IP announces itself', () => {
