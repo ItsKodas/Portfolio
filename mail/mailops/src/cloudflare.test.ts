@@ -71,6 +71,16 @@ describe('createCloudflareApi', () => {
         assert.equal(body.proxied, false)
     })
 
+    // A POST where a PATCH belongs would create a duplicate record in the live zone every cycle,
+    // and every other assertion in this file would stay green while it happened.
+    it('creates with POST to the collection', async () => {
+        const { impl, calls } = stubFetch(() => ({}))
+        await createCloudflareApi('token', 'zone', impl).create(desired)
+        assert.equal(calls.length, 1)
+        assert.equal(calls[0]?.init?.method, 'POST')
+        assert.match(String(calls[0]?.url), /dns_records$/)
+    })
+
     it('refuses to update a record it did not create', async () => {
         const { impl, calls } = stubFetch(() => ({}))
         const api = createCloudflareApi('token', 'zone', impl)
@@ -85,6 +95,7 @@ describe('createCloudflareApi', () => {
         const { impl, calls } = stubFetch(() => ({}))
         await createCloudflareApi('token', 'zone', impl).update(managed, { ...desired, content: '9.9.9.9' })
         assert.equal(calls.length, 1)
+        assert.equal(calls[0]?.init?.method, 'PATCH')
         assert.match(String(calls[0]?.url), /dns_records\/1$/)
     })
 

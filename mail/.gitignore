@@ -1,0 +1,3 @@
+# The root .gitignore uses /node_modules, which is root-only, so mailops' dependencies would sit in
+# git status forever and a single `git add -A` would commit them.
+node_modules/
