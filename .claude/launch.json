@@ -16,6 +16,13 @@
       "autoPort": true
     },
     {
+      "name": "wallpaper",
+      "runtimeExecutable": "npm",
+      "runtimeArgs": ["run", "wallpaper:serve"],
+      "port": 3001,
+      "autoPort": true
+    },
+    {
       "name": "docker",
       "runtimeExecutable": "docker",
       "runtimeArgs": ["compose", "up", "--build"],

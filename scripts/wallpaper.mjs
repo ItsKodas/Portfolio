@@ -58,3 +58,33 @@ for (const path of [join(DIST, 'index.html'), ...files(join(DIST, '_next'))]) {
 }
 
 console.log(`\nWallpaper built into ${DIST}`)
+
+// With --serve, the built folder is then served over HTTP, so the exact bundle Wallpaper Engine loads can be opened in
+// a browser (the "wallpaper" entry in .claude/launch.json uses this). The page is built for a file:// root, so its
+// relative paths work here unchanged.
+if (process.argv.includes('--serve')) {
+    const { createServer } = await import('node:http')
+    const { extname, normalize, resolve } = await import('node:path')
+
+    const port = Number(process.env.PORT) || 3001
+    const root = resolve(DIST)
+    const TYPES = {
+        '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8',
+        '.css': 'text/css; charset=utf-8', '.json': 'application/json; charset=utf-8',
+        '.txt': 'text/plain; charset=utf-8', '.svg': 'image/svg+xml',
+        '.jpg': 'image/jpeg', '.png': 'image/png', '.ico': 'image/x-icon',
+        '.woff': 'font/woff', '.woff2': 'font/woff2',
+    }
+
+    createServer((request, response) => {
+        const asked = decodeURIComponent(new URL(request.url, 'http://localhost').pathname)
+        const file = resolve(root, '.' + normalize(asked === '/' ? '/index.html' : asked))
+        // Nothing outside the built folder is served.
+        if (!file.startsWith(root) || !existsSync(file) || statSync(file).isDirectory()) {
+            response.writeHead(404, { 'content-type': 'text/plain; charset=utf-8' })
+            return response.end('Not found')
+        }
+        response.writeHead(200, { 'content-type': TYPES[extname(file)] ?? 'application/octet-stream' })
+        response.end(readFileSync(file))
+    }).listen(port, () => console.log(`Serving ${DIST} on http://localhost:${port}`))
+}
