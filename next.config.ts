@@ -6,6 +6,8 @@ const wallpaper = process.env.WALLPAPER_EXPORT === "1";
 
 const nextConfig: NextConfig = {
   reactStrictMode: false,
+  // (and tells the page it's that build, which leaves out the wallpaper page's links to the site and the Workshop)
+  env: { WALLPAPER_EXPORT: wallpaper ? "1" : "0" },
   ...(wallpaper && {
     output: "export",
     images: { unoptimized: true },

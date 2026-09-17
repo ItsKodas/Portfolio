@@ -20,7 +20,7 @@ import Watchtower from '../watchtower/index'
 import ForegroundTrees from '../trees/index'
 
 import ScrollbarTint from './scrollbarTint'
-import UiToggle from './uiToggle'
+import WallpaperLink from './wallpaperLink'
 import styles from './parallax.module.css'
 
 import Sky from './sky.svg'
@@ -79,8 +79,8 @@ function LiteLayer({ speed, className = styles.layer, style, children }: LayerPr
 
 // The full hero: every part of the scene at its own depth, each springing after the scroll. The desktop wallpaper
 // (app/wallpaper) shows the same scene with layers that follow the mouse instead, and no title or note.
-type SceneProps = { ui: string, Layer?: React.ComponentType<LayerProps>, title?: React.ReactNode, note?: boolean }
-export function FullScene({ ui, Layer = ScrollLayer, title = <AnimatedLogo />, note = true }: SceneProps) {
+type SceneProps = { Layer?: React.ComponentType<LayerProps>, title?: React.ReactNode, note?: boolean }
+export function FullScene({ Layer = ScrollLayer, title = <AnimatedLogo />, note = true }: SceneProps) {
     return (
         <>
             <Layer speed={0.1}>
@@ -98,7 +98,7 @@ export function FullScene({ ui, Layer = ScrollLayer, title = <AnimatedLogo />, n
 
             {title && (
                 <Layer speed={0.005}>
-                    <div className={`absolute inset-0 ${ui}`}>
+                    <div className='absolute inset-0'>
                         {title}
                     </div>
                 </Layer>
@@ -118,7 +118,7 @@ export function FullScene({ ui, Layer = ScrollLayer, title = <AnimatedLogo />, n
                 cover it as the page scrolls */}
             {note && (
                 <Layer speed={0.6}>
-                    <div className={`relative h-svh flex justify-center ${ui}`}>
+                    <div className='relative h-svh flex justify-center'>
                         <div className='absolute bottom-[20%]'>
                             <ScrollIcon />
                         </div>
@@ -147,7 +147,7 @@ export function FullScene({ ui, Layer = ScrollLayer, title = <AnimatedLogo />, n
 // mountains and logo stay put and scroll with the page; the near mountains, valley, lake, note, forest and fireflies
 // move together at the valley's speed; the foreground trees move on their own. (The stylesheets switch the scenery's
 // own animations off.)
-function LiteScene({ ui }: { ui: string }) {
+function LiteScene() {
     return (
         <>
             <div className={`${styles.layer} ${styles.still}`}>
@@ -155,7 +155,7 @@ function LiteScene({ ui }: { ui: string }) {
                 <NightSky />
                 <CloudStream />
                 <Image priority src={MountainsFar} alt='MountainsFar' fill className='object-cover' />
-                <div className={`absolute inset-0 ${ui}`}>
+                <div className='absolute inset-0'>
                     <AnimatedLogo />
                 </div>
             </div>
@@ -165,7 +165,7 @@ function LiteScene({ ui }: { ui: string }) {
                 <Image priority src={Valley} alt='' fill className='object-cover' />
                 <Watchtower />
                 <Water />
-                <div className={`absolute inset-x-0 top-0 h-svh flex justify-center ${ui}`}>
+                <div className='absolute inset-x-0 top-0 h-svh flex justify-center'>
                     <div className='absolute bottom-[20%]'>
                         <ScrollIcon />
                     </div>
@@ -186,9 +186,6 @@ export default function ParallaxView({ children }: Readonly<{ children: React.Re
     const ContentLayer = lite ? LiteLayer : ScrollLayer
 
     const [pageHeight, setPageHeight] = useState<number>()
-    // Whether the hero's title, buttons and note are hidden, leaving just the scenery
-    const [uiHidden, setUiHidden] = useState(false)
-    const ui = `${styles.ui} ${uiHidden ? styles.uiHidden : ''}`
 
     // Time the first frames, and fall back to the lite hero if the browser can't keep up
     useEffect(() => watchFrameRate(), [])
@@ -243,13 +240,13 @@ export default function ParallaxView({ children }: Readonly<{ children: React.Re
     return (
         <ThemeProvider theme={DarkTheme}>
             <ScrollbarTint />
-            <UiToggle hidden={uiHidden} onToggle={() => setUiHidden(h => !h)} />
+            <WallpaperLink />
             <div className='relative overflow-hidden bg-[#0b101f]' style={{ height: pageHeight ?? '100svh' }}>
 
                 {/* ── Hero scene ─────────────────────────────────────── */}
 
                 <section ref={heroRef} className='absolute inset-x-0 top-0 h-[200svh]'>
-                    {lite ? <LiteScene ui={ui} /> : <FullScene ui={ui} />}
+                    {lite ? <LiteScene /> : <FullScene />}
                 </section>
 
                 {/* ── Content ────────────────────────────────────────── */}
