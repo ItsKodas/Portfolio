@@ -12,10 +12,24 @@ export const SKYLINE = [
      856,  840,  844,  848,  796,  716,  700,  676,  672,  760,  688,  652,
 ]
 
+const STEP = 3840 / SKYLINE.length // how far apart the samples are across the canvas
+
 // The skyline at a point across the canvas, between the samples either side of it
 export function skylineAt(x: number) {
     const at = Math.min(Math.max(x / 3840, 0), 1) * SKYLINE.length - 0.5
     const first = Math.min(Math.max(Math.floor(at), 0), SKYLINE.length - 1)
     const next = Math.min(first + 1, SKYLINE.length - 1)
     return SKYLINE[first] + (SKYLINE[next] - SKYLINE[first]) * Math.min(Math.max(at - first, 0), 1)
+}
+
+// The lowest the skyline gets over a stretch of the canvas, for standing something behind the mountains. The samples
+// are wide apart, so a straight line drawn between two of them cuts the corner off whatever the silhouette does in
+// between, and a foot placed by the height at one point alone can end up above the mountain and show. Taking the
+// lowest over the whole stretch instead keeps it under the art either side of it.
+export function skylineUnder(from: number, to: number) {
+    let lowest = Math.max(skylineAt(from), skylineAt(to))
+    for (let i = Math.ceil(from / STEP - 0.5); i <= Math.floor(to / STEP - 0.5); i++) {
+        lowest = Math.max(lowest, SKYLINE[Math.min(Math.max(i, 0), SKYLINE.length - 1)])
+    }
+    return lowest
 }

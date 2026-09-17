@@ -7,6 +7,7 @@ import { useEffect, useRef, useState } from 'react'
 import { useSpring, animated, to } from '@react-spring/web'
 
 import { useScene } from '@/app/perf/usePerf'
+import { SITE } from '@/app/site'
 import { useRevealed } from '../parallax/curtain'
 
 import styles from './logo.module.css'
@@ -107,7 +108,7 @@ export default function AnimatedLogo() {
                         <animated.div style={{
                             clipPath: unroll.p.to(p => `inset(0 ${((1 - p) * 100).toFixed(2)}% 0 0)`),
                         }}>
-                            <Typography variant='h1' component='p' fontSize={'8rem'} letterSpacing={'10px'} fontWeight={700} className="text-nowrap">HORIZONS</Typography>
+                            <Typography variant='h1' component='p' fontSize={'8rem'} letterSpacing={'10px'} fontWeight={700} className="text-nowrap">{SITE.name.toUpperCase()}</Typography>
                         </animated.div>
                         {/* Hidden above its own top edge (tucked under the title) and slides down into place */}
                         <div className="overflow-hidden" style={{ marginTop: -SUBTITLE_TUCK }}>
@@ -115,7 +116,7 @@ export default function AnimatedLogo() {
                                 transform: subtitle.p.to(p => `translateY(${((1 - p) * -100).toFixed(2)}%)`),
                                 opacity: subtitle.p,
                             }}>
-                                <Typography variant='h2' component='p' fontSize={'2.25rem'} letterSpacing={'11px'} className="pl-2 subtitle text-nowrap">Fullstack Web Development</Typography>
+                                <Typography variant='h2' component='p' fontSize={'2.25rem'} letterSpacing={'11px'} className="pl-2 subtitle text-nowrap">{SITE.tagline}</Typography>
                             </animated.div>
                         </div>
                     </animated.div>

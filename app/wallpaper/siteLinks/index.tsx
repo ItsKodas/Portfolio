@@ -9,7 +9,7 @@ import styles from './siteLinks.module.css'
 // way on the desktop. (The way back is a plain link, loading the site afresh, since the wallpaper sets the page's
 // performance and motion modes its own way.)
 
-const WORKSHOP = 'https://steamcommunity.com/sharedfiles/filedetails/?id=3803278100'
+const WORKSHOP = 'https://steamcommunity.com/sharedfiles/filedetails/?id=3803371065'
 
 export default function SiteLinks() {
     if (process.env.WALLPAPER_EXPORT === '1') return null

@@ -59,7 +59,7 @@ const projects: { name: string, year?: string, blurb: string, website?: string, 
     },
     {
         name: 'PMPC Group',
-        year: '2024',
+        year: '2025',
         blurb: 'Marketing website for a project management consultancy, with scroll-triggered animations and a 17-service showcase.',
         website: 'http://pmpcgroup.com.au/',
     },

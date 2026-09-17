@@ -7,9 +7,11 @@
     "build": "next build",
     "start": "next start",
     "lint": "next lint",
+    "scene": "node scripts/scene.mjs",
     "test": "vitest run",
     "test:watch": "vitest",
-    "wallpaper": "node scripts/wallpaper.mjs"
+    "wallpaper": "node scripts/wallpaper.mjs",
+    "wallpaper:serve": "node scripts/wallpaper.mjs --serve"
   },
   "dependencies": {
     "@emotion/react": "11.14.0",
