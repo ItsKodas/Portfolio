@@ -1,0 +1,46 @@
+{
+	"title": "Horizons",
+	"description": "A night over the lake: drifting clouds, twinkling stars, a wind-blown forest and fireflies, with layers that follow your mouse. From horizons.gg.",
+	"type": "web",
+	"file": "index.html",
+	"preview": "preview.jpg",
+	"tags": ["Landscape", "Nature"],
+	"contentrating": "Everyone",
+	"general": {
+		"properties": {
+			"schemecolor": {
+				"order": 0,
+				"text": "ui_browse_properties_scheme_color",
+				"type": "color",
+				"value": "0.30588 0.8 0.98039"
+			},
+			"showlogo": {
+				"order": 1,
+				"text": "Show title",
+				"type": "bool",
+				"value": true
+			},
+			"mouseparallax": {
+				"order": 2,
+				"text": "Mouse parallax",
+				"type": "bool",
+				"value": true
+			},
+			"parallaxstrength": {
+				"order": 3,
+				"text": "Parallax strength",
+				"type": "slider",
+				"condition": "mouseparallax.value",
+				"min": 0,
+				"max": 100,
+				"value": 50
+			},
+			"stillscenery": {
+				"order": 4,
+				"text": "Still scenery (lowest GPU use)",
+				"type": "bool",
+				"value": false
+			}
+		}
+	}
+}

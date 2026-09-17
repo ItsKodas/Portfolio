@@ -22,6 +22,15 @@ function goLite() {
     listeners.forEach(l => l())
 }
 
+// Sets the mode outright, as the desktop wallpaper's settings do (and marks it forced, so frame timing leaves it alone)
+export function setPerf(mode: 'full' | 'lite') {
+    const root = document.documentElement
+    root.setAttribute('data-perf-forced', '')
+    if (root.dataset.perf === mode) return
+    root.dataset.perf = mode
+    listeners.forEach(l => l())
+}
+
 // A frame slower than this, at the median, means the browser can't keep up with the full hero. It's above a 30Hz
 // display's 33ms, so a slow screen alone doesn't count.
 const SLOW_FRAME_MS = 36

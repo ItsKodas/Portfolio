@@ -15,10 +15,12 @@
 
 # next.js
 /.next/
+/.next-wallpaper/
 /out/
 
 # production
 /build
+/dist
 
 # misc
 .DS_Store

@@ -37,11 +37,11 @@ const fadeIn = {
     WebkitMaskImage: 'linear-gradient(to bottom, transparent 0, black 10rem)',
 }
 
-type LayerProps = { speed: number, className?: string, style?: React.CSSProperties, children: React.ReactNode }
+export type LayerProps = { speed: number, className?: string, style?: React.CSSProperties, children: React.ReactNode }
 
 // Same motion as @react-spring/parallax's ParallaxLayer: on scroll, spring (config.slow) to an
 // extra offset of -scroll * speed on top of the page's own scroll
-function Layer({ speed, className = styles.layer, style, children }: LayerProps) {
+function ScrollLayer({ speed, className = styles.layer, style, children }: LayerProps) {
     const [{ y }, api] = useSpring(() => ({ y: 0, config: config.slow }))
 
     useEffect(() => {
@@ -77,8 +77,9 @@ function LiteLayer({ speed, className = styles.layer, style, children }: LayerPr
     return <div ref={ref} className={className} style={style}>{children}</div>
 }
 
-// The full hero: every part of the scene at its own depth, each springing after the scroll
-function FullScene({ ui }: { ui: string }) {
+// The full hero: every part of the scene at its own depth, each springing after the scroll. The desktop wallpaper
+// (app/wallpaper) shows the same scene with layers that follow the mouse instead, and without the hero's links and note.
+export function FullScene({ ui, Layer = ScrollLayer, wallpaper = false }: { ui: string, Layer?: React.ComponentType<LayerProps>, wallpaper?: boolean }) {
     return (
         <>
             <Layer speed={0.1}>
@@ -96,7 +97,7 @@ function FullScene({ ui }: { ui: string }) {
 
             <Layer speed={0.005}>
                 <div className={`absolute inset-0 ${ui}`}>
-                    <AnimatedLogo />
+                    <AnimatedLogo links={!wallpaper} />
                 </div>
             </Layer>
 
@@ -112,13 +113,15 @@ function FullScene({ ui }: { ui: string }) {
 
             {/* The note pointing down to the work, moving with the valley, and behind the forest and trees so they
                 cover it as the page scrolls */}
-            <Layer speed={0.6}>
-                <div className={`relative h-svh flex justify-center ${ui}`}>
-                    <div className='absolute bottom-[20%]'>
-                        <ScrollIcon />
+            {!wallpaper && (
+                <Layer speed={0.6}>
+                    <div className={`relative h-svh flex justify-center ${ui}`}>
+                        <div className='absolute bottom-[20%]'>
+                            <ScrollIcon />
+                        </div>
                     </div>
-                </div>
-            </Layer>
+                </Layer>
+            )}
 
             <Layer speed={0.75}>
                 <Image priority src={Forest} alt='' fill className='object-cover' />
@@ -177,7 +180,7 @@ function LiteScene({ ui }: { ui: string }) {
 
 export default function ParallaxView({ children }: Readonly<{ children: React.ReactNode }>) {
     const lite = useLite()
-    const ContentLayer = lite ? LiteLayer : Layer
+    const ContentLayer = lite ? LiteLayer : ScrollLayer
 
     const [pageHeight, setPageHeight] = useState<number>()
     // Whether the hero's title, buttons and note are hidden, leaving just the scenery
