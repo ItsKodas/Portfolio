@@ -13,7 +13,7 @@ import { ArtCanvas, CANVAS, Piece, type Box } from '@/app/(landing)/parallax/art
 
 import { useNowPlaying } from '../media'
 import { useSettings } from '../settings'
-import { skylineAt } from './skyline'
+import { skylineUnder } from './skyline'
 import styles from './visualizer.module.css'
 
 const BARS_PER_SIDE = 12   // each from a share of the 64 levels a channel comes in
@@ -24,7 +24,7 @@ const FALL = 0.93          // and how much of its height it keeps over the same 
 const STEADIEST = 4        // the most 60ths of a second one frame may count for, so a stall doesn't snap the lines
 const SILENT = 0.002       // below this everything counts as silent, and nothing's drawn
 const LIFT = 0.7           // levels are raised to this power, lifting the quieter ones (they mostly sit well below 1)
-const BELOW = 70           // how far below the skyline the lines stand, in canvas units, so their feet stay hidden
+const BELOW = 95           // how far below the skyline the lines stand, in canvas units, so their feet stay hidden
 const FADE = 0.25          // the share of a line, from its base up, over which it fades in from nothing
 const SCREEN = CANVAS.height / 2 // a screen's height in canvas units (the art is two screens tall)
 
@@ -121,7 +121,9 @@ export default function Visualizer() {
             // Where each line stands and reaches: its foot below the skyline there, its tip that far above its foot
             const lines = Array.from(levels, (level, slot) => {
                 const x = spanLeft + (slot + 0.5) * slotWidth
-                const base = skylineAt(x) + BELOW
+                // Stood under the lowest the skyline gets across the line's own stretch, so its foot stays buried even
+                // where the mountains dip away beside it
+                const base = skylineUnder(x - slotWidth / 2, x + slotWidth / 2) + BELOW
                 return { x, base, top: base - level * reach }
             })
 
@@ -144,8 +146,8 @@ export default function Visualizer() {
                 // A smooth line through the tips, curving through the midpoints between them, running down onto the
                 // skyline at either end so it settles into the mountains instead of stopping dead mid-screen
                 const tips: [number, number][] = lines.map(({ x, top }) => [x, top])
-                tips.unshift([spanLeft, skylineAt(spanLeft) + BELOW])
-                tips.push([spanRight, skylineAt(spanRight) + BELOW])
+                tips.unshift([spanLeft, skylineUnder(spanLeft - slotWidth / 2, spanLeft + slotWidth / 2) + BELOW])
+                tips.push([spanRight, skylineUnder(spanRight - slotWidth / 2, spanRight + slotWidth / 2) + BELOW])
                 ctx.beginPath()
                 ctx.moveTo(tips[0][0], tips[0][1])
                 for (let i = 1; i < tips.length - 1; i++) {
@@ -160,7 +162,7 @@ export default function Visualizer() {
 
                 // Closed back along the feet, so what's filled sits against the skyline rather than over the whole sky
                 for (let slot = levels.length - 1; slot >= 0; slot--) ctx.lineTo(lines[slot].x, lines[slot].base)
-                ctx.lineTo(spanLeft, skylineAt(spanLeft) + BELOW)
+                ctx.lineTo(spanLeft, tips[0][1])
                 ctx.closePath()
                 const gradient = ctx.createLinearGradient(0, Math.min(...tips.map(([, y]) => y)), 0, BOX.h)
                 gradient.addColorStop(0, `rgba(${channels}, 0.5)`)
