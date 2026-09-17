@@ -1,7 +1,10 @@
 import { describe, it } from 'node:test'
 import assert from 'node:assert/strict'
+import { mkdir, writeFile, rmdir } from 'node:fs/promises'
+import { join } from 'node:path'
+import { tmpdir } from 'node:os'
 import { loadConfig } from './config.ts'
-import { parseTrace, parseDkimRecord, aliasMap } from './adapters.ts'
+import { parseTrace, parseDkimRecord, aliasMap, readDkimKey } from './adapters.ts'
 
 const config = loadConfig({
     MAIL_DOMAIN: 'dev.horizons.gg',
@@ -50,5 +53,68 @@ describe('aliasMap', () => {
 
     it('produces nothing for a target that is not implemented yet', () => {
         assert.equal(aliasMap({ ...config, deliveryTargets: ['ingest'] }), '')
+    })
+})
+
+describe('readDkimKey', () => {
+    it('returns null when the key file does not exist', async () => {
+        // Use a non-existent path under tmpdir to avoid actual file operations
+        const nonExistent = join(tmpdir(), 'nonexistent-' + Math.random().toString(36))
+        const result = await readDkimKey(nonExistent, config)
+        assert.equal(result, null)
+    })
+
+    it('reads and parses a valid BIND formatted key file', async () => {
+        const baseDir = join(tmpdir(), 'dkim-test-' + Math.random().toString(36))
+        const keyDir = join(baseDir, 'opendkim', 'keys', config.mailDomain)
+        const keyPath = join(keyDir, `${config.dkimSelector}.txt`)
+
+        try {
+            await mkdir(keyDir, { recursive: true })
+            const bindContent = [
+                'mail._domainkey IN TXT ( "v=DKIM1; h=sha256; k=rsa; "',
+                '   "p=MIIBIjANBgkq" )  ; ----- DKIM key mail for dev.horizons.gg',
+            ].join('\n')
+            await writeFile(keyPath, bindContent, 'utf8')
+
+            const result = await readDkimKey(baseDir, config)
+            assert.equal(result, 'v=DKIM1; h=sha256; k=rsa; p=MIIBIjANBgkq')
+        } finally {
+            // Clean up test directory
+            try {
+                await rmdir(join(baseDir, 'opendkim', 'keys', config.mailDomain))
+                await rmdir(join(baseDir, 'opendkim', 'keys'))
+                await rmdir(join(baseDir, 'opendkim'))
+                await rmdir(baseDir)
+            } catch {
+                // Ignore cleanup errors
+            }
+        }
+    })
+
+    it('returns null when the key path is a directory instead of a file', async () => {
+        const baseDir = join(tmpdir(), 'dkim-dir-test-' + Math.random().toString(36))
+        const keyDir = join(baseDir, 'opendkim', 'keys', config.mailDomain)
+
+        try {
+            // Create a directory where the key file should be
+            await mkdir(keyDir, { recursive: true })
+            const keyAsDir = join(keyDir, `${config.dkimSelector}.txt`)
+            await mkdir(keyAsDir)
+
+            const result = await readDkimKey(baseDir, config)
+            assert.equal(result, null)
+        } finally {
+            // Clean up test directory
+            try {
+                await rmdir(join(baseDir, 'opendkim', 'keys', config.mailDomain, `${config.dkimSelector}.txt`))
+                await rmdir(join(baseDir, 'opendkim', 'keys', config.mailDomain))
+                await rmdir(join(baseDir, 'opendkim', 'keys'))
+                await rmdir(join(baseDir, 'opendkim'))
+                await rmdir(baseDir)
+            } catch {
+                // Ignore cleanup errors
+            }
+        }
     })
 })

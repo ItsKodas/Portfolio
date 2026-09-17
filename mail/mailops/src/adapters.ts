@@ -30,12 +30,20 @@ export function parseDkimRecord(bind: string): string | null {
 }
 
 // Returns null while the key does not exist yet. docker-mailserver generates it on first start, so the first
-// few cycles legitimately find nothing and simply publish the rest of the records.
+// few cycles legitimately find nothing and simply publish the rest of the records. Other filesystem errors are
+// logged to stderr but still return null, never throwing, so the deployment degrades gracefully.
 export async function readDkimKey(configDir: string, config: Config): Promise<string | null> {
     const path = join(configDir, 'opendkim', 'keys', config.mailDomain, `${config.dkimSelector}.txt`)
     try {
         return parseDkimRecord(await readFile(path, 'utf8'))
-    } catch {
+    } catch (err) {
+        // ENOENT is the normal state before docker-mailserver generates the key. Log nothing for it.
+        if (err instanceof Error && 'code' in err && err.code === 'ENOENT') {
+            return null
+        }
+        // Any other error is an anomaly (permissions, path is a directory, etc). Warn the operator.
+        const errorCode = err instanceof Error && 'code' in err ? err.code : 'unknown'
+        console.warn(`Warning: cannot read DKIM key from ${path}: ${errorCode}`)
         return null
     }
 }
