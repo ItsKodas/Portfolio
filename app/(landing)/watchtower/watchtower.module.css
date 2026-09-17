@@ -1,0 +1,33 @@
+.tower {
+    position: absolute;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+    pointer-events: none;
+}
+
+/* Lamp glow breathing and flickering slightly */
+.glow {
+    animation: glow 3.2s ease-in-out infinite;
+}
+
+@keyframes glow {
+    0%, 100% { opacity: 0.75; }
+    30%      { opacity: 1; }
+    45%      { opacity: 0.85; }
+    70%      { opacity: 0.95; }
+}
+
+.window {
+    animation: window 3.2s ease-in-out infinite;
+}
+
+@keyframes window {
+    0%, 100% { opacity: 0.85; }
+    30%      { opacity: 1; }
+    45%      { opacity: 0.9; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .glow, .window { animation: none; }
+}

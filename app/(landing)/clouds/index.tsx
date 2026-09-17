@@ -4,7 +4,7 @@ import styles from './clouds.module.css'
 interface Cloud {
     seed: number
     horizon: number  // where the billows sit, as % down the (two screen tall) layer
-    width: number    // vw
+    width: number    // % of the art canvas width
     duration: number // seconds to cross the screen
     progress: number // 0-1, how far across it starts so the sky isn't empty on load
     opacity: number
@@ -26,6 +26,9 @@ const IMAGES = CLOUDS.map(c => ({ warm: `url("${cloudSvg(c.seed, WARM)}")`, cool
 export default function CloudStream() {
     return (
         <div className={styles.stream} aria-hidden="true">
+            {/* Same box as the parallax art (3840x4320, scaled like object-cover), so the clouds keep their size and
+                place relative to the mountains on every screen */}
+            <div className={styles.canvas}>
             {CLOUDS.map((cloud, i) => {
                 const timing = {
                     animationDuration: `${cloud.duration}s`,
@@ -39,8 +42,8 @@ export default function CloudStream() {
                         style={{
                             ...timing,
                             // Billows at `horizon`; the body below them fades out into the haze over the mountains
-                            bottom: `calc(${100 - cloud.horizon}% - ${((CLOUD_HEIGHT - BASE_Y) / CLOUD_WIDTH * cloud.width).toFixed(2)}vw)`,
-                            width: `${cloud.width}vw`,
+                            bottom: `calc(${100 - cloud.horizon}% - ${((CLOUD_HEIGHT - BASE_Y) / CLOUD_WIDTH * cloud.width).toFixed(2)}cqw)`,
+                            width: `${cloud.width}cqw`,
                             aspectRatio: `${CLOUD_WIDTH} / ${CLOUD_HEIGHT}`,
                             opacity: cloud.opacity,
                         }}
@@ -50,6 +53,7 @@ export default function CloudStream() {
                     </div>
                 )
             })}
+            </div>
         </div>
     )
 }

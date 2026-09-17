@@ -1,0 +1,91 @@
+.trees {
+    position: absolute;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+    pointer-events: none;
+}
+
+/* Bending from the base: skewing around the ground line moves the treetops most and the trunks hardly at all */
+.bend {
+    transform-box: view-box;
+}
+
+/* Everyday sway: small, slightly irregular back and forth (each tree sets its own duration and delay) */
+.sway {
+    animation: sway 7s ease-in-out infinite;
+}
+
+/* --amp scales each tree's movement */
+@keyframes sway {
+    0%, 100% { transform: skewX(calc(var(--amp, 1) * 0.35deg)); }
+    30%      { transform: skewX(calc(var(--amp, 1) * -0.5deg)); }
+    55%      { transform: skewX(calc(var(--amp, 1) * 0.15deg)); }
+    75%      { transform: skewX(calc(var(--amp, 1) * -0.3deg)); }
+}
+
+/* Gusts: calm for most of the cycle, then a quick lean with the wind, a shiver, and a slow recovery */
+.gust {
+    animation: gust 16s ease-in-out infinite;
+}
+
+@keyframes gust {
+    0%, 55%, 100% { transform: skewX(0deg); }
+    60%           { transform: skewX(calc(var(--amp, 1) * -1.6deg)); }
+    63%           { transform: skewX(calc(var(--amp, 1) * -1.1deg)); }
+    66%           { transform: skewX(calc(var(--amp, 1) * -1.8deg)); }
+    70%           { transform: skewX(calc(var(--amp, 1) * -0.9deg)); }
+    80%           { transform: skewX(calc(var(--amp, 1) * -0.2deg)); }
+}
+
+/* Wind streaks: invisible until the gust, then a faint sweep across the screen */
+.streak {
+    opacity: 0;
+    transform-box: view-box;
+    animation: streak 16s ease-out infinite;
+}
+
+@keyframes streak {
+    0%, 56%  { transform: translateX(-800px); opacity: 0; }
+    60%      { opacity: 0.12; }
+    68%      { transform: translateX(4000px); opacity: 0; }
+    100%     { transform: translateX(4000px); opacity: 0; }
+}
+
+/* Leaves: carried along with the wind, rising and dipping, tumbling end over end, fading in and out */
+.leafTravel {
+    animation: leafTravel linear infinite;
+}
+
+@keyframes leafTravel {
+    0%   { transform: translate(0, 0);        opacity: 0; }
+    8%   { opacity: 1; }
+    85%  { opacity: 1; }
+    100% { transform: translate(1400px, 260px); opacity: 0; }
+}
+
+.leafFlutter {
+    animation: leafFlutter ease-in-out infinite alternate;
+}
+
+@keyframes leafFlutter {
+    from { transform: translateY(-40px); }
+    to   { transform: translateY(40px); }
+}
+
+.leafSpin {
+    transform-box: fill-box;
+    transform-origin: center;
+    animation: leafSpin linear infinite;
+}
+
+@keyframes leafSpin {
+    from { transform: rotate(0deg) scaleX(1); }
+    50%  { transform: rotate(180deg) scaleX(0.3); }
+    to   { transform: rotate(360deg) scaleX(1); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .sway, .gust, .streak, .leafTravel, .leafFlutter, .leafSpin { animation: none; }
+    .streak, .leafTravel { opacity: 0; }
+}
