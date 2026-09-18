@@ -445,3 +445,33 @@ still describes exactly that. The catch-all is now behind `ACCEPT_CATCHALL`, off
 it matters on this particular stack: forward-only means every accepted dictionary-attack recipient is
 re-sent to the operator's real inbox from an address permanently on the PBL, which risks the operator's
 own provider rate-limiting the single delivery path the design depends on.
+
+### docker-mailserver needs one account, even on a forward-only server
+
+**The spec said:** forward-only, with no mailboxes, and listed mailboxes explicitly as out of scope. It
+never created a mail account, and assumed virtual aliases alone were enough for `docker-mailserver` to
+run.
+
+**Why that was wrong:** `docker-mailserver` requires at least one mail account on first start. With none,
+it shuts down after two minutes and restarts, so the stack as delivered would have crash-looped the
+mailserver indefinitely. As with the DKIM correction above, every unit was faithful to a spec that
+assumed something about `docker-mailserver` that is not true, which is why no review of an individual
+unit could have caught it. It was found while preparing the first real start.
+
+**What was done:** one account is created by hand after first start, for the same address the server
+accepts, and the runbook's First start section now does this immediately after `docker compose up`.
+The account exists only to satisfy `docker-mailserver`. IMAP and POP3 remain off and port 587 remains
+unpublished, so nothing can log into it, and the alias `mailops` writes still forwards the address to
+`FORWARD_TO` before delivery, so no mail accumulates in its mailbox. The design stays forward-only in
+every way that matters.
+
+Creating the account by hand rather than from `mailops` was deliberate. Having `mailops` write it would
+have crossed the ownership split in **Volumes** above, where `mailserver` owns accounts and `mailops`
+owns only the alias map, and would have made `mailops` generate a credential. A one-time manual step
+that survives in the `mail-config` volume was the better trade.
+
+The accepted address, previously hardcoded as `contact@`, is now `MAIL_ADDRESS`, defaulting to `contact`.
+The account and the alias must name the same address, and hardcoding one side of that pairing made a
+mismatch easy to create and hard to see. A value containing `@` is rejected at startup with a message
+naming the mistake, since pasting the full address would otherwise put the domain in the alias map
+twice.

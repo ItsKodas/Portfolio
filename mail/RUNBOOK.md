@@ -3,7 +3,7 @@
 ## Before first start
 
 1. Create a Cloudflare API token scoped to **Zone:DNS:Edit on `horizons.gg` only**. Nothing else.
-2. Copy `mail/.env.example` to `mail/.env` and fill in `FORWARD_TO` and `DMARC_RUA`.
+2. Copy `mail/.env.example` to `mail/.env` and fill in `MAIL_ADDRESS`, `FORWARD_TO` and `DMARC_RUA`.
 3. Copy `mail/.env.mailops.example` to `mail/.env.mailops` and fill in `CF_API_TOKEN` and `CF_ZONE_ID`.
 4. Do **not** forward port 25 on the modem yet.
 
@@ -25,9 +25,35 @@ dashboard, issue a new one with the same scope, and put the new value in `mail/.
 
 ## First start
 
+Bring the stack up, then create the mail account straight away, before watching the logs:
+
 ```bash
-cd mail && docker compose up -d && docker compose logs -f mailops
+cd mail
+docker compose up -d
+docker compose exec mailserver setup email add info@dev.horizons.gg
+docker compose logs -f mailops
 ```
+
+The address must be `MAIL_ADDRESS@MAIL_DOMAIN` from `mail/.env`, so `info@dev.horizons.gg` with the
+example values.
+
+### Why the account, and why straight away
+
+`docker-mailserver` refuses to run without at least one mail account. If none exists within two minutes
+of starting, it shuts down and restarts. This stack is forward-only and has no use for a mailbox, but
+the account is required anyway, so you create exactly one: the same address the server accepts.
+
+You will be asked for a password. Choose any strong one you do not use elsewhere; **you will never need
+it again.** Nothing ever logs in with this account: IMAP and POP3 are off, and port 587 is not published.
+Its only job is to let `docker-mailserver` start.
+
+Mail to the address is still forwarded, not stored. `mailops` writes an alias sending it to
+`FORWARD_TO`, and Postfix applies the alias before delivery, so nothing piles up in a mailbox nobody can
+open. The inbound end-to-end test below confirms this.
+
+If you miss the two-minute window, `docker-mailserver` restarts. Run the `setup email add` command again
+once it is back up. You only ever do this once: the account lives in the `mail-config` volume, survives
+restarts, and is only needed again after wiping that volume.
 
 Expect `boot gate passed` within a minute or two. If it exits instead, the log names the failed check.
 
@@ -91,9 +117,10 @@ An open relay on a residential address is found within hours and the consequence
 
 ## Inbound end to end
 
-Send a message from an external account to `contact@dev.horizons.gg`, then confirm:
+Send a message from an external account to `info@dev.horizons.gg`, then confirm:
 
-- it arrives at `FORWARD_TO`
+- it arrives at `FORWARD_TO`, which also proves the alias is forwarding rather than the account's mailbox
+  keeping it
 - the envelope sender was SRS-rewritten, visible as `SRS0=` in the received headers
 
 ## Measure deliverability, do not assume it
@@ -144,8 +171,12 @@ and keeps reporting, so the Spamhaus and DNS checks stay visible while you inves
 
 ## Accepted addresses
 
-By default the server accepts `contact@dev.horizons.gg` and nothing else. Mail to any other address at
-the domain is rejected at SMTP time, which is the correct answer for a forward-only server.
+The server accepts `MAIL_ADDRESS@MAIL_DOMAIN`, so `info@dev.horizons.gg` with the example values, and
+nothing else. Mail to any other address at the domain is rejected at SMTP time, which is the correct
+answer for a forward-only server.
+
+To change the address, set `MAIL_ADDRESS` in `mail/.env`, then create a matching account with
+`setup email add` as in First start. The account and the accepted address must agree.
 
 `ACCEPT_CATCHALL=1` in `mail/.env` adds `@dev.horizons.gg` to the alias map, accepting every address at
 the domain. Think before turning it on. On a forward-only server a catch-all means every
