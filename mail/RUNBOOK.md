@@ -71,6 +71,10 @@ TXT should exist in Cloudflare, each commented `managed-by:mailops`, and the A r
 
 There is **no DKIM record yet**, and there will not be one until you do the next step. Do not wait for it.
 
+You will also see `inbound 25 from outside: UNREACHABLE` in the log and an `inbound-unreachable` warning.
+**That is correct at this point**, because you have not forwarded port 25 yet. It clears once you do,
+in the open relay step below.
+
 ## Generate the DKIM key
 
 `docker-mailserver` does **not** create an OpenDKIM keypair by itself. It has to be told to, once, and
@@ -111,9 +115,37 @@ This is the step that protects you from the expensive mistake. Do it immediately
 1. Forward port 25 to the host on the modem.
 2. Run an external relay test at once, through MXToolbox's SMTP diagnostic or mail-tester.
 3. Confirm it reports **no open relay**.
+4. Confirm inbound 25 is reachable from outside. Restart `mailops` so it checks straight away rather than
+   waiting up to 15 minutes, then look for `inbound 25 from outside: reachable` in its log:
+
+   ```bash
+   docker compose restart mailops && docker compose logs -f mailops
+   ```
 
 If the test reports an open relay, close port 25 on the modem before doing anything else, then investigate.
 An open relay on a residential address is found within hours and the consequences outlive the mistake.
+
+If inbound 25 is still `UNREACHABLE` with the port forwarded, check the forward points at this machine's
+LAN address. If it does, your ISP is probably blocking inbound 25, which a timeout cannot distinguish from a
+missing forward. That would need raising with the ISP or a different way in; it is not something this
+stack can work around.
+
+### How the inbound check works
+
+Inbound 25 cannot be tested from inside your own network, because the modem's loopback reports success
+whether the port is open or not. So `mailops` asks check-host.net to connect to your public address on
+port 25 from four nodes around the world. One node getting through counts as reachable, since any single
+node can sit behind its own network's outbound-25 block. Every node failing counts as unreachable.
+Anything in between, including check-host itself being down, counts as inconclusive and never as either
+answer.
+
+It runs at startup, whenever your public IP changes, and otherwise every 15 minutes. It is deliberately
+not every cycle: it is a free third-party service, and calling it once a minute is the quickest way to get
+blocked by it. check-host.net sees your public address, which is already public in your DNS.
+
+It is loud, never fatal. An unreachable port turns the healthcheck unhealthy but never stops `mailops`,
+because stopping it would stop the DNS updates, and on a dynamic IP that ends inbound mail entirely after
+the next rotation.
 
 ## Inbound end to end
 
@@ -205,4 +237,9 @@ After changing it, `docker compose up -d` and wait one cycle for `mailops` to re
   operator mistake, and the stack stays up while you look at it.
 - A `spamhaus` warning after an IP change means the new address arrived with inherited reputation damage.
   Switching to a relay is the remedy.
+- An `inbound-unreachable` warning means no outside node could connect to your port 25. Usually the
+  modem's port forward, often lost after a modem reboot. See the open relay section for diagnosis.
+- An `inbound-check-unavailable` warning means the outside check has been inconclusive three times
+  running, so inbound 25 is currently unverified rather than known good. Usually check-host.net being
+  unreachable. It does not mean the port is closed.
 - An `inbound-stale` warning means nothing has connected for 48 hours. Usually the modem's port forward.
