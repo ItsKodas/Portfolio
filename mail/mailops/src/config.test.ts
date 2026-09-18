@@ -138,4 +138,26 @@ describe('loadConfig', () => {
         })
         assert.ok(failures.includes('RELAY_PORT must be a number between 1 and 65535'))
     })
+
+    it('defaults the mail address to contact', () => {
+        assert.equal(loadConfig(base).mailAddress, 'contact')
+    })
+
+    it('uses MAIL_ADDRESS when it is set', () => {
+        assert.equal(loadConfig({ ...base, MAIL_ADDRESS: 'info' }).mailAddress, 'info')
+    })
+
+    it('rejects a full address, which would double the domain in the alias map', () => {
+        assert.deepEqual(
+            failuresOf({ ...base, MAIL_ADDRESS: 'info@dev.horizons.gg' }),
+            ['MAIL_ADDRESS is the part before the @, such as info, not a full address'],
+        )
+    })
+
+    it('rejects a mail address with characters a local part cannot hold', () => {
+        assert.deepEqual(
+            failuresOf({ ...base, MAIL_ADDRESS: 'in fo' }),
+            ['MAIL_ADDRESS may only contain lowercase letters, digits, and . _ + -'],
+        )
+    })
 })

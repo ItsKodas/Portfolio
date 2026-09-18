@@ -445,3 +445,58 @@ still describes exactly that. The catch-all is now behind `ACCEPT_CATCHALL`, off
 it matters on this particular stack: forward-only means every accepted dictionary-attack recipient is
 re-sent to the operator's real inbox from an address permanently on the PBL, which risks the operator's
 own provider rate-limiting the single delivery path the design depends on.
+
+### docker-mailserver needs one account, even on a forward-only server
+
+**The spec said:** forward-only, with no mailboxes, and listed mailboxes explicitly as out of scope. It
+never created a mail account, and assumed virtual aliases alone were enough for `docker-mailserver` to
+run.
+
+**Why that was wrong:** `docker-mailserver` requires at least one mail account on first start. With none,
+it shuts down after two minutes and restarts, so the stack as delivered would have crash-looped the
+mailserver indefinitely. As with the DKIM correction above, every unit was faithful to a spec that
+assumed something about `docker-mailserver` that is not true, which is why no review of an individual
+unit could have caught it. It was found while preparing the first real start.
+
+**What was done:** one account is created by hand after first start, for the same address the server
+accepts, and the runbook's First start section now does this immediately after `docker compose up`.
+The account exists only to satisfy `docker-mailserver`. IMAP and POP3 remain off and port 587 remains
+unpublished, so nothing can log into it, and the alias `mailops` writes still forwards the address to
+`FORWARD_TO` before delivery, so no mail accumulates in its mailbox. The design stays forward-only in
+every way that matters.
+
+Creating the account by hand rather than from `mailops` was deliberate. Having `mailops` write it would
+have crossed the ownership split in **Volumes** above, where `mailserver` owns accounts and `mailops`
+owns only the alias map, and would have made `mailops` generate a credential. A one-time manual step
+that survives in the `mail-config` volume was the better trade.
+
+The accepted address, previously hardcoded as `contact@`, is now `MAIL_ADDRESS`, defaulting to `contact`.
+The account and the alias must name the same address, and hardcoding one side of that pairing made a
+mismatch easy to create and hard to see. A value containing `@` is rejected at startup with a message
+naming the mistake, since pasting the full address would otherwise put the domain in the alias map
+twice.
+
+### The outside inbound 25 check was specified but never built
+
+**The spec said:** at boot, `mailops` performs an external port check for inbound 25, as informational
+output only, alongside the log-staleness signal.
+
+**What actually shipped:** the plan dropped the external check, so only the log-staleness signal was built.
+That meant nothing verified inbound 25 until 48 hours of silence had passed. It was noticed when the
+operator asked, after the first real start, for the stack to refuse to run unless its ports worked.
+
+**What was done:** the external check now exists, via check-host.net, which connects to the public address
+on port 25 from four nodes around the world. Reachable needs one node to get through, since any single
+node can sit behind its own outbound-25 block. Unreachable needs every node to answer and fail. Anything
+else, including check-host being down, is inconclusive, and inconclusive is never reported as either
+answer. Only a conclusive result replaces the retained one, and three inconclusive results in a row raise
+their own `inbound-check-unavailable` warning, so the check cannot go quietly blind. That rule is the
+direct lesson of the Spamhaus false negative found on the same first start.
+
+It runs at startup, on every IP change, and otherwise every 15 minutes rather than every cycle, because
+calling a free third-party service once a minute invites being blocked by it.
+
+**Refusing to start was considered and rejected with the operator.** It would have made booting depend on a
+third party's uptime, forced port 25 open before setup and before the open relay test, and stopped DNS
+updates on a transient failure, which on a dynamic IP ends inbound mail after the next rotation. The
+check is loud and never fatal, consistent with **Health assertion and failure behaviour** above.

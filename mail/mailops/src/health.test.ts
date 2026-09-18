@@ -201,3 +201,30 @@ describe('resolveIntervalMs', () => {
         assert.deepEqual(resolveIntervalMs('NaN', 15_000), { ms: 15_000, invalid: true })
     })
 })
+
+describe('collectWarnings: inbound port 25', () => {
+    it('warns when inbound 25 is unreachable from every outside node', () => {
+        const warnings = collectWarnings({
+            ...quiet,
+            inbound: { reachable: false, inconclusive: false, detail: 'unreachable from all 4 nodes' },
+        })
+        assert.equal(warnings[0]?.check, 'inbound-unreachable')
+    })
+
+    it('is silent when inbound 25 is reachable', () => {
+        assert.deepEqual(collectWarnings({ ...quiet, inbound: { reachable: true, inconclusive: false, detail: 'ok' } }), [])
+    })
+
+    it('does not read an inconclusive check as unreachable', () => {
+        const warnings = collectWarnings({ ...quiet, inbound: { reachable: false, inconclusive: true, detail: 'pending' } })
+        assert.deepEqual(warnings.filter(w => w.check === 'inbound-unreachable'), [])
+    })
+
+    it('says so once the check has been inconclusive three times running, so it cannot go quietly blind', () => {
+        assert.equal(collectWarnings({ ...quiet, inboundInconclusiveStreak: 3 })[0]?.check, 'inbound-check-unavailable')
+    })
+
+    it('tolerates a couple of inconclusive checks without warning', () => {
+        assert.deepEqual(collectWarnings({ ...quiet, inboundInconclusiveStreak: 2 }), [])
+    })
+})
