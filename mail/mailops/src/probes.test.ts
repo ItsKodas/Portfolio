@@ -1,7 +1,9 @@
 import { describe, it } from 'node:test'
 import assert from 'node:assert/strict'
 import net from 'node:net'
-import { interpretSpamhaus, checkSpamhaus, probeOutboundSmtp, lastInboundConnection } from './probes.ts'
+import {
+    interpretSpamhaus, checkSpamhaus, probeOutboundSmtp, lastInboundConnection, interpretPortCheck, checkInboundPort,
+} from './probes.ts'
 
 describe('interpretSpamhaus', () => {
     it('reads a PBL listing as listed', () => {
@@ -162,5 +164,102 @@ describe('lastInboundConnection', () => {
         const found = lastInboundConnection(log, currentDate)
         assert.equal(found?.getFullYear(), 2026)
         assert.equal(found?.getMonth(), 7) // August is month 7
+    })
+})
+
+describe('interpretPortCheck', () => {
+    const connected = [{ time: 0.01, address: '124.177.8.46' }]
+    const timedOut = [{ error: 'Connection timed out' }]
+    const refused = [{ error: 'Connection refused' }]
+
+    it('is reachable when any node connected, even if others failed', () => {
+        const result = interpretPortCheck({ a: connected, b: timedOut, c: timedOut })
+        assert.equal(result.reachable, true)
+        assert.equal(result.inconclusive, false)
+    })
+
+    it('is unreachable only when every node failed, and says why', () => {
+        const result = interpretPortCheck({ a: timedOut, b: refused })
+        assert.equal(result.reachable, false)
+        assert.equal(result.inconclusive, false)
+        assert.match(result.detail, /Connection timed out/)
+    })
+
+    it('is inconclusive while a node is still pending, even if the rest failed', () => {
+        assert.equal(interpretPortCheck({ a: timedOut, b: null }).inconclusive, true)
+    })
+
+    it('is inconclusive when no node has answered at all', () => {
+        assert.equal(interpretPortCheck({ a: null, b: null }).inconclusive, true)
+    })
+
+    it('is inconclusive for an empty result rather than reading it as unreachable', () => {
+        assert.equal(interpretPortCheck({}).inconclusive, true)
+    })
+})
+
+function fakeCheckHost(responses: unknown[]) {
+    const calls: { url: string, init?: RequestInit }[] = []
+    const impl = (async (url: string | URL | Request, init?: RequestInit) => {
+        calls.push({ url: String(url), init })
+        const next = responses.shift()
+        if (next instanceof Error) throw next
+        return new Response(JSON.stringify(next), { status: 200, headers: { 'content-type': 'application/json' } })
+    }) as unknown as typeof fetch
+    return { impl, calls }
+}
+
+const noWait = async () => {}
+
+describe('checkInboundPort', () => {
+    it('asks check-host to connect to the address and port, then reads the result', async () => {
+        const { impl, calls } = fakeCheckHost([
+            { ok: 1, request_id: 'abc123' },
+            { a: [{ time: 0.02, address: '124.177.8.46' }] },
+        ])
+        const result = await checkInboundPort('124.177.8.46', 25, { fetchImpl: impl, sleep: noWait })
+        assert.equal(result.reachable, true)
+        assert.match(calls[0]!.url, /check-tcp\?host=124\.177\.8\.46(:|%3A)25/)
+        assert.match(calls[1]!.url, /check-result\/abc123$/)
+        assert.equal((calls[0]!.init?.headers as Record<string, string>).Accept, 'application/json')
+    })
+
+    it('keeps polling while nodes are pending, then reports the settled answer', async () => {
+        const { impl } = fakeCheckHost([
+            { ok: 1, request_id: 'abc' },
+            { a: null, b: null },
+            { a: [{ error: 'Connection timed out' }], b: [{ error: 'Connection timed out' }] },
+        ])
+        const result = await checkInboundPort('1.2.3.4', 25, { fetchImpl: impl, sleep: noWait })
+        assert.equal(result.reachable, false)
+        assert.equal(result.inconclusive, false)
+    })
+
+    it('is inconclusive rather than unreachable when nodes never settle', async () => {
+        const { impl } = fakeCheckHost([{ ok: 1, request_id: 'abc' }, ...Array(10).fill({ a: null })])
+        const result = await checkInboundPort('1.2.3.4', 25, { fetchImpl: impl, sleep: noWait, polls: 3 })
+        assert.equal(result.inconclusive, true)
+    })
+
+    it('is inconclusive when check-host refuses to start a check', async () => {
+        const { impl } = fakeCheckHost([{ error: 'limit exceeded' }])
+        assert.equal((await checkInboundPort('1.2.3.4', 25, { fetchImpl: impl, sleep: noWait })).inconclusive, true)
+    })
+
+    it('never throws when check-host itself is unreachable, reporting inconclusive instead', async () => {
+        const { impl } = fakeCheckHost([new Error('getaddrinfo ENOTFOUND check-host.net')])
+        const result = await checkInboundPort('1.2.3.4', 25, { fetchImpl: impl, sleep: noWait })
+        assert.equal(result.inconclusive, true)
+        assert.match(result.detail, /ENOTFOUND/)
+    })
+
+    it('bounds every request with an abort signal', async () => {
+        const { impl, calls } = fakeCheckHost([
+            { ok: 1, request_id: 'abc' },
+            { a: [{ time: 0.02, address: '1.2.3.4' }] },
+        ])
+        await checkInboundPort('1.2.3.4', 25, { fetchImpl: impl, sleep: noWait })
+        assert.equal(calls.length, 2)
+        for (const call of calls) assert.ok(call.init?.signal instanceof AbortSignal)
     })
 })

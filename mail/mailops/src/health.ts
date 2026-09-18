@@ -4,7 +4,7 @@
 
 import { writeFile, mkdir } from 'node:fs/promises'
 import { dirname } from 'node:path'
-import type { SmtpProbe, SpamhausResult } from './probes.ts'
+import type { SmtpProbe, SpamhausResult, InboundResult } from './probes.ts'
 import type { ReconcileResult } from './reconcile.ts'
 import type { CertStatus } from './certs.ts'
 
@@ -57,7 +57,13 @@ export type StatusInput = {
     logError?: string | null
     certError?: string | null
     cert?: CertStatus | null
+    inbound?: InboundResult | null
+    inboundInconclusiveStreak?: number
 }
+
+// How many inconclusive inbound checks in a row before saying the check itself has gone blind. One or two
+// is check-host having a moment; three, at a 15 minute cadence, is most of an hour with no real answer.
+export const INBOUND_INCONCLUSIVE_LIMIT = 3
 
 export const ACK_CERT_COMMAND = 'docker compose restart mailserver && docker compose exec mailops npm run ack-cert'
 
@@ -117,6 +123,21 @@ export function collectWarnings(input: StatusInput): Warning[] {
     // inbound-staleness check below: the only real evidence that inbound 25 still reaches us.
     if (input.logError) {
         warnings.push({ check: 'log-unreadable', detail: `${input.logError}, so inbound staleness cannot be checked` })
+    }
+
+    // Loud, never fatal. Refusing to run over this would stop DNS updates on a dynamic IP, so after the next
+    // rotation inbound mail would stop entirely: a worse outcome than the one being warned about.
+    if (input.inbound && !input.inbound.inconclusive && !input.inbound.reachable) {
+        warnings.push({ check: 'inbound-unreachable', detail: `${input.inbound.detail}. Check the modem's port 25 forward` })
+    }
+
+    // An outside check that keeps failing to answer must not read as a passing one. Without this the
+    // status file stays ok: true while nothing is actually checking inbound 25 at all.
+    if ((input.inboundInconclusiveStreak ?? 0) >= INBOUND_INCONCLUSIVE_LIMIT) {
+        warnings.push({
+            check: 'inbound-check-unavailable',
+            detail: `the outside inbound 25 check has been inconclusive ${input.inboundInconclusiveStreak} times running, so inbound 25 is currently unverified`,
+        })
     }
 
     // Only meaningful once we have received at least once. A fresh stack has no history and is not unhealthy.

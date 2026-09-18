@@ -5,8 +5,8 @@ import { desiredRecords } from './desired.ts'
 import { createCloudflareApi, CloudflareApiError, type DnsApi } from './cloudflare.ts'
 import { reconcile, createWriteTracker } from './reconcile.ts'
 import { fetchPublicIp, readDkimKey, writeAliasMap, readLogTail } from './adapters.ts'
-import { probeOutboundSmtp, checkSpamhaus, lastInboundConnection } from './probes.ts'
-import type { SpamhausResult } from './probes.ts'
+import { probeOutboundSmtp, checkSpamhaus, lastInboundConnection, checkInboundPort } from './probes.ts'
+import type { SpamhausResult, InboundResult } from './probes.ts'
 import { evaluateBootGate, bootGateIsRetryable, collectWarnings, writeStatus, cycleFailedWarning, resolveIntervalMs, BootGateError, type BootChecks } from './health.ts'
 import type { Config } from './config.ts'
 import { ensureCertificate, certificateStatus } from './certs.ts'
@@ -34,6 +34,12 @@ const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms))
 // resolver that is not answering yet, short enough that a genuinely broken deployment still tells the
 // operator so promptly.
 const BOOT_GATE_BACKOFF_MS = [5_000, 10_000, 20_000, 40_000]
+
+// The outside inbound 25 check calls a free third-party service. Every 60 second cycle would be roughly 1,440
+// calls a day with no published limit, which is the fastest way to get this IP blocked and every later check
+// stuck at inconclusive. Fifteen minutes still finds a broken port forward within the hour, against the
+// 48 hours the log-staleness check needs.
+const INBOUND_CHECK_INTERVAL_MS = 15 * 60_000
 
 async function probeEnvironment(api: DnsApi, config: Config): Promise<BootChecks> {
     const outbound = await probeOutboundSmtp(OUTBOUND_PROBE_HOST)
@@ -93,6 +99,12 @@ async function main() {
     // in status.json until a later real lookup clears it.
     let lastSpamhaus: SpamhausResult = { listed: false, inconclusive: true, codes: [], meanings: [] }
 
+    // Same retention rule as lastSpamhaus: only a conclusive answer replaces it, so one check-host hiccup
+    // cannot clear an "unreachable" that is still true. Inconclusive answers are counted separately instead.
+    let lastInboundCheck: InboundResult | null = null
+    let lastInboundCheckAt = 0
+    let inboundInconclusiveStreak = 0
+
     for (;;) {
         let warnings
         try {
@@ -106,10 +118,26 @@ async function main() {
 
             // Only on change: a rotated address can arrive carrying a previous occupant's XBL listing, and that
             // is something to find out from a log line rather than from mail quietly failing.
-            if (ip !== lastIp) {
+            const ipChanged = ip !== lastIp
+            if (ipChanged) {
                 lastSpamhaus = await checkSpamhaus(ip)
                 log(`public IP is ${ip}, spamhaus: ${lastSpamhaus.listed ? lastSpamhaus.meanings.join('; ') : 'not listed'}`)
                 lastIp = ip
+            }
+
+            // Also on every IP change, not just on the timer: a modem reboot is the likeliest thing to both
+            // rotate the address and drop the port forward, so that is exactly when to look again.
+            if (ipChanged || Date.now() - lastInboundCheckAt >= INBOUND_CHECK_INTERVAL_MS) {
+                const inbound = await checkInboundPort(ip, 25)
+                lastInboundCheckAt = Date.now()
+                if (inbound.inconclusive) {
+                    inboundInconclusiveStreak++
+                } else {
+                    lastInboundCheck = inbound
+                    inboundInconclusiveStreak = 0
+                }
+                const verdict = inbound.inconclusive ? 'inconclusive' : inbound.reachable ? 'reachable' : 'UNREACHABLE'
+                log(`inbound 25 from outside: ${verdict} (${inbound.detail})`)
             }
 
             const tail = await readLogTail(LOG_FILE)
@@ -129,6 +157,7 @@ async function main() {
             warnings = collectWarnings({
                 reconcile: result, spamhaus: lastSpamhaus, lastInbound: lastInboundConnection(tail.text),
                 logError: tail.error ?? null, certError, cert, now: new Date(),
+                inbound: lastInboundCheck, inboundInconclusiveStreak,
             })
             for (const warning of warnings) log(`WARN ${warning.check}: ${warning.detail}`)
         } catch (error) {
