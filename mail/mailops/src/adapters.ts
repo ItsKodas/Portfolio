@@ -104,8 +104,8 @@ export async function readLogTail(path: string, maxBytes = LOG_TAIL_BYTES): Prom
 // produces nothing, so adding it later is additive rather than a rewrite.
 export function aliasMap(config: Config): string {
     if (!config.deliveryTargets.includes('forward')) return ''
-    const lines = [`contact@${config.mailDomain} ${config.forwardTo}`]
-    // contact@ is the only address the design ever authorised. A catch-all on a forward-only server
+    const lines = [`${config.mailAddress}@${config.mailDomain} ${config.forwardTo}`]
+    // The configured address is the only one the design authorises. A catch-all on a forward-only server
     // accepts every dictionary-attack recipient and re-sends it to the operator's real inbox from an
     // address that is permanently on the PBL, which risks the operator's own provider rate-limiting
     // the single delivery path this whole design depends on. Opt in knowingly or not at all.

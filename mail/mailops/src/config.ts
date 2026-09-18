@@ -12,6 +12,7 @@ export type RelayConfig = {
 export type Config = {
     mailDomain: string
     mailHostname: string
+    mailAddress: string
     forwardTo: string
     cfApiToken: string
     cfZoneId: string
@@ -30,6 +31,7 @@ export class ConfigError extends Error {
 }
 
 const DOMAIN = /^(?!-)[a-z0-9-]{1,63}(?<!-)(\.(?!-)[a-z0-9-]{1,63}(?<!-))+$/
+const LOCAL_PART = /^[a-z0-9._+-]+$/
 
 type Env = Record<string, string | undefined>
 
@@ -53,6 +55,15 @@ export function loadConfig(env: Env): Config {
 
     const mailDomain = required(env, 'MAIL_DOMAIN', failures)
     if (mailDomain && !DOMAIN.test(mailDomain)) failures.push('MAIL_DOMAIN is not a valid domain name')
+
+    const mailAddress = env.MAIL_ADDRESS?.trim() || 'contact'
+    // The likeliest mistake is pasting the whole address, which would put the domain in the alias map twice.
+    // Name that case specifically rather than letting it fall through to the generic character rule.
+    if (mailAddress.includes('@')) {
+        failures.push('MAIL_ADDRESS is the part before the @, such as info, not a full address')
+    } else if (!LOCAL_PART.test(mailAddress)) {
+        failures.push('MAIL_ADDRESS may only contain lowercase letters, digits, and . _ + -')
+    }
 
     const forwardTo = required(env, 'FORWARD_TO', failures)
     const cfApiToken = required(env, 'CF_API_TOKEN', failures)
@@ -93,6 +104,7 @@ export function loadConfig(env: Env): Config {
     return {
         mailDomain,
         mailHostname: `mail.${mailDomain}`,
+        mailAddress,
         forwardTo,
         cfApiToken,
         cfZoneId,

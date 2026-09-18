@@ -47,7 +47,14 @@ describe('aliasMap', () => {
         assert.ok(aliasMap(config).startsWith('contact@dev.horizons.gg me@example.com\n'))
     })
 
-    it('installs no catch-all by default, because only contact@ was ever authorised', () => {
+    it('forwards the configured address rather than a hardcoded one', () => {
+        assert.equal(
+            aliasMap({ ...config, mailAddress: 'info' }),
+            'info@dev.horizons.gg me@example.com\n',
+        )
+    })
+
+    it('installs no catch-all by default, because only the configured address was ever authorised', () => {
         assert.equal(aliasMap(config), 'contact@dev.horizons.gg me@example.com\n')
         assert.ok(!aliasMap(config).includes('@dev.horizons.gg me@example.com\n@'))
         assert.equal(aliasMap(config).trim().split('\n').length, 1)
