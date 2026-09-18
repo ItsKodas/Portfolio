@@ -17,6 +17,12 @@ services:
       ENABLE_SRS: 1
       SRS_SENDER_CLASSES: envelope_sender
       ENABLE_RSPAMD: 1
+      # Rspamd is the filter. Amavis only exists to run SpamAssassin and ClamAV, both off by default, so left on
+      # it added a re-queue hop to every message and scored nothing.
+      ENABLE_AMAVIS: 0
+      # No IPv6 route here, so Postfix tried IPv6 first on every delivery, failed, then fell back to IPv4.
+      # docker-mailserver's own docs recommend ipv4 behind Docker.
+      POSTFIX_INET_PROTOCOLS: ipv4
       ENABLE_OPENDKIM: 1
       ENABLE_FAIL2BAN: 1
       ENABLE_IMAP: 0
