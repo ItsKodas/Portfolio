@@ -85,7 +85,9 @@ export function createDockerApi(socketPath = DOCKER_SOCKET, request: RequestFn =
             }
         },
         listProjectContainers: project => json<ContainerSummary[]>(containersPath(project)),
-        inspect: id => json<ContainerInspect>(`/containers/${checkedId(id)}/json`),
+        async inspect(id) {
+            return json<ContainerInspect>(`/containers/${checkedId(id)}/json`)
+        },
         // No timeout: a followed stream is legitimately idle for long stretches. The agent bounds its life.
         async logs(id, options) {
             const response = await open(logsPath(id, options), null)

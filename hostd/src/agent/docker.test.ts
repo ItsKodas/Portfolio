@@ -91,6 +91,10 @@ describe('createDockerApi', () => {
         for await (const chunk of stream) text += String(chunk)
         assert.equal(text, 'bytes')
     })
+
+    it('rejects a malformed container id in inspect as a promise, not a synchronous throw', async () => {
+        await assert.rejects(createDockerApi('/s', fakeRequest(200, '{}').request).inspect('../../info'), /malformed container id/)
+    })
 })
 
 describe('pickPerService', () => {
