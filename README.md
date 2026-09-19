@@ -53,7 +53,7 @@ You can check out [the Next.js GitHub repository](https://github.com/vercel/next
 
 ## The hero scene and performance
 
-The hero is served in four cumulative tiers (`depth`, `sky`, `water`, `forest`), marked on `<html data-scene="...">`
+The hero is served in four cumulative tiers (`depth`, `sky`, `forest`, `water`), marked on `<html data-scene="...">`
 by a script in the page head before anything is drawn, from a budget of what the device can hold. Layers that follow
 the scroll directly are moved by the browser itself through a CSS scroll timeline, which is what keeps phones smooth.
 A device that crashes on screen is held to the `depth` tier on its next visit. The full reasoning, with the
@@ -68,7 +68,7 @@ These all work on the live site, which matters on a phone that can't be attached
 | `?debug=perf` | a readout of frames drawn and scroll events per second, the worst frame, the tier, scroll timeline support, the iOS version and any crash cap, plus switches that each take one suspect out of the picture |
 | `?scene=depth+water` | forces exactly those tiers, for this visit only |
 | `?perf=lite` or `?perf=full` | forces the still or the whole scene, **remembered in this browser** until `?perf=auto` |
-| `?perf=auto` | back to detection, and forgets any crash cap |
+| `?perf=auto` | back to detection, and forgets an old crash cap (but not a crash that has only just happened) |
 
 Combine them freely, for example `?debug=perf&scene=depth` to watch the readout at a pinned tier. Remember to finish
 with `?perf=auto` after using `?perf=lite` or `?perf=full`, since both stick.

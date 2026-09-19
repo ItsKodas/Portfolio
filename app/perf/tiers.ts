@@ -11,11 +11,15 @@ export interface Tier {
 // docs/superpowers/specs for the full table and how these were derived. Overdraw in viewports turns out to be very
 // nearly viewport independent (10.00 vs 9.88 for the parallax at 375x812 and 1024x768), which is what lets the head
 // script work them out before layout has happened.
+//
+// The water goes last. On a phone the whole scene crashed once the content scrolled into view while dropping any one
+// tier held; the sky and the water cost about the same there, the forest next to nothing, and a moving sky shows far
+// more than the water's subtle shifting. So phones stop one tier short (see touchMaxTiers), and that tier is the water.
 export const TIERS: Tier[] = [
     { token: 'depth',  overdraw: 7.0,  layers: 7 },   // the ten layer parallax, in place of the lite three
     { token: 'sky',    overdraw: 10.0, layers: 26 },  // star twinkle, drift, shooting stars, cloud drift
-    { token: 'water',  overdraw: 0.9,  layers: 21 },  // ripples, streaks, fog, boat bob, lantern flicker
     { token: 'forest', overdraw: 0.2,  layers: 162 }, // tree sway, gusts, wind streaks, leaves, fireflies
+    { token: 'water',  overdraw: 0.9,  layers: 21 },  // ripples, streaks, fog, boat bob, lantern flicker
 ]
 
 // The still scene every device gets, which is not free either
@@ -36,6 +40,10 @@ export const BUDGETS = {
     // while a laptop half its size got the whole scene.
     touchFloor: 150 * 1024 * 1024, // the floor for a phone or tablet
     touchViewports: 30,            // the area-scaled allowance, in viewports of composited raster: the whole scene is 21.9
+    // A touch device never gets the last tier, whatever its budget. The budget can't draw this line itself: the water
+    // adds so little (0.9 viewports) that no one allowance lands between "all but the water" and "all of it" across
+    // phone screen sizes, the window for an iPhone 15 and the one for a Pro Max not even overlapping.
+    touchMaxTiers: 3,
     pointer: 1024 * 1024 * 1024,   // the floor for a mouse or trackpad
     pointerViewports: 26,          // cumulative full-scene overdraw is 21.9, so this leaves real headroom
     memDivisor: 4,                 // navigator.deviceMemory is scaled against this, so 4GB is the neutral middle
@@ -78,5 +86,5 @@ export function ceilingFor(
         spent = next
         reached++
     }
-    return reached
+    return coarsePointer ? Math.min(reached, budgets.touchMaxTiers) : reached
 }

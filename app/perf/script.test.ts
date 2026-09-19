@@ -63,10 +63,10 @@ function run(env: Env = {}): Record<string, string> {
 }
 
 describe('PERF_SCRIPT', () => {
-    it('hands a phone every tier up front', () => {
+    it('starts a phone on the still scene, climbing to everything but the water', () => {
         const attrs = run({ coarse: true })
-        expect(attrs['data-scene']).toBe(ALL)
-        expect(attrs['data-scene-max']).toBe(String(TIERS.length))
+        expect(attrs['data-scene']).toBe('')
+        expect(attrs['data-scene-max']).toBe(String(TIERS.length - 1))
         expect(attrs['data-perf-forced']).toBeUndefined()
     })
 
@@ -114,7 +114,7 @@ describe('PERF_SCRIPT', () => {
 
     it('still detects when localStorage throws', () => {
         const attrs = run({ coarse: true, storageThrows: true })
-        expect(attrs['data-scene-max']).toBe(String(TIERS.length))
+        expect(attrs['data-scene-max']).toBe(String(TIERS.length - 1))
     })
 
     it('honours ?perf= on the load where storage throws, not just on the next one', () => {
@@ -129,8 +129,8 @@ describe('PERF_SCRIPT', () => {
     it('honours ?perf=auto over a remembered mode even when storage throws', () => {
         // Nothing can be forgotten here, so the most this load can do is ignore what it cannot read: it must
         // detect rather than fall back to a stored mode it has no way of clearing.
-        // (a remembered lite, which detection on this phone would never give, so the two can't be confused)
-        const attrs = run({ search: '?perf=auto', coarse: true, stored: 'lite', storageThrows: true })
+        // (a desktop and a remembered lite, which detection there would never give, so the two can't be confused)
+        const attrs = run({ search: '?perf=auto', innerWidth: 1920, innerHeight: 1080, dpr: 2, stored: 'lite', storageThrows: true })
         expect(attrs['data-scene']).toBe(ALL)
         expect(attrs['data-scene-max']).toBe(String(TIERS.length))
         expect(attrs['data-perf-forced']).toBeUndefined()
@@ -153,7 +153,7 @@ describe('PERF_SCRIPT', () => {
 describe('PERF_SCRIPT after a crash', () => {
     it('marks the tiers it hands out as live', () => {
         const storage: Record<string, string> = {}
-        run({ coarse: true, storage })
+        run({ innerWidth: 1920, innerHeight: 1080, dpr: 2, storage })
         expect(storage['scene-live']).toBe(String(TIERS.length))
     })
 
@@ -166,7 +166,7 @@ describe('PERF_SCRIPT after a crash', () => {
     it('holds a load after a crash to the depth tier, and remembers that', () => {
         // straight to depth rather than one tier down: the stars are the big memory cost, and stepping down one at a
         // time would keep them through two more crashes
-        const storage: Record<string, string> = { 'scene-live': String(TIERS.length) }
+        const storage: Record<string, string> = { 'scene-live': String(TIERS.length - 1) }   // what a phone shows
         const attrs = run({ coarse: true, storage })
         expect(attrs['data-scene-max']).toBe('1')
         expect(attrs['data-scene']).toBe('')   // climbs to depth from the still scene like any capped device
@@ -193,11 +193,20 @@ describe('PERF_SCRIPT after a crash', () => {
         expect(storage['scene-cap']).toBe('0')
     })
 
-    it('forgets the crash memory on ?perf=auto', () => {
-        const storage: Record<string, string> = { 'scene-cap': '0', 'scene-live': '1' }
+    it('forgets an old cap on ?perf=auto', () => {
+        const storage: Record<string, string> = { 'scene-cap': '0' }
         const attrs = run({ search: '?perf=auto', coarse: true, storage })
-        expect(attrs['data-scene-max']).toBe(String(TIERS.length))
+        expect(attrs['data-scene-max']).toBe(String(TIERS.length - 1))
         expect(storage['scene-cap']).toBeUndefined()
+    })
+
+    it('still honours a crash that has only just happened on ?perf=auto', () => {
+        // The browser reloads a crashed page at the same address. If ?perf=auto threw the fresh mark away along with
+        // the old cap, every reload would hand the scene out again and crash again: a crash loop forced by a URL.
+        const storage: Record<string, string> = { 'scene-cap': '0', 'scene-live': String(TIERS.length - 1) }
+        const attrs = run({ search: '?perf=auto', coarse: true, storage })
+        expect(attrs['data-scene-max']).toBe('1')
+        expect(storage['scene-cap']).toBe('1')
     })
 
     it('neither marks nor obeys it when a mode is forced', () => {
