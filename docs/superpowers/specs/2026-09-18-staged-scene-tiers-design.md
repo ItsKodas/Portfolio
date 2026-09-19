@@ -1,6 +1,26 @@
 # Staged scene tiers for the home page hero
 
-Date: 2026-09-18
+Date: 2026-09-18, last updated 2026-09-20
+
+## Where it ended up
+
+This started as mobile browsers crashing on the home page and went through three problems, each hiding the next:
+
+1. **The crash** was memory: every phone was handed the full scene at first paint (#15, below).
+2. **Then scrolling lagged on phones**, at every tier. Springs and frosted glass were part of it (#19), but the root
+   cause, found on the device with the `?debug=perf` test mode (#21, #22), was that script moved the layers: on iOS
+   every browser uses WebKit, which scrolls in a separate process, so each frame waited on layers it hadn't seen
+   coming. The browser now moves them through a CSS scroll timeline (#23), which took a phone from a few updates a
+   second to smooth.
+3. **Then phones could have the whole scene**, which they now get on a raised budget, with a crash guard so a phone
+   that can't hold it costs one reload rather than a crash loop (#24).
+
+Desktops keep their springing layers and frosted glass throughout.
+
+One report is open and unreproduced: a line through the frosted blur on a hero button, seen on a desktop. Chrome at
+five common desktop sizes and scalings showed nothing, so it depends on the browser or GPU. See Future work.
+
+The sections below are the design as it evolved, kept with their reasoning, including the parts later superseded.
 
 ## Problem
 
@@ -561,3 +581,15 @@ a full viewport. Grouping stars spatially rather than randomly would shrink thos
 dramatically and could bring `sky` within reach of a normal phone. That is a change to
 `stars/index.tsx` and its group construction, not to the tier system, so it is deliberately
 left out of this work.
+
+(Since then phones have been given `sky` anyway, on a raised budget with a crash guard, so this is no longer what keeps
+the stars off phones. It would still cut the scene's biggest memory cost, and so widen the margin on phones that have
+not been tested.)
+
+**The line through a hero button's frosted blur.** Reported on a desktop against the "The Back Room" button under the
+title, and not reproduced: headless Chrome at 1920x1080, 1366x768, 1536x864 at 125%, 1280x720 at 150% and 2560x1440
+all showed a clean blur. Two candidates remain. A GPU-composited browser tiles large layers, and a backdrop blur can
+show a faint seam where two tiles meet; that would be a straight line that stays put on the button. Or the near
+mountains, which the title and its buttons deliberately sit behind and which move a hundred times faster than the
+title, lift their ridge across the buttons with any scroll, drawn sharp in front of the glass; that would be an edge
+that moves as the page scrolls. Which browser, and whether the line moves when scrolling, would tell them apart.

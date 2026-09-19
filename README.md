@@ -51,11 +51,33 @@ To learn more about Next.js, take a look at the following resources:
 
 You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
 
-## Measuring the scene
+## The hero scene and performance
 
-The hero is served in tiers, and how far a browser climbs depends on cost constants in `app/perf/tiers.ts`. If you
-add or remove moving parts, re-derive them: paste `scripts/scene-cost.js` into the browser console on the home page
-and compare runs at different `?scene=` token sets. The difference between two runs is what that tier costs.
+The hero is served in four cumulative tiers (`depth`, `sky`, `water`, `forest`), marked on `<html data-scene="...">`
+by a script in the page head before anything is drawn, from a budget of what the device can hold. Layers that follow
+the scroll directly are moved by the browser itself through a CSS scroll timeline, which is what keeps phones smooth.
+A device that crashes on screen is held to the `depth` tier on its next visit. The full reasoning, with the
+measurements behind it, is in `docs/superpowers/specs/2026-09-18-staged-scene-tiers-design.md`.
+
+### Diagnosing it on a device
+
+These all work on the live site, which matters on a phone that can't be attached to a profiler:
+
+| URL | what it does |
+| --- | --- |
+| `?debug=perf` | a readout of frames drawn and scroll events per second, the worst frame, the tier, scroll timeline support, the iOS version and any crash cap, plus switches that each take one suspect out of the picture |
+| `?scene=depth+water` | forces exactly those tiers, for this visit only |
+| `?perf=lite` or `?perf=full` | forces the still or the whole scene, **remembered in this browser** until `?perf=auto` |
+| `?perf=auto` | back to detection, and forgets any crash cap |
+
+Combine them freely, for example `?debug=perf&scene=depth` to watch the readout at a pinned tier. Remember to finish
+with `?perf=auto` after using `?perf=lite` or `?perf=full`, since both stick.
+
+### Measuring the scene
+
+How far a browser climbs depends on cost constants in `app/perf/tiers.ts`. If you add or remove moving parts,
+re-derive them: paste `scripts/scene-cost.js` into the browser console on the home page and compare runs at different
+`?scene=` token sets. The difference between two runs is what that tier costs.
 
 ## Deploy on Vercel
 
