@@ -69,20 +69,14 @@ function open(connect: Connect, request: AgentRequest) {
         } catch (error) {
             throw new AgentUnavailableError(`the agent connection failed: ${describeError(error)}`)
         }
-        if (result.done) {
-            // A recorded socket failure can still surface here: readline stops forwarding it once the
-            // reader has already closed once (for instance on an earlier graceful end), so a later error
-            // on the same socket reaches only our own handler, not a rejection from the iterator itself.
-            if (failure) throw new AgentUnavailableError(`the agent connection failed: ${describeError(failure)}`)
-            return null
-        }
-        return result.value
+        return result.done ? null : result.value
     }
 
     async function first(): Promise<string> {
         const value = await next()
         if (value !== null) return value
-        throw new AgentUnavailableError('the agent closed the connection without answering')
+        const reason = failure as Error | null
+        throw new AgentUnavailableError(reason ? `the agent connection failed: ${reason.message}` : 'the agent closed the connection without answering')
     }
 
     function close(): void {

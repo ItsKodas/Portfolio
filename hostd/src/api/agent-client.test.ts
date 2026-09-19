@@ -120,12 +120,34 @@ describe('stream', () => {
         assert.equal((await iterator.next()).done, true)
     })
 
-    it('surfaces a socket failure recorded after the agent already said it was done, instead of ending quietly', async () => {
-        // A failure recorded via the socket's 'error' handler can arrive after the reader has already
-        // closed once (on the agent's own graceful end), a point past which readline no longer forwards
-        // a further error into a rejection of the iterator itself. So this drives the sequence by hand:
-        // consume the one line, let the agent's graceful end fully land, then fail the raw socket, and
-        // only then ask for more.
+    it('rejects with AgentUnavailableError when the socket fails before the agent ends the stream', async () => {
+        // A genuine mid-stream failure: the agent never gets to end the stream cleanly, so readline is
+        // still forwarding the raw socket's own 'error' event into a rejection of the iterator itself.
+        let server!: Duplex
+        let clientSide!: Duplex
+        const connect: Connect = () => {
+            const pair = duplexPair()
+            clientSide = pair[0]
+            server = pair[1]
+            return clientSide
+        }
+        const client = createAgentClient(connect)
+        const resultPromise = client.stream(logs)
+        await new Promise<void>(resolve => server.once('data', () => resolve()))
+        server.write(`${JSON.stringify({ ok: true, stream: true })}\n`)
+        server.write(`${JSON.stringify(line)}\n`)
+        const result = await resultPromise
+        assert.ok(result.ok)
+        const iterator = result.lines[Symbol.asyncIterator]()
+        assert.deepEqual((await iterator.next()).value, line)
+        clientSide.destroy(new Error('read ECONNRESET'))
+        await assert.rejects(iterator.next(), /the agent connection failed: read ECONNRESET/)
+    })
+
+    it('ends the stream normally when a socket error arrives only after the agent already ended it', async () => {
+        // A delayed ECONNRESET after the peer's own FIN is a normal TCP artifact, not a real failure.
+        // Once the agent has cleanly ended the stream, readline has already self-closed once and no
+        // longer forwards a further socket error into the iterator, so the stream must still end quietly.
         let server!: Duplex
         let clientSide!: Duplex
         const connect: Connect = () => {
@@ -149,6 +171,8 @@ describe('stream', () => {
         clientSide.destroy(new Error('read ECONNRESET'))
         // Let the destroy's own 'error' emission (scheduled, not synchronous) land before asking for more.
         await new Promise<void>(resolve => setImmediate(resolve))
-        await assert.rejects(iterator.next(), /the agent connection failed: read ECONNRESET/)
+        await assert.doesNotReject(async () => {
+            assert.equal((await iterator.next()).done, true)
+        })
     })
 })
