@@ -65,7 +65,8 @@ These all work on the live site, which matters on a phone that can't be attached
 
 | URL | what it does |
 | --- | --- |
-| `?debug=perf` | a readout of frames drawn and scroll events per second, the worst frame, the tier, scroll timeline support, the iOS version and any crash cap, plus switches that each take one suspect out of the picture |
+| `?debug=perf` | a readout of frames drawn and scroll events per second, the worst frame, the tier, scroll timeline support, the iOS version and any crash cap, plus switches that each take one suspect out of the picture. Also turns on the crash guard's log, which records every load from then on and shows in the readout |
+| `?debug=off` | turns the crash guard's log back off, and deletes it |
 | `?scene=depth+water` | forces exactly those tiers, for this visit only |
 | `?perf=lite` or `?perf=full` | forces the still or the whole scene, **remembered in this browser** until `?perf=auto` |
 | `?perf=auto` | back to detection, and forgets an old crash cap (but not a crash that has only just happened) |

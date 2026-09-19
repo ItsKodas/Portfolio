@@ -25,10 +25,28 @@ export const PERF_SCRIPT = `(function () {
     var root = document.documentElement, forced = null
     var all = ${JSON.stringify(ALL_TOKENS)}, count = ${TIERS.length}
 
+    // The test mode's guard log (see crashGuard.ts), on from ?debug=perf until ?debug=off, so a misfire on a phone
+    // that can't be attached to a profiler can be read off the page. Normal visitors never turn it on.
+    var logging = false
+    try {
+        var debug = new URLSearchParams(location.search).get('debug')
+        if (debug === 'perf') localStorage.setItem('scene-debug', '1')
+        else if (debug === 'off') { localStorage.removeItem('scene-debug'); localStorage.removeItem('scene-log') }
+        logging = localStorage.getItem('scene-debug') === '1'
+    } catch (e) {}
+    function note(text) {
+        if (!logging) return
+        try {
+            var log = JSON.parse(localStorage.getItem('scene-log') || '[]')
+            log.push(new Date().toTimeString().slice(0, 8) + ' ' + text)
+            localStorage.setItem('scene-log', JSON.stringify(log.slice(-30)))
+        } catch (e) {}
+    }
+
     function apply(scene, max, isForced) {
         root.setAttribute('data-scene', scene)
         root.setAttribute('data-scene-max', String(max))
-        if (isForced) root.setAttribute('data-perf-forced', '')
+        if (isForced) { root.setAttribute('data-perf-forced', ''); note('load ' + (location.search || '/') + ' forced') }
     }
 
     try {
@@ -100,14 +118,23 @@ export const PERF_SCRIPT = `(function () {
         ceiling = 0
     }
 
-    // A phone that can't hold what it's handed dies on screen and the browser reloads it. The page marks the tiers it
-    // is showing as live and clears the mark whenever it is hidden or left normally (see crashGuard.ts), so finding
-    // the mark here means the last visit died on screen. Then this device is held to the depth tier from now on (or
-    // the still scene, if it died there): straight to depth rather than one tier down, because the stars are the big
-    // memory cost, and stepping down one tier at a time would keep them through two more crashes.
+    // A phone that can't hold what it's handed dies on screen and the browser reloads it, in the same tab. The page
+    // marks the tiers it is showing as live for that tab and clears the mark whenever it is hidden or left normally
+    // (see crashGuard.ts), so finding the mark here means the last page in this tab died on screen. Then this device is
+    // held to the depth tier from now on (or the still scene, if it died there): straight to depth rather than one
+    // tier down, because the stars are the big memory cost, and stepping down one tier at a time would keep them
+    // through two more crashes.
+    //
+    // The mark is per tab (sessionStorage), and only a page actually on screen reads or writes it. It used to live in
+    // storage every page of the site shares, and be read and written whether or not the page was showing, so a page
+    // the browser preloaded, or one opened alongside, took another page's mark for a crash: a phone was held to the
+    // still scene on every plain load with no crash at all. A page out of sight still obeys a cap already remembered.
+    var shown = document.visibilityState === 'visible' && !document.prerendering
+    var live = null, before = null, cap = null
     try {
-        var cap = localStorage.getItem('scene-cap')
-        var live = localStorage.getItem('scene-live')
+        localStorage.removeItem('scene-live')   // (where older versions kept the mark)
+        cap = before = localStorage.getItem('scene-cap')
+        if (shown) live = sessionStorage.getItem('scene-live')
         if (live !== null) {
             var held = Number(live) > 1 ? 1 : 0
             cap = String(cap === null ? held : Math.min(Number(cap), held))
@@ -118,5 +145,8 @@ export const PERF_SCRIPT = `(function () {
 
     var handed = ceiling === count ? count : 0
     apply(handed === count ? all : '', ceiling, false)
-    try { localStorage.setItem('scene-live', String(handed)) } catch (e) {}
+    if (shown) try { sessionStorage.setItem('scene-live', String(handed)) } catch (e) {}
+    note('load ' + (location.search || '/') + ' ' + (shown ? 'shown' : document.prerendering ? 'prerender' : 'hidden')
+        + ' mark ' + (live === null ? '-' : live) + ' cap ' + (before === null ? '-' : before) + ' > ' + (cap === null ? '-' : cap)
+        + ' max ' + ceiling)
 })()`
