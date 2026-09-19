@@ -5,7 +5,7 @@
 
 import Link from 'next/link'
 import Image from 'next/image'
-import { GitHub, LinkedIn, YouTube, Instagram, NorthEast } from '@mui/icons-material'
+import { GitHub, LinkedIn, YouTube, Instagram, NorthEast, ArrowForward } from '@mui/icons-material'
 
 import PMPC_Group from '../../public/images/clients/pmpc.svg'
 import SpotOnDrones from '../../public/images/clients/spotondrones-mono.png'
@@ -25,6 +25,17 @@ const clients: { src: typeof PMPC_Group, name: string, href?: string, box: strin
     { src: Arbys, name: "Arby's Auto Glass", href: 'https://arbysauto.com/', box: 'h-11 w-11' },
     { src: ASOT, name: 'ASOT', href: 'https://www.asotmilsim.com/', box: 'h-10 w-28', style: WHITE },
 ]
+
+// The way into the quote form, shown in the introduction and again at the end of the page
+function QuoteLink({ className = '' }: { className?: string }) {
+    return (
+        <Link href="/quote"
+            className={`group inline-flex items-center gap-2 rounded-full border border-[#f19bb3]/35 bg-[#f19bb3]/[0.08] px-5 py-2.5 text-sm font-semibold text-[#f7c5d3] transition-colors hover:border-[#f19bb3]/60 hover:text-white ${className}`}>
+            Get a quote
+            <ArrowForward sx={{ fontSize: 16 }} className="transition-transform group-hover:translate-x-0.5" />
+        </Link>
+    )
+}
 
 const ICONS = { GitHub, LinkedIn, YouTube, Instagram }
 const socials = SOCIALS.map(s => ({ ...s, icon: ICONS[s.label] }))
@@ -123,6 +134,7 @@ export default function Landing() {
                         Building modern digital experiences with clean code and thoughtful design. Specialising in fullstack
                         web development, from scalable backends to polished, performant frontends.
                     </p>
+                    <QuoteLink className="mt-8" />
                 </div>
 
                 <Panel className="p-6">
@@ -189,6 +201,7 @@ export default function Landing() {
                 <p className="mx-auto mb-8 max-w-md text-base leading-relaxed text-[#b4c3dc]/75">
                     Have a project in mind or just want to say hi? Reach out on any of these.
                 </p>
+                <div className="mb-8"><QuoteLink /></div>
                 <div className="flex flex-wrap justify-center gap-3">
                     {socials.map(({ label, href, icon: Icon }) => (
                         <Link key={label} href={href} target="_blank" rel="me noopener noreferrer" aria-label={label}
