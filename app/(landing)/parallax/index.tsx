@@ -9,6 +9,7 @@ import { animated, config, useSpring } from '@react-spring/web'
 import DarkTheme from "@/themes/dark"
 import { useCoarsePointer, useScene } from '@/app/perf/usePerf'
 import { runScene } from '@/app/perf/climb'
+import { startCrashGuard } from '@/app/perf/crashGuard'
 
 import AnimatedLogo from '../logo/index'
 import CloudStream from '../clouds/index'
@@ -221,6 +222,10 @@ export default function ParallaxView({ children }: Readonly<{ children: React.Re
     const [pageHeight, setPageHeight] = useState<number>()
 
     const revealed = useRevealed()
+
+    // Keep track of whether the scene on screen is still standing, so a device that crashes under it is held lower
+    // next time (see crashGuard.ts)
+    useEffect(() => startCrashGuard(), [])
 
     // Put the rest of the scene in once it's showing, so loading doesn't count against the frame timing
     useEffect(() => { if (revealed) return runScene(canSwapScene) }, [revealed])

@@ -1,5 +1,6 @@
 import { useSyncExternalStore } from 'react'
 
+import { recordLive } from './crashGuard'
 import { TIERS } from './tiers'
 
 // How much of the hero scene is showing, as the cumulative tokens the head script put on the root (see script.ts),
@@ -46,6 +47,7 @@ export function setTier(n: number) {
     const next = TIERS.slice(0, n).map(t => t.token).join(' ')
     if (root.getAttribute('data-scene') === next) return
     root.setAttribute('data-scene', next)
+    recordLive()   // (so a crash is judged against what was actually on screen)
     listeners.forEach(l => l())
 }
 
