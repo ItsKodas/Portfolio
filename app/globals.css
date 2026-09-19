@@ -29,6 +29,18 @@ html:not([data-scene~="depth"]) * {
   backdrop-filter: none !important;
 }
 
+/* And on a touch device at any tier. The content moves at a different speed from the scene behind it, so every
+   frosted panel is re-blurred on every scroll frame, and there are a couple of dozen of them (see useCoarsePointer in
+   app/perf). tailwind.config.ts sets `important: true`, so every utility, backdrop-blur-md included, is !important
+   too, and between two !important rules specificity decides: a bare `*` loses to a single class, so this needs at
+   least the tier 0 rule's (0,1,1). */
+@media (pointer: coarse) {
+  html:root * {
+    -webkit-backdrop-filter: none !important;
+    backdrop-filter: none !important;
+  }
+}
+
 
 /* Scrollbar: a slim, muted pill floating on the night (a transparent border gives it room on either side). Its colour
    follows the part of the scene on screen: the page sets it in a stylesheet of its own (see parallax/scrollbarTint.tsx);
@@ -61,4 +73,31 @@ html:not([data-scene~="depth"]) * {
 
 ::-webkit-scrollbar-corner {
   background: #0b101f;
+}
+
+
+/* The ?debug=perf test mode (see app/perf/debug.tsx): each token takes one suspect for slow scrolling out of the
+   picture. !important beats the layers' inline transforms, and every selector here out-specifies Tailwind's
+   !important utilities (see the tier 0 rule above). Inert unless the test mode sets data-debug. */
+html[data-debug~="still"] [data-parallax] { transform: none !important; animation: none !important; translate: none !important; }
+html[data-debug~="nohero"] [data-hero] { display: none !important; }
+html[data-debug~="nomask"] * { -webkit-mask-image: none !important; mask-image: none !important; }
+html[data-debug~="nofilter"] * { filter: none !important; }
+
+
+/* Layers that follow the scroll directly (see LiteLayer in app/(landing)/parallax) are moved by the browser wherever it
+   can drive an animation from the scroll position: -speed x scrollY, on the page's own scroll timeline, in step with
+   the scroll and off the main thread (Safari 26.4 and later run these on the compositor). The timeline runs 0 to 1
+   over the whole scroll, so the far end is -speed x its length, which ParallaxView keeps in --scroll-max; until it
+   has measured, nothing moves, which is right at the top of the page. It animates `translate`, which composes with
+   `transform`. Where scroll timelines aren't supported, the layer moves itself from script instead. */
+@supports (animation-timeline: scroll()) {
+  [data-parallax="direct"] {
+    animation: scroll-parallax linear both;
+    animation-timeline: scroll(root);
+  }
+}
+
+@keyframes scroll-parallax {
+  to { translate: 0 calc(var(--speed) * var(--scroll-max, 0) * -1px); }
 }

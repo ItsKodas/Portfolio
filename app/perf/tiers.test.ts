@@ -25,20 +25,37 @@ const ceiling = (
 ) => ceilingFor(vw, vh, dpr, deviceMemory, coarsePointer, TIERS, BASE, TILE_MIN, BUDGETS)
 
 describe('ceilingFor', () => {
-    it('gives an iPhone the depth tier only', () => {
-        expect(ceiling(PHONE, undefined, true)).toBe(1)
+    // On a phone the whole scene crashed once the content scrolled into view, while dropping any one tier held; sky and
+    // water cost about the same there and the forest next to nothing, and a moving sky shows more than the water does.
+    // So the water goes last, and a touch device stops one tier short of it.
+    it('orders the tiers so the water is the last thing any device gets', () => {
+        expect(TIERS.map(t => t.token)).toEqual(['depth', 'sky', 'forest', 'water'])
     })
 
-    it('gives an 8GB Android the depth tier only', () => {
-        expect(ceiling(PHONE, 8, true)).toBe(1)
+    it('gives an iPhone everything but the water', () => {
+        expect(ceiling(PHONE, undefined, true)).toBe(TIERS.length - 1)
     })
 
-    it('gives a 4GB Android the depth tier only', () => {
-        expect(ceiling(PHONE, 4, true)).toBe(1)
+    it('gives an 8GB Android everything but the water', () => {
+        expect(ceiling(PHONE, 8, true)).toBe(TIERS.length - 1)
     })
 
-    it('leaves a 2GB Android on the still scene', () => {
-        expect(ceiling(PHONE, 2, true)).toBe(0)
+    it('gives a 4GB Android everything but the water', () => {
+        expect(ceiling(PHONE, 4, true)).toBe(TIERS.length - 1)
+    })
+
+    it('holds a touch device short of the whole scene however generous its budget', () => {
+        const budgets = { ...BUDGETS, touchFloor: 1e12 }
+        expect(ceilingFor(393, 852, 3, 8, true, TIERS, BASE, TILE_MIN, budgets)).toBe(TIERS.length - 1)
+    })
+
+    it('does not hold a pointer device short of it', () => {
+        const budgets = { ...BUDGETS, pointer: 1e12 }
+        expect(ceilingFor(1440, 900, 2, 8, false, TIERS, BASE, TILE_MIN, budgets)).toBe(TIERS.length)
+    })
+
+    it('keeps a 2GB Android to the parallax', () => {
+        expect(ceiling(PHONE, 2, true)).toBe(1)
     })
 
     it('gives desktop Safari every tier', () => {
@@ -124,14 +141,12 @@ describe('ceilingFor', () => {
         // (viewportBytes x touchViewports > touchFloor, so touchFloor === Math.max(...) never activates for
         // either side), and the larger is exactly 4x the area of the smaller at the same dpr.
         //
-        // With today's constants, both land on the depth tier too, but not by the same coincidence as above:
-        // it is structural. Once the area term dominates, cost and allowance both scale linearly with area, so
-        // which tier is reached converges to whichever cumulative overdraw ratio first exceeds touchViewports
-        // (14), independent of viewport size. Cumulative overdraw is 10.8 through depth and 20.8 through sky,
-        // so no touch device without deviceMemory can reach the sky tier from the area term alone, at any
-        // size. That means no pair of viewports in this regime can currently demonstrate a strict difference;
-        // this assertion documents that the ordering holds (not fewer), while the comment above documents why
-        // it cannot yet be strict.
+        // With today's constants both land on every tier, and that is structural rather than coincidental.
+        // Once the area term dominates, cost and allowance both scale linearly with area, so which tier is
+        // reached converges to whichever cumulative overdraw ratio first exceeds touchViewports (30),
+        // independent of viewport size, and the full scene's 21.9 never does. So no pair of viewports in this
+        // regime can currently demonstrate a strict difference; this assertion documents that the ordering holds
+        // (not fewer), while this comment documents why it cannot yet be strict.
         const small = ceiling([900, 700, 3], undefined, true)
         const large = ceiling([1800, 1400, 3], undefined, true)
         expect(large).toBeGreaterThanOrEqual(small)

@@ -1,6 +1,27 @@
 # Staged scene tiers for the home page hero
 
-Date: 2026-09-18
+Date: 2026-09-18, last updated 2026-09-20
+
+## Where it ended up
+
+This started as mobile browsers crashing on the home page and went through three problems, each hiding the next:
+
+1. **The crash** was memory: every phone was handed the full scene at first paint (#15, below).
+2. **Then scrolling lagged on phones**, at every tier. Springs and frosted glass were part of it (#19), but the root
+   cause, found on the device with the `?debug=perf` test mode (#21, #22), was that script moved the layers: on iOS
+   every browser uses WebKit, which scrolls in a separate process, so each frame waited on layers it hadn't seen
+   coming. The browser now moves them through a CSS scroll timeline (#23), which took a phone from a few updates a
+   second to smooth.
+3. **Then phones could have more of the scene**: on a raised budget with a crash guard (#24), then held one tier short
+   of the whole scene, which crashed a phone once the content scrolled into view while any three tiers held. The water
+   tier now goes last and touch devices stop before it, so phones get depth, sky and forest.
+
+Desktops keep their springing layers and frosted glass throughout.
+
+One report is open and unreproduced: a line through the frosted blur on a hero button, seen on a desktop. Chrome at
+five common desktop sizes and scalings showed nothing, so it depends on the browser or GPU. See Future work.
+
+The sections below are the design as it evolved, kept with their reasoning, including the parts later superseded.
 
 ## Problem
 
@@ -75,11 +96,13 @@ wallpaper.
 | 0 | (none) | the current `LiteScene`: three depths, no scene animation | 3.8 | 35 |
 | 1 | `depth` | the ten layer parallax | +7.0 | +7 |
 | 2 | `sky` | star twinkle, drift, shooting stars, cloud drift | +10.0 | +26 |
-| 3 | `water` | ripples, streaks, fog, boat bob, lantern flicker | +0.9 | +21 |
-| 4 | `forest` | tree sway, gusts, wind streaks, leaves, fireflies | +0.2 | +162 |
+| 3 | `forest` | tree sway, gusts, wind streaks, leaves, fireflies | +0.2 | +162 |
+| 4 | `water` | ripples, streaks, fog, boat bob, lantern flicker | +0.9 | +21 |
 
 Tokens are cumulative and always applied in this order. `data-scene="depth sky"` means tiers
-0 through 2.
+0 through 2. (The water was originally tier 3 and the forest tier 4; they swapped so the water, which a phone can't
+afford alongside everything else, goes last. See Phones stop one tier short. The cost tables below keep the original
+order they were measured in.)
 
 ## The cost model
 
@@ -146,6 +169,11 @@ The real-browser effect is smaller than the model suggests, because a composited
 the viewport gets no backing store allocated until it scrolls into view, and the crash this
 design fixes happens at the top of the page, before the footer is anywhere near the viewport.
 
+On a touch device the question is now moot: `night`'s animations are switched off there at
+every tier (see Scroll-time cost on touch devices, below), so those 43 layers are never
+promoted on a phone at all. The inaccuracy remains only for pointer devices, whose budget has
+several hundred MiB of headroom.
+
 Re-running `scripts/scene-cost.js` with `night` on `depth` would settle this properly; until
 then, treat `depth` and `forest`'s layer counts in `TIERS` as approximate.
 
@@ -153,7 +181,7 @@ then, treat `depth` and `forest`'s layer counts in `TIERS` as approximate.
 
 ```
 budget    = allowance x memFactor
-allowance = coarsePointer ? max(120 MiB, viewportBytes x 14)
+allowance = coarsePointer ? max(150 MiB, viewportBytes x 30)
                           : max(1024 MiB, viewportBytes x 26)
 memFactor = navigator.deviceMemory ? clamp(deviceMemory / 4, 0.5, 1.5) : 1
 ```
@@ -163,7 +191,7 @@ device's own screen, in viewports of the same `vw x vh x dpr^2 x 4` term the cos
 The floor exists so a small screen is not starved down to nothing; the area term exists so a
 large screen is not held to the same ceiling as a small one.
 
-The touch floor is 120 MiB over 14 viewports; the pointer floor is 1024 MiB over 26. 26 sits
+The touch floor is 150 MiB over 30 viewports; the pointer floor is 1024 MiB over 26. 26 sits
 above the 21.9 viewports of cumulative full-scene overdraw, so a pointer device in the area
 regime keeps real headroom over the whole scene rather than scraping it.
 
@@ -218,36 +246,94 @@ Which lands as:
 
 | device | geometry | signals | tier reached |
 | --- | --- | --- | --- |
-| iPhone SE | 375x667, DPR 2 | coarse, no `deviceMemory` | 3, `water` |
-| iPhone 15 | 393x852, DPR 3 | coarse, no `deviceMemory` | 1, `depth` |
-| iPhone 15 Pro Max | 430x932, DPR 3 | coarse, no `deviceMemory` | 1, `depth` |
-| iPad 10.9 | 820x1180, DPR 2 | coarse, no `deviceMemory` | 1, `depth` |
-| Pixel 8 | 412x915, DPR 2.625 | coarse, `deviceMemory` 8 | 1, `depth` |
-| mid range Android | 375x812, DPR 3 | coarse, `deviceMemory` 4 | 1, `depth` |
-| low end Android | 360x800, DPR 3 | coarse, `deviceMemory` 2 | 0, still scene |
+| iPhone SE | 375x667, DPR 2 | coarse, no `deviceMemory` | 3, all but `water` |
+| iPhone 15 | 393x852, DPR 3 | coarse, no `deviceMemory` | 3, all but `water` |
+| iPhone 15 Pro Max | 430x932, DPR 3 | coarse, no `deviceMemory` | 3, all but `water` |
+| iPad 10.9 | 820x1180, DPR 2 | coarse, no `deviceMemory` | 3, all but `water` |
+| Pixel 8 | 412x915, DPR 2.625 | coarse, `deviceMemory` 8 | 3, all but `water` |
+| mid range Android | 375x812, DPR 3 | coarse, `deviceMemory` 4 | 3, all but `water` |
+| low end Android | 360x800, DPR 3 | coarse, `deviceMemory` 2 | 1, `depth` |
 | MacBook Pro 16 | 1728x970, DPR 2 | fine, no `deviceMemory` | 4, all tiers |
 | Studio Display | 2560x1340, DPR 2 | fine, no `deviceMemory` | 4, all tiers |
 | Pro Display XDR | 3008x1590, DPR 2 | fine, no `deviceMemory` | 4, all tiers |
 | desktop Chrome | 1920x1080, DPR 2 | fine, `deviceMemory` 8 | 4, all tiers |
 
-**Touch devices do not all land on tier 1**, and which regime a device falls in is what decides
-it. Most phones and tablets are in the area regime, where the screen is big enough that
-`viewportBytes x 14` beats the 120 MiB floor, and they settle at `depth`: there the tier
-reached converges on whichever cumulative overdraw ratio first exceeds 14, independent of size,
-and cumulative overdraw is 10.8 through `depth` but 20.8 through `sky`. Either side of that
-regime the answer differs. A small enough screen sits under the floor and reaches tier 3 (see
-the residual below), and a device whose `deviceMemory` drags `memFactor` down to 0.5 can fall
-short of even `depth` and stay on the still scene.
+### Phones get the whole scene, with a crash guard behind them
 
-These are starting values. They are chosen so that no touch device reaches the state that
-currently crashes, and so that every pointer driven device clears all four tiers and behaves
-exactly as the site does today. They will need tuning against real hardware, which is why
-they live in one file with their reasoning in comments.
+The touch budget was first set at 120 MiB over 14 viewports, which held every phone to `depth`, because `sky` alone
+costs 10.0 viewports (8.43 of them stars) and cumulative overdraw through it is 20.8. That was chosen before two things
+were known: phones were also carrying 25 frosted-glass panels, and their layers were moved by script, which is what
+actually stalled them. With frosted glass off on touch and the layers moved by the browser (see Scroll-time cost on
+touch devices, below), a phone that had crashed and then stalled ran the whole scene, forced with `?scene=`,
+flawlessly. So the touch budget is now 150 MiB over 30 viewports: every recent iPhone, iPad and 4 GB or larger Android
+reaches all four tiers, and 2 to 3 GB Androids keep the parallax only.
 
-Note that `sky` is expensive enough (10.0 viewports, of which the stars alone are 8.43) that
-most phones will settle at `depth`. See Future work.
+That is a bet, and iPhones report no memory to check it against, so it comes with a guard against being wrong. The
+original crash reloaded and crashed again on every load until the browser gave up; a phone that can't hold the whole
+scene must not do that again.
+
+- The head script marks the tiers it hands out as live for this tab, in `sessionStorage` (`scene-live`), and every
+  tier change after that re-marks it (`recordLive` in `app/perf/crashGuard.ts`, called from `setTier`). Only a page
+  actually on screen reads or writes the mark (`visibilityState` is `visible` and the page isn't being prerendered);
+  a page out of sight still obeys a cap already remembered. See "The mark is per tab", below, for why.
+- `startCrashGuard`, from `ParallaxView`, clears the mark whenever the page is hidden or left (`visibilitychange` to
+  hidden, `pagehide`) and restores it when shown again (`visibilitychange` to visible, `pageshow`). The one way the
+  mark survives is the page dying while on screen. Clearing on hide is what keeps a phone discarding a backgrounded
+  tab from being mistaken for a crash.
+- A load that finds the mark holds the device to `depth` from then on (`scene-cap`), or to the still scene if it died
+  at `depth` or below. Straight to `depth` rather than one tier down, because the stars on `sky` are the big memory
+  cost, and stepping down a tier at a time would keep them through two more crashes. A cap only ever lowers.
+- `?perf=auto` forgets an old cap (in `localStorage`, so it applies to the device), but not a crash that has only just
+  happened. The browser reloads a crashed page
+  at the same address, so a `?perf=auto` that threw the fresh mark away would hand the scene out again on every reload,
+  a crash loop forced by a URL; that is exactly what happened on the phone the first time round. Forced modes neither
+  mark nor obey any of it.
+
+### The mark is per tab
+
+The mark first lived in `localStorage`, shared by every page of the site, and the head script read and wrote it whether
+or not its page was on screen. On the phone that proved everything else, that held the device to the still scene on
+every plain load with no crash at all: a page loading out of sight, most likely the browser preloading the address as it
+was typed, found the mark of the page still on screen and took it for a crash. A phone mid-climb shows tier 0 or 1 for
+its first second or two, which is exactly the mark that produces a cap of 0.
+
+So the mark is kept per tab in `sessionStorage`, which a browser keeps through reloading a crashed tab, and only a page
+on screen reads or writes it. The cap it produces stays in `localStorage`, since it describes the device.
+
+Checked in headless Chrome at phone size: moving between addresses in one tab leaves no false cap; crashing a tab's
+renderer (`Page.crash`) and reloading that same tab holds it to `depth`; another tab afterwards keeps the device's cap
+without marking anything new; `?perf=auto` clears it. That the mark survives a crashed renderer is confirmed for Chrome
+only. On iOS it is expected, since WebKit keeps session storage outside the web content process, but it is not proven.
+
+**The guard log.** Because this misfired on a phone that can't be attached to a profiler, `?debug=perf` also turns on a
+log (`scene-log` in `localStorage`, the last 30 lines, until `?debug=off`). The head script records every load: its
+address, whether it was shown, hidden or prerendering, the mark it found, the cap before and after, and the ceiling. The
+client records every mark and clear with its reason. The `?debug=perf` readout shows it. A load straight after a crash
+should read `mark 3 cap - > 1`; one reading `mark -` there would mean the mark did not survive the crash.
+
+### Phones stop one tier short
+
+The raised budget handed phones all four tiers, and on the phone that proved it, the whole scene crashed once the
+content scrolled into view (a layer gets no memory until it comes on screen, so the cost of everything below the hero
+lands then). Dropping any single tier held, whichever it was; the sky and the water cost about the same there and the
+forest next to nothing. So the tier order is now `depth`, `sky`, `forest`, `water`, and a touch device stops before the
+last (`touchMaxTiers` in `BUDGETS`): a moving sky shows far more than the water's subtle shifting, and the forest comes
+almost free.
+
+That line is a hard cap rather than a budget, because the budget can't draw it: the water adds so little (0.9 viewports
+and 21 layers) that no one touch allowance lands between "all but the water" and "all of it" across phone sizes. The
+window for an iPhone 15 and the one for a Pro Max do not even overlap. The budget still applies beneath the cap, so a
+2 to 3 GB Android keeps the parallax only. Desktops are unaffected and get all four.
+
+Checked end to end in headless Chrome at phone size with a genuine renderer crash (`Page.crash` in the DevTools
+protocol): a fresh load gets all four tiers; a normal exit leaves nothing against it; after the crash the next load is
+held to `depth`, still with all ten parallax layers, and stays held; `?perf=auto` restores the whole scene. The
+`?debug=perf` readout shows the cap, if any.
 
 ### Residual: the iPhone SE still reaches a higher tier than other phones
+
+(Superseded: under the current touch budget every phone in the table above reaches all four tiers. Kept for the
+reasoning, which still describes how the floor behaves.)
 
 One quirk survives this change and is left as-is. On a 375x667, DPR 2 screen, the area term is
 small enough that the 120 MiB floor governs rather than `viewportBytes x 14`, and the per-layer
@@ -261,6 +347,69 @@ This is not a reappearance of the inversion above: it does not put a stronger de
 still scene while a weaker one gets everything, it only means one small, older phone affords
 more of the scene than its larger, newer siblings. Real device testing should settle whether
 that is acceptable or whether the floor needs its own separate tuning pass.
+
+## Scroll-time cost on touch devices
+
+The budget models memory, and memory was what crashed the tab. It says nothing about what
+scrolling costs per frame, and on a phone that turned out to be the next problem: with the
+crash fixed, a phone at `depth` held a steady frame rate at rest and fell apart as soon as it
+was scrolled. Three things made that invisible to the design above.
+
+- **The frame watch only ever sampled at rest.** It ran once, about a second after the scene
+  settled at the top of the page, and a healthy result ended it. Nobody has scrolled by then.
+- **Reaching `depth` turned on more than depth.** Every layer type decision keyed off `lite`,
+  meaning "not `depth`", so a phone at tier 1 also got react-spring layers (ten hero depths and
+  the content column, each restarted on every scroll event with `config.slow` and still
+  settling for about a second afterwards), frosted glass (25 blurred surfaces in the content,
+  each re-blurred every scroll frame because the scene behind moves at a different speed), and
+  a hero that kept drawing after it was scrolled past, since taking it out of drawing was also
+  tied to `lite`.
+- **The campfire and night stars animated at tier 1**, having moved to the `depth` token.
+
+None of these cost memory at rest, which is why the budget passed them. A machine drawing
+without a GPU never saw any of it, because it is held at tier 0, where every one of them is off:
+that is why a desktop with hardware acceleration disabled scrolled smoothly while a phone did
+not.
+
+A touch device, meaning `(pointer: coarse)`, the same test the budget already branches on,
+therefore keeps the ten-depth parallax but loses what costs a frame on every scroll:
+
+| on a touch device | how |
+| --- | --- |
+| every layer, hero and content, follows the scroll directly rather than springing after it | `useCoarsePointer()` in `usePerf.ts`; `ParallaxView` passes `LiteLayer` to `FullScene` |
+| the hero is taken out of drawing once the content covers it | tied to direct layers now, not to `lite`, since only springing layers trail the scroll |
+| no frosted glass | `@media (pointer: coarse)` in `app/globals.css` |
+
+and the frame watch now samples real scrolls (see `app/perf/climb.ts`, below), so a device that
+still struggles steps down rather than staying slow. Pointer devices are unchanged: springs,
+frosted glass and the campfire all remain from `depth` up.
+
+`tailwind.config.ts` sets `important: true`, so every Tailwind utility is `!important`,
+`backdrop-blur-md` included. Between two `!important` rules specificity decides, so a bare `*`
+loses to a single class. Both rules that switch the blur off carry at least (0,1,1): the tier 0
+rule by its shape, and the touch rule as `html:root *`.
+
+### Direct layers are moved by the browser
+
+That first fix removed the springs, but on an iPhone scrolling still stalled for about 200 ms a frame, at every tier
+including the still scene, while the finger scrolled perfectly. A `?debug=perf` test mode (`app/perf/debug.tsx`)
+isolated it on the device: masks and filters made no difference, while hiding the hero or stopping script movement of
+the layers both fixed it. Per-scroll script measured at 0.06 ms, so the cost was never the script itself. On iOS every
+browser uses WebKit, which scrolls the page in a separate process; a layer moved by script is repositioned one frame
+behind, so each frame waited on big layers the browser had not seen coming.
+
+So wherever the browser supports scroll timelines, a direct layer is not moved by script at all. `app/globals.css`
+animates its `translate` on `animation-timeline: scroll(root)`, from 0 to `-speed x` the whole scroll range, which
+`ParallaxView` keeps in `--scroll-max`; each layer carries its speed as `--speed`. That places every layer at exactly
+`-speed x scrollY`, in step with the scroll. Safari 26.4 and later run scroll-driven animations on the compositor.
+Where scroll timelines are not supported, `LiteLayer` falls back to moving itself from the scroll event. On the phone
+this took scrolling from a few updates a second to smooth, and with it smooth there was no reason left to hold back
+the campfire and night stars on touch, so those follow the tiers again like everywhere else.
+
+`.paused`, which freezes the hero's animations once the content covers it, exempts the layers themselves: pausing a
+scroll-driven animation would leave it stuck and out of step with the scroll once resumed.
+
+Springing layers on pointer devices are unchanged; they were smooth, and the trail is the intended feel.
 
 ## Components
 
@@ -347,6 +496,16 @@ frames, and drops one token if the median frame exceeds the threshold, repeating
 frames are healthy or it reaches tier 0. This is today's `watchFrameRate` behaviour, preserved
 and given somewhere to step down to.
 
+**Then it watches scrolling, for the rest of the visit.** A healthy result at rest used to end
+the watch, but frames at rest say little about scrolling, which is where a phone struggles
+(see Scroll-time cost on touch devices, below). So passing the at-rest check hands over to a
+scroll watch instead. A frame counts only when a scroll event has landed since the one before
+it, so nothing is sampled, and no frame of its own is requested, while the page sits idle;
+each gesture starts from a fresh baseline so the gap between gestures is never measured, and
+a hidden tab resets it the same way. Every `SCROLL_FRAMES` (30) such frames, gathered across
+gestures, it takes the median and steps down one tier if it is slow, then carries on watching
+at the new tier. It does not run at tier 0, where there is nothing left to drop.
+
 ### Stylesheet migration
 
 Every `:global(html[data-perf="lite"])` rule in the nine scene stylesheets becomes a
@@ -379,11 +538,13 @@ Climbing while the scene is on screen creates two visible transition risks.
 
 **`depth` is a structural remount.** `LiteScene` and `FullScene` place their layers at
 different parallax offsets, so swapping mid scroll is a visible jump. At `scrollY === 0` every
-layer sits at offset zero and the two scenes are pixel identical. So the `depth` token is
-applied **only while `scrollY === 0`**. If the visitor has already scrolled, the driver waits
-for a return to the top, and abandons the `depth` tier after 30 seconds. The climb begins at
-reveal, when scroll is essentially always 0, so in practice this costs nothing and removes
-the one transition that would look broken.
+layer sits at offset zero and the two scenes are pixel identical, and once the content has
+scrolled up over the hero completely neither scene can be seen at all. So the `depth` token
+is only ever added or removed at one of those two moments. `ParallaxView` owns that geometry
+and hands the driver a `canSwapScene()` check (at the top, or the hero fully covered, the
+same threshold at which a direct-layer hero is taken out of drawing). If neither comes, the
+climb abandons `depth` after 30 seconds, while a step down away from `depth` goes ahead
+anyway, since a device that is already struggling should not stay that way indefinitely.
 
 **Only the leaves actually pop.** Reading the keyframes, most of what a token enables cannot
 pop by construction. `.twinkle` starts at `opacity: 1`, which is the resting state. `.drift`
@@ -428,7 +589,7 @@ consistent with tier 0 being the no-JS state, but it was never stated outright u
 | `navigator.deviceMemory` undefined | `memFactor` of 1, the conservative middle |
 | tab hidden during climb | `sampleFrames` resets its baseline on the next tick, effectively pausing |
 | frame sample exceeds threshold | reverts to the tier before, then hands off to the demotion watch |
-| visitor scrolled before `depth` applies | waits for `scrollY === 0`, gives up after 30 s |
+| visitor scrolled before `depth` applies | waits for `canSwapScene()`, gives up after 30 s |
 
 ## Testing
 
@@ -465,3 +626,15 @@ a full viewport. Grouping stars spatially rather than randomly would shrink thos
 dramatically and could bring `sky` within reach of a normal phone. That is a change to
 `stars/index.tsx` and its group construction, not to the tier system, so it is deliberately
 left out of this work.
+
+(Since then phones have been given `sky` anyway, on a raised budget with a crash guard, so this is no longer what keeps
+the stars off phones. It would still cut the scene's biggest memory cost, and so widen the margin on phones that have
+not been tested.)
+
+**The line through a hero button's frosted blur.** Reported on a desktop against the "The Back Room" button under the
+title, and not reproduced: headless Chrome at 1920x1080, 1366x768, 1536x864 at 125%, 1280x720 at 150% and 2560x1440
+all showed a clean blur. Two candidates remain. A GPU-composited browser tiles large layers, and a backdrop blur can
+show a faint seam where two tiles meet; that would be a straight line that stays put on the button. Or the near
+mountains, which the title and its buttons deliberately sit behind and which move a hundred times faster than the
+title, lift their ridge across the buttons with any scroll, drawn sharp in front of the glass; that would be an edge
+that moves as the page scrolls. Which browser, and whether the line moves when scrolling, would tell them apart.

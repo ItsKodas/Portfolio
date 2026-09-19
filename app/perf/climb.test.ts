@@ -15,6 +15,7 @@ const SETTLE_MS = 1000
 const TOP_WAIT_MS = 30000
 const CLIMB_FRAMES = 20
 const WATCH_FRAMES = 60
+const SCROLL_FRAMES = 30
 
 const FAST = 16  // comfortably under climb.ts's 36ms slow-frame threshold
 const SLOW = 60  // comfortably over it
@@ -390,5 +391,127 @@ describe('a hidden tab', () => {
         // delta. The armed timer is sky's own settle, the next step already under way.
         expect(h.scene()).toBe(withTiers(2))
         expect(vi.getTimerCount()).toBe(1)
+    })
+})
+
+// Settles the at-rest watch with healthy frames, which is what hands over to the scroll watch
+function settleAtRest(h: ReturnType<typeof harness>) {
+    vi.advanceTimersByTime(SETTLE_MS)
+    h.flush(WATCH_FRAMES, FAST)
+}
+
+// One scroll gesture: a scroll event before each of `frames` frames. The first frame of a gesture only ever sets
+// the baseline, so `frames` frames yield `frames - 1` measured deltas.
+function scrollGesture(h: ReturnType<typeof harness>, frames: number, deltaMs: number) {
+    for (let i = 0; i < frames; i++) {
+        h.scrollTo(1000 + i)
+        h.tick(deltaMs)
+    }
+}
+
+describe('the scroll watch', () => {
+    it('steps down one tier when frames drawn while scrolling are slow', () => {
+        const h = harness()
+        h.setScene(withTiers(2))
+        h.setMax(2)
+        runScene(() => true)
+        settleAtRest(h)
+        expect(h.scene()).toBe(withTiers(2))   // idle frames were fine, which is exactly what used to end the watch
+
+        scrollGesture(h, SCROLL_FRAMES + 1, SLOW)
+        expect(h.scene()).toBe(withTiers(1))
+    })
+
+    it('leaves the tier alone when scrolling is smooth, and keeps watching', () => {
+        const h = harness()
+        h.setScene(withTiers(2))
+        h.setMax(2)
+        runScene(() => true)
+        settleAtRest(h)
+
+        scrollGesture(h, SCROLL_FRAMES + 1, FAST)
+        expect(h.scene()).toBe(withTiers(2))
+        expect(h.pendingScrollListenerCount()).toBe(1)
+    })
+
+    it('draws no frames of its own while the page sits idle', () => {
+        const h = harness()
+        h.setScene(withTiers(2))
+        h.setMax(2)
+        runScene(() => true)
+        settleAtRest(h)
+
+        expect(h.pendingFrameCount()).toBe(0)
+        scrollGesture(h, 3, FAST)
+        h.tick(FAST)   // a frame with no scroll before it ends the gesture
+        expect(h.pendingFrameCount()).toBe(0)
+    })
+
+    it('does not measure the gap between two gestures', () => {
+        const h = harness()
+        h.setScene(withTiers(2))
+        h.setMax(2)
+        runScene(() => true)
+        settleAtRest(h)
+
+        scrollGesture(h, 11, SLOW)   // 10 measured deltas
+        h.tick(100000)               // no scroll before this frame: the gesture ends here, unmeasured
+        scrollGesture(h, 20, SLOW)   // 19 more: 29 in all, one short of a verdict
+        expect(h.scene()).toBe(withTiers(2))
+
+        h.scrollTo(2000)
+        h.tick(SLOW)                 // the 30th
+        expect(h.scene()).toBe(withTiers(1))
+    })
+
+    it('holds back a step down that would remove depth until the scene can be swapped unseen', () => {
+        const h = harness()
+        h.setScene(withTiers(1))
+        h.setMax(1)
+        let swappable = false
+        runScene(() => swappable)
+        settleAtRest(h)
+
+        scrollGesture(h, SCROLL_FRAMES + 1, SLOW)
+        expect(h.scene()).toBe(DEPTH)   // slow, but the hero is on screen, so swapping now would jump
+
+        swappable = true
+        h.scrollTo(3000)
+        expect(h.scene()).toBe('')
+    })
+
+    it('does not watch scrolling on the still scene, where there is nothing left to drop', () => {
+        const h = harness()
+        h.setScene('')
+        h.setMax(0)
+        runScene(() => true)
+        settleAtRest(h)
+
+        expect(h.pendingScrollListenerCount()).toBe(0)
+    })
+
+    it('is cancelled by stop', () => {
+        const h = harness()
+        h.setScene(withTiers(2))
+        h.setMax(2)
+        const stop = runScene(() => true)
+        settleAtRest(h)
+        scrollGesture(h, 3, SLOW)   // mid-gesture, a frame in flight
+
+        stop()
+        expect(h.pendingScrollListenerCount()).toBe(0)
+        expect(h.pendingFrameCount()).toBe(0)
+    })
+})
+
+describe('canSwapScene', () => {
+    it('lets depth go in away from the top when the scene can be swapped unseen', () => {
+        const h = harness()
+        h.setScene('')
+        h.setMax(TIERS.length)
+        h.scrollTo(800)
+
+        runScene(() => true)
+        expect(h.scene()).toBe(DEPTH)
     })
 })

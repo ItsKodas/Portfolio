@@ -1,0 +1,69 @@
+# hostd: the service the client portal will call to control client sites. Deployed on its own, like
+# mail/. Nothing is published on the host: api is reachable only on the hostd network, and the agent has
+# no network at all in phase 1.
+
+name: hostd
+
+services:
+  agent:
+    build:
+      context: .
+      target: agent
+    container_name: hostd-agent
+    # Root, because it holds the Docker socket. It listens only on the Unix socket in hostd-sock.
+    network_mode: none
+    environment:
+      HOSTD_REGISTRY_FILE: /etc/hostd/projects.yaml
+      HOSTD_AGENT_SOCKET: /run/hostd/agent.sock
+      # The node user's group in the api image, so api can connect and nothing else can.
+      HOSTD_SOCKET_GID: "1000"
+      HOSTD_STATUS_FILE: /tmp/hostd-status.json
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      # The same path inside as outside: compose hands bind mount sources to the daemon as host paths.
+      # Read-only in phase 1, which only reads compose files; file access in phase 3 changes this.
+      - /var/www:/var/www:ro
+      - ./projects.yaml:/etc/hostd/projects.yaml:ro
+      - hostd-sock:/run/hostd
+    healthcheck:
+      test: ["CMD", "node", "--import", "tsx", "src/shared/healthcheck.ts", "/tmp/hostd-status.json"]
+      interval: 60s
+      timeout: 15s
+      retries: 3
+      start_period: 120s
+    restart: unless-stopped
+
+  api:
+    build:
+      context: .
+      target: api
+    container_name: hostd-api
+    env_file: .env
+    environment:
+      HOSTD_REGISTRY_FILE: /etc/hostd/projects.yaml
+      HOSTD_AGENT_SOCKET: /run/hostd/agent.sock
+      HOSTD_STATE_DIR: /state
+      HOSTD_STATUS_FILE: /tmp/hostd-status.json
+    volumes:
+      - ./projects.yaml:/etc/hostd/projects.yaml:ro
+      - hostd-state:/state
+      - hostd-sock:/run/hostd
+    networks:
+      - hostd
+    depends_on:
+      - agent
+    healthcheck:
+      test: ["CMD", "node", "--import", "tsx", "src/shared/healthcheck.ts", "/tmp/hostd-status.json"]
+      interval: 60s
+      timeout: 15s
+      retries: 3
+      start_period: 120s
+    restart: unless-stopped
+
+networks:
+  hostd:
+    name: hostd
+
+volumes:
+  hostd-state:
+  hostd-sock:
