@@ -20,6 +20,8 @@ import Fireflies from '../fireflies/index'
 import Watchtower from '../watchtower/index'
 import ForegroundTrees from '../trees/index'
 
+import PerfDebug from '@/app/perf/debug'
+
 import ScrollbarTint from './scrollbarTint'
 import SceneCurtain, { useRevealed } from './curtain'
 import WallpaperLink from './wallpaperLink'
@@ -55,7 +57,7 @@ function ScrollLayer({ speed, className = styles.layer, style, children }: Layer
     }, [api, speed])
 
     return (
-        <animated.div className={className} style={{ ...style, transform: y.to(v => `translate3d(0,${v}px,0)`) }}>
+        <animated.div data-parallax className={className} style={{ ...style, transform: y.to(v => `translate3d(0,${v}px,0)`) }}>
             {children}
         </animated.div>
     )
@@ -76,7 +78,7 @@ function LiteLayer({ speed, className = styles.layer, style, children }: LayerPr
         return () => window.removeEventListener('scroll', onScroll)
     }, [speed])
 
-    return <div ref={ref} className={className} style={style}>{children}</div>
+    return <div ref={ref} data-parallax className={className} style={style}>{children}</div>
 }
 
 // The full hero: every part of the scene at its own depth, each springing after the scroll. The desktop wallpaper
@@ -261,13 +263,14 @@ export default function ParallaxView({ children }: Readonly<{ children: React.Re
     return (
         <ThemeProvider theme={DarkTheme}>
             <ScrollbarTint />
+            <PerfDebug />
             <WallpaperLink />
             <SceneCurtain />
             <div className='relative overflow-hidden bg-[#0b101f]' style={{ height: pageHeight ?? '100svh' }}>
 
                 {/* ── Hero scene ─────────────────────────────────────── */}
 
-                <section ref={heroRef} className='absolute inset-x-0 top-0 h-[200svh]'>
+                <section ref={heroRef} data-hero className='absolute inset-x-0 top-0 h-[200svh]'>
                     {lite ? <LiteScene /> : <FullScene Layer={direct ? LiteLayer : ScrollLayer} />}
                 </section>
 

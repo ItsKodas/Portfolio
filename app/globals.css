@@ -74,3 +74,12 @@ html:not([data-scene~="depth"]) * {
 ::-webkit-scrollbar-corner {
   background: #0b101f;
 }
+
+
+/* The ?debug=perf test mode (see app/perf/debug.tsx): each token takes one suspect for slow scrolling out of the
+   picture. !important beats the layers' inline transforms, and every selector here out-specifies Tailwind's
+   !important utilities (see the tier 0 rule above). Inert unless the test mode sets data-debug. */
+html[data-debug~="still"] [data-parallax] { transform: none !important; }
+html[data-debug~="nohero"] [data-hero] { display: none !important; }
+html[data-debug~="nomask"] * { -webkit-mask-image: none !important; mask-image: none !important; }
+html[data-debug~="nofilter"] * { filter: none !important; }
