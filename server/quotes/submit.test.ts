@@ -102,6 +102,12 @@ describe('submitQuote', () => {
         expect(events.at(-1)).toBe('log Quote q1: sending its emails failed')
     })
 
+    it('still reports success, and logs, when scheduling the emails itself throws', async () => {
+        const { deps, events } = fakes({ afterResponse: () => { throw new Error('after() outside a request') } })
+        expect(await submitQuote(valid, 'ip', deps)).toEqual({ ok: true })
+        expect(events.at(-1)).toBe('log Quote q1: scheduling its emails failed')
+    })
+
     it('copes with input that is not an object', async () => {
         const { deps } = fakes({ verifyTurnstile: async token => token !== '' })
         expect(await submitQuote(null, 'ip', deps)).toEqual({ ok: false, reason: 'turnstile' })

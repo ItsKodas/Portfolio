@@ -65,13 +65,18 @@ export async function submitQuote(raw: unknown, ip: string, deps: SubmitDeps): P
         return { ok: false, reason: 'server' }
     }
 
-    // The quote is safe in the database from here, so nothing that goes wrong with email can lose it
-    deps.afterResponse(async () => {
-        try {
-            await deps.deliver(id)
-        } catch (error) {
-            deps.log(`Quote ${id}: sending its emails failed`, error)
-        }
-    })
+    // The quote is safe in the database from here, so nothing that goes wrong with email, including scheduling it,
+    // can be reported back as a failed submission
+    try {
+        deps.afterResponse(async () => {
+            try {
+                await deps.deliver(id)
+            } catch (error) {
+                deps.log(`Quote ${id}: sending its emails failed`, error)
+            }
+        })
+    } catch (error) {
+        deps.log(`Quote ${id}: scheduling its emails failed`, error)
+    }
     return { ok: true }
 }
