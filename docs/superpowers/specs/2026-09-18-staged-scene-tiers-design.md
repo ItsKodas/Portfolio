@@ -12,8 +12,9 @@ This started as mobile browsers crashing on the home page and went through three
    every browser uses WebKit, which scrolls in a separate process, so each frame waited on layers it hadn't seen
    coming. The browser now moves them through a CSS scroll timeline (#23), which took a phone from a few updates a
    second to smooth.
-3. **Then phones could have the whole scene**, which they now get on a raised budget, with a crash guard so a phone
-   that can't hold it costs one reload rather than a crash loop (#24).
+3. **Then phones could have more of the scene**: on a raised budget with a crash guard (#24), then held one tier short
+   of the whole scene, which crashed a phone once the content scrolled into view while any three tiers held. The water
+   tier now goes last and touch devices stop before it, so phones get depth, sky and forest.
 
 Desktops keep their springing layers and frosted glass throughout.
 
@@ -95,11 +96,13 @@ wallpaper.
 | 0 | (none) | the current `LiteScene`: three depths, no scene animation | 3.8 | 35 |
 | 1 | `depth` | the ten layer parallax | +7.0 | +7 |
 | 2 | `sky` | star twinkle, drift, shooting stars, cloud drift | +10.0 | +26 |
-| 3 | `water` | ripples, streaks, fog, boat bob, lantern flicker | +0.9 | +21 |
-| 4 | `forest` | tree sway, gusts, wind streaks, leaves, fireflies | +0.2 | +162 |
+| 3 | `forest` | tree sway, gusts, wind streaks, leaves, fireflies | +0.2 | +162 |
+| 4 | `water` | ripples, streaks, fog, boat bob, lantern flicker | +0.9 | +21 |
 
 Tokens are cumulative and always applied in this order. `data-scene="depth sky"` means tiers
-0 through 2.
+0 through 2. (The water was originally tier 3 and the forest tier 4; they swapped so the water, which a phone can't
+afford alongside everything else, goes last. See Phones stop one tier short. The cost tables below keep the original
+order they were measured in.)
 
 ## The cost model
 
@@ -243,12 +246,12 @@ Which lands as:
 
 | device | geometry | signals | tier reached |
 | --- | --- | --- | --- |
-| iPhone SE | 375x667, DPR 2 | coarse, no `deviceMemory` | 4, all tiers |
-| iPhone 15 | 393x852, DPR 3 | coarse, no `deviceMemory` | 4, all tiers |
-| iPhone 15 Pro Max | 430x932, DPR 3 | coarse, no `deviceMemory` | 4, all tiers |
-| iPad 10.9 | 820x1180, DPR 2 | coarse, no `deviceMemory` | 4, all tiers |
-| Pixel 8 | 412x915, DPR 2.625 | coarse, `deviceMemory` 8 | 4, all tiers |
-| mid range Android | 375x812, DPR 3 | coarse, `deviceMemory` 4 | 4, all tiers |
+| iPhone SE | 375x667, DPR 2 | coarse, no `deviceMemory` | 3, all but `water` |
+| iPhone 15 | 393x852, DPR 3 | coarse, no `deviceMemory` | 3, all but `water` |
+| iPhone 15 Pro Max | 430x932, DPR 3 | coarse, no `deviceMemory` | 3, all but `water` |
+| iPad 10.9 | 820x1180, DPR 2 | coarse, no `deviceMemory` | 3, all but `water` |
+| Pixel 8 | 412x915, DPR 2.625 | coarse, `deviceMemory` 8 | 3, all but `water` |
+| mid range Android | 375x812, DPR 3 | coarse, `deviceMemory` 4 | 3, all but `water` |
 | low end Android | 360x800, DPR 3 | coarse, `deviceMemory` 2 | 1, `depth` |
 | MacBook Pro 16 | 1728x970, DPR 2 | fine, no `deviceMemory` | 4, all tiers |
 | Studio Display | 2560x1340, DPR 2 | fine, no `deviceMemory` | 4, all tiers |
@@ -278,7 +281,24 @@ scene must not do that again.
 - A load that finds the mark holds the device to `depth` from then on (`scene-cap`), or to the still scene if it died
   at `depth` or below. Straight to `depth` rather than one tier down, because the stars on `sky` are the big memory
   cost, and stepping down a tier at a time would keep them through two more crashes. A cap only ever lowers.
-- `?perf=auto` forgets the cap and the mark. Forced modes neither mark nor obey them.
+- `?perf=auto` forgets an old cap, but not a crash that has only just happened. The browser reloads a crashed page
+  at the same address, so a `?perf=auto` that threw the fresh mark away would hand the scene out again on every reload,
+  a crash loop forced by a URL; that is exactly what happened on the phone the first time round. Forced modes neither
+  mark nor obey any of it.
+
+### Phones stop one tier short
+
+The raised budget handed phones all four tiers, and on the phone that proved it, the whole scene crashed once the
+content scrolled into view (a layer gets no memory until it comes on screen, so the cost of everything below the hero
+lands then). Dropping any single tier held, whichever it was; the sky and the water cost about the same there and the
+forest next to nothing. So the tier order is now `depth`, `sky`, `forest`, `water`, and a touch device stops before the
+last (`touchMaxTiers` in `BUDGETS`): a moving sky shows far more than the water's subtle shifting, and the forest comes
+almost free.
+
+That line is a hard cap rather than a budget, because the budget can't draw it: the water adds so little (0.9 viewports
+and 21 layers) that no one touch allowance lands between "all but the water" and "all of it" across phone sizes. The
+window for an iPhone 15 and the one for a Pro Max do not even overlap. The budget still applies beneath the cap, so a
+2 to 3 GB Android keeps the parallax only. Desktops are unaffected and get all four.
 
 Checked end to end in headless Chrome at phone size with a genuine renderer crash (`Page.crash` in the DevTools
 protocol): a fresh load gets all four tiers; a normal exit leaves nothing against it; after the crash the next load is

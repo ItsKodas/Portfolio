@@ -43,8 +43,10 @@ export const PERF_SCRIPT = `(function () {
         }
         var asked = params.get('perf')
         if (asked === 'lite' || asked === 'full' || asked === 'auto') {
-            // (auto also forgets any crash, below: it's the way back to what detection alone would give)
-            if (asked === 'auto') try { localStorage.removeItem('scene-cap'); localStorage.removeItem('scene-live') } catch (e3) {}
+            // (auto also forgets an old crash cap, below: it's the way back to what detection alone would give. But not
+            // a crash that has only just happened: the browser reloads a crashed page at the same address, so throwing
+            // the fresh mark away here would hand the scene out again on every reload, a crash loop forced by a URL.)
+            if (asked === 'auto') try { localStorage.removeItem('scene-cap') } catch (e3) {}
             // The override takes effect on this load whether or not it could be remembered for the next one. A
             // browser blocking storage throws below, and the right answer to that is to lose the memory, not the
             // override, so the persisting gets a try of its own.

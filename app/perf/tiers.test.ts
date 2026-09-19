@@ -25,18 +25,33 @@ const ceiling = (
 ) => ceilingFor(vw, vh, dpr, deviceMemory, coarsePointer, TIERS, BASE, TILE_MIN, BUDGETS)
 
 describe('ceilingFor', () => {
-    // Phones got the whole scene once the browser moved the layers: a phone that had crashed and then stalled at a
-    // tier or two ran the full scene flawlessly with that, frosted glass off and nothing moved by script
-    it('gives an iPhone the whole scene', () => {
-        expect(ceiling(PHONE, undefined, true)).toBe(TIERS.length)
+    // On a phone the whole scene crashed once the content scrolled into view, while dropping any one tier held; sky and
+    // water cost about the same there and the forest next to nothing, and a moving sky shows more than the water does.
+    // So the water goes last, and a touch device stops one tier short of it.
+    it('orders the tiers so the water is the last thing any device gets', () => {
+        expect(TIERS.map(t => t.token)).toEqual(['depth', 'sky', 'forest', 'water'])
     })
 
-    it('gives an 8GB Android the whole scene', () => {
-        expect(ceiling(PHONE, 8, true)).toBe(TIERS.length)
+    it('gives an iPhone everything but the water', () => {
+        expect(ceiling(PHONE, undefined, true)).toBe(TIERS.length - 1)
     })
 
-    it('gives a 4GB Android the whole scene', () => {
-        expect(ceiling(PHONE, 4, true)).toBe(TIERS.length)
+    it('gives an 8GB Android everything but the water', () => {
+        expect(ceiling(PHONE, 8, true)).toBe(TIERS.length - 1)
+    })
+
+    it('gives a 4GB Android everything but the water', () => {
+        expect(ceiling(PHONE, 4, true)).toBe(TIERS.length - 1)
+    })
+
+    it('holds a touch device short of the whole scene however generous its budget', () => {
+        const budgets = { ...BUDGETS, touchFloor: 1e12 }
+        expect(ceilingFor(393, 852, 3, 8, true, TIERS, BASE, TILE_MIN, budgets)).toBe(TIERS.length - 1)
+    })
+
+    it('does not hold a pointer device short of it', () => {
+        const budgets = { ...BUDGETS, pointer: 1e12 }
+        expect(ceilingFor(1440, 900, 2, 8, false, TIERS, BASE, TILE_MIN, budgets)).toBe(TIERS.length)
     })
 
     it('keeps a 2GB Android to the parallax', () => {
