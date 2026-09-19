@@ -62,8 +62,12 @@ async function main(): Promise<void> {
     if (!reachable) fail([`the agent is not answering on ${AGENT_SOCKET}`])
 
     const audit = new AuditLog(join(STATE_DIR, 'audit'))
-    const pruned = await audit.prune()
-    if (pruned.length > 0) log(`pruned audit files: ${pruned.join(', ')}`)
+    try {
+        const pruned = await audit.prune()
+        if (pruned.length > 0) log(`pruned audit files: ${pruned.join(', ')}`)
+    } catch (error) {
+        log(`WARN audit prune failed at boot: ${describeError(error)}`)
+    }
 
     // Lifecycle calls get the full timeout; only the health probe above uses the short one.
     const handler = createHandler({
@@ -91,14 +95,26 @@ async function main(): Promise<void> {
             .catch(error => log(`could not write status: ${describeError(error)}`))
         await sleep(POLL_MS)
 
-        if (await store.refresh()) log('registry reloaded')
+        try {
+            if (await store.refresh()) log('registry reloaded')
+        } catch (error) {
+            log(`WARN registry refresh failed: ${describeError(error)}`)
+        }
         if (Date.now() - lastAgentCheck >= AGENT_CHECK_MS) {
-            agentWarning = (await agentAnswers()) ? null : `the agent is not answering on ${AGENT_SOCKET}`
+            try {
+                agentWarning = (await agentAnswers()) ? null : `the agent is not answering on ${AGENT_SOCKET}`
+            } catch (error) {
+                agentWarning = `agent health check failed: ${describeError(error)}`
+            }
             lastAgentCheck = Date.now()
         }
         if (Date.now() - lastPrune >= PRUNE_MS) {
-            const removed = await audit.prune()
-            if (removed.length > 0) log(`pruned audit files: ${removed.join(', ')}`)
+            try {
+                const removed = await audit.prune()
+                if (removed.length > 0) log(`pruned audit files: ${removed.join(', ')}`)
+            } catch (error) {
+                log(`WARN audit prune failed: ${describeError(error)}`)
+            }
             lastPrune = Date.now()
         }
     }
