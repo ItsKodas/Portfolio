@@ -1,0 +1,78 @@
+// The quotes feature's tables. The enum values match server/quotes/labels.ts (a test checks that).
+
+generator client {
+  provider            = "prisma-client"
+  output              = "../server/generated/prisma"
+  // Extensionless imports inside the generated client, which Next's bundler and Vitest both resolve
+  importFileExtension = ""
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+enum QuoteStatus {
+  NEW
+  REPLIED
+  WON
+  LOST
+}
+
+enum ProjectType {
+  NEW_SITE
+  REDESIGN
+  WEB_APP
+  ONLINE_STORE
+  OTHER
+}
+
+enum Budget {
+  UNDER_2K
+  FROM_2K_TO_5K
+  FROM_5K_TO_10K
+  OVER_10K
+  NOT_SURE
+}
+
+enum Timeline {
+  ASAP
+  ONE_TO_THREE_MONTHS
+  OVER_THREE_MONTHS
+  FLEXIBLE
+}
+
+model Quote {
+  id             String       @id @default(cuid())
+  createdAt      DateTime     @default(now())
+  name           String
+  email          String
+  company        String?
+  website        String?
+  projectType    ProjectType?
+  budget         Budget?
+  timeline       Timeline?
+  message        String
+  referenceSites String[]
+  status         QuoteStatus  @default(NEW)
+  archivedAt     DateTime?
+  // When the email to Koda went
+  notifiedAt     DateTime?
+  // When the confirmation to the prospect went
+  confirmedAt    DateTime?
+  // HMAC of the sender's IP, for the rate limit; the IP itself is never stored
+  ipHash         String
+  notes          Note[]
+
+  @@index([ipHash, createdAt])
+  @@index([archivedAt, createdAt])
+}
+
+model Note {
+  id        String   @id @default(cuid())
+  createdAt DateTime @default(now())
+  body      String
+  quote     Quote    @relation(fields: [quoteId], references: [id], onDelete: Cascade)
+  quoteId   String
+
+  @@index([quoteId])
+}

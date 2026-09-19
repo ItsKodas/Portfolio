@@ -11,17 +11,22 @@
 
 import { spawnSync } from 'node:child_process'
 import { cpSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs'
-import { join } from 'node:path'
+import { join, normalize, sep } from 'node:path'
 
 const DIST = join('dist', 'wallpaper-engine')
 const SOURCES = ['app', 'public', 'themes', 'global.d.ts', 'next.config.ts', 'tsconfig.json', 'tailwind.config.ts',
     'postcss.config.mjs', 'eslint.config.mjs', 'package.json', 'package-lock.json']
 
+// The quote form, the admin area and the API are server-side (server actions, route handlers, sign-in), which a
+// static export can't contain, and the wallpaper uses none of them. (middleware.ts and server/ aren't in SOURCES.)
+const SERVER_SIDE = [join('app', '(quote)'), join('app', '(admin)'), join('app', 'api')]
+const isServerSide = path => SERVER_SIDE.some(dir => normalize(path) === dir || normalize(path).startsWith(dir + sep))
+
 const work = '.wallpaper-build'
 rmSync(work, { recursive: true, force: true })
 let status = 0
 try {
-    for (const source of SOURCES) cpSync(source, join(work, source), { recursive: true })
+    for (const source of SOURCES) cpSync(source, join(work, source), { recursive: true, filter: path => !isServerSide(path) })
 
     const build = spawnSync('npx next build', { cwd: work, stdio: 'inherit', shell: true, env: { ...process.env, WALLPAPER_EXPORT: '1' } })
     status = build.status ?? 1

@@ -4,3 +4,8 @@ node_modules/
 mail/
 hostd/
 docs/
+server/generated/
+dist/
+.git/
+.claude/
+.superpowers/

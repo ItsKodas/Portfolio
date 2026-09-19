@@ -1,0 +1,28 @@
+# Local development only: Postgres, and Mailpit, which catches every email the site sends (read them at
+# http://localhost:8025). The site itself runs with npm run dev. Start these with npm run services.
+
+name: horizons-dev
+
+services:
+  db:
+    image: postgres:18-alpine
+    environment:
+      POSTGRES_USER: horizons
+      POSTGRES_PASSWORD: horizons
+      POSTGRES_DB: horizons
+    # 5433, so that a Postgres already installed on the machine can keep 5432
+    ports:
+      - "127.0.0.1:5433:5432"
+    volumes:
+      - dev-db:/var/lib/postgresql
+      # Creates the horizons_test database the database tests use (only on the very first start)
+      - ./docker/dev-initdb:/docker-entrypoint-initdb.d:ro
+
+  mailpit:
+    image: axllent/mailpit:v1.31
+    ports:
+      - "127.0.0.1:8025:8025"
+      - "127.0.0.1:1025:1025"
+
+volumes:
+  dev-db:

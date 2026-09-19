@@ -1,7 +1,55 @@
+# The site and its database. Secrets come from .env beside this file (see .env.example).
+
 services:
   web:
     build: .
     container_name: horizons
     ports:
       - "5004:3000"
+    env_file: .env
+    environment:
+      # Built here from POSTGRES_PASSWORD, so .env on the server has no DATABASE_URL to keep in step
+      DATABASE_URL: postgresql://horizons:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}@db:5432/horizons
+    depends_on:
+      db:
+        condition: service_healthy
     restart: unless-stopped
+
+  # No published port: only the site and the backup job can reach it, over the compose network
+  db:
+    image: postgres:18-alpine
+    container_name: horizons-db
+    environment:
+      POSTGRES_USER: horizons
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+      POSTGRES_DB: horizons
+    volumes:
+      # Postgres 18 keeps its data in a versioned folder under here, which makes future major upgrades easier
+      - db-data:/var/lib/postgresql
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "horizons", "-d", "horizons"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+
+  db-backup:
+    image: postgres:18-alpine
+    container_name: horizons-db-backup
+    entrypoint: ["sh", "/db-backup.sh"]
+    environment:
+      PGHOST: db
+      PGUSER: horizons
+      PGPASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+      PGDATABASE: horizons
+    volumes:
+      - ./scripts/db-backup.sh:/db-backup.sh:ro
+      - db-backups:/backups
+    depends_on:
+      db:
+        condition: service_healthy
+    restart: unless-stopped
+
+volumes:
+  db-data:
+  db-backups:

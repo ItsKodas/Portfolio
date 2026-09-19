@@ -1,0 +1,22 @@
+import type { Metadata } from 'next'
+import { AppRouterCacheProvider } from '@mui/material-nextjs/v15-appRouter'
+
+import AdminTheme from './theme'
+
+// MUI's providers live here rather than in the root layout, so the landing page and the wallpaper build don't get them
+export const metadata: Metadata = {
+    title: { default: 'Admin', template: '%s · Admin' },
+    robots: { index: false, follow: false },
+}
+
+// Admin pages show another visitor's data and must never be served from a cache, however a later change to this
+// tree might otherwise make it eligible for one
+export const dynamic = 'force-dynamic'
+
+export default function AdminLayout({ children }: Readonly<{ children: React.ReactNode }>) {
+    return (
+        <AppRouterCacheProvider>
+            <AdminTheme>{children}</AdminTheme>
+        </AppRouterCacheProvider>
+    )
+}
