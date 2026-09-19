@@ -15,9 +15,11 @@
     will-change: auto;
 }
 
-/* The whole hero, once the content has scrolled up over it: nothing in it needs to keep animating out of sight */
+/* The whole hero, once the content has scrolled up over it: nothing in it needs to keep animating out of sight. Except
+   the layers themselves: the stylesheet moves direct ones with a scroll-driven animation, and pausing that would leave
+   them stuck where they were and out of step with the scroll once resumed */
 .paused,
-.paused * {
+.paused *:not([data-parallax]) {
     animation-play-state: paused !important;
 }
 

@@ -90,10 +90,3 @@
    gating them on the forest tier would freeze them on every phone for no memory back. */
 :global(html:not([data-scene~="depth"])) .twinkle, :global(html:not([data-scene~="depth"])) .glow, :global(html:not([data-scene~="depth"])) .flame, :global(html:not([data-scene~="depth"])) .spark { animation: none; }
 :global(html:not([data-scene~="depth"])) .spark { opacity: 0; }
-
-/* And on a touch device at any tier. Memory was never the problem with these, scrolling is: on a phone they animate
-   the whole time the page is being scrolled, which is where it struggles (see useCoarsePointer in app/perf). */
-@media (pointer: coarse) {
-    .twinkle, .glow, .flame, .spark { animation: none; }
-    .spark { opacity: 0; }
-}
