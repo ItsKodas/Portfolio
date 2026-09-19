@@ -690,3 +690,69 @@ Recorded so the seams are built in the right shape.
    client ids are what the registry's `client` fields hold.
 2. **Restore from the portal**, once the manual procedure has been exercised enough to trust.
 3. **Per-hostname certificates** for client-owned domains.
+
+## Corrections after implementation
+
+Added 2026-09-20, after the branch was built and reviewed. The design above is left as it was written,
+including the reasoning that produced it. This section records where that reasoning rested on something
+untrue, and what is true instead. Nothing above has been quietly rewritten to match.
+
+### `docker compose config` resolves env files away
+
+**The spec said:** "The agent runs `docker compose --project-directory <dir> -f <compose> config --format
+json` and checks the resolved project against the entry", and under the storage guard, that a storage
+directory must not contain, among other things, "any `env_file`... Checked against the resolved
+configuration, so includes and extends are covered."
+
+**What is actually true:** without `--no-env-resolution`, that command resolves every referenced env file's
+values into `environment` and drops the `env_file` key from its JSON output entirely. The guard's `readsOf`
+reads `env_file`, so on every real project it iterated nothing, in production; only the test fixture's
+hand-written `env_file` key made the check look exercised. The same resolution was also inlining every
+project's env values, database passwords included, into the agent's own captured stdout on every guard run.
+
+**What was done:** `configArgv` in `hostd/src/agent/compose.ts` now passes `--no-env-resolution`. Checked
+against real compose output: it yields `"env_file": [ { "path": "/abs/path.env" } ]`, exactly the shape
+`readsOf` already expected. On a compose too old to know the flag, the command exits non-zero, so
+`resolveCompose` returns `ok: false` and the project is marked invalid: the guard fails closed, not open.
+
+### The guard checks path strings, never the storage roots themselves
+
+**The spec said:** validation confirms "`dir` is `/var/www/<one segment>` and exists", and the storage
+guard, for each storage directory, reasons entirely over "the resolved configuration" as path strings,
+comparing a storage entry's path against what compose mounts and reads.
+
+**What is actually true:** nothing in phase 1 ever stats a storage root itself. An entry that is a symlink,
+a plain file, or missing on disk passed every check, because every check was a string comparison against
+`project.storage[name].absolute`, never a look at the filesystem object that path names.
+
+**Why it matters:** phase 3's file API, per "Path safety" above, opens the storage root and then descends
+`O_NOFOLLOW | O_DIRECTORY` component by component, on the reasoning that a symlink anywhere in the walk is
+a container escape. That reasoning covers everything below the root; it never covered the root itself,
+which the guard was the only thing positioned to check before phase 3 exists.
+
+**What was done:** `GuardTracker.problemOf` in `hostd/src/agent/guard-tracker.ts` now `lstat`s each storage
+root after the `dir` check, marking the project invalid with a message naming the entry (for example
+`storage media (/var/www/acme/uploads) is not a directory`, or `... does not exist`) when it is missing or
+is not a real directory. `lstat`, not `stat`, so a symlinked root is reported as itself rather than silently
+followed to whatever it points at. This narrows the gap but does not close it: the guard's check and
+phase 3's later open of the same path are still two separate moments, so **phase 3's descriptor walk must
+still open the storage root itself with `O_NOFOLLOW`**, the same as every component below it, rather than
+assume the root the guard last saw on a poll is the root it is opening now.
+
+### The agent hands docker its whole environment
+
+**The spec said:** the agent "Holds `RESTIC_PASSWORD` and the R2 credentials, so a compromised `api` cannot
+read or delete offsite backups", placing those secrets in the agent's own process environment
+(`hostd/.env.agent`) specifically to keep them out of `api`'s reach.
+
+**What is actually true:** `createSpawnRunner` in `hostd/src/agent/compose.ts` spawned `docker` with no
+`env` of its own, so the child inherited `process.env` unfiltered. `docker compose` interpolates `${VAR}`
+from its own environment into a project's compose file, so a client compose file referencing, say,
+`${RESTIC_PASSWORD}`, would have had it substituted in: everything phase 2 puts in the agent's environment
+specifically to withhold from a compromised `api` was reachable from any project's own compose file.
+
+**What was done:** `createSpawnRunner` now spawns `docker` with an explicit `env` built from `process.env`,
+containing only `PATH`, `HOME`, `DOCKER_HOST`, `DOCKER_CONFIG` and `TZ`, each included only when already
+set. Phase 2 should keep this allowlist in mind when it adds `RESTIC_PASSWORD` and the R2 credentials: they
+are not reachable from a project's compose file today, and no later change to `createSpawnRunner` should
+widen the allowlist without the same reasoning that narrowed it.
