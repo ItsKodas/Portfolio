@@ -96,4 +96,35 @@ describe('handleConnection', () => {
         await done
         assert.equal(closed, true)
     })
+
+    it('closes a follow stream whose peer left before handle() resolved', async () => {
+        let closed = false
+        let wake: () => void = () => {}
+        const agent = stubAgent(async () => {
+            await new Promise(resolve => setTimeout(resolve, 50))
+            return {
+                kind: 'stream',
+                lines: (async function* () {
+                    await new Promise<void>(resolve => { wake = resolve })
+                })(),
+                close: () => {
+                    closed = true
+                    wake()
+                },
+            }
+        })
+        const [client, server] = duplexPair()
+        const done = handleConnection(server, agent, () => {})
+        client.write('{"verb":"logs","project":"acme","args":{"service":"web","follow":true}}\n')
+        client.end()
+
+        // A bounded race: if the fix regresses, `done` never resolves (the stream's lines generator waits
+        // on `wake`, which only close() calls), so this fails as an assertion rather than hanging the suite.
+        const result = await Promise.race([
+            done.then(() => 'done' as const),
+            new Promise<'timeout'>(resolve => setTimeout(() => resolve('timeout'), 300)),
+        ])
+        assert.equal(result, 'done')
+        assert.equal(closed, true)
+    })
 })

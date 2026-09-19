@@ -65,10 +65,26 @@ const lineOf = (value: unknown) => `${JSON.stringify(value)}\n`
 
 export async function handleConnection(socket: Duplex, agent: AgentHandler, log: (message: string) => void): Promise<void> {
     socket.on('error', () => socket.destroy())
+
+    // A peer can leave at any point from the very first byte onward, including before its request line has
+    // even finished arriving (the 'end' event can fire in the same tick the line does). This marker goes on
+    // before anything else is awaited, so a logs follow request, which can make several Docker round trips
+    // before its outcome is known, never loses track of an early departure while waiting on that outcome.
+    let gone = false
+    const markGone = () => { gone = true }
+    socket.once('end', markGone)
+    socket.once('close', markGone)
+    const stopWatching = () => {
+        socket.off('end', markGone)
+        socket.off('close', markGone)
+    }
+
     const line = await readRequestLine(socket)
     // Anything after the request line is ignored, but the socket keeps reading so the peer leaving is seen.
     socket.resume()
+
     if (line === null) {
+        stopWatching()
         log('refused bad-request: no request line')
         socket.end(lineOf(refuse('bad-request', 'expected one request line of at most 64 KB')))
         return
@@ -76,6 +92,7 @@ export async function handleConnection(socket: Duplex, agent: AgentHandler, log:
 
     const parsed = parseAgentRequest(line)
     if (!parsed.ok) {
+        stopWatching()
         log(`refused ${parsed.code}: ${parsed.message}`)
         socket.end(lineOf(parsed))
         return
@@ -86,33 +103,44 @@ export async function handleConnection(socket: Duplex, agent: AgentHandler, log:
     try {
         outcome = await agent.handle(parsed.request)
     } catch (error) {
+        stopWatching()
         log(`${what} unavailable: ${describeError(error)}`)
         socket.end(lineOf(refuse('unavailable', describeError(error))))
         return
     }
 
     if (outcome.kind === 'reply') {
+        stopWatching()
         log(`${what} ${outcome.reply.ok ? 'ok' : outcome.reply.code}`)
         socket.end(lineOf(outcome.reply))
         return
     }
 
-    log(`${what} streaming`)
     const stream = outcome
-    let gone = false
+    if (gone) {
+        // The peer left while the handler was still working; there is no one to write the stream to.
+        stopWatching()
+        log(`${what} stream abandoned before it started`)
+        stream.close()
+        return
+    }
+
+    log(`${what} streaming`)
+    let closed = false
     const abort = () => {
-        gone = true
+        closed = true
         stream.close()
     }
+    stopWatching()
     socket.once('end', abort)
     socket.once('close', abort)
     try {
         if (!socket.write(lineOf({ ok: true, stream: true }))) await waitForDrain(socket)
         for await (const logLine of stream.lines) {
-            if (gone) break
+            if (closed) break
             if (!socket.write(lineOf(logLine))) await waitForDrain(socket)
         }
-        if (!gone) socket.end()
+        if (!closed) socket.end()
     } catch (error) {
         log(`${what} stream failed: ${describeError(error)}`)
         socket.destroy()
