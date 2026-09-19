@@ -74,4 +74,15 @@ describe('GuardTracker', () => {
         await tracker.checkAll(parseRegistry('projects: {}\n'))
         assert.deepEqual(tracker.current(), new Map())
     })
+
+    it('marks a project invalid, without throwing, when the guard itself hits a shape it cannot handle', async () => {
+        const registry = parseRegistry(text(['alpha', 'bravo']))
+        const tracker = new GuardTracker(composeRunner({
+            '/var/www/alpha': { name: 'alpha', services: { web: { volumes: 'not-a-list' } } },
+            '/var/www/bravo': goodConfig('bravo'),
+        }), async () => true)
+        await assert.doesNotReject(tracker.checkAll(registry))
+        assert.match(tracker.current().get('alpha') ?? '', /^the storage guard could not check this project:/)
+        assert.equal(tracker.current().has('bravo'), false)
+    })
 })

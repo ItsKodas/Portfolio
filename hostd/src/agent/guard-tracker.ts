@@ -3,6 +3,7 @@
 
 import { stat } from 'node:fs/promises'
 import type { ProjectEntry, Registry } from '../shared/registry.ts'
+import { describeError } from '../shared/formats.ts'
 import { resolveCompose, type Runner } from './compose.ts'
 import { guardProblems } from './guard.ts'
 
@@ -26,7 +27,14 @@ export class GuardTracker {
     }
 
     async check(project: ProjectEntry): Promise<string | null> {
-        const problem = await this.problemOf(project)
+        // One project's guard failure must never take the others offline, so an unexpected shape (a
+        // shallow-checked compose config, say) is a problem for this project, not an exception for the caller.
+        let problem: string | null
+        try {
+            problem = await this.problemOf(project)
+        } catch (error) {
+            problem = `the storage guard could not check this project: ${describeError(error)}`
+        }
         if (problem) this.invalid.set(project.id, problem)
         else this.invalid.delete(project.id)
         return problem
