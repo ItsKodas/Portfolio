@@ -67,6 +67,23 @@ describe('confirmationEmail', () => {
         expect(email.text).toContain('Hi Ann <b>Lee</b>,')
         expect(email.html).toContain('Hi Ann &lt;b&gt;Lee&lt;/b&gt;,')
     })
+
+    it('greets a plausible name as typed', () => {
+        expect(confirmationEmail({ ...quote, name: 'Ann Lee' }, confirm).text).toContain('Hi Ann Lee,')
+    })
+
+    it.each([
+        ['a URL', 'See https://evil.example for details'],
+        ['an email address', 'Your account is locked, contact fix@evil.example'],
+        ['a bare web address', 'Visit www.evil.example now'],
+        ['a name over 40 characters', 'A'.repeat(41)],
+    ])('falls back to a generic greeting for %s', (_case, name) => {
+        const email = confirmationEmail({ ...quote, name }, confirm)
+        expect(email.text).toContain('Hi there,')
+        expect(email.html).toContain('Hi there,')
+        expect(email.text).not.toContain(name)
+        expect(email.html).not.toContain(name)
+    })
 })
 
 describe('emailsMissing', () => {

@@ -61,11 +61,16 @@ export function notificationEmail(quote: QuoteForEmail, options: { from: string,
     return { from: options.from, to: options.to, replyTo: quote.email, subject, text, html }
 }
 
+// A name that looks like a link or an address isn't a name someone typed for themselves, it's text aimed at whoever
+// reads the greeting, so those get the same generic greeting as a name that's just implausibly long
+const looksSafeAsAGreeting = (name: string) => name.length <= 40 && !name.includes('://') && !name.includes('@') && !name.includes('www.')
+
 // Takes only the name and address on purpose. Anyone can type any address into the form, so if this repeated what
 // they wrote, the form would let a stranger send arbitrary text from Koda's domain to anyone.
 export function confirmationEmail(quote: { name: string, email: string }, options: { from: string, replyTo: string }): Email {
+    const greeting = looksSafeAsAGreeting(quote.name) ? `Hi ${quote.name},` : 'Hi there,'
     const lines = [
-        `Hi ${quote.name},`,
+        greeting,
         "Thanks for getting in touch. Your request has come through, and I'll be in touch soon.",
         'If you think of anything to add, just reply to this email.',
         'Koda',

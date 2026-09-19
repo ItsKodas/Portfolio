@@ -352,7 +352,7 @@ The admin pages are checked for rendering and redirects; signing in with Google 
 | Risk | Why it is accepted, or what limits it |
 | --- | --- |
 | `CF-Connecting-IP` can be forged by anyone reaching port 5004 directly rather than through Cloudflare | It only lets someone dodge the rate limit; Turnstile still has to pass. Restricting the origin to Cloudflare's IPs is a separate hardening task. |
-| The confirmation email can be aimed at a stranger | Turnstile and the rate limit bound the volume, and the email carries no attacker-chosen text. |
+| The confirmation email can be aimed at a stranger | Turnstile and the rate limit bound the volume. The greeting falls back to "Hi there," instead of the typed name whenever that name contains `://`, `@` or `www.`, or is over 40 characters, so it cannot carry a link or address to a stranger. |
 | One admin, identified by email | Deliberate for Part 1. Part 2 replaces it with real accounts and roles. |
 | Nightly dumps sit on the same disk as the database | They cover mistakes (a bad delete, a broken migration), not disk loss. Proper backups come in a later part. |
 | Auth.js v5's release status | The version is pinned in the plan and upgraded deliberately. |
