@@ -14,7 +14,6 @@ const SWITCHES = [
     { token: 'nohero', label: 'Hero off' },     // the whole scene hidden
     { token: 'nomask', label: 'Masks off' },    // faded edges and the water's masks
     { token: 'nofilter', label: 'Filters off' }, // the fog's blur and the like
-    { token: 'css', label: 'CSS parallax' },     // the same parallax, driven by the browser's scroll instead of script
 ]
 
 // Whether this browser can drive animations from the scroll position, and which iOS it is (every iOS browser uses the
@@ -60,21 +59,6 @@ export default function PerfDebug() {
     useEffect(() => {
         if (enabled) document.documentElement.dataset.debug = on.join(' ')
     }, [enabled, on])
-
-    // The CSS parallax maps the whole scroll range onto each layer's movement, so it needs that range in pixels
-    useEffect(() => {
-        if (!enabled) return
-        const root = document.documentElement
-        const measure = () => root.style.setProperty('--scroll-max', String(root.scrollHeight - window.innerHeight))
-        const observer = new ResizeObserver(measure)
-        measure()
-        observer.observe(document.body)
-        window.addEventListener('resize', measure)
-        return () => {
-            observer.disconnect()
-            window.removeEventListener('resize', measure)
-        }
-    }, [enabled])
 
     if (!enabled) return null
 

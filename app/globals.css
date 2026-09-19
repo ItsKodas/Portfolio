@@ -79,25 +79,25 @@ html:not([data-scene~="depth"]) * {
 /* The ?debug=perf test mode (see app/perf/debug.tsx): each token takes one suspect for slow scrolling out of the
    picture. !important beats the layers' inline transforms, and every selector here out-specifies Tailwind's
    !important utilities (see the tier 0 rule above). Inert unless the test mode sets data-debug. */
-html[data-debug~="still"] [data-parallax] { transform: none !important; }
+html[data-debug~="still"] [data-parallax] { transform: none !important; animation: none !important; translate: none !important; }
 html[data-debug~="nohero"] [data-hero] { display: none !important; }
 html[data-debug~="nomask"] * { -webkit-mask-image: none !important; mask-image: none !important; }
 html[data-debug~="nofilter"] * { filter: none !important; }
 
-/* The CSS parallax switch: the same movement the layers get from script, -speed x scrollY, driven instead by the
-   page's own scroll timeline, so the browser moves them as part of scrolling. The scroll timeline runs 0 to 1 over the
-   whole scroll range, so the far end is -speed x that range. It animates `translate`, which composes with `transform`,
-   so the script's inline transform is simply switched off rather than fought over. Kept running when the hero is
-   covered, where .paused would otherwise freeze it. */
+
+/* Layers that follow the scroll directly (see LiteLayer in app/(landing)/parallax) are moved by the browser wherever it
+   can drive an animation from the scroll position: -speed x scrollY, on the page's own scroll timeline, in step with
+   the scroll and off the main thread (Safari 26.4 and later run these on the compositor). The timeline runs 0 to 1
+   over the whole scroll, so the far end is -speed x its length, which ParallaxView keeps in --scroll-max; until it
+   has measured, nothing moves, which is right at the top of the page. It animates `translate`, which composes with
+   `transform`. Where scroll timelines aren't supported, the layer moves itself from script instead. */
 @supports (animation-timeline: scroll()) {
-  html[data-debug~="css"] [data-parallax] {
-    transform: none !important;
-    animation: debug-scroll-parallax linear both !important;
-    animation-timeline: scroll(root) !important;
-    animation-play-state: running !important;
+  [data-parallax="direct"] {
+    animation: scroll-parallax linear both;
+    animation-timeline: scroll(root);
   }
 }
 
-@keyframes debug-scroll-parallax {
-  to { translate: 0 calc(var(--speed) * var(--scroll-max) * -1px); }
+@keyframes scroll-parallax {
+  to { translate: 0 calc(var(--speed) * var(--scroll-max, 0) * -1px); }
 }

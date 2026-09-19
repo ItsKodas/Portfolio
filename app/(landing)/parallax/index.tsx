@@ -41,8 +41,12 @@ const fadeIn = {
     WebkitMaskImage: 'linear-gradient(to bottom, transparent 0, black 10rem)',
 }
 
-// Each moving layer's speed as a CSS variable, for the ?debug=perf CSS parallax test (see app/perf/debug.tsx)
+// Each moving layer's speed as a CSS variable, which the stylesheet moves direct layers by (see LiteLayer)
 const speedVar = (speed: number) => ({ '--speed': speed }) as React.CSSProperties
+
+// Whether the browser can move a layer from the scroll position itself (the check must match the @supports in
+// app/globals.css, which does the moving)
+const scrollTimelines = () => CSS.supports('animation-timeline: scroll()')
 
 export type LayerProps = { speed: number, className?: string, style?: React.CSSProperties, children: React.ReactNode }
 
@@ -60,20 +64,23 @@ function ScrollLayer({ speed, className = styles.layer, style, children }: Layer
     }, [api, speed])
 
     return (
-        <animated.div data-parallax className={className} style={{ ...style, ...speedVar(speed), transform: y.to(v => `translate3d(0,${v}px,0)`) }}>
+        <animated.div data-parallax='spring' className={className} style={{ ...style, ...speedVar(speed), transform: y.to(v => `translate3d(0,${v}px,0)`) }}>
             {children}
         </animated.div>
     )
 }
 
-// The lite hero's layer: follows the scroll directly, with no spring to keep it moving afterwards, written straight onto
-// the element from the scroll event (which already comes once a frame)
+// A layer that follows the scroll directly, with no spring to keep it moving afterwards. Where the browser can drive an
+// animation from the scroll position, the stylesheet moves it (see app/globals.css), in step with the scroll and with
+// no script at all, which is what finally made a phone scroll smoothly: moved by script, each frame waited on the page
+// to reposition big layers the browser hadn't seen coming. Elsewhere it's written straight onto the element from the
+// scroll event, which comes once a frame.
 function LiteLayer({ speed, className = styles.layer, style, children }: LayerProps) {
     const ref = useRef<HTMLDivElement>(null)
 
     useEffect(() => {
         const el = ref.current
-        if (!el) return
+        if (!el || scrollTimelines()) return
         const onScroll = () => { el.style.transform = `translate3d(0,${-window.scrollY * speed}px,0)` }
 
         onScroll()
@@ -81,7 +88,7 @@ function LiteLayer({ speed, className = styles.layer, style, children }: LayerPr
         return () => window.removeEventListener('scroll', onScroll)
     }, [speed])
 
-    return <div ref={ref} data-parallax className={className} style={{ ...style, ...speedVar(speed) }}>{children}</div>
+    return <div ref={ref} data-parallax='direct' className={className} style={{ ...style, ...speedVar(speed) }}>{children}</div>
 }
 
 // The full hero: every part of the scene at its own depth, each springing after the scroll. The desktop wallpaper
@@ -227,6 +234,8 @@ export default function ParallaxView({ children }: Readonly<{ children: React.Re
         const vh = window.innerHeight
         const maxScroll = Math.max((CONTENT_OFFSET * vh + content.offsetHeight - vh) / (1 + CONTENT_SPEED), 0)
         setPageHeight(vh + maxScroll)
+        // (the stylesheet's scroll timeline runs 0 to 1 over the whole scroll, so direct layers need its length)
+        document.documentElement.style.setProperty('--scroll-max', String(maxScroll))
     }, [content])
 
     useEffect(() => {

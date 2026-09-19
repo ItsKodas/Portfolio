@@ -298,7 +298,6 @@ therefore keeps the ten-depth parallax but loses what costs a frame on every scr
 | every layer, hero and content, follows the scroll directly rather than springing after it | `useCoarsePointer()` in `usePerf.ts`; `ParallaxView` passes `LiteLayer` to `FullScene` |
 | the hero is taken out of drawing once the content covers it | tied to direct layers now, not to `lite`, since only springing layers trail the scroll |
 | no frosted glass | `@media (pointer: coarse)` in `app/globals.css` |
-| no campfire or night stars | `@media (pointer: coarse)` in `night/night.module.css` |
 
 and the frame watch now samples real scrolls (see `app/perf/climb.ts`, below), so a device that
 still struggles steps down rather than staying slow. Pointer devices are unchanged: springs,
@@ -308,6 +307,28 @@ frosted glass and the campfire all remain from `depth` up.
 `backdrop-blur-md` included. Between two `!important` rules specificity decides, so a bare `*`
 loses to a single class. Both rules that switch the blur off carry at least (0,1,1): the tier 0
 rule by its shape, and the touch rule as `html:root *`.
+
+### Direct layers are moved by the browser
+
+That first fix removed the springs, but on an iPhone scrolling still stalled for about 200 ms a frame, at every tier
+including the still scene, while the finger scrolled perfectly. A `?debug=perf` test mode (`app/perf/debug.tsx`)
+isolated it on the device: masks and filters made no difference, while hiding the hero or stopping script movement of
+the layers both fixed it. Per-scroll script measured at 0.06 ms, so the cost was never the script itself. On iOS every
+browser uses WebKit, which scrolls the page in a separate process; a layer moved by script is repositioned one frame
+behind, so each frame waited on big layers the browser had not seen coming.
+
+So wherever the browser supports scroll timelines, a direct layer is not moved by script at all. `app/globals.css`
+animates its `translate` on `animation-timeline: scroll(root)`, from 0 to `-speed x` the whole scroll range, which
+`ParallaxView` keeps in `--scroll-max`; each layer carries its speed as `--speed`. That places every layer at exactly
+`-speed x scrollY`, in step with the scroll. Safari 26.4 and later run scroll-driven animations on the compositor.
+Where scroll timelines are not supported, `LiteLayer` falls back to moving itself from the scroll event. On the phone
+this took scrolling from a few updates a second to smooth, and with it smooth there was no reason left to hold back
+the campfire and night stars on touch, so those follow the tiers again like everywhere else.
+
+`.paused`, which freezes the hero's animations once the content covers it, exempts the layers themselves: pausing a
+scroll-driven animation would leave it stuck and out of step with the scroll once resumed.
+
+Springing layers on pointer devices are unchanged; they were smooth, and the trail is the intended feel.
 
 ## Components
 
