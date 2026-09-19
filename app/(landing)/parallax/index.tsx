@@ -41,6 +41,9 @@ const fadeIn = {
     WebkitMaskImage: 'linear-gradient(to bottom, transparent 0, black 10rem)',
 }
 
+// Each moving layer's speed as a CSS variable, for the ?debug=perf CSS parallax test (see app/perf/debug.tsx)
+const speedVar = (speed: number) => ({ '--speed': speed }) as React.CSSProperties
+
 export type LayerProps = { speed: number, className?: string, style?: React.CSSProperties, children: React.ReactNode }
 
 // Same motion as @react-spring/parallax's ParallaxLayer: on scroll, spring (config.slow) to an
@@ -57,7 +60,7 @@ function ScrollLayer({ speed, className = styles.layer, style, children }: Layer
     }, [api, speed])
 
     return (
-        <animated.div data-parallax className={className} style={{ ...style, transform: y.to(v => `translate3d(0,${v}px,0)`) }}>
+        <animated.div data-parallax className={className} style={{ ...style, ...speedVar(speed), transform: y.to(v => `translate3d(0,${v}px,0)`) }}>
             {children}
         </animated.div>
     )
@@ -78,7 +81,7 @@ function LiteLayer({ speed, className = styles.layer, style, children }: LayerPr
         return () => window.removeEventListener('scroll', onScroll)
     }, [speed])
 
-    return <div ref={ref} data-parallax className={className} style={style}>{children}</div>
+    return <div ref={ref} data-parallax className={className} style={{ ...style, ...speedVar(speed) }}>{children}</div>
 }
 
 // The full hero: every part of the scene at its own depth, each springing after the scroll. The desktop wallpaper

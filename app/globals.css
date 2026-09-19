@@ -83,3 +83,21 @@ html[data-debug~="still"] [data-parallax] { transform: none !important; }
 html[data-debug~="nohero"] [data-hero] { display: none !important; }
 html[data-debug~="nomask"] * { -webkit-mask-image: none !important; mask-image: none !important; }
 html[data-debug~="nofilter"] * { filter: none !important; }
+
+/* The CSS parallax switch: the same movement the layers get from script, -speed x scrollY, driven instead by the
+   page's own scroll timeline, so the browser moves them as part of scrolling. The scroll timeline runs 0 to 1 over the
+   whole scroll range, so the far end is -speed x that range. It animates `translate`, which composes with `transform`,
+   so the script's inline transform is simply switched off rather than fought over. Kept running when the hero is
+   covered, where .paused would otherwise freeze it. */
+@supports (animation-timeline: scroll()) {
+  html[data-debug~="css"] [data-parallax] {
+    transform: none !important;
+    animation: debug-scroll-parallax linear both !important;
+    animation-timeline: scroll(root) !important;
+    animation-play-state: running !important;
+  }
+}
+
+@keyframes debug-scroll-parallax {
+  to { translate: 0 calc(var(--speed) * var(--scroll-max) * -1px); }
+}
