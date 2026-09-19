@@ -20,6 +20,44 @@ You can start editing the page by modifying `app/page.tsx`. The page auto-update
 
 This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
 
+## Quotes and the admin area
+
+The "Get a quote" form (`/quote`) saves each request to Postgres, emails it to Koda and sends the person a short
+confirmation. The admin area (`/admin`) lists the requests, behind Google sign-in for one account. The design is in
+`docs/superpowers/specs/2026-09-20-quote-form-and-admin-inbox-design.md`.
+
+### Running it locally
+
+```bash
+cp .env.example .env    # then set AUTH_SECRET (openssl rand -base64 33)
+npm install
+npm run services        # Postgres and Mailpit, in Docker
+npx prisma migrate dev  # creates the tables
+npm run dev
+```
+
+Emails land in Mailpit at http://localhost:8025. `npm test` runs every test, including the database tests against the
+`horizons_test` database that `npm run services` creates.
+
+### Deploying
+
+`docker compose up -d --build` runs the site, Postgres and a nightly database dump (14 days kept, in the `db-backups`
+volume). New migrations apply when the site starts. It needs a `.env` beside `docker-compose.yml`, from
+`.env.example`, with:
+
+- `POSTGRES_PASSWORD`: any long random string, set once
+- `AUTH_SECRET`: another long random string, and `AUTH_URL=https://www.horizons.gg`
+- `AUTH_GOOGLE_ID` and `AUTH_GOOGLE_SECRET`, from a Google Cloud OAuth client (web application) whose redirect URIs
+  are `https://www.horizons.gg/api/auth/callback/google` and `http://localhost:3000/api/auth/callback/google`
+- `ADMIN_EMAIL`: the one Google account allowed in
+- `TURNSTILE_SITE_KEY` and `TURNSTILE_SECRET_KEY`, from a Cloudflare Turnstile widget for `www.horizons.gg`
+- `SMTP_HOST`, `SMTP_PORT`, `SMTP_USER` and `SMTP_PASS`, from the email relay, with `dev.horizons.gg` verified there as
+  a sending domain (add the relay's DNS records in Cloudflare; mailops doesn't manage them)
+- `MAIL_FROM`, `QUOTE_NOTIFY_TO` and `QUOTE_REPLY_TO` as in `.env.example`
+
+To restore a dump: `docker compose exec db-backup pg_restore --clean --if-exists -d horizons /backups/horizons-YYYY-MM-DD.dump`
+(this replaces what's in the database).
+
 ## Wallpaper Engine
 
 The hero scene is also a [Wallpaper Engine](https://www.wallpaperengine.io/) web wallpaper (`app/wallpaper`, viewable at
