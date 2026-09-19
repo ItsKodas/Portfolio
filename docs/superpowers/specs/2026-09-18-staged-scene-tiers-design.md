@@ -146,6 +146,11 @@ The real-browser effect is smaller than the model suggests, because a composited
 the viewport gets no backing store allocated until it scrolls into view, and the crash this
 design fixes happens at the top of the page, before the footer is anywhere near the viewport.
 
+On a touch device the question is now moot: `night`'s animations are switched off there at
+every tier (see Scroll-time cost on touch devices, below), so those 43 layers are never
+promoted on a phone at all. The inaccuracy remains only for pointer devices, whose budget has
+several hundred MiB of headroom.
+
 Re-running `scripts/scene-cost.js` with `night` on `depth` would settle this properly; until
 then, treat `depth` and `forest`'s layer counts in `TIERS` as approximate.
 
@@ -262,6 +267,48 @@ still scene while a weaker one gets everything, it only means one small, older p
 more of the scene than its larger, newer siblings. Real device testing should settle whether
 that is acceptable or whether the floor needs its own separate tuning pass.
 
+## Scroll-time cost on touch devices
+
+The budget models memory, and memory was what crashed the tab. It says nothing about what
+scrolling costs per frame, and on a phone that turned out to be the next problem: with the
+crash fixed, a phone at `depth` held a steady frame rate at rest and fell apart as soon as it
+was scrolled. Three things made that invisible to the design above.
+
+- **The frame watch only ever sampled at rest.** It ran once, about a second after the scene
+  settled at the top of the page, and a healthy result ended it. Nobody has scrolled by then.
+- **Reaching `depth` turned on more than depth.** Every layer type decision keyed off `lite`,
+  meaning "not `depth`", so a phone at tier 1 also got react-spring layers (ten hero depths and
+  the content column, each restarted on every scroll event with `config.slow` and still
+  settling for about a second afterwards), frosted glass (25 blurred surfaces in the content,
+  each re-blurred every scroll frame because the scene behind moves at a different speed), and
+  a hero that kept drawing after it was scrolled past, since taking it out of drawing was also
+  tied to `lite`.
+- **The campfire and night stars animated at tier 1**, having moved to the `depth` token.
+
+None of these cost memory at rest, which is why the budget passed them. A machine drawing
+without a GPU never saw any of it, because it is held at tier 0, where every one of them is off:
+that is why a desktop with hardware acceleration disabled scrolled smoothly while a phone did
+not.
+
+A touch device, meaning `(pointer: coarse)`, the same test the budget already branches on,
+therefore keeps the ten-depth parallax but loses what costs a frame on every scroll:
+
+| on a touch device | how |
+| --- | --- |
+| every layer, hero and content, follows the scroll directly rather than springing after it | `useCoarsePointer()` in `usePerf.ts`; `ParallaxView` passes `LiteLayer` to `FullScene` |
+| the hero is taken out of drawing once the content covers it | tied to direct layers now, not to `lite`, since only springing layers trail the scroll |
+| no frosted glass | `@media (pointer: coarse)` in `app/globals.css` |
+| no campfire or night stars | `@media (pointer: coarse)` in `night/night.module.css` |
+
+and the frame watch now samples real scrolls (see `app/perf/climb.ts`, below), so a device that
+still struggles steps down rather than staying slow. Pointer devices are unchanged: springs,
+frosted glass and the campfire all remain from `depth` up.
+
+`tailwind.config.ts` sets `important: true`, so every Tailwind utility is `!important`,
+`backdrop-blur-md` included. Between two `!important` rules specificity decides, so a bare `*`
+loses to a single class. Both rules that switch the blur off carry at least (0,1,1): the tier 0
+rule by its shape, and the touch rule as `html:root *`.
+
 ## Components
 
 ### `app/perf/tiers.ts` (new)
@@ -347,6 +394,16 @@ frames, and drops one token if the median frame exceeds the threshold, repeating
 frames are healthy or it reaches tier 0. This is today's `watchFrameRate` behaviour, preserved
 and given somewhere to step down to.
 
+**Then it watches scrolling, for the rest of the visit.** A healthy result at rest used to end
+the watch, but frames at rest say little about scrolling, which is where a phone struggles
+(see Scroll-time cost on touch devices, below). So passing the at-rest check hands over to a
+scroll watch instead. A frame counts only when a scroll event has landed since the one before
+it, so nothing is sampled, and no frame of its own is requested, while the page sits idle;
+each gesture starts from a fresh baseline so the gap between gestures is never measured, and
+a hidden tab resets it the same way. Every `SCROLL_FRAMES` (30) such frames, gathered across
+gestures, it takes the median and steps down one tier if it is slow, then carries on watching
+at the new tier. It does not run at tier 0, where there is nothing left to drop.
+
 ### Stylesheet migration
 
 Every `:global(html[data-perf="lite"])` rule in the nine scene stylesheets becomes a
@@ -379,11 +436,13 @@ Climbing while the scene is on screen creates two visible transition risks.
 
 **`depth` is a structural remount.** `LiteScene` and `FullScene` place their layers at
 different parallax offsets, so swapping mid scroll is a visible jump. At `scrollY === 0` every
-layer sits at offset zero and the two scenes are pixel identical. So the `depth` token is
-applied **only while `scrollY === 0`**. If the visitor has already scrolled, the driver waits
-for a return to the top, and abandons the `depth` tier after 30 seconds. The climb begins at
-reveal, when scroll is essentially always 0, so in practice this costs nothing and removes
-the one transition that would look broken.
+layer sits at offset zero and the two scenes are pixel identical, and once the content has
+scrolled up over the hero completely neither scene can be seen at all. So the `depth` token
+is only ever added or removed at one of those two moments. `ParallaxView` owns that geometry
+and hands the driver a `canSwapScene()` check (at the top, or the hero fully covered, the
+same threshold at which a direct-layer hero is taken out of drawing). If neither comes, the
+climb abandons `depth` after 30 seconds, while a step down away from `depth` goes ahead
+anyway, since a device that is already struggling should not stay that way indefinitely.
 
 **Only the leaves actually pop.** Reading the keyframes, most of what a token enables cannot
 pop by construction. `.twinkle` starts at `opacity: 1`, which is the resting state. `.drift`
@@ -428,7 +487,7 @@ consistent with tier 0 being the no-JS state, but it was never stated outright u
 | `navigator.deviceMemory` undefined | `memFactor` of 1, the conservative middle |
 | tab hidden during climb | `sampleFrames` resets its baseline on the next tick, effectively pausing |
 | frame sample exceeds threshold | reverts to the tier before, then hands off to the demotion watch |
-| visitor scrolled before `depth` applies | waits for `scrollY === 0`, gives up after 30 s |
+| visitor scrolled before `depth` applies | waits for `canSwapScene()`, gives up after 30 s |
 
 ## Testing
 

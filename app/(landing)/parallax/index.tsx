@@ -7,7 +7,7 @@ import { ThemeProvider } from '@mui/material'
 import { animated, config, useSpring } from '@react-spring/web'
 
 import DarkTheme from "@/themes/dark"
-import { useScene } from '@/app/perf/usePerf'
+import { useCoarsePointer, useScene } from '@/app/perf/usePerf'
 import { runScene } from '@/app/perf/climb'
 
 import AnimatedLogo from '../logo/index'
@@ -187,16 +187,31 @@ function LiteScene() {
     )
 }
 
+// How far the content's top edge has risen above the top of the screen (it starts CONTENT_OFFSET screens down and
+// rises 1 + CONTENT_SPEED pixels per pixel scrolled), and whether its faded edge has passed as well, leaving the hero
+// completely covered
+const contentRisen = () => window.scrollY * (1 + CONTENT_SPEED) - CONTENT_OFFSET * window.innerHeight
+const heroCovered = () => contentRisen() > 10 * parseFloat(getComputedStyle(document.documentElement).fontSize) + 40
+
+// The still and full scenes can be swapped without the scene visibly jumping at the very top, where every layer sits
+// at offset zero, or once the content covers the hero completely (see runScene)
+const canSwapScene = () => window.scrollY === 0 || heroCovered()
+
 export default function ParallaxView({ children }: Readonly<{ children: React.ReactNode }>) {
     const lite = !useScene('depth')
-    const ContentLayer = lite ? LiteLayer : ScrollLayer
+    // Layers that follow the scroll directly rather than springing after it: the still scene's, and every layer on a
+    // touch device, where a spring on each of ten layers plus the content costs a frame on every scroll
+    // (both hooks called every render: `lite || useCoarsePointer()` would skip the second while lite is true)
+    const coarse = useCoarsePointer()
+    const direct = lite || coarse
+    const ContentLayer = direct ? LiteLayer : ScrollLayer
 
     const [pageHeight, setPageHeight] = useState<number>()
 
     const revealed = useRevealed()
 
     // Put the rest of the scene in once it's showing, so loading doesn't count against the frame timing
-    useEffect(() => { if (revealed) return runScene() }, [revealed])
+    useEffect(() => { if (revealed) return runScene(canSwapScene) }, [revealed])
 
     // The content moves at (1 + speed)x the scroll, so the page only needs enough scroll
     // for its bottom to reach the bottom of the screen at that rate. (Switching modes remounts the content, so it's
@@ -220,19 +235,17 @@ export default function ParallaxView({ children }: Readonly<{ children: React.Re
         }
     }, [content, recalc])
 
-    // Pause the hero's animations once the content has scrolled up over it and the scene is out of sight (the content
-    // top sits CONTENT_OFFSET screens down and rises 1 + CONTENT_SPEED pixels per pixel scrolled). The lite hero is also
-    // taken out of drawing altogether once the content's faded top edge has passed as well. (The full hero's springs
-    // trail the scroll, so part of it can still be showing for a moment; it keeps drawing.)
+    // Pause the hero's animations once the content has scrolled up over it and the scene is out of sight. When its
+    // layers follow the scroll directly, the hero is also taken out of drawing altogether once the content's faded top
+    // edge has passed as well. (Springing layers trail the scroll, so part of the hero can still be showing for a
+    // moment; that hero keeps drawing.)
     const heroRef = useRef<HTMLElement>(null)
     useEffect(() => {
         let frame = 0
         const update = () => {
             frame = 0
-            const risen = window.scrollY * (1 + CONTENT_SPEED) - CONTENT_OFFSET * window.innerHeight
-            const fade = 10 * parseFloat(getComputedStyle(document.documentElement).fontSize)
-            heroRef.current?.classList.toggle(styles.paused, risen > 40)
-            heroRef.current?.classList.toggle(styles.gone, lite && risen > fade + 40)
+            heroRef.current?.classList.toggle(styles.paused, contentRisen() > 40)
+            heroRef.current?.classList.toggle(styles.gone, direct && heroCovered())
         }
         const onScroll = () => { if (!frame) frame = requestAnimationFrame(update) }
         update()
@@ -243,7 +256,7 @@ export default function ParallaxView({ children }: Readonly<{ children: React.Re
             window.removeEventListener('resize', onScroll)
             if (frame) cancelAnimationFrame(frame)
         }
-    }, [lite])
+    }, [direct])
 
     return (
         <ThemeProvider theme={DarkTheme}>
@@ -255,7 +268,7 @@ export default function ParallaxView({ children }: Readonly<{ children: React.Re
                 {/* ── Hero scene ─────────────────────────────────────── */}
 
                 <section ref={heroRef} className='absolute inset-x-0 top-0 h-[200svh]'>
-                    {lite ? <LiteScene /> : <FullScene />}
+                    {lite ? <LiteScene /> : <FullScene Layer={direct ? LiteLayer : ScrollLayer} />}
                 </section>
 
                 {/* ── Content ────────────────────────────────────────── */}
