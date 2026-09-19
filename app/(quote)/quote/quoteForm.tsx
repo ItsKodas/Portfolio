@@ -123,19 +123,19 @@ export default function QuoteForm({ siteKey }: { siteKey: string }) {
 
             <div className="grid gap-6 sm:grid-cols-3">
                 <Field id="projectType" title="Project type" optional error={errors.projectType}>
-                    <select id="projectType" className={input} value={values.projectType} onChange={set('projectType')}>
+                    <select id="projectType" className={input} value={values.projectType} onChange={set('projectType')} aria-invalid={!!errors.projectType} aria-describedby={describedBy('projectType')}>
                         <option value="">Choose one</option>
                         {PROJECT_TYPES.map(value => <option key={value} value={value}>{PROJECT_TYPE_LABELS[value]}</option>)}
                     </select>
                 </Field>
                 <Field id="budget" title="Budget (AUD)" optional error={errors.budget}>
-                    <select id="budget" className={input} value={values.budget} onChange={set('budget')}>
+                    <select id="budget" className={input} value={values.budget} onChange={set('budget')} aria-invalid={!!errors.budget} aria-describedby={describedBy('budget')}>
                         <option value="">Choose one</option>
                         {BUDGETS.map(value => <option key={value} value={value}>{BUDGET_LABELS[value]}</option>)}
                     </select>
                 </Field>
                 <Field id="timeline" title="Timeline" optional error={errors.timeline}>
-                    <select id="timeline" className={input} value={values.timeline} onChange={set('timeline')}>
+                    <select id="timeline" className={input} value={values.timeline} onChange={set('timeline')} aria-invalid={!!errors.timeline} aria-describedby={describedBy('timeline')}>
                         <option value="">Choose one</option>
                         {TIMELINES.map(value => <option key={value} value={value}>{TIMELINE_LABELS[value]}</option>)}
                     </select>

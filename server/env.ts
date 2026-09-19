@@ -45,6 +45,7 @@ export function mailConfig(env: Env = process.env): MailConfig {
     return {
         host, port, from, notifyTo, replyTo,
         user: env.SMTP_USER?.trim() || undefined,
+        // Not trimmed on purpose: a password may legitimately start or end with whitespace
         pass: env.SMTP_PASS || undefined,
         siteUrl: siteUrl.replace(/\/+$/, ''),
     }

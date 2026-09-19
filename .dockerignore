@@ -6,3 +6,6 @@ hostd/
 docs/
 server/generated/
 dist/
+.git/
+.claude/
+.superpowers/

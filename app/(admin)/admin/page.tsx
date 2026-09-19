@@ -51,39 +51,39 @@ export default async function Inbox({ searchParams }: { searchParams: Promise<{ 
                 <Typography color="text.secondary">Nothing here.</Typography>
             ) : (
                 <Paper>
-                <TableContainer>
-                    <Table size="small">
-                        <TableHead>
-                            <TableRow>
-                                <TableCell>Received</TableCell>
-                                <TableCell>Name</TableCell>
-                                <TableCell>Company</TableCell>
-                                <TableCell>Project</TableCell>
-                                <TableCell>Budget</TableCell>
-                                <TableCell>Status</TableCell>
-                            </TableRow>
-                        </TableHead>
-                        <TableBody>
-                            {quotes.map(quote => (
-                                <TableRow key={quote.id} hover>
-                                    <TableCell sx={{ whiteSpace: 'nowrap' }}>{formatWhen(quote.createdAt)}</TableCell>
-                                    <TableCell>
-                                        <Link href={`/admin/quotes/${quote.id}`} style={{ color: 'inherit', fontWeight: 600 }}>{quote.name}</Link>
-                                        {emailsMissing(quote, now) && (
-                                            <Tooltip title="An email for this quote was not sent">
-                                                <WarningAmber color="warning" sx={{ fontSize: 18, ml: 1, verticalAlign: 'middle' }} />
-                                            </Tooltip>
-                                        )}
-                                    </TableCell>
-                                    <TableCell>{quote.company}</TableCell>
-                                    <TableCell>{quote.projectType && PROJECT_TYPE_LABELS[quote.projectType]}</TableCell>
-                                    <TableCell>{quote.budget && BUDGET_LABELS[quote.budget]}</TableCell>
-                                    <TableCell><Chip size="small" label={STATUS_LABELS[quote.status]} color={STATUS_COLOURS[quote.status]} /></TableCell>
+                    <TableContainer>
+                        <Table size="small">
+                            <TableHead>
+                                <TableRow>
+                                    <TableCell>Received</TableCell>
+                                    <TableCell>Name</TableCell>
+                                    <TableCell>Company</TableCell>
+                                    <TableCell>Project</TableCell>
+                                    <TableCell>Budget</TableCell>
+                                    <TableCell>Status</TableCell>
                                 </TableRow>
-                            ))}
-                        </TableBody>
-                    </Table>
-                </TableContainer>
+                            </TableHead>
+                            <TableBody>
+                                {quotes.map(quote => (
+                                    <TableRow key={quote.id} hover>
+                                        <TableCell sx={{ whiteSpace: 'nowrap' }}>{formatWhen(quote.createdAt)}</TableCell>
+                                        <TableCell>
+                                            <Link href={`/admin/quotes/${quote.id}`} style={{ color: 'inherit', fontWeight: 600 }}>{quote.name}</Link>
+                                            {emailsMissing(quote, now) && (
+                                                <Tooltip title="An email for this quote was not sent">
+                                                    <WarningAmber color="warning" sx={{ fontSize: 18, ml: 1, verticalAlign: 'middle' }} />
+                                                </Tooltip>
+                                            )}
+                                        </TableCell>
+                                        <TableCell>{quote.company}</TableCell>
+                                        <TableCell>{quote.projectType && PROJECT_TYPE_LABELS[quote.projectType]}</TableCell>
+                                        <TableCell>{quote.budget && BUDGET_LABELS[quote.budget]}</TableCell>
+                                        <TableCell><Chip size="small" label={STATUS_LABELS[quote.status]} color={STATUS_COLOURS[quote.status]} /></TableCell>
+                                    </TableRow>
+                                ))}
+                            </TableBody>
+                        </Table>
+                    </TableContainer>
                 </Paper>
             )}
         </Container>

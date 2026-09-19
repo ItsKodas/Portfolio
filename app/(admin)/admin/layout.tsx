@@ -9,6 +9,10 @@ export const metadata: Metadata = {
     robots: { index: false, follow: false },
 }
 
+// Admin pages show another visitor's data and must never be served from a cache, however a later change to this
+// tree might otherwise make it eligible for one
+export const dynamic = 'force-dynamic'
+
 export default function AdminLayout({ children }: Readonly<{ children: React.ReactNode }>) {
     return (
         <AppRouterCacheProvider>
