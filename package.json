@@ -16,14 +16,17 @@
     "wallpaper:serve": "node scripts/wallpaper.mjs --serve"
   },
   "dependencies": {
+    "@emotion/cache": "11.14.0",
     "@emotion/react": "11.14.0",
     "@emotion/styled": "11.14.0",
     "@mui/icons-material": "6.4.0",
     "@mui/material": "6.4.0",
+    "@mui/material-nextjs": "6.5.0",
     "@prisma/adapter-pg": "7.10.0",
     "@prisma/client": "7.10.0",
     "@react-spring/web": "9.7.5",
     "next": "^15.5.9",
+    "next-auth": "5.0.0-beta.32",
     "nodemailer": "8.0.11",
     "react": "18.3.1",
     "react-dom": "18.3.1",
