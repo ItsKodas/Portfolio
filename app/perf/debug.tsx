@@ -21,6 +21,8 @@ const SWITCHES = [
 const timelines = () => typeof CSS !== 'undefined' && CSS.supports('animation-timeline: scroll()')
 // The tier this device has been held to since a crash, if it has been (see app/perf/crashGuard.ts)
 const storedCap = () => { try { return localStorage.getItem('scene-cap') ?? 'none' } catch (e) { return '-' } }
+// The crash guard's log (see app/perf/crashGuard.ts), newest last: which load found which mark, and what it capped
+const guardLog = () => { try { return JSON.parse(localStorage.getItem('scene-log') ?? '[]') as string[] } catch (e) { return [] } }
 const iosVersion = () => navigator.userAgent.match(/OS (\d+)_(\d+)/)?.slice(1).join('.') ?? '-'
 
 interface Stats { frames: number, scrolls: number, worst: number, scene: string, timeline: boolean, ios: string, cap: string }
@@ -29,6 +31,7 @@ export default function PerfDebug() {
     const [enabled, setEnabled] = useState(false)
     const [stats, setStats] = useState<Stats>()
     const [on, setOn] = useState<string[]>([])
+    const [log, setLog] = useState<string[]>([])
 
     // Read after hydrating, so the server and the first client render agree on rendering nothing
     useEffect(() => { setEnabled(new URLSearchParams(location.search).get('debug') === 'perf') }, [])
@@ -47,6 +50,7 @@ export default function PerfDebug() {
         window.addEventListener('scroll', onScroll, { passive: true })
         const every = window.setInterval(() => {
             setStats({ frames, scrolls, worst: Math.round(worst), scene: document.documentElement.dataset.scene ?? '', timeline: timelines(), ios: iosVersion(), cap: storedCap() })
+            setLog(guardLog())
             frames = 0
             scrolls = 0
             worst = 0
@@ -83,6 +87,12 @@ export default function PerfDebug() {
                     </button>
                 ))}
             </div>
+            {/* The guard's log, which keeps recording across loads until ?debug=off. Screenshot it after a misfire. */}
+            <div className='mt-2 max-h-40 w-full overflow-y-auto break-words rounded bg-black/70 p-1 text-[9px] leading-tight'>
+                {log.length ? log.slice(-14).map((line, i) => <div key={i}>{line}</div>) : <div>guard log empty</div>}
+            </div>
+            <button onClick={() => { try { localStorage.setItem('scene-log', '[]') } catch (e) {} setLog([]) }}
+                className='mt-1 rounded bg-white/15 px-2 py-1 text-left'>clear log</button>
         </div>
     )
 }

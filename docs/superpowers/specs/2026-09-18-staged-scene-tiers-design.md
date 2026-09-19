@@ -272,8 +272,10 @@ That is a bet, and iPhones report no memory to check it against, so it comes wit
 original crash reloaded and crashed again on every load until the browser gave up; a phone that can't hold the whole
 scene must not do that again.
 
-- The head script marks the tiers it hands out as live in `localStorage` (`scene-live`), and every tier change after
-  that re-marks it (`recordLive` in `app/perf/crashGuard.ts`, called from `setTier`).
+- The head script marks the tiers it hands out as live for this tab, in `sessionStorage` (`scene-live`), and every
+  tier change after that re-marks it (`recordLive` in `app/perf/crashGuard.ts`, called from `setTier`). Only a page
+  actually on screen reads or writes the mark (`visibilityState` is `visible` and the page isn't being prerendered);
+  a page out of sight still obeys a cap already remembered. See "The mark is per tab", below, for why.
 - `startCrashGuard`, from `ParallaxView`, clears the mark whenever the page is hidden or left (`visibilitychange` to
   hidden, `pagehide`) and restores it when shown again (`visibilitychange` to visible, `pageshow`). The one way the
   mark survives is the page dying while on screen. Clearing on hide is what keeps a phone discarding a backgrounded
@@ -281,10 +283,33 @@ scene must not do that again.
 - A load that finds the mark holds the device to `depth` from then on (`scene-cap`), or to the still scene if it died
   at `depth` or below. Straight to `depth` rather than one tier down, because the stars on `sky` are the big memory
   cost, and stepping down a tier at a time would keep them through two more crashes. A cap only ever lowers.
-- `?perf=auto` forgets an old cap, but not a crash that has only just happened. The browser reloads a crashed page
+- `?perf=auto` forgets an old cap (in `localStorage`, so it applies to the device), but not a crash that has only just
+  happened. The browser reloads a crashed page
   at the same address, so a `?perf=auto` that threw the fresh mark away would hand the scene out again on every reload,
   a crash loop forced by a URL; that is exactly what happened on the phone the first time round. Forced modes neither
   mark nor obey any of it.
+
+### The mark is per tab
+
+The mark first lived in `localStorage`, shared by every page of the site, and the head script read and wrote it whether
+or not its page was on screen. On the phone that proved everything else, that held the device to the still scene on
+every plain load with no crash at all: a page loading out of sight, most likely the browser preloading the address as it
+was typed, found the mark of the page still on screen and took it for a crash. A phone mid-climb shows tier 0 or 1 for
+its first second or two, which is exactly the mark that produces a cap of 0.
+
+So the mark is kept per tab in `sessionStorage`, which a browser keeps through reloading a crashed tab, and only a page
+on screen reads or writes it. The cap it produces stays in `localStorage`, since it describes the device.
+
+Checked in headless Chrome at phone size: moving between addresses in one tab leaves no false cap; crashing a tab's
+renderer (`Page.crash`) and reloading that same tab holds it to `depth`; another tab afterwards keeps the device's cap
+without marking anything new; `?perf=auto` clears it. That the mark survives a crashed renderer is confirmed for Chrome
+only. On iOS it is expected, since WebKit keeps session storage outside the web content process, but it is not proven.
+
+**The guard log.** Because this misfired on a phone that can't be attached to a profiler, `?debug=perf` also turns on a
+log (`scene-log` in `localStorage`, the last 30 lines, until `?debug=off`). The head script records every load: its
+address, whether it was shown, hidden or prerendering, the mark it found, the cap before and after, and the ceiling. The
+client records every mark and clear with its reason. The `?debug=perf` readout shows it. A load straight after a crash
+should read `mark 3 cap - > 1`; one reading `mark -` there would mean the mark did not survive the crash.
 
 ### Phones stop one tier short
 
