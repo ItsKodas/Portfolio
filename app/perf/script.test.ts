@@ -7,6 +7,7 @@ const ALL = TIERS.map(t => t.token).join(' ')
 interface Env {
     search?: string
     stored?: string | null
+    storage?: Record<string, string>   // seeded, and mutated in place, so a test can read back what was remembered
     storageThrows?: boolean
     innerWidth?: number
     innerHeight?: number
@@ -31,7 +32,7 @@ function run(env: Env = {}): Record<string, string> {
         getParameter: () => env.renderer ?? 'Apple GPU',
     }
 
-    const store: Record<string, string> = {}
+    const store: Record<string, string> = env.storage ?? {}
     if (env.stored != null) store.perf = env.stored
     const boom = () => { throw new Error('storage disabled') }
 
@@ -62,10 +63,10 @@ function run(env: Env = {}): Record<string, string> {
 }
 
 describe('PERF_SCRIPT', () => {
-    it('starts a phone on the still scene with room for one tier', () => {
+    it('hands a phone every tier up front', () => {
         const attrs = run({ coarse: true })
-        expect(attrs['data-scene']).toBe('')
-        expect(attrs['data-scene-max']).toBe('1')
+        expect(attrs['data-scene']).toBe(ALL)
+        expect(attrs['data-scene-max']).toBe(String(TIERS.length))
         expect(attrs['data-perf-forced']).toBeUndefined()
     })
 
@@ -113,7 +114,7 @@ describe('PERF_SCRIPT', () => {
 
     it('still detects when localStorage throws', () => {
         const attrs = run({ coarse: true, storageThrows: true })
-        expect(attrs['data-scene-max']).toBe('1')
+        expect(attrs['data-scene-max']).toBe(String(TIERS.length))
     })
 
     it('honours ?perf= on the load where storage throws, not just on the next one', () => {
@@ -128,9 +129,10 @@ describe('PERF_SCRIPT', () => {
     it('honours ?perf=auto over a remembered mode even when storage throws', () => {
         // Nothing can be forgotten here, so the most this load can do is ignore what it cannot read: it must
         // detect rather than fall back to a stored mode it has no way of clearing.
-        const attrs = run({ search: '?perf=auto', coarse: true, stored: 'full', storageThrows: true })
-        expect(attrs['data-scene']).toBe('')
-        expect(attrs['data-scene-max']).toBe('1')
+        // (a remembered lite, which detection on this phone would never give, so the two can't be confused)
+        const attrs = run({ search: '?perf=auto', coarse: true, stored: 'lite', storageThrows: true })
+        expect(attrs['data-scene']).toBe(ALL)
+        expect(attrs['data-scene-max']).toBe(String(TIERS.length))
         expect(attrs['data-perf-forced']).toBeUndefined()
     })
 
@@ -142,5 +144,66 @@ describe('PERF_SCRIPT', () => {
 
     it('inlines the real ceilingFor rather than a second copy of the arithmetic', () => {
         expect(PERF_SCRIPT).toContain('budgets.memDivisor')
+    })
+})
+
+// A phone that can't hold what it was handed dies on screen, and the browser reloads it. The page marks the tiers it is
+// showing as live, and clears the mark whenever it is hidden or left normally (see crashGuard.ts), so a load that finds
+// the mark still there knows the last visit died on screen
+describe('PERF_SCRIPT after a crash', () => {
+    it('marks the tiers it hands out as live', () => {
+        const storage: Record<string, string> = {}
+        run({ coarse: true, storage })
+        expect(storage['scene-live']).toBe(String(TIERS.length))
+    })
+
+    it('marks the still scene as live when it starts a device there to climb', () => {
+        const storage: Record<string, string> = { 'scene-cap': '1' }
+        run({ coarse: true, storage })
+        expect(storage['scene-live']).toBe('0')
+    })
+
+    it('holds a load after a crash to the depth tier, and remembers that', () => {
+        // straight to depth rather than one tier down: the stars are the big memory cost, and stepping down one at a
+        // time would keep them through two more crashes
+        const storage: Record<string, string> = { 'scene-live': String(TIERS.length) }
+        const attrs = run({ coarse: true, storage })
+        expect(attrs['data-scene-max']).toBe('1')
+        expect(attrs['data-scene']).toBe('')   // climbs to depth from the still scene like any capped device
+        expect(storage['scene-cap']).toBe('1')
+    })
+
+    it('drops to the still scene after a crash at the depth tier', () => {
+        const storage: Record<string, string> = { 'scene-live': '1' }
+        const attrs = run({ coarse: true, storage })
+        expect(attrs['data-scene-max']).toBe('0')
+        expect(storage['scene-cap']).toBe('0')
+    })
+
+    it('keeps to a remembered cap on later loads', () => {
+        const storage: Record<string, string> = { 'scene-cap': '1' }
+        const attrs = run({ coarse: true, storage })
+        expect(attrs['data-scene-max']).toBe('1')
+    })
+
+    it('never raises a cap it already has', () => {
+        const storage: Record<string, string> = { 'scene-cap': '0', 'scene-live': String(TIERS.length) }
+        const attrs = run({ coarse: true, storage })
+        expect(attrs['data-scene-max']).toBe('0')
+        expect(storage['scene-cap']).toBe('0')
+    })
+
+    it('forgets the crash memory on ?perf=auto', () => {
+        const storage: Record<string, string> = { 'scene-cap': '0', 'scene-live': '1' }
+        const attrs = run({ search: '?perf=auto', coarse: true, storage })
+        expect(attrs['data-scene-max']).toBe(String(TIERS.length))
+        expect(storage['scene-cap']).toBeUndefined()
+    })
+
+    it('neither marks nor obeys it when a mode is forced', () => {
+        const storage: Record<string, string> = { 'scene-cap': '0' }
+        const attrs = run({ search: '?perf=full', coarse: true, storage })
+        expect(attrs['data-scene']).toBe(ALL)
+        expect(storage['scene-live']).toBeUndefined()
     })
 })

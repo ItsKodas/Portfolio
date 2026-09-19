@@ -19,9 +19,11 @@ const SWITCHES = [
 // Whether this browser can drive animations from the scroll position, and which iOS it is (every iOS browser uses the
 // system WebKit, and WebKit only runs scroll-driven animations off the main thread from 26.4)
 const timelines = () => typeof CSS !== 'undefined' && CSS.supports('animation-timeline: scroll()')
+// The tier this device has been held to since a crash, if it has been (see app/perf/crashGuard.ts)
+const storedCap = () => { try { return localStorage.getItem('scene-cap') ?? 'none' } catch (e) { return '-' } }
 const iosVersion = () => navigator.userAgent.match(/OS (\d+)_(\d+)/)?.slice(1).join('.') ?? '-'
 
-interface Stats { frames: number, scrolls: number, worst: number, scene: string, timeline: boolean, ios: string }
+interface Stats { frames: number, scrolls: number, worst: number, scene: string, timeline: boolean, ios: string, cap: string }
 
 export default function PerfDebug() {
     const [enabled, setEnabled] = useState(false)
@@ -44,7 +46,7 @@ export default function PerfDebug() {
         raf = requestAnimationFrame(tick)
         window.addEventListener('scroll', onScroll, { passive: true })
         const every = window.setInterval(() => {
-            setStats({ frames, scrolls, worst: Math.round(worst), scene: document.documentElement.dataset.scene ?? '', timeline: timelines(), ios: iosVersion() })
+            setStats({ frames, scrolls, worst: Math.round(worst), scene: document.documentElement.dataset.scene ?? '', timeline: timelines(), ios: iosVersion(), cap: storedCap() })
             frames = 0
             scrolls = 0
             worst = 0
@@ -72,6 +74,7 @@ export default function PerfDebug() {
             <div className='truncate'>tier&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; {stats ? stats.scene || '(still)' : '-'}</div>
             <div>timeline&nbsp; {stats ? (stats.timeline ? 'yes' : 'no') : '-'}</div>
             <div>iOS&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; {stats?.ios ?? '-'}</div>
+            <div>cap&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; {stats?.cap ?? '-'}</div>
             <div className='mt-2 flex flex-col gap-1'>
                 {SWITCHES.map(({ token, label }) => (
                     <button key={token} onClick={() => toggle(token)}

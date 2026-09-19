@@ -158,7 +158,7 @@ then, treat `depth` and `forest`'s layer counts in `TIERS` as approximate.
 
 ```
 budget    = allowance x memFactor
-allowance = coarsePointer ? max(120 MiB, viewportBytes x 14)
+allowance = coarsePointer ? max(150 MiB, viewportBytes x 30)
                           : max(1024 MiB, viewportBytes x 26)
 memFactor = navigator.deviceMemory ? clamp(deviceMemory / 4, 0.5, 1.5) : 1
 ```
@@ -168,7 +168,7 @@ device's own screen, in viewports of the same `vw x vh x dpr^2 x 4` term the cos
 The floor exists so a small screen is not starved down to nothing; the area term exists so a
 large screen is not held to the same ceiling as a small one.
 
-The touch floor is 120 MiB over 14 viewports; the pointer floor is 1024 MiB over 26. 26 sits
+The touch floor is 150 MiB over 30 viewports; the pointer floor is 1024 MiB over 26. 26 sits
 above the 21.9 viewports of cumulative full-scene overdraw, so a pointer device in the area
 regime keeps real headroom over the whole scene rather than scraping it.
 
@@ -223,36 +223,52 @@ Which lands as:
 
 | device | geometry | signals | tier reached |
 | --- | --- | --- | --- |
-| iPhone SE | 375x667, DPR 2 | coarse, no `deviceMemory` | 3, `water` |
-| iPhone 15 | 393x852, DPR 3 | coarse, no `deviceMemory` | 1, `depth` |
-| iPhone 15 Pro Max | 430x932, DPR 3 | coarse, no `deviceMemory` | 1, `depth` |
-| iPad 10.9 | 820x1180, DPR 2 | coarse, no `deviceMemory` | 1, `depth` |
-| Pixel 8 | 412x915, DPR 2.625 | coarse, `deviceMemory` 8 | 1, `depth` |
-| mid range Android | 375x812, DPR 3 | coarse, `deviceMemory` 4 | 1, `depth` |
-| low end Android | 360x800, DPR 3 | coarse, `deviceMemory` 2 | 0, still scene |
+| iPhone SE | 375x667, DPR 2 | coarse, no `deviceMemory` | 4, all tiers |
+| iPhone 15 | 393x852, DPR 3 | coarse, no `deviceMemory` | 4, all tiers |
+| iPhone 15 Pro Max | 430x932, DPR 3 | coarse, no `deviceMemory` | 4, all tiers |
+| iPad 10.9 | 820x1180, DPR 2 | coarse, no `deviceMemory` | 4, all tiers |
+| Pixel 8 | 412x915, DPR 2.625 | coarse, `deviceMemory` 8 | 4, all tiers |
+| mid range Android | 375x812, DPR 3 | coarse, `deviceMemory` 4 | 4, all tiers |
+| low end Android | 360x800, DPR 3 | coarse, `deviceMemory` 2 | 1, `depth` |
 | MacBook Pro 16 | 1728x970, DPR 2 | fine, no `deviceMemory` | 4, all tiers |
 | Studio Display | 2560x1340, DPR 2 | fine, no `deviceMemory` | 4, all tiers |
 | Pro Display XDR | 3008x1590, DPR 2 | fine, no `deviceMemory` | 4, all tiers |
 | desktop Chrome | 1920x1080, DPR 2 | fine, `deviceMemory` 8 | 4, all tiers |
 
-**Touch devices do not all land on tier 1**, and which regime a device falls in is what decides
-it. Most phones and tablets are in the area regime, where the screen is big enough that
-`viewportBytes x 14` beats the 120 MiB floor, and they settle at `depth`: there the tier
-reached converges on whichever cumulative overdraw ratio first exceeds 14, independent of size,
-and cumulative overdraw is 10.8 through `depth` but 20.8 through `sky`. Either side of that
-regime the answer differs. A small enough screen sits under the floor and reaches tier 3 (see
-the residual below), and a device whose `deviceMemory` drags `memFactor` down to 0.5 can fall
-short of even `depth` and stay on the still scene.
+### Phones get the whole scene, with a crash guard behind them
 
-These are starting values. They are chosen so that no touch device reaches the state that
-currently crashes, and so that every pointer driven device clears all four tiers and behaves
-exactly as the site does today. They will need tuning against real hardware, which is why
-they live in one file with their reasoning in comments.
+The touch budget was first set at 120 MiB over 14 viewports, which held every phone to `depth`, because `sky` alone
+costs 10.0 viewports (8.43 of them stars) and cumulative overdraw through it is 20.8. That was chosen before two things
+were known: phones were also carrying 25 frosted-glass panels, and their layers were moved by script, which is what
+actually stalled them. With frosted glass off on touch and the layers moved by the browser (see Scroll-time cost on
+touch devices, below), a phone that had crashed and then stalled ran the whole scene, forced with `?scene=`,
+flawlessly. So the touch budget is now 150 MiB over 30 viewports: every recent iPhone, iPad and 4 GB or larger Android
+reaches all four tiers, and 2 to 3 GB Androids keep the parallax only.
 
-Note that `sky` is expensive enough (10.0 viewports, of which the stars alone are 8.43) that
-most phones will settle at `depth`. See Future work.
+That is a bet, and iPhones report no memory to check it against, so it comes with a guard against being wrong. The
+original crash reloaded and crashed again on every load until the browser gave up; a phone that can't hold the whole
+scene must not do that again.
+
+- The head script marks the tiers it hands out as live in `localStorage` (`scene-live`), and every tier change after
+  that re-marks it (`recordLive` in `app/perf/crashGuard.ts`, called from `setTier`).
+- `startCrashGuard`, from `ParallaxView`, clears the mark whenever the page is hidden or left (`visibilitychange` to
+  hidden, `pagehide`) and restores it when shown again (`visibilitychange` to visible, `pageshow`). The one way the
+  mark survives is the page dying while on screen. Clearing on hide is what keeps a phone discarding a backgrounded
+  tab from being mistaken for a crash.
+- A load that finds the mark holds the device to `depth` from then on (`scene-cap`), or to the still scene if it died
+  at `depth` or below. Straight to `depth` rather than one tier down, because the stars on `sky` are the big memory
+  cost, and stepping down a tier at a time would keep them through two more crashes. A cap only ever lowers.
+- `?perf=auto` forgets the cap and the mark. Forced modes neither mark nor obey them.
+
+Checked end to end in headless Chrome at phone size with a genuine renderer crash (`Page.crash` in the DevTools
+protocol): a fresh load gets all four tiers; a normal exit leaves nothing against it; after the crash the next load is
+held to `depth`, still with all ten parallax layers, and stays held; `?perf=auto` restores the whole scene. The
+`?debug=perf` readout shows the cap, if any.
 
 ### Residual: the iPhone SE still reaches a higher tier than other phones
+
+(Superseded: under the current touch budget every phone in the table above reaches all four tiers. Kept for the
+reasoning, which still describes how the floor behaves.)
 
 One quirk survives this change and is left as-is. On a 375x667, DPR 2 screen, the area term is
 small enough that the 120 MiB floor governs rather than `viewportBytes x 14`, and the per-layer

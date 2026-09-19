@@ -34,8 +34,8 @@ export const BUDGETS = {
     // backwards at both ends: on the touch side a fixed ceiling left an iPad Pro on the still scene and gave an
     // iPhone SE the lot, and on the pointer side it left a 5K display in Safari with the parallax and nothing else
     // while a laptop half its size got the whole scene.
-    touchFloor: 120 * 1024 * 1024, // the floor for a phone or tablet, where the renderer gets killed early
-    touchViewports: 14,            // the area-scaled allowance, in viewports of composited raster
+    touchFloor: 150 * 1024 * 1024, // the floor for a phone or tablet
+    touchViewports: 30,            // the area-scaled allowance, in viewports of composited raster: the whole scene is 21.9
     pointer: 1024 * 1024 * 1024,   // the floor for a mouse or trackpad
     pointerViewports: 26,          // cumulative full-scene overdraw is 21.9, so this leaves real headroom
     memDivisor: 4,                 // navigator.deviceMemory is scaled against this, so 4GB is the neutral middle

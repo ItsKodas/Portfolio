@@ -43,6 +43,8 @@ export const PERF_SCRIPT = `(function () {
         }
         var asked = params.get('perf')
         if (asked === 'lite' || asked === 'full' || asked === 'auto') {
+            // (auto also forgets any crash, below: it's the way back to what detection alone would give)
+            if (asked === 'auto') try { localStorage.removeItem('scene-cap'); localStorage.removeItem('scene-live') } catch (e3) {}
             // The override takes effect on this load whether or not it could be remembered for the next one. A
             // browser blocking storage throws below, and the right answer to that is to lose the memory, not the
             // override, so the persisting gets a try of its own.
@@ -96,5 +98,23 @@ export const PERF_SCRIPT = `(function () {
         ceiling = 0
     }
 
-    apply(ceiling === count ? all : '', ceiling, false)
+    // A phone that can't hold what it's handed dies on screen and the browser reloads it. The page marks the tiers it
+    // is showing as live and clears the mark whenever it is hidden or left normally (see crashGuard.ts), so finding
+    // the mark here means the last visit died on screen. Then this device is held to the depth tier from now on (or
+    // the still scene, if it died there): straight to depth rather than one tier down, because the stars are the big
+    // memory cost, and stepping down one tier at a time would keep them through two more crashes.
+    try {
+        var cap = localStorage.getItem('scene-cap')
+        var live = localStorage.getItem('scene-live')
+        if (live !== null) {
+            var held = Number(live) > 1 ? 1 : 0
+            cap = String(cap === null ? held : Math.min(Number(cap), held))
+            localStorage.setItem('scene-cap', cap)
+        }
+        if (cap !== null) ceiling = Math.min(ceiling, Number(cap))
+    } catch (e) {}
+
+    var handed = ceiling === count ? count : 0
+    apply(handed === count ? all : '', ceiling, false)
+    try { localStorage.setItem('scene-live', String(handed)) } catch (e) {}
 })()`

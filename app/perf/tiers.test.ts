@@ -25,20 +25,22 @@ const ceiling = (
 ) => ceilingFor(vw, vh, dpr, deviceMemory, coarsePointer, TIERS, BASE, TILE_MIN, BUDGETS)
 
 describe('ceilingFor', () => {
-    it('gives an iPhone the depth tier only', () => {
-        expect(ceiling(PHONE, undefined, true)).toBe(1)
+    // Phones got the whole scene once the browser moved the layers: a phone that had crashed and then stalled at a
+    // tier or two ran the full scene flawlessly with that, frosted glass off and nothing moved by script
+    it('gives an iPhone the whole scene', () => {
+        expect(ceiling(PHONE, undefined, true)).toBe(TIERS.length)
     })
 
-    it('gives an 8GB Android the depth tier only', () => {
-        expect(ceiling(PHONE, 8, true)).toBe(1)
+    it('gives an 8GB Android the whole scene', () => {
+        expect(ceiling(PHONE, 8, true)).toBe(TIERS.length)
     })
 
-    it('gives a 4GB Android the depth tier only', () => {
-        expect(ceiling(PHONE, 4, true)).toBe(1)
+    it('gives a 4GB Android the whole scene', () => {
+        expect(ceiling(PHONE, 4, true)).toBe(TIERS.length)
     })
 
-    it('leaves a 2GB Android on the still scene', () => {
-        expect(ceiling(PHONE, 2, true)).toBe(0)
+    it('keeps a 2GB Android to the parallax', () => {
+        expect(ceiling(PHONE, 2, true)).toBe(1)
     })
 
     it('gives desktop Safari every tier', () => {
@@ -124,14 +126,12 @@ describe('ceilingFor', () => {
         // (viewportBytes x touchViewports > touchFloor, so touchFloor === Math.max(...) never activates for
         // either side), and the larger is exactly 4x the area of the smaller at the same dpr.
         //
-        // With today's constants, both land on the depth tier too, but not by the same coincidence as above:
-        // it is structural. Once the area term dominates, cost and allowance both scale linearly with area, so
-        // which tier is reached converges to whichever cumulative overdraw ratio first exceeds touchViewports
-        // (14), independent of viewport size. Cumulative overdraw is 10.8 through depth and 20.8 through sky,
-        // so no touch device without deviceMemory can reach the sky tier from the area term alone, at any
-        // size. That means no pair of viewports in this regime can currently demonstrate a strict difference;
-        // this assertion documents that the ordering holds (not fewer), while the comment above documents why
-        // it cannot yet be strict.
+        // With today's constants both land on every tier, and that is structural rather than coincidental.
+        // Once the area term dominates, cost and allowance both scale linearly with area, so which tier is
+        // reached converges to whichever cumulative overdraw ratio first exceeds touchViewports (30),
+        // independent of viewport size, and the full scene's 21.9 never does. So no pair of viewports in this
+        // regime can currently demonstrate a strict difference; this assertion documents that the ordering holds
+        // (not fewer), while this comment documents why it cannot yet be strict.
         const small = ceiling([900, 700, 3], undefined, true)
         const large = ceiling([1800, 1400, 3], undefined, true)
         expect(large).toBeGreaterThanOrEqual(small)
