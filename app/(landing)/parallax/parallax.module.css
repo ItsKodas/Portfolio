@@ -28,9 +28,10 @@
     visibility: hidden;
 }
 
-/* The link to the scene as a desktop wallpaper: a small frosted round button in the top right */
+/* The link to the scene as a desktop wallpaper: a small frosted round button in the top right of the page, which
+   scrolls away with it rather than following along */
 .wallpaperLink {
-    position: fixed;
+    position: absolute;
     top: 16px;
     right: 20px;
     z-index: 50;
@@ -62,4 +63,11 @@
 .wallpaperLink svg {
     width: 20px;
     height: 20px;
+}
+
+/* A desktop wallpaper is no use on a phone or tablet, so touch devices don't get the button at all */
+@media (pointer: coarse) {
+    .wallpaperLink {
+        display: none;
+    }
 }
