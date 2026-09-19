@@ -27,7 +27,10 @@ export function lifecycleArgv(project: ProjectEntry, action: LifecycleAction): s
 }
 
 export function configArgv(project: ProjectEntry): string[] {
-    return [...composeBase(project), 'config', '--format', 'json']
+    // --no-env-resolution keeps env_file as the path list the guard reads, instead of compose inlining
+    // every project's env values (database passwords among them) into this captured stdout. On a compose
+    // too old to know the flag, the command exits non-zero and resolveCompose fails closed.
+    return [...composeBase(project), 'config', '--no-env-resolution', '--format', 'json']
 }
 
 export type RunResult = { exitCode: number | null, stdout: string, stderr: string, timedOut: boolean }
@@ -55,9 +58,24 @@ class Capture {
     }
 }
 
+// Only what docker itself needs, taken from process.env when set. Phase 2 puts secrets (RESTIC_PASSWORD,
+// the R2 credentials) in this process's environment specifically to keep them out of reach of a
+// compromised api, so nothing else from process.env may reach the child: compose interpolates ${VAR}
+// from the child's environment into a project's own compose file.
+const DOCKER_ENV_KEYS = ['PATH', 'HOME', 'DOCKER_HOST', 'DOCKER_CONFIG', 'TZ'] as const
+
+function dockerEnv(): Record<string, string> {
+    const env: Record<string, string> = {}
+    for (const key of DOCKER_ENV_KEYS) {
+        const value = process.env[key]
+        if (value !== undefined) env[key] = value
+    }
+    return env
+}
+
 export function createSpawnRunner(spawn: typeof nodeSpawn = nodeSpawn): Runner {
     return (command, args, timeoutMs) => new Promise(resolve => {
-        const child = spawn(command, args, { shell: false, stdio: ['ignore', 'pipe', 'pipe'] })
+        const child = spawn(command, args, { shell: false, stdio: ['ignore', 'pipe', 'pipe'], env: dockerEnv() })
         const stdout = new Capture()
         const stderr = new Capture()
         child.stdout?.on('data', (chunk: Buffer) => stdout.add(chunk))
@@ -101,6 +119,9 @@ export async function runLifecycle(project: ProjectEntry, action: LifecycleActio
 
 export type ResolvedService = {
     volumes?: Array<{ type?: string, source?: string }>
+    // This shape ({ path: string }, not a bare string) only holds because configArgv passes
+    // --no-env-resolution; without it compose resolves env files away and this key is absent. Do not
+    // remove that flag.
     env_file?: Array<string | { path?: string }>
     build?: string | { context?: string, dockerfile?: string }
 }

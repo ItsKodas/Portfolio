@@ -77,7 +77,19 @@ async function main(): Promise<void> {
         audit,
     })
     const server = createServer(handler)
-    await new Promise<void>(resolve => server.listen(PORT, '0.0.0.0', resolve))
+    // A bind failure (say the port is already taken) must fail boot with a named FATAL line, through the
+    // same fail() path as every other boot check, rather than crash as an uncaught exception.
+    await new Promise<void>((resolve, reject) => {
+        const onBootError = (error: Error) => reject(error)
+        server.once('error', onBootError)
+        server.listen(PORT, '0.0.0.0', () => {
+            server.removeListener('error', onBootError)
+            resolve()
+        })
+    })
+    // After boot, a server-level error (not a per-request failure) is unusual but not fatal: warn and
+    // keep serving whatever connections still work.
+    server.on('error', error => log(`WARN api server error: ${describeError(error)}`))
     log(`listening on :${PORT}`)
 
     let agentWarning: string | null = null

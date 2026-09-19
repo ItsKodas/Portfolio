@@ -1,7 +1,7 @@
 // The storage guard's current verdict for every project. A failing project is refused, never fatal, so
 // one broken site cannot take the others offline.
 
-import { stat } from 'node:fs/promises'
+import { lstat, stat } from 'node:fs/promises'
 import type { ProjectEntry, Registry } from '../shared/registry.ts'
 import { describeError } from '../shared/formats.ts'
 import { resolveCompose, type Runner } from './compose.ts'
@@ -17,10 +17,28 @@ const isDirectoryOnDisk: DirCheck = async path => {
     }
 }
 
+// Phase 1 never dereferences a storage root, but the guard still must not pass one that is a symlink (or
+// missing, or a plain file), because phase 3's file access inherits the assumption that it is trustworthy.
+// lstat, not stat, so a symlink is reported as itself rather than as whatever it points to.
+export type StorageRootState = 'ok' | 'missing' | 'not-a-directory'
+export type StorageRootCheck = (path: string) => Promise<StorageRootState>
+
+const storageRootOnDisk: StorageRootCheck = async path => {
+    try {
+        return (await lstat(path)).isDirectory() ? 'ok' : 'not-a-directory'
+    } catch {
+        return 'missing'
+    }
+}
+
 export class GuardTracker {
     private readonly invalid = new Map<string, string>()
 
-    constructor(private readonly run: Runner, private readonly isDirectory: DirCheck = isDirectoryOnDisk) {}
+    constructor(
+        private readonly run: Runner,
+        private readonly isDirectory: DirCheck = isDirectoryOnDisk,
+        private readonly storageRoot: StorageRootCheck = storageRootOnDisk,
+    ) {}
 
     current(): ReadonlyMap<string, string> {
         return this.invalid
@@ -53,6 +71,11 @@ export class GuardTracker {
 
     private async problemOf(project: ProjectEntry): Promise<string | null> {
         if (!(await this.isDirectory(project.dir))) return `${project.dir} does not exist on the dedi`
+        for (const [name, storage] of Object.entries(project.storage)) {
+            const state = await this.storageRoot(storage.absolute)
+            if (state === 'missing') return `storage ${name} (${storage.absolute}) does not exist`
+            if (state === 'not-a-directory') return `storage ${name} (${storage.absolute}) is not a directory`
+        }
         const resolved = await resolveCompose(project, this.run)
         if (!resolved.ok) return resolved.problem
         const problems = guardProblems(project, resolved.resolved)

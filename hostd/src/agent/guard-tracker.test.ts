@@ -25,10 +25,13 @@ function composeRunner(configs: Record<string, unknown>): Runner {
 
 const goodConfig = (id: string) => ({ name: id, services: { web: { volumes: [{ type: 'bind', source: `/var/www/${id}/uploads` }] } } })
 
+// Stands in for a real disk: every storage root is a real directory unless told otherwise.
+const storageOk = async () => 'ok' as const
+
 describe('GuardTracker', () => {
     it('records nothing for projects that pass', async () => {
         const registry = parseRegistry(text(['alpha']))
-        const tracker = new GuardTracker(composeRunner({ '/var/www/alpha': goodConfig('alpha') }), async () => true)
+        const tracker = new GuardTracker(composeRunner({ '/var/www/alpha': goodConfig('alpha') }), async () => true, storageOk)
         await tracker.checkAll(registry)
         assert.deepEqual(tracker.current(), new Map())
         assert.deepEqual(tracker.warnings(), [])
@@ -36,7 +39,7 @@ describe('GuardTracker', () => {
 
     it('marks a project whose directory is missing', async () => {
         const registry = parseRegistry(text(['alpha']))
-        const tracker = new GuardTracker(composeRunner({}), async () => false)
+        const tracker = new GuardTracker(composeRunner({}), async () => false, storageOk)
         await tracker.checkAll(registry)
         assert.equal(tracker.current().get('alpha'), '/var/www/alpha does not exist on the dedi')
     })
@@ -45,7 +48,7 @@ describe('GuardTracker', () => {
         const registry = parseRegistry(text(['alpha', 'bravo']))
         const tracker = new GuardTracker(composeRunner({
             '/var/www/bravo': { name: 'bravo', services: { web: { volumes: [] } } },
-        }), async () => true)
+        }), async () => true, storageOk)
         await tracker.checkAll(registry)
         assert.match(tracker.current().get('alpha') ?? '', /^docker compose config failed: no configuration file provided/)
         assert.equal(tracker.current().get('bravo'), 'storage media (/var/www/bravo/uploads) is not bind-mounted into a site service')
@@ -58,7 +61,7 @@ describe('GuardTracker', () => {
     it('clears a project once it passes again, and returns the verdict from check()', async () => {
         const registry = parseRegistry(text(['alpha']))
         const configs: Record<string, unknown> = {}
-        const tracker = new GuardTracker(composeRunner(configs), async () => true)
+        const tracker = new GuardTracker(composeRunner(configs), async () => true, storageOk)
         await tracker.checkAll(registry)
         assert.ok(tracker.current().has('alpha'))
         configs['/var/www/alpha'] = goodConfig('alpha')
@@ -67,7 +70,7 @@ describe('GuardTracker', () => {
     })
 
     it('forgets projects that have left the registry', async () => {
-        const tracker = new GuardTracker(composeRunner({}), async () => true)
+        const tracker = new GuardTracker(composeRunner({}), async () => true, storageOk)
         await tracker.checkAll(parseRegistry(text(['alpha'])))
         assert.ok(tracker.current().has('alpha'))
         // An empty mapping, not text([]): "projects:" with nothing under it is YAML null, a whole-file error.
@@ -80,9 +83,31 @@ describe('GuardTracker', () => {
         const tracker = new GuardTracker(composeRunner({
             '/var/www/alpha': { name: 'alpha', services: { web: { volumes: 'not-a-list' } } },
             '/var/www/bravo': goodConfig('bravo'),
-        }), async () => true)
+        }), async () => true, storageOk)
         await assert.doesNotReject(tracker.checkAll(registry))
         assert.match(tracker.current().get('alpha') ?? '', /^the storage guard could not check this project:/)
         assert.equal(tracker.current().has('bravo'), false)
+    })
+
+    it('marks a project whose storage root does not exist on disk', async () => {
+        const registry = parseRegistry(text(['alpha']))
+        const tracker = new GuardTracker(
+            composeRunner({ '/var/www/alpha': goodConfig('alpha') }),
+            async () => true,
+            async () => 'missing',
+        )
+        await tracker.checkAll(registry)
+        assert.equal(tracker.current().get('alpha'), 'storage media (/var/www/alpha/uploads) does not exist')
+    })
+
+    it('marks a project whose storage root is a symlink rather than a real directory', async () => {
+        const registry = parseRegistry(text(['alpha']))
+        const tracker = new GuardTracker(
+            composeRunner({ '/var/www/alpha': goodConfig('alpha') }),
+            async () => true,
+            async () => 'not-a-directory',
+        )
+        await tracker.checkAll(registry)
+        assert.equal(tracker.current().get('alpha'), 'storage media (/var/www/alpha/uploads) is not a directory')
     })
 })

@@ -95,6 +95,34 @@ describe('createDockerApi', () => {
     it('rejects a malformed container id in inspect as a promise, not a synchronous throw', async () => {
         await assert.rejects(createDockerApi('/s', fakeRequest(200, '{}').request).inspect('../../info'), /malformed container id/)
     })
+
+    // A wedged daemon that accepts the connection and never answers must not hold a follow slot (and the
+    // connection) forever. The header wait is bounded; once headers do arrive the timeout is cleared, so a
+    // legitimately idle follow stream is never killed later for inactivity.
+    it('rejects rather than hanging when the daemon never answers the logs request', async () => {
+        let firedTimeout: (() => void) | null = null
+        let destroyedWith: Error | undefined
+        const request = (_options: RequestOptions, _callback: (response: IncomingMessage) => void): ClientRequest => {
+            const req = Object.assign(new EventEmitter(), {
+                setTimeout(_ms: number, cb: () => void) {
+                    firedTimeout = cb
+                    return req
+                },
+                destroy(error?: Error) {
+                    destroyedWith = error
+                    req.emit('error', error ?? new Error('destroyed'))
+                    return req
+                },
+                end() { return req }, // the daemon accepted the connection but never calls the response callback
+            })
+            return req as unknown as ClientRequest
+        }
+        const pending = createDockerApi('/s', request).logs(ID, { tail: 10, since: null, follow: true })
+        assert.ok(firedTimeout, 'a timeout must be armed for the header wait')
+        ;(firedTimeout as () => void)()
+        await assert.rejects(pending, /Docker API timed out on \/containers\/a+\/logs/)
+        assert.ok(destroyedWith)
+    })
 })
 
 describe('pickPerService', () => {

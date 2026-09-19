@@ -228,10 +228,22 @@ describe('parseRegistry, problems with one project', () => {
         assert.equal(registry.projects.size, 0)
     })
 
-    it('does not resolve a service called constructor to a prototype property', () => {
-        const registry = parseRegistry(project())
+    it('parses a service literally named constructor, resolving to the parsed entry rather than Object.prototype.constructor', () => {
+        const registry = parseRegistry(project({
+            services: '{ web: { role: site }, constructor: { role: database, engine: postgres } }',
+        }))
         const entry = registry.projects.get('site')
         assert.ok(entry)
-        assert.equal(Object.hasOwn(entry.services, 'constructor'), false)
+        // A service named constructor must be an own key: an object literal's inherited constructor is
+        // not an own property, so this also proves the parsed value replaced it rather than being lost.
+        assert.equal(Object.hasOwn(entry.services, 'constructor'), true)
+        const constructorService = entry.services['constructor']
+        assert.deepEqual(constructorService, { role: 'database', engine: 'postgres', dump: {} })
+        // The lookup must resolve to the parsed service, never to the inherited Function.
+        assert.notEqual(constructorService, Object.prototype.constructor)
+        assert.ok(constructorService)
+        assert.equal(isComposeService(constructorService), true)
+        // A name that was never registered still falls through to nothing of ours, not a prototype method.
+        assert.equal(Object.hasOwn(entry.services, 'toString'), false)
     })
 })

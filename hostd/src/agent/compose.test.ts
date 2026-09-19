@@ -42,8 +42,10 @@ describe('argv', () => {
         assert.deepEqual(lifecycleArgv(project, 'restart'), [...base, 'restart'])
     })
 
-    it('resolves the configuration as JSON', () => {
-        assert.deepEqual(configArgv(project), [...base, 'config', '--format', 'json'])
+    // --no-env-resolution keeps env_file as a path list instead of compose inlining every value (a
+    // database password among them) into the resolved JSON this command captures.
+    it('resolves the configuration as JSON, without inlining env file values', () => {
+        assert.deepEqual(configArgv(project), [...base, 'config', '--no-env-resolution', '--format', 'json'])
     })
 })
 
@@ -147,6 +149,49 @@ describe('createSpawnRunner', () => {
         assert.deepEqual(result, { exitCode: 0, stdout: 'hello', stderr: '', timedOut: false })
         assert.equal(calls[0]?.options.shell, false)
         assert.deepEqual(calls[0]?.args, ['compose', 'ls'])
+    })
+
+    // Compose interpolates ${VAR} from the environment into a project's compose file, and phase 2 puts
+    // secrets (RESTIC_PASSWORD, R2 credentials) in this process's environment specifically to keep them
+    // away from a compromised api. Only what docker itself needs may reach the child.
+    it('passes docker only a minimal environment, never process.env wholesale', async () => {
+        const original = { ...process.env }
+        try {
+            process.env.PATH = '/usr/bin'
+            process.env.HOME = '/root'
+            process.env.DOCKER_HOST = 'unix:///var/run/docker.sock'
+            process.env.DOCKER_CONFIG = '/root/.docker'
+            process.env.TZ = 'UTC'
+            process.env.RESTIC_PASSWORD = 'super-secret'
+
+            const { spawn, calls } = fakeSpawn(child => child.emit('close', 0))
+            await createSpawnRunner(spawn)('docker', [], 1000)
+
+            assert.deepEqual(calls[0]?.options.env, {
+                PATH: '/usr/bin', HOME: '/root', DOCKER_HOST: 'unix:///var/run/docker.sock',
+                DOCKER_CONFIG: '/root/.docker', TZ: 'UTC',
+            })
+        } finally {
+            process.env = original
+        }
+    })
+
+    it('omits an allowed key entirely when process.env does not set it', async () => {
+        const original = { ...process.env }
+        try {
+            delete process.env.DOCKER_HOST
+            delete process.env.DOCKER_CONFIG
+            delete process.env.TZ
+            process.env.PATH = '/usr/bin'
+            process.env.HOME = '/root'
+
+            const { spawn, calls } = fakeSpawn(child => child.emit('close', 0))
+            await createSpawnRunner(spawn)('docker', [], 1000)
+
+            assert.deepEqual(calls[0]?.options.env, { PATH: '/usr/bin', HOME: '/root' })
+        } finally {
+            process.env = original
+        }
     })
 
     it('reports a spawn failure as a null exit code with the error', async () => {

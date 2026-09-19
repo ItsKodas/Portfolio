@@ -56,9 +56,15 @@ export function logsPath(id: string, options: LogsOptions): string {
 const endpoint = (path: string) => path.split('?')[0]
 
 export function createDockerApi(socketPath = DOCKER_SOCKET, request: RequestFn = httpRequest): DockerApi {
-    function open(path: string, timeoutMs: number | null): Promise<IncomingMessage> {
+    // clearTimeoutOnHeaders bounds only the wait for response headers: once they arrive the timeout is
+    // cleared, so a body that is legitimately idle afterwards (a followed log stream) is never killed for
+    // inactivity. Without it the timeout, if any, stays armed for the whole exchange (json's body read too).
+    function open(path: string, timeoutMs: number | null, clearTimeoutOnHeaders = false): Promise<IncomingMessage> {
         return new Promise((resolve, reject) => {
-            const req = request({ socketPath, path, method: 'GET' }, resolve)
+            const req = request({ socketPath, path, method: 'GET' }, response => {
+                if (clearTimeoutOnHeaders) req.setTimeout(0)
+                resolve(response)
+            })
             req.on('error', reject)
             if (timeoutMs !== null) req.setTimeout(timeoutMs, () => req.destroy(new Error(`Docker API timed out on ${endpoint(path)}`)))
             req.end()
@@ -88,9 +94,11 @@ export function createDockerApi(socketPath = DOCKER_SOCKET, request: RequestFn =
         async inspect(id) {
             return json<ContainerInspect>(`/containers/${checkedId(id)}/json`)
         },
-        // No timeout: a followed stream is legitimately idle for long stretches. The agent bounds its life.
+        // The header wait is bounded (a wedged daemon that accepts the connection and never answers must
+        // not hold the agent's follow slot forever); the body stream itself is not, since a followed
+        // stream is legitimately idle for long stretches. The agent bounds its life separately.
         async logs(id, options) {
-            const response = await open(logsPath(id, options), null)
+            const response = await open(logsPath(id, options), DOCKER_TIMEOUT_MS, true)
             if (response.statusCode !== 200) {
                 response.resume()
                 throw new Error(`Docker API logs answered ${response.statusCode}`)
