@@ -233,7 +233,17 @@ describe('logs', () => {
         const { agent } = setup({ followMaxMs: 20 })
         const outcome = await agent.handle(logs(true))
         assert.ok(outcome.kind === 'stream')
-        assert.deepEqual(await collect(outcome.lines), [])
+        // The close timer is unref'd in agent.ts, deliberately: a log follow must never hold the process
+        // open at shutdown. That also means it cannot keep the event loop alive here, and when this suite
+        // is the only thing running (as in the Docker build) the loop drains before the timer fires, and
+        // node --test reports the awaited stream as "still pending". The ticker below holds the loop open
+        // until the stream has ended.
+        const keepAlive = setInterval(() => {}, 5)
+        try {
+            assert.deepEqual(await collect(outcome.lines), [])
+        } finally {
+            clearInterval(keepAlive)
+        }
         assert.equal(agent.followCount('acme'), 0)
     })
 })
