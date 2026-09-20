@@ -369,13 +369,16 @@ export function RegenerateCodesForm() {
         setError(null)
         try {
             const result = await regenerateCodesAction(password)
-            if (result.ok) setCodes(result.recoveryCodes)
-            else setError(result.error)
+            if (result.ok) {
+                setCodes(result.recoveryCodes)
+                // Only on success, like every other form here: clearing after a refusal would throw away what
+                // was typed, which is exactly what someone who has just mistyped their password does not want
+                setPassword('')
+            } else setError(result.error)
         } catch {
             setError('That did not work. Try reloading the page.')
         } finally {
             setPending(false)
-            setPassword('')
         }
     }
 
