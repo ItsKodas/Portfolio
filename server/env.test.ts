@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
-import { EnvError, ipHashKey, mailConfig, turnstileSecret } from './env'
+import { EnvError, clientSecretKey, ipHashKey, mailConfig, turnstileSecret } from './env'
 
 const mail = {
     SMTP_HOST: 'smtp.example.com',
@@ -67,5 +67,20 @@ describe('turnstileSecret and ipHashKey', () => {
     it('throw when missing or blank', () => {
         expect(problemsOf(() => turnstileSecret({ TURNSTILE_SECRET_KEY: ' ' }))).toEqual(['TURNSTILE_SECRET_KEY is not set'])
         expect(problemsOf(() => ipHashKey({}))).toEqual(['AUTH_SECRET is not set'])
+    })
+})
+
+describe('clientSecretKey', () => {
+    it('decodes 32 base64 bytes', () => {
+        const key = Buffer.alloc(32, 7).toString('base64')
+        expect(clientSecretKey({ CLIENT_SECRET_KEY: key })).toEqual(Buffer.alloc(32, 7))
+    })
+
+    it('names the variable when it is missing', () => {
+        expect(() => clientSecretKey({})).toThrow(/CLIENT_SECRET_KEY/)
+    })
+
+    it('refuses a key of the wrong length, rather than padding it', () => {
+        expect(() => clientSecretKey({ CLIENT_SECRET_KEY: Buffer.alloc(16).toString('base64') })).toThrow(/32 bytes/)
     })
 })

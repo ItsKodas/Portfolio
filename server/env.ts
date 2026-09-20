@@ -64,3 +64,12 @@ export const turnstileSecret = (env: Env = process.env) => single(env, 'TURNSTIL
 // The IP hash is keyed with the sessions' secret, so there is one fewer secret to manage. Rotating it only resets
 // the rate-limit window.
 export const ipHashKey = (env: Env = process.env) => single(env, 'AUTH_SECRET')
+
+// Encrypts TOTP secrets and keys the recovery code HMACs. Deliberately not AUTH_SECRET: rotating that today
+// only resets rate-limit windows, and it must not also brick every client's authenticator.
+export function clientSecretKey(env: Env = process.env): Buffer {
+    const value = single(env, 'CLIENT_SECRET_KEY')
+    const key = Buffer.from(value, 'base64')
+    if (key.length !== 32) throw new EnvError(['CLIENT_SECRET_KEY must be 32 bytes, base64 encoded, from: openssl rand -base64 32'])
+    return key
+}
