@@ -2,7 +2,7 @@
 // before the agent hears of it; every change, every stream opened and every refusal is audited.
 
 import type { IncomingMessage, ServerResponse } from 'node:http'
-import { PROJECT_ID, SERVICE_NAME, isRecord, describeError } from '../shared/formats.ts'
+import { PROJECT_ID, CLIENT_ID, SERVICE_NAME, isRecord, describeError } from '../shared/formats.ts'
 import {
     LIFECYCLE_ACTIONS, MAX_TAIL, DEFAULT_TAIL, MAX_REQUEST_BYTES,
     type AgentReply, type AgentRequest, type LifecycleAction, type LogsArgs, type RefusalCode,
@@ -143,7 +143,17 @@ function onlyKeys(value: Record<string, unknown>, allowed: string[]): boolean {
 
 // Reads the body with a hard cap enforced as bytes arrive, not from a trusted Content-Length: the same
 // 64 KB the agent's own wire protocol allows itself, so nothing a client can post to api is bigger than
-// what would reach the agent anyway.
+// what would reach the agent anyway. Note this bounds the whole JSON envelope, not just an env file's
+// text: MAX_ENV_BYTES in envfiles.ts is also 64 KB, but of the file's raw text, and JSON-escaping that
+// text (quotes, backslashes, newlines) can inflate it past this envelope cap before MAX_ENV_BYTES is
+// ever checked. An admin editing a large env file hits this refusal first; its message says so.
+//
+// On the over-limit path this deliberately does not call req.destroy(): req and res share one socket,
+// and destroying it here would destroy the response before refuseRoute ever gets to write to it,
+// turning a 400 into a dead socket (at worst ERR_STREAM_DESTROYED). Removing the listeners is enough:
+// once flowing (data has already been read), a Readable with no 'data' listener just discards further
+// chunks instead of buffering them, so the rest of the body drains in the background while the caller
+// writes its response on the still-live socket.
 function readBody(req: IncomingMessage, maxBytes: number): Promise<{ ok: true, raw: string } | { ok: false, message: string }> {
     return new Promise(resolve => {
         const chunks: Buffer[] = []
@@ -160,8 +170,7 @@ function readBody(req: IncomingMessage, maxBytes: number): Promise<{ ok: true, r
         const onData = (chunk: Buffer) => {
             bytes += chunk.length
             if (bytes > maxBytes) {
-                finish({ ok: false, message: `request body must be ${maxBytes} bytes or fewer` })
-                req.destroy()
+                finish({ ok: false, message: `the request body must be ${maxBytes} bytes (${Math.floor(maxBytes / 1024)} KB) or fewer` })
                 return
             }
             chunks.push(chunk)
@@ -192,8 +201,10 @@ function parseCreateBody(value: Record<string, unknown>): { ok: true, args: Prov
     if (!onlyKeys(value, ['id', 'client', 'name', 'repo', 'branch', 'domain', 'certificate'])) {
         return { ok: false, message: 'create takes only id, client, name, repo, branch, domain and certificate' }
     }
-    if (typeof value.id !== 'string') return { ok: false, message: 'id is malformed' }
-    if (typeof value.client !== 'string') return { ok: false, message: 'client is malformed' }
+    // Validated against the same grammar as everywhere else an id is trusted, not just typeof: an
+    // unvalidated id is what would otherwise end up as the project field of an audit entry below.
+    if (typeof value.id !== 'string' || !PROJECT_ID.test(value.id)) return { ok: false, message: 'id is malformed' }
+    if (typeof value.client !== 'string' || !CLIENT_ID.test(value.client)) return { ok: false, message: 'client is malformed' }
     if (typeof value.name !== 'string') return { ok: false, message: 'name is malformed' }
     if (typeof value.repo !== 'string') return { ok: false, message: 'repo is malformed' }
     if (typeof value.branch !== 'string') return { ok: false, message: 'branch is malformed' }
@@ -334,6 +345,27 @@ export function createHandler(deps: ApiDeps): (req: IncomingMessage, res: Server
             return sendJson(res, AGENT_STATUS[reply.code], reply)
         }
 
+        // Shared by DELETE /projects/:id (environment null, the whole project) and
+        // DELETE /projects/:id/environments/:env (one environment): the confirmation is the safety
+        // mechanism of both, so it lives in exactly one place rather than two copies that could drift.
+        const removeProject = async (project: string, environment: EnvironmentName | null): Promise<void> => {
+            const target = environment ? `${project} remove ${environment}` : `${project} remove`
+            const entry = await authorizeProject(project, 'provision', target)
+            if (!entry) return
+
+            const body = await readJsonBody(req, MAX_REQUEST_BYTES)
+            if (!body.ok) return refuseRoute(400, 'bad-request', body.message, project, 'provision', target)
+            const parsed = parseConfirmBody(body.value)
+            if (!parsed.ok) return refuseRoute(400, 'bad-request', parsed.message, project, 'provision', target)
+            if (parsed.name !== entry.name) {
+                return refuseRoute(400, 'bad-request', 'name must match the project name to confirm deletion', project, 'provision', target)
+            }
+
+            const reply = await callAgentAudited({ verb: 'provision', project, args: { action: 'remove', environment } }, project, 'provision', target)
+            if (!reply) return
+            return respondAgentAction('provision', reply, project, target)
+        }
+
         switch (route.verb) {
             case 'not-found':
                 return refuseRoute(404, 'not-found', 'no such route', null, 'unknown', url.pathname.slice(0, 200))
@@ -395,7 +427,7 @@ export function createHandler(deps: ApiDeps): (req: IncomingMessage, res: Server
                 if (!body.ok) return refuseRoute(400, 'bad-request', body.message, null, 'provision', null)
                 const parsed = parseCreateBody(body.value)
                 if (!parsed.ok) {
-                    const id = typeof body.value.id === 'string' ? body.value.id : null
+                    const id = typeof body.value.id === 'string' && PROJECT_ID.test(body.value.id) ? body.value.id : null
                     return refuseRoute(400, 'bad-request', parsed.message, id, 'provision', null)
                 }
 
@@ -405,26 +437,8 @@ export function createHandler(deps: ApiDeps): (req: IncomingMessage, res: Server
                 return respondAgentAction('provision', reply, parsed.args.id, target)
             }
 
-            case 'delete': {
-                const target = `${route.project} remove`
-                const project = await authorizeProject(route.project, 'provision', target)
-                if (!project) return
-
-                const body = await readJsonBody(req, MAX_REQUEST_BYTES)
-                if (!body.ok) return refuseRoute(400, 'bad-request', body.message, route.project, 'provision', target)
-                const parsed = parseConfirmBody(body.value)
-                if (!parsed.ok) return refuseRoute(400, 'bad-request', parsed.message, route.project, 'provision', target)
-                if (parsed.name !== project.name) {
-                    return refuseRoute(400, 'bad-request', 'name must match the project name to confirm deletion', route.project, 'provision', target)
-                }
-
-                const reply = await callAgentAudited(
-                    { verb: 'provision', project: route.project, args: { action: 'remove', environment: null } },
-                    route.project, 'provision', target,
-                )
-                if (!reply) return
-                return respondAgentAction('provision', reply, route.project, target)
-            }
+            case 'delete':
+                return removeProject(route.project, null)
 
             case 'add-environment': {
                 const target = `${route.project} add-environment`
@@ -444,26 +458,8 @@ export function createHandler(deps: ApiDeps): (req: IncomingMessage, res: Server
                 return respondAgentAction('provision', reply, route.project, target)
             }
 
-            case 'remove-environment': {
-                const target = `${route.project} remove ${route.environment}`
-                const project = await authorizeProject(route.project, 'provision', target)
-                if (!project) return
-
-                const body = await readJsonBody(req, MAX_REQUEST_BYTES)
-                if (!body.ok) return refuseRoute(400, 'bad-request', body.message, route.project, 'provision', target)
-                const parsed = parseConfirmBody(body.value)
-                if (!parsed.ok) return refuseRoute(400, 'bad-request', parsed.message, route.project, 'provision', target)
-                if (parsed.name !== project.name) {
-                    return refuseRoute(400, 'bad-request', 'name must match the project name to confirm deletion', route.project, 'provision', target)
-                }
-
-                const reply = await callAgentAudited(
-                    { verb: 'provision', project: route.project, args: { action: 'remove', environment: route.environment } },
-                    route.project, 'provision', target,
-                )
-                if (!reply) return
-                return respondAgentAction('provision', reply, route.project, target)
-            }
+            case 'remove-environment':
+                return removeProject(route.project, route.environment)
 
             case 'env-list': {
                 const target = route.environment
@@ -479,7 +475,13 @@ export function createHandler(deps: ApiDeps): (req: IncomingMessage, res: Server
             }
 
             case 'env-file': {
-                const project = await authorizeProject(route.project, 'env', route.path)
+                // Includes the environment, not just the path: this is the audit trail for access to
+                // secrets, and 'live' and 'test' each have their own .env, so the target has to say
+                // which one, the same way env-list's target (just the environment) reads as one
+                // namespace with this one. Truncated the same way 'not-found' already truncates a raw
+                // pathname, since route.path comes straight from the URL.
+                const target = `${route.environment}/${route.path}`.slice(0, 200)
+                const project = await authorizeProject(route.project, 'env', target)
                 if (!project) return
 
                 // Lexical only, same as envfiles.ts's own comment says: the agent checks the same path
@@ -487,28 +489,28 @@ export function createHandler(deps: ApiDeps): (req: IncomingMessage, res: Server
                 // resolves relative to. That is not duplication to remove, it is the only place a
                 // symlink planted inside the environment folder can be caught.
                 const pathProblem = envPathProblem(route.path)
-                if (pathProblem) return refuseRoute(400, 'bad-request', pathProblem, route.project, 'env', route.path)
+                if (pathProblem) return refuseRoute(400, 'bad-request', pathProblem, route.project, 'env', target)
 
                 if (req.method === 'GET') {
                     const reply = await callAgentAudited(
                         { verb: 'env', project: route.project, args: { action: 'read', environment: route.environment, path: route.path } },
-                        route.project, 'env', route.path,
+                        route.project, 'env', target,
                     )
                     if (!reply) return
-                    return respondAgentAction('env', reply, route.project, route.path)
+                    return respondAgentAction('env', reply, route.project, target)
                 }
 
                 const body = await readJsonBody(req, MAX_REQUEST_BYTES)
-                if (!body.ok) return refuseRoute(400, 'bad-request', body.message, route.project, 'env', route.path)
+                if (!body.ok) return refuseRoute(400, 'bad-request', body.message, route.project, 'env', target)
                 const parsed = parseEnvWriteBody(body.value)
-                if (!parsed.ok) return refuseRoute(400, 'bad-request', parsed.message, route.project, 'env', route.path)
+                if (!parsed.ok) return refuseRoute(400, 'bad-request', parsed.message, route.project, 'env', target)
 
                 const reply = await callAgentAudited(
                     { verb: 'env', project: route.project, args: { action: 'write', environment: route.environment, path: route.path, text: parsed.text } },
-                    route.project, 'env', route.path,
+                    route.project, 'env', target,
                 )
                 if (!reply) return
-                return respondAgentAction('env', reply, route.project, route.path)
+                return respondAgentAction('env', reply, route.project, target)
             }
 
             case 'lifecycle': {

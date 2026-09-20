@@ -333,13 +333,33 @@ describe('POST /projects', () => {
         assert.deepEqual(agent.calls, [])
     })
 
-    it('returns 503 with code unavailable when the agent cannot be reached', async () => {
+    it('returns 503 when the agent refuses because provisioning is not configured', async () => {
+        // This is a well-formed agent reply (a Refusal with code 'unavailable'), not a dropped
+        // connection: it exercises the ordinary refusal pass-through in respondAgentAction, mapped
+        // through AGENT_STATUS like any other refusal code.
         agent.reply = () => ({ ok: false, code: 'unavailable', message: 'provisioning is not configured' })
         const response = await request('/projects', { method: 'POST', actor: 'admin', body: CREATE_BODY })
         assert.equal(response.status, 503)
         assert.deepEqual(await response.json(), { ok: false, code: 'unavailable', message: 'provisioning is not configured' })
         const [entry] = await audit.read({ limit: 1 })
         assert.equal(entry?.outcome, 'refused')
+    })
+
+    it('returns 503 with code agent-unavailable when the agent connection is actually lost', async () => {
+        agent.call = async () => { throw new AgentUnavailableError('the agent closed the connection without answering') }
+        const response = await request('/projects', { method: 'POST', actor: 'admin', body: CREATE_BODY })
+        assert.equal(response.status, 503)
+        assert.equal(((await response.json()) as { code: string }).code, 'agent-unavailable')
+        const [entry] = await audit.read({ limit: 1 })
+        assert.deepEqual([entry?.verb, entry?.outcome], ['provision', 'failed'])
+    })
+
+    it('refuses a body over the 64 KB cap without calling the agent', async () => {
+        const response = await request('/projects', { method: 'POST', actor: 'admin', rawBody: 'x'.repeat(64 * 1024 + 1) })
+        assert.equal(response.status, 400)
+        const responseBody = await response.json() as { code: string }
+        assert.equal(responseBody.code, 'bad-request')
+        assert.deepEqual(agent.calls, [])
     })
 })
 
@@ -348,6 +368,8 @@ describe('DELETE /projects/:id', () => {
         const wrongName = await request('/projects/acme', { method: 'DELETE', actor: 'admin', body: { name: 'Not Acme' } })
         assert.equal(wrongName.status, 400)
         assert.deepEqual(agent.calls, [])
+        const [refusal] = await audit.read({ limit: 1 })
+        assert.deepEqual([refusal?.verb, refusal?.target, refusal?.outcome, refusal?.reason], ['provision', 'acme remove', 'refused', 'bad-request'])
 
         agent.reply = () => ({ ok: true, output: '/var/www/acme was left in place, along with its volumes and databases' })
         const rightName = await request('/projects/acme', { method: 'DELETE', actor: 'admin', body: { name: 'Acme' } })
@@ -387,10 +409,24 @@ describe('DELETE /projects/:id/environments/:env', () => {
         agent.reply = () => ({ ok: true, output: 'unregistered' })
         const wrongName = await request('/projects/acme/environments/test', { method: 'DELETE', actor: 'admin', body: { name: 'nope' } })
         assert.equal(wrongName.status, 400)
+        const [refusal] = await audit.read({ limit: 1 })
+        assert.deepEqual([refusal?.verb, refusal?.target, refusal?.outcome], ['provision', 'acme remove test', 'refused'])
 
         const response = await request('/projects/acme/environments/test', { method: 'DELETE', actor: 'admin', body: { name: 'Acme' } })
         assert.equal(response.status, 200)
         assert.deepEqual(agent.calls, [{ verb: 'provision', project: 'acme', args: { action: 'remove', environment: 'test' } }])
+    })
+
+    // registry-write.ts refuses to remove the live environment on its own (it is not this route's job
+    // to know that; the agent is what enforces it). This just confirms that refusal comes back through
+    // respondAgentAction as a failure, not silently as something else.
+    it('passes a downstream refusal to remove live on its own through as a failure', async () => {
+        agent.reply = () => ({ ok: false, code: 'failed', message: 'the live environment cannot be removed on its own' })
+        const response = await request('/projects/acme/environments/live', { method: 'DELETE', actor: 'admin', body: { name: 'Acme' } })
+        assert.equal(response.status, 502)
+        assert.deepEqual(await response.json(), { ok: false, code: 'failed', message: 'the live environment cannot be removed on its own' })
+        const [entry] = await audit.read({ limit: 1 })
+        assert.deepEqual([entry?.verb, entry?.target, entry?.outcome, entry?.reason], ['provision', 'acme remove live', 'failed', 'the live environment cannot be removed on its own'])
     })
 })
 
@@ -414,6 +450,10 @@ describe('GET|PUT /projects/:id/:env/env/*path', () => {
         assert.equal(response.status, 200)
         assert.deepEqual(await response.json(), { ok: true, text: 'SECRET=shh\n' })
         assert.deepEqual(agent.calls, [{ verb: 'env', project: 'acme', args: { action: 'read', environment: 'live', path: '.env' } }])
+        const [entry] = await audit.read({ limit: 1 })
+        // The environment is part of the target, not just the path: live and test each have their own
+        // .env, and the audit trail for secret access has to say which one.
+        assert.deepEqual([entry?.verb, entry?.target, entry?.outcome], ['env', 'live/.env', 'ok'])
     })
 
     it('passes an env write through with its path and text, and audits it without the text', async () => {
@@ -424,7 +464,7 @@ describe('GET|PUT /projects/:id/:env/env/*path', () => {
             verb: 'env', project: 'acme', args: { action: 'write', environment: 'live', path: '.env', text: 'SECRET=shh' },
         }])
         const [entry] = await audit.read({ limit: 1 })
-        assert.deepEqual([entry?.verb, entry?.target, entry?.outcome], ['env', '.env', 'ok'])
+        assert.deepEqual([entry?.verb, entry?.target, entry?.outcome], ['env', 'live/.env', 'ok'])
         const serialised = JSON.stringify(entry)
         assert.equal(serialised.includes('shh'), false)
         assert.equal(serialised.includes('SECRET'), false)
@@ -451,6 +491,17 @@ describe('GET|PUT /projects/:id/:env/env/*path', () => {
         assert.equal((await request('/projects/acme/live/env/.env', { method: 'PUT', actor: 'admin', body: {} })).status, 400)
         assert.equal((await request('/projects/acme/live/env/.env', { method: 'PUT', actor: 'admin', body: { text: 1 } })).status, 400)
         assert.equal((await request('/projects/acme/live/env/.env', { method: 'PUT', actor: 'admin', body: { text: 'x', extra: 1 } })).status, 400)
+        assert.deepEqual(agent.calls, [])
+    })
+
+    // The 64 KB cap is on the whole JSON envelope, not the file text: MAX_ENV_BYTES (also 64 KB) bounds
+    // the text alone, but wrapping it in {"text":"..."} pushes the envelope over its own cap first, so
+    // this refuses before the agent, and before MAX_ENV_BYTES, ever gets a say.
+    it('refuses a write whose JSON envelope is over the 64 KB cap, without calling the agent', async () => {
+        const response = await request('/projects/acme/live/env/.env', {
+            method: 'PUT', actor: 'admin', rawBody: `{"text":"${'x'.repeat(64 * 1024)}"}`,
+        })
+        assert.equal(response.status, 400)
         assert.deepEqual(agent.calls, [])
     })
 })
