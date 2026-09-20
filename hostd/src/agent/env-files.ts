@@ -114,6 +114,38 @@ export async function listEnvFiles(environment: EnvironmentEntry, fs: EnvFs = no
     return list
 }
 
+// A freshly cloned repo usually commits `<name>.example` (an env file's own example is always exactly its
+// name plus `.example`, as computed above) and gitignores `<name>` itself, and a compose file usually
+// declares `env_file: <name>`. `docker compose config` fails on a missing env_file, which would otherwise
+// roll back a clone that has done nothing wrong, before the operator ever gets to fill the real file in.
+// For every `<name>.example` this walk finds whose `<name>` both looks like an env file and does not
+// exist yet, this creates `<name>` empty: empty, never a copy of the example, so a placeholder value (a
+// fake password, a fake API key) can never become what a freshly created site actually runs with. Reuses
+// walk() rather than a fresh readdir of its own, so this only ever creates a file the same symlink-aware
+// traversal that backs listEnvFiles would itself have found. Returns the paths it created, for the log.
+export async function createMissingEnvFiles(dir: string, fs: EnvFs = nodeFs): Promise<string[]> {
+    const found: string[] = []
+    const allFiles = new Set<string>()
+    await walk(fs, dir, dir, 0, found, allFiles)
+
+    const created: string[] = []
+    for (const relative of allFiles) {
+        if (!relative.endsWith('.example')) continue
+        const real = relative.slice(0, -'.example'.length)
+        if (!isEnvFileName(posix.basename(real)) || allFiles.has(real)) continue
+        try {
+            await fs.writeFile(posix.join(dir, real), '', { flag: 'wx' })
+            created.push(real)
+        } catch {
+            // EEXIST (something else created it, symlink or not, between the walk and here) or any other
+            // failure: this call has nothing at stake in it existing, so it is not worth failing
+            // provisioning over. wx never follows a symlink already at that name, the same as
+            // writeEnvFile's own temp file relies on below.
+        }
+    }
+    return created
+}
+
 export async function readEnvFile(
     environment: EnvironmentEntry, relative: string, fs: EnvFs = nodeFs,
 ): Promise<{ ok: true, text: string } | { ok: false, problem: string }> {

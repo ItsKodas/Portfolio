@@ -27,27 +27,27 @@ site depends on) keep working, and only provisioning and env editing are unavail
 3. Create `hostd/.env.fetcher` from `hostd/example.env.fetcher`, and fill in `GITHUB_TOKEN` with a
    fine-grained personal access token, read-only, limited to the client repositories.
 
-4. Create `hostd/registry/projects.yaml` from `hostd/projects.example.yaml` (`mkdir registry` first), and
-   delete the example project for now. **This must exist before the first `docker compose up`:** if it
-   does not, Docker creates the missing pieces as directories instead, and all three containers refuse to
-   start with a message saying so. If that happens, remove the directory it created in place of the file,
-   create the file, and start again.
-
-   You will also see an empty `hostd/projects.yaml/` directory appear after the first start. That is
-   Docker's own fallback for a bind mount whose host file does not exist, and it is expected here: the
-   agent mounts that exact path read-only purely to detect a phase 1 install left in place (see
-   Upgrading, below), and a fresh install never has it. It is harmless; leave it.
+4. Create `hostd/registry/projects.yaml` from `hostd/projects.example.yaml` (`mkdir -p registry` first),
+   and delete the example project for now. **This must exist before the first `docker compose up`:** if
+   it does not, Docker creates the missing pieces as directories instead, and all three containers refuse
+   to start with a message saying so. If that happens, remove the directory it created in place of the
+   file, create the file, and start again.
 
 ## Upgrading from phase 1
 
-An existing phase 1 install has `hostd/projects.yaml` and no `hostd/.env.fetcher`. The agent refuses to
-start while `hostd/projects.yaml` still exists, precisely so an upgrade cannot silently run against a
-stale registry.
+An existing phase 1 install has `hostd/projects.yaml` and no `hostd/.env.fetcher`.
 
 1. Stop the stack: `docker compose down`.
-2. Move the registry into its own folder: `mkdir registry && mv projects.yaml registry/projects.yaml`.
+2. Move the registry into its own folder: `mkdir -p registry && mv projects.yaml registry/projects.yaml`.
+   (`-p` matters here: if a previous, incomplete `docker compose up` already created `registry` as an
+   empty directory, a plain `mkdir` fails and the `&&` never runs the `mv`.)
 3. Create `hostd/.env.fetcher` from `hostd/example.env.fetcher` (see step 3 above).
 4. `docker compose up -d --build`.
+
+The old `hostd/projects.yaml` is not read from its old location any more once the registry mount points at
+the `registry/` folder; nothing in phase 2 looks at it. It is safe to delete once `registry/projects.yaml`
+is in place and the stack is back up, and safe to leave in place if you would rather keep it as a backup
+for a while, since nothing treats its mere presence as meaningful.
 
 ## First start
 
@@ -237,10 +237,11 @@ Then remove the `hostd-test` entry from `projects.yaml`.
 
 ## Creating a site
 
-`create` only clones the repo, notices which services the compose file resolves (every one of them comes
-back `role: site`, since nothing else is known yet), and registers the result with no capabilities. Add
-`capabilities` (and correct any service that is really a database, and any `storage`) in
-`hostd/registry/projects.yaml` before anything past step 1 below will do anything.
+`create` only clones the repo and notices which services the compose file resolves: each one is guessed
+site or database from its image name (postgres, mysql, mariadb, mongo or redis becomes database; anything
+else, including a database run from a renamed or custom image, becomes site). It is a starting point, not
+a guarantee, and the result is registered with no capabilities at all. Steps 2 and 3 below must both
+happen, in that order, before anything past step 1 does anything useful.
 
 1. Create the project:
 
@@ -252,17 +253,22 @@ back `role: site`, since nothing else is known yet), and registers the result wi
 
    Expect `{"ok":true,"project":{"id":"acme-bakery","state":"needs-setup"},"envFiles":[...]}`.
 
-2. Edit `hostd/registry/projects.yaml`: add `capabilities: [lifecycle, logs, provision, env]` (or whatever
-   subset the client should have) to the new entry, and fix up `services` and `storage` if the compose
-   file has a database or a bind-mounted upload folder. Wait ten seconds for the reload.
+2. Edit `hostd/registry/projects.yaml`: correct any service the guess above got wrong, and add
+   `capabilities: [lifecycle, logs, provision, env]` (or whatever subset the client should have) to the
+   new entry. Wait ten seconds for the reload before going on to step 3.
 
-3. List its env files:
+3. Only now, with the roles right, add any `storage` entries the site needs (uploads, media and the
+   like). **The storage guard cannot protect a database it believes is a site**: it refuses a storage
+   entry that overlaps a service marked `role: database`, so adding storage before correcting a
+   wrongly-guessed database lets that entry through unchecked. Wait ten seconds for the reload again.
+
+4. List its env files:
 
    ```bash
    hc http://hostd-api:8080/projects/acme-bakery/live/env
    ```
 
-4. Fill one in, using a path from that listing:
+5. Fill one in, using a path from that listing:
 
    ```bash
    hc -X PUT http://hostd-api:8080/projects/acme-bakery/live/env/.env \
@@ -270,7 +276,7 @@ back `role: site`, since nothing else is known yet), and registers the result wi
      -d '{"text":"DATABASE_URL=postgres://...\nWEB_PORT=5008\n"}'
    ```
 
-5. Start it:
+6. Start it:
 
    ```bash
    hc -X POST http://hostd-api:8080/projects/acme-bakery/start
@@ -282,8 +288,9 @@ Adding a test environment later is `POST /projects/acme-bakery/environments` wit
 ## What is deliberately not automatic
 
 - **The first start waits for the operator.** `create` registers a project with no capabilities at all and
-  every service marked `role: site`, and env files are only ever listed, never filled in: nothing runs
-  until the entry is reviewed, `lifecycle` (and whatever else) is enabled, and the env files are edited.
+  every service role only guessed from its image, and env files are only ever listed, never filled in:
+  nothing runs until the entry is reviewed, `lifecycle` (and whatever else) is enabled, and the env files
+  are edited.
 - **Removing a project leaves its folder, volumes and databases in place.** `provision remove` only edits
   the registry; nothing under `/var/www` is deleted. Clean those up by hand once you are sure.
 
@@ -298,11 +305,12 @@ Adding a test environment later is `POST /projects/acme-bakery/environments` wit
 | A project is `"valid":false` with `compose resolves the project name ...` | See step 1 of Enrolling a real site. |
 | A project is `"valid":false` with `... does not exist on the dedi` | `dir` is wrong, or the directory was removed. |
 | `api` unhealthy with `the audit log could not be written` | The `hostd-state` volume is full or has the wrong owner. |
-| `FATAL hostd/projects.yaml still exists on the host ...` (agent) | The upgrade steps were not followed. Stop the stack, `mkdir registry && mv projects.yaml registry/projects.yaml`, start again. |
 | Agent log `WARN the fetcher socket ... is not answering` | `hostd-fetcher` is not running or failed its own gate; provisioning and env editing are unavailable until it is, but lifecycle and logs are unaffected. Read `docker compose logs fetcher`. |
-| A `create` or `add-environment` refusal `"no free port ... to ..."` | The configured port range (5000-5999) is full. Free one up, or extend `PORT_RANGE` in `src/shared/ports.ts`. |
+| A project is `"valid":false` with `storage is configured but no service is marked role database` | A service that is really a database is still marked `role: site` (or missing a role entirely); see step 2 of Creating a site. The project stays invalid, and lifecycle stays refused, until it is corrected. |
+| A `create` or `add-environment` refusal `"no free port ... to ..."` | The configured port range (5000-5999) is full, by registry entry or by an already-published container port. Free one up, or extend `PORT_RANGE` in `src/shared/ports.ts`. |
 | A `create` refusal `"... is already registered"`, or an `add-environment` refusal naming a folder that `"already exists"` | The id is already taken, or its folder is already on disk under a different registration. |
 | A `create` or `add-environment` refusal `"... is already used by another project"` | The domain is already registered to a different project's environment. |
 | A `create` or `add-environment` refusal naming a Git failure | The fetcher could not clone. Check the branch exists on the remote, and that `GITHUB_TOKEN` in `.env.fetcher` can read the repo. |
-| A `create` or `add-environment` refusal `"the compose file has no service with role site"` | Nothing in the compose file looks like a site container. The cloned folder was removed and nothing was registered. |
+| A `create` or `add-environment` refusal `"the compose file declares no services"` | The compose file has no services in it at all, not merely none marked site. The cloned folder was removed and nothing was registered. |
+| A `create` or `add-environment` refusal naming a `docker compose config` error directly (a missing `env_file`, a syntax error) | hostd creates an empty file for any `.env.example` it finds with nothing real beside it yet, but only in the folders and depth a later env listing would itself reach; something the compose file needs still was not there. Fix the compose file or the repo, and try again. |
 | A `provision` or `env` refusal naming a registry problem (`"... could not be written"`, or `"... already exists"` for an add) | The write itself failed, or raced another one and lost. A folder left behind after a losing race is not that call's to remove; it is left for you to look at. |

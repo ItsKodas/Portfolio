@@ -5,12 +5,15 @@ import type { Runner } from './compose.ts'
 import { parseRegistry } from '../shared/registry.ts'
 
 // Each project needs its own port now that the registry itself refuses two projects sharing one.
+// appdb is SQLite: not a compose service (isComposeService says so), so it never needs a matching entry
+// in any test's resolved compose stub below, but it does count as a database role for guard.ts's own
+// storage-with-no-database-role rule, which is not what any of these tests are about.
 const text = (ids: string[]) => `projects:\n${ids.map((id, index) => `  ${id}:
     client: cl_1
     name: ${id}
     dir: /var/www/${id}
     upstream: 127.0.0.1:${5010 + index}
-    services: { web: { role: site } }
+    services: { web: { role: site }, appdb: { role: database, engine: sqlite, file: data/app.db } }
     storage: { media: { path: uploads, mode: rw } }
 `).join('')}`
 

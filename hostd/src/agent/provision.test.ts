@@ -5,6 +5,7 @@ import { createProject, addEnvironment, removeProject, type ProvisionDeps } from
 import { RegistryWriter, type RegistryWriteFs } from '../shared/registry-write.ts'
 import { parseRegistry, type ProjectEntry } from '../shared/registry.ts'
 import type { EnvFs } from './env-files.ts'
+import type { GuessedService } from './compose.ts'
 import type { ProvisionCreateArgs, ProvisionAddEnvironmentArgs } from '../shared/protocol.ts'
 import type { FetchReply, FetchRequest } from '../shared/fetch-protocol.ts'
 
@@ -81,7 +82,7 @@ function fakeEnvFs(tree: Record<string, string> = {}) {
 type SetupOptions = {
     registryYaml?: string
     cloneResult?: FetchReply
-    resolveResult?: { ok: true, services: Record<string, { role: 'site' }> } | { ok: false, problem: string }
+    resolveResult?: { ok: true, services: Record<string, GuessedService> } | { ok: false, problem: string }
     portResult?: { ok: true, port: number } | { ok: false, problem: string }
     existsPaths?: string[]
     envTree?: Record<string, string>
@@ -116,6 +117,9 @@ function setup(options: SetupOptions = {}) {
 
     const deps: ProvisionDeps = {
         registry: () => registry,
+        // Not tracked in calls: it is not a disk or registry side effect the ordering tests below care
+        // about, only a precondition that the fixed registry above is already what a refresh would see.
+        refreshRegistry: async () => {},
         writer,
         fetcher: {
             call: async request => {
@@ -170,10 +174,44 @@ describe('createProject', () => {
         assert.deepEqual(bakery.services, { web: { role: 'site' } })
     })
 
+    it('writes a database service resolve guessed, not only site services', async () => {
+        const { deps, registryFiles } = setup({ resolveResult: { ok: true, services: { web: { role: 'site' }, db: { role: 'database', engine: 'postgres' } } } })
+        const reply = await createProject(createArgs(), deps)
+        assert.equal(reply.ok, true)
+        const bakery = parseRegistry(registryFiles.get(REGISTRY_PATH)!).projects.get('bakery')
+        assert.deepEqual(bakery?.services, { web: { role: 'site' }, db: { role: 'database', engine: 'postgres', dump: {} } })
+    })
+
     it('does those in order, so nothing is registered before it exists on disk', async () => {
         const { deps, calls } = setup()
         await createProject(createArgs(), deps)
         assert.deepEqual(calls, ['exists', 'choosePort', 'mkdir', 'clone', 'resolve', 'write'])
+    })
+
+    // The store only reloads on its own 10 second timer, so a create issued right after another one could
+    // otherwise see an id, domain or port that one just took as still free. Refreshing only inside
+    // choosePort would not be enough: the id and domain checks run before it. This proves the refresh
+    // actually happens before those checks, not merely that a refreshRegistry field exists: registry()
+    // starts out clean, and only refreshRegistry flips it to a snapshot where "bakery" is already taken.
+    it('refreshes the registry before checking id, domain and port, not only inside choosePort', async () => {
+        const { deps } = setup()
+        const claimed = parseRegistry(`${REGISTRY_YAML}  bakery:
+    client: cl_9
+    name: Someone Else
+    repo: git@github.com:ItsKodas/someone-else.git
+    services: { web: { role: site } }
+    environments:
+      live: { dir: /var/www/bakery, branch: main, domain: someone-else.com, port: 5099 }
+`)
+        let registry = parseRegistry(REGISTRY_YAML)
+        const reply = await createProject(createArgs(), {
+            ...deps,
+            registry: () => registry,
+            refreshRegistry: async () => { registry = claimed },
+        })
+        assert.equal(reply.ok, false)
+        assert.equal(reply.ok === false && reply.code, 'bad-request')
+        assert.match(reply.ok === false ? reply.message : '', /bakery is already registered/)
     })
 
     it('removes the folder and writes nothing when the clone fails', async () => {
@@ -458,6 +496,27 @@ describe('addEnvironment', () => {
         assert.equal(reply.ok, false)
         assert.equal(reply.ok === false && reply.code, 'failed')
         assert.deepEqual(rmdirs, ['/var/www/acme-test'])
+    })
+
+    it('refreshes the registry before checking the domain, not only inside choosePort', async () => {
+        const { deps } = setup()
+        const claimed = parseRegistry(`${REGISTRY_YAML}  widget:
+    client: cl_9
+    name: Widget
+    repo: git@github.com:ItsKodas/widget.git
+    services: { web: { role: site } }
+    environments:
+      live: { dir: /var/www/widget, branch: main, domain: test.acme.com, port: 5099 }
+`)
+        let registry = parseRegistry(REGISTRY_YAML)
+        const reply = await addEnvironment(project(), args(), {
+            ...deps,
+            registry: () => registry,
+            refreshRegistry: async () => { registry = claimed },
+        })
+        assert.equal(reply.ok, false)
+        assert.equal(reply.ok === false && reply.code, 'bad-request')
+        assert.match(reply.ok === false ? reply.message : '', /test\.acme\.com is already used by another project/)
     })
 
     it('refuses a second test environment', async () => {

@@ -62,6 +62,7 @@ function setup(options: SetupOptions = {}) {
     const docker: DockerApi = {
         ping: async () => true,
         listProjectContainers: async () => containers === false ? [] : [{ Id: WEB, State: 'running', Labels: { 'com.docker.compose.service': 'web' } }],
+        listAllContainers: async () => [],
         inspect: async () => inspectWeb,
         logs: async () => {
             const stream = new PassThrough()
@@ -265,6 +266,7 @@ function fakeEnvFs(overrides: Partial<EnvFs> = {}): EnvFs {
 function fakeProvisionDeps(overrides: Partial<ProvisionDeps> = {}): ProvisionDeps {
     return {
         registry: () => registry,
+        refreshRegistry: async () => {},
         writer: { write: async () => ({ ok: true }) } as unknown as ProvisionDeps['writer'],
         fetcher: { call: async () => ({ ok: true }) },
         choosePort: async () => ({ ok: true, port: 5100 }),

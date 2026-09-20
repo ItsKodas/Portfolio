@@ -18,7 +18,8 @@ import {
 } from '../shared/registry.ts'
 import { RegistryWriter, type Change } from '../shared/registry-write.ts'
 import type { FetchClient } from './fetch-client.ts'
-import { listEnvFiles, readEnvFile, writeEnvFile, type EnvFs } from './env-files.ts'
+import type { GuessedService } from './compose.ts'
+import { listEnvFiles, readEnvFile, writeEnvFile, createMissingEnvFiles, type EnvFs } from './env-files.ts'
 import {
     refuse,
     type AgentReply, type ProvisionAddEnvironmentArgs, type ProvisionCreateArgs, type Refusal,
@@ -38,13 +39,18 @@ const ENV_LINE = /^([A-Za-z_][A-Za-z0-9_]*)=(.*)$/
 
 export type ProvisionDeps = {
     registry: () => Registry
+    // Reloads the registry from disk before registry() is read below, so the id, domain and port checks
+    // that follow all see one fresh snapshot rather than choosePort alone refreshing for itself: the
+    // store only reloads on its own 10 second timer otherwise, and a create issued just after another one
+    // could see an id, domain or port that one just took as still free.
+    refreshRegistry: () => Promise<void>
     writer: RegistryWriter
     fetcher: FetchClient
     choosePort: () => Promise<{ ok: true, port: number } | { ok: false, problem: string }>
     mkdir(dir: string): Promise<void>
     rmdir(dir: string): Promise<void>
     exists(dir: string): Promise<boolean>
-    resolve(dir: string, composePath: string): Promise<{ ok: true, services: Record<string, { role: 'site' }> } | { ok: false, problem: string }>
+    resolve(dir: string, composePath: string): Promise<{ ok: true, services: Record<string, GuessedService> } | { ok: false, problem: string }>
     log(message: string): void
 }
 
@@ -142,14 +148,14 @@ type ProvisionAttempt = {
     // Runs after a successful clone, before resolve. A no-op for create; addEnvironment copies and
     // rewrites env files here, using the composePath's directory as the freshly cloned test folder.
     afterClone: (composePath: string) => Promise<{ ok: true } | { ok: false, problem: string }>
-    // Given the site services resolve found, attempts the registry write. Only createProject's services
-    // are ever non-empty going in; addEnvironment's write ignores the argument. `conflict: true` on a
-    // failure (set by registry-write.ts's own edit(), not guessed from the message text) means someone
-    // else's entry already claims this id or environment: the folder this call made is then not this
-    // call's to remove, because it may not even be this call's folder any more. The single global
-    // provisioning lock in agent.ts is the primary defense against that race; this is the fallback for
-    // whatever reaches the write despite it.
-    write: (services: Record<string, { role: 'site' }>) => Promise<{ ok: true } | { ok: false, problem: string, conflict?: true }>
+    // Given the services resolve found (each guessed site or database), attempts the registry write. Only
+    // createProject's services are ever non-empty going in; addEnvironment's write ignores the argument.
+    // `conflict: true` on a failure (set by registry-write.ts's own edit(), not guessed from the message
+    // text) means someone else's entry already claims this id or environment: the folder this call made
+    // is then not this call's to remove, because it may not even be this call's folder any more. The
+    // single global provisioning lock in agent.ts is the primary defense against that race; this is the
+    // fallback for whatever reaches the write despite it.
+    write: (services: Record<string, GuessedService>) => Promise<{ ok: true } | { ok: false, problem: string, conflict?: true }>
 }
 
 // The mkdir/clone/resolve/write sequence shared by createProject and addEnvironment: the exact ordering
@@ -196,9 +202,16 @@ async function provisionOnDisk(attempt: ProvisionAttempt, deps: ProvisionDeps): 
         }
 
         const resolved = await deps.resolve(dir, composePath)
-        if (!resolved.ok || Object.keys(resolved.services).length === 0) {
-            await rollback('compose has no site service')
-            return refuse('invalid-project', resolved.ok ? 'the compose file has no service with role site' : resolved.problem)
+        if (!resolved.ok) {
+            // Named plainly, both in the log and the refusal: this is docker compose's own error (a
+            // missing env_file, a syntax error, a command that could not run), not "no site service",
+            // which is a different, narrower case handled below.
+            await rollback(`resolve failed: ${resolved.problem}`)
+            return refuse('invalid-project', resolved.problem)
+        }
+        if (Object.keys(resolved.services).length === 0) {
+            await rollback('compose declares no services')
+            return refuse('invalid-project', 'the compose file declares no services')
         }
 
         const written = await attempt.write(resolved.services)
@@ -219,12 +232,14 @@ async function provisionOnDisk(attempt: ProvisionAttempt, deps: ProvisionDeps): 
     }
 }
 
-const noSetup = async (): Promise<{ ok: true }> => ({ ok: true })
-
 export async function createProject(args: ProvisionCreateArgs, deps: ProvisionDeps, envFs?: EnvFs): Promise<AgentReply> {
     const problem = fieldProblem(args)
     if (problem) return refuse('bad-request', problem)
 
+    // Refreshed once, here, before any of id, domain or port is checked, so all three see the same
+    // snapshot: refreshing only inside choosePort would still let the id and domain checks above it run
+    // against a registry the store has not reloaded yet.
+    await deps.refreshRegistry()
     const registry = deps.registry()
     if (RESERVED_PROJECT_IDS.has(args.id)) return refuse('bad-request', `${args.id} is reserved for the operator's own stacks`)
     if (registry.projects.has(args.id) || registry.invalid.has(args.id)) return refuse('bad-request', `${args.id} is already registered`)
@@ -240,7 +255,15 @@ export async function createProject(args: ProvisionCreateArgs, deps: ProvisionDe
         dir,
         repo: args.repo,
         branch: args.branch,
-        afterClone: noSetup,
+        // A repo usually commits an example beside a gitignored real file, and its compose file usually
+        // declares env_file against the real one; resolve (just below, in provisionOnDisk) would
+        // otherwise fail on a repo that has done nothing wrong, before the operator ever gets to fill
+        // the real file in.
+        afterClone: async () => {
+            const created = await createMissingEnvFiles(dir, envFs)
+            for (const path of created) deps.log(`provision ${args.id}: created an empty ${path} for its .example`)
+            return { ok: true }
+        },
         write: services => deps.writer.write({
             kind: 'add-project',
             id: args.id,
@@ -271,6 +294,9 @@ export async function addEnvironment(project: ProjectEntry, args: ProvisionAddEn
     const dir = `${project.dir}-test`
     if (await deps.exists(dir)) return refuse('bad-request', `${dir} already exists`)
 
+    // Same reasoning as createProject: refresh before the domain and port checks, not just inside
+    // choosePort, so both see the same snapshot.
+    await deps.refreshRegistry()
     const registry = deps.registry()
     if (args.domain && domainTaken(registry, args.domain, project.id)) return refuse('bad-request', `${args.domain} is already used by another project`)
 
@@ -289,7 +315,12 @@ export async function addEnvironment(project: ProjectEntry, args: ProvisionAddEn
                 name: 'test', dir, composePath, branch: args.branch, domain: args.domain, port: port.port, certificate: args.certificate, deployed: null,
             }
             const failures = await copyEnvFiles(project.id, live, test, envFs, deps)
-            return failures.length === 0 ? { ok: true } : { ok: false, problem: `could not copy ${failures.join(', ')} from the live environment` }
+            if (failures.length > 0) return { ok: false, problem: `could not copy ${failures.join(', ')} from the live environment` }
+            // Fills any gap the copy above left: an env file live never had at all (so there was nothing
+            // to copy) but the repo still commits an example for, on the same reasoning as createProject.
+            const created = await createMissingEnvFiles(dir, envFs)
+            for (const path of created) deps.log(`provision ${project.id}: created an empty ${path} for its .example`)
+            return { ok: true }
         },
         write: () => deps.writer.write({
             kind: 'add-environment',

@@ -3,7 +3,7 @@
 
 import { spawn as nodeSpawn } from 'node:child_process'
 import { isRecord } from '../shared/formats.ts'
-import type { ProjectEntry } from '../shared/registry.ts'
+import type { Engine, ProjectEntry } from '../shared/registry.ts'
 import type { LifecycleAction } from '../shared/protocol.ts'
 
 export const LIFECYCLE_TIMEOUT_MS = 120_000
@@ -129,6 +129,7 @@ export type ResolvedService = {
     // remove that flag.
     env_file?: Array<string | { path?: string }>
     build?: string | { context?: string, dockerfile?: string }
+    image?: string
 }
 export type ResolvedCompose = { name: string, services: Record<string, ResolvedService> }
 
@@ -148,17 +149,50 @@ export async function resolveCompose(
     }
 }
 
+export type GuessedService = { role: 'site' } | { role: 'database', engine: Exclude<Engine, 'sqlite'> }
+
+// A starting point for the operator to correct, not a guarantee: matches the image's repository part
+// (the part before a tag or digest) against the common database images by name. Anything that does not
+// match, including a database run from a custom or renamed image, comes back site. The storage guard
+// (guard.ts) also refuses a project with storage but no service marked database, specifically so a
+// database this guessed wrong does not silently keep its data directory unprotected.
+const DATABASE_IMAGES: Array<{ match: string, engine: Exclude<Engine, 'sqlite'> }> = [
+    { match: 'postgres', engine: 'postgres' },
+    { match: 'mariadb', engine: 'mariadb' },
+    { match: 'mysql', engine: 'mysql' },
+    { match: 'mongo', engine: 'mongodb' },
+    { match: 'redis', engine: 'redis' },
+]
+
+// Everything up to a tag or digest: a registry port (registry.example.com:5000/repo) must not be mistaken
+// for a tag separator, so this looks for the last ':' after the last '/', not the first ':' anywhere.
+function repositoryOf(image: string): string {
+    const withoutDigest = image.split('@')[0] ?? image
+    const lastSlash = withoutDigest.lastIndexOf('/')
+    const tagColon = withoutDigest.indexOf(':', lastSlash + 1)
+    return tagColon === -1 ? withoutDigest : withoutDigest.slice(0, tagColon)
+}
+
+function guessRole(service: ResolvedService): GuessedService {
+    if (service.image) {
+        const repository = repositoryOf(service.image).toLowerCase()
+        const database = DATABASE_IMAGES.find(({ match }) => repository.includes(match))
+        if (database) return { role: 'database', engine: database.engine }
+    }
+    return { role: 'site' }
+}
+
 // What a freshly cloned, not-yet-registered project resolves to. There is no registry entry yet to say
-// which service plays which role, so every service the compose file names is provisionally role site;
-// the project comes back needs-setup, and the operator's own edit to the registry (adding a database
-// service, correcting a role) is what happens next, exactly like enrolling a project by hand today.
+// which service plays which role, so each one is guessed from its image (see guessRole); the project
+// comes back needs-setup, and the operator's own review and edit of the registry, correcting whatever
+// this guessed wrong, is what happens next, exactly like enrolling a project by hand today.
 export async function resolveNewProject(
     location: ComposeLocation,
     run: Runner,
-): Promise<{ ok: true, services: Record<string, { role: 'site' }> } | { ok: false, problem: string }> {
+): Promise<{ ok: true, services: Record<string, GuessedService> } | { ok: false, problem: string }> {
     const result = await resolveCompose(location, run)
     if (!result.ok) return result
-    const services: Record<string, { role: 'site' }> = {}
-    for (const name of Object.keys(result.resolved.services)) services[name] = { role: 'site' }
+    const services: Record<string, GuessedService> = {}
+    for (const [name, service] of Object.entries(result.resolved.services)) services[name] = guessRole(service)
     return { ok: true, services }
 }

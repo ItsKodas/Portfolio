@@ -25,6 +25,28 @@ ${extra}`)
     return project
 }
 
+// Same shape as entry() above, but with every service (including what would otherwise be db) given
+// role: site: exactly the state a freshly provisioned project can be in before the operator has reviewed
+// it, since resolveNewProject's own guess can be wrong and a hand enrollment can simply get it wrong too.
+function entryWithNoDatabaseRole(): ProjectEntry {
+    const registry = parseRegistry(`
+projects:
+  acme:
+    client: cl_1
+    name: Acme
+    dir: /var/www/acme
+    upstream: 127.0.0.1:5010
+    services:
+      web: { role: site }
+      db: { role: site }
+    storage:
+      media: { path: uploads, mode: rw }
+`)
+    const project = registry.projects.get('acme')
+    assert.ok(project, JSON.stringify([...registry.invalid]))
+    return project
+}
+
 const bind = (source: string) => ({ type: 'bind', source, target: '/x' })
 
 function resolved(overrides: Partial<ResolvedCompose['services']> = {}, name = 'acme'): ResolvedCompose {
@@ -113,5 +135,30 @@ describe('guardProblems', () => {
 
     it('treats a trailing slash on a bind source as the same directory', () => {
         assert.deepEqual(guardProblems(entry(), resolved({ web: { volumes: [bind('/var/www/acme/uploads/')] } })), [])
+    })
+
+    // A project with role: site on what is actually the database service (the exact state a freshly
+    // provisioned project, or a hand enrollment, can be in before review) makes databaseSources empty, so
+    // the overlap rule above can never fire even when storage really does sit on top of the database's
+    // own bind mount. This rule is the backstop for that: it fires on the mere absence of a database role
+    // wherever there is storage to protect, regardless of whether an overlap actually exists yet.
+    it('warns when storage exists but no service is marked role database', () => {
+        const problems = guardProblems(entryWithNoDatabaseRole(), resolved())
+        assert.deepEqual(problems, ['storage is configured but no service is marked role database; review the services before trusting the storage guard'])
+    })
+
+    it('does not warn about a missing database role when there is no storage at all', () => {
+        const registry = parseRegistry(`
+projects:
+  acme:
+    client: cl_1
+    name: Acme
+    dir: /var/www/acme
+    upstream: 127.0.0.1:5010
+    services:
+      web: { role: site }
+`)
+        const project = registry.projects.get('acme')!
+        assert.deepEqual(guardProblems(project, { name: 'acme', services: { web: { volumes: [] } } }), [])
     })
 })

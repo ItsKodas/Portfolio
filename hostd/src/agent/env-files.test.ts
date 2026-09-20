@@ -1,7 +1,7 @@
 import { describe, it } from 'node:test'
 import assert from 'node:assert/strict'
 
-import { listEnvFiles, readEnvFile, writeEnvFile, type EnvFs } from './env-files.ts'
+import { listEnvFiles, createMissingEnvFiles, readEnvFile, writeEnvFile, type EnvFs } from './env-files.ts'
 import { parseRegistry, type EnvironmentEntry } from '../shared/registry.ts'
 import { MAX_ENV_BYTES } from '../shared/envfiles.ts'
 
@@ -171,6 +171,73 @@ describe('listEnvFiles', () => {
         }
         const list = await listEnvFiles(environment(), flaky)
         assert.deepEqual(list.map(entry => entry.path), ['.env'])
+    })
+})
+
+describe('createMissingEnvFiles', () => {
+    it('creates an empty file for an example with nothing real beside it yet', async () => {
+        const { fs, files } = setup({ [`${DIR}/.env.example`]: 'DATABASE_URL=postgres://user:pass@db/app' })
+        const created = await createMissingEnvFiles(DIR, fs)
+        assert.deepEqual(created, ['.env'])
+        assert.equal(files.get(`${DIR}/.env`), '')
+    })
+
+    it('leaves an example alone when the real file already exists, and does not touch its content', async () => {
+        const { fs, files } = setup({ [`${DIR}/.env`]: 'A=1', [`${DIR}/.env.example`]: 'A=' })
+        const created = await createMissingEnvFiles(DIR, fs)
+        assert.deepEqual(created, [])
+        assert.equal(files.get(`${DIR}/.env`), 'A=1')
+    })
+
+    it('never copies the example values into the file it creates', async () => {
+        const { fs, files } = setup({ [`${DIR}/api/app.env.example`]: 'SECRET=fake-placeholder-value' })
+        await createMissingEnvFiles(DIR, fs)
+        assert.equal(files.get(`${DIR}/api/app.env`), '')
+    })
+
+    it('ignores an example whose real name is not itself a valid env file name', async () => {
+        // config.json.example's real name would be config.json, which isEnvFileName rejects.
+        const { fs, files } = setup({ [`${DIR}/config.json.example`]: '{}' })
+        const created = await createMissingEnvFiles(DIR, fs)
+        assert.deepEqual(created, [])
+        assert.equal(files.has(`${DIR}/config.json`), false)
+    })
+
+    it('reuses the same depth limit and skip list as listEnvFiles, so it never reaches further than a listing would', async () => {
+        const { fs, files } = setup({
+            [`${DIR}/.git/.env.example`]: 'SECRET=leak',
+            [`${DIR}/a/b/c/d/.env.example`]: 'TOO_DEEP=1',
+        })
+        const created = await createMissingEnvFiles(DIR, fs)
+        assert.deepEqual(created, [])
+        assert.equal(files.has(`${DIR}/.git/.env`), false)
+        assert.equal(files.has(`${DIR}/a/b/c/d/.env`), false)
+    })
+
+    it('does not walk into a symlinked directory, the same protection listEnvFiles has', async () => {
+        const { fs, files } = setup(
+            { '/etc/.env.example': 'SECRET=leak' },
+            { [`${DIR}/shared`]: '/etc' },
+        )
+        const created = await createMissingEnvFiles(DIR, fs)
+        assert.deepEqual(created, [])
+        assert.equal(files.has('/etc/.env'), false)
+    })
+
+    it('does not fail provisioning when something already occupies the path it would create', async () => {
+        const { fs } = setup({ [`${DIR}/.env.example`]: 'A=' })
+        const raced: EnvFs = {
+            ...fs,
+            writeFile: async (path, text, options) => {
+                if (path === `${DIR}/.env` && options?.flag === 'wx') {
+                    const error = new Error('EEXIST') as NodeJS.ErrnoException
+                    error.code = 'EEXIST'
+                    throw error
+                }
+                return fs.writeFile(path, text, options)
+            },
+        }
+        await assert.doesNotReject(createMissingEnvFiles(DIR, raced))
     })
 })
 

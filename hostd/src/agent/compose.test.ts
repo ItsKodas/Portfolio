@@ -119,17 +119,48 @@ describe('resolveCompose', () => {
 
 describe('resolveNewProject', () => {
     const location = { dir: '/var/www/bakery', composePath: '/var/www/bakery/docker-compose.yml' }
+    const resolving = (services: Record<string, { image?: string }>) => runnerReturning({ stdout: JSON.stringify({ name: 'bakery', services }) })
 
-    it('marks every resolved service as role site, since nothing is registered yet to say otherwise', async () => {
-        const { run, calls } = runnerReturning({ stdout: JSON.stringify({ name: 'bakery', services: { web: {}, worker: {} } }) })
+    it('marks a service with no recognisable database image as role site', async () => {
+        const { run, calls } = resolving({ web: { image: 'acme/bakery-web:latest' }, worker: {} })
         assert.deepEqual(await resolveNewProject(location, run), {
             ok: true, services: { web: { role: 'site' }, worker: { role: 'site' } },
         })
         assert.deepEqual(calls[0]?.args, configArgv(location))
     })
 
+    // A starting point the operator corrects, not a guarantee: every image string here is exactly the
+    // kind of official Docker Hub name (repository only, or repository:tag, or behind a registry host and
+    // port) this is meant to catch, not proof it catches every real database image in the wild.
+    for (const [image, engine] of [
+        ['postgres:16-alpine', 'postgres'],
+        ['mariadb:11', 'mariadb'],
+        ['mysql:8', 'mysql'],
+        ['mongo:7', 'mongodb'],
+        ['redis:7-alpine', 'redis'],
+        ['registry.example.com:5000/library/postgres:16', 'postgres'],
+    ] as const) {
+        it(`guesses role database (${engine}) for image ${image}`, async () => {
+            const { run } = resolving({ db: { image } })
+            assert.deepEqual(await resolveNewProject(location, run), { ok: true, services: { db: { role: 'database', engine } } })
+        })
+    }
+
+    it('is case-insensitive and matches the repository even with no tag', async () => {
+        const { run } = resolving({ db: { image: 'Postgres' } })
+        assert.deepEqual(await resolveNewProject(location, run), { ok: true, services: { db: { role: 'database', engine: 'postgres' } } })
+    })
+
+    // The match is a plain substring, exactly as specified (an image repository containing one of the
+    // five names), so a repository whose name happens to contain one is guessed database too; this is
+    // the false positive the "starting point, not a guarantee" comment on guessRole is about.
+    it('matches a substring of a larger repository name, false positives included', async () => {
+        const { run } = resolving({ web: { image: 'acme/postgresql-admin-web:latest' } })
+        assert.deepEqual(await resolveNewProject(location, run), { ok: true, services: { web: { role: 'database', engine: 'postgres' } } })
+    })
+
     it('reports no services at all rather than inventing one', async () => {
-        const { run } = runnerReturning({ stdout: JSON.stringify({ name: 'bakery', services: {} }) })
+        const { run } = resolving({})
         assert.deepEqual(await resolveNewProject(location, run), { ok: true, services: {} })
     })
 

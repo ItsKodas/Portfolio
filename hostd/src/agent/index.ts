@@ -5,10 +5,10 @@ import { createServer, createConnection } from 'node:net'
 import { chmod, chown, mkdir, rm, stat } from 'node:fs/promises'
 import { RegistryStore, explainRegistryError } from '../shared/registry-store.ts'
 import { RegistryWriter } from '../shared/registry-write.ts'
-import { choosePort, listeningOnHost } from '../shared/ports.ts'
+import { choosePort } from '../shared/ports.ts'
 import { buildStatus, writeStatus } from '../shared/status.ts'
 import { describeError } from '../shared/formats.ts'
-import { createDockerApi } from './docker.ts'
+import { createDockerApi, dockerPortCheck } from './docker.ts'
 import { createSpawnRunner, resolveNewProject } from './compose.ts'
 import { GuardTracker } from './guard-tracker.ts'
 import { createFetchClient, socketConnect } from './fetch-client.ts'
@@ -22,10 +22,6 @@ const SOCKET_GID = Number(process.env.HOSTD_SOCKET_GID ?? '1000')
 const STATUS_FILE = process.env.HOSTD_STATUS_FILE ?? '/tmp/hostd-status.json'
 const FETCH_SOCKET_PATH = process.env.HOSTD_FETCH_SOCKET ?? '/run/hostd/fetch.sock'
 const WWW = '/var/www'
-// Bind-mounted read-only from the pre-phase-2 host path (hostd/projects.yaml), which the upgrade moves
-// to hostd/registry/projects.yaml. Its presence here means that move never happened, so starting would
-// otherwise run the new agent against whatever is left in the phase 1 location. See RUNBOOK.md.
-const OLD_REGISTRY_FILE = '/etc/hostd-legacy/projects.yaml'
 const POLL_MS = 10_000
 // Compose files can change without the registry changing, so the guard also runs on a timer.
 const GUARD_EVERY_MS = 10 * 60_000
@@ -57,14 +53,6 @@ async function main(): Promise<void> {
         if (!(await stat(WWW)).isDirectory()) failures.push(`${WWW} is not a directory`)
     } catch {
         failures.push(`${WWW} is not mounted`)
-    }
-    try {
-        if ((await stat(OLD_REGISTRY_FILE)).isFile()) {
-            failures.push('hostd/projects.yaml still exists on the host; move it to hostd/registry/projects.yaml before starting (see RUNBOOK.md)')
-        }
-    } catch {
-        // Not a file: either it never existed, or the bind mount auto-created an empty directory
-        // because the host source was missing, which is exactly what a completed upgrade looks like.
     }
     if (failures.length > 0) fail(failures)
 
@@ -111,16 +99,14 @@ async function main(): Promise<void> {
     }
     const provision: ProvisionDeps = {
         registry: () => store.current(),
+        // provision.ts calls this itself, before it reads registry(), so the id, domain and port checks
+        // it makes in one call all see the same fresh snapshot.
+        refreshRegistry: async () => { await store.refresh() },
         writer,
         fetcher,
-        // The store only reloads on its own 10 second timer, so a create issued just after another one
-        // could otherwise still see the port that create just took and pick it again. parseRegistry
-        // would refuse that write rather than corrupt the registry, but refreshing first avoids turning
-        // an ordinary race into a spurious failure.
-        choosePort: async () => {
-            await store.refresh()
-            return choosePort(store.current(), listeningOnHost)
-        },
+        // A fresh dockerPortCheck per call, so it takes its own snapshot of every container's published
+        // ports rather than reusing one from an earlier provisioning action.
+        choosePort: async () => choosePort(store.current(), dockerPortCheck(docker)),
         mkdir: dir => mkdir(dir),
         rmdir: dir => rm(dir, { recursive: true, force: true }),
         exists,

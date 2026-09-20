@@ -1,7 +1,11 @@
 // Which port a new environment gets. Two sources of truth, because either alone is wrong: the registry
-// knows about environments that are not running, and the host knows about everything else on the box.
-
-import { createServer } from 'node:net'
+// knows about environments that are not running, and Docker's own published ports (see docker.ts's
+// publishedHostPorts) know about a container the registry has not caught up to yet. There is no third
+// source, a raw probe of the host's loopback interface, because the agent runs with network_mode: none:
+// it has no network namespace of its own to probe with, so binding 127.0.0.1:<port> from inside it would
+// only ever see its own empty namespace and report every port free. The Docker API view cannot see a
+// port some other, non-Docker process on the host has bound, but nothing on this box binds one outside
+// Docker.
 
 import type { Registry } from './registry.ts'
 
@@ -16,12 +20,6 @@ export function takenPorts(registry: Registry): Set<number> {
     }
     return taken
 }
-
-export const listeningOnHost: PortCheck = port => new Promise(resolve => {
-    const probe = createServer()
-    probe.once('error', () => resolve(true))
-    probe.listen({ host: '127.0.0.1', port }, () => probe.close(() => resolve(false)))
-})
 
 export async function choosePort(registry: Registry, inUse: PortCheck, range: PortRange = PORT_RANGE) {
     const taken = takenPorts(registry)

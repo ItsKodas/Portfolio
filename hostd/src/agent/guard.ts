@@ -56,6 +56,16 @@ export function guardProblems(project: ProjectEntry, resolved: ResolvedCompose):
     const reads = [project.composePath, posix.join(project.dir, '.env')]
     for (const service of Object.values(resolved.services)) reads.push(...readsOf(service))
 
+    // The overlap check just below can only ever fire against a service actually marked database: a
+    // project provisioned automatically starts with every service guessed (compose.ts's resolveNewProject
+    // guesses from the image, which is a starting point, not a guarantee), and a project enrolled by hand
+    // can simply have the role wrong. Either way, storage with no database service at all to check it
+    // against would otherwise pass this guard clean even though nothing has verified a database's own
+    // directory is not what that storage entry actually points at.
+    if (Object.keys(project.storage).length > 0 && !Object.values(project.services).some(entry => entry.role === 'database')) {
+        problems.push('storage is configured but no service is marked role database; review the services before trusting the storage guard')
+    }
+
     for (const [name, storage] of Object.entries(project.storage)) {
         if (!siteSources.includes(storage.absolute)) {
             problems.push(`storage ${name} (${storage.absolute}) is not bind-mounted into a site service`)
