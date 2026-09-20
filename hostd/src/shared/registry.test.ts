@@ -1,6 +1,6 @@
 import { describe, it } from 'node:test'
 import assert from 'node:assert/strict'
-import { parseRegistry, RegistryError, isComposeService } from './registry.ts'
+import { parseRegistry, RegistryError, isComposeService, MAX_COMPOSE_FILES } from './registry.ts'
 
 const valid = `
 reserved: [horizons.gg]
@@ -62,7 +62,7 @@ describe('parseRegistry, a valid file', () => {
         const entry = registry.projects.get('acme-bakery')
         assert.ok(entry)
         assert.equal(entry.client, 'cl_8f2k1')
-        assert.equal(entry.composePath, '/var/www/acme-bakery/docker-compose.yml')
+        assert.deepEqual(entry.composePaths, ['/var/www/acme-bakery/docker-compose.yml'])
         assert.deepEqual(entry.upstream, { host: '127.0.0.1', port: 5010 })
         assert.deepEqual(entry.services.db, { role: 'database', engine: 'postgres', dump: {} })
         assert.deepEqual(entry.storage.media, { path: 'uploads', absolute: '/var/www/acme-bakery/uploads', mode: 'rw' })
@@ -75,12 +75,26 @@ describe('parseRegistry, a valid file', () => {
         const registry = parseRegistry(project())
         const entry = registry.projects.get('site')
         assert.ok(entry)
-        assert.equal(entry.compose, 'docker-compose.yml')
+        assert.deepEqual(entry.compose, ['docker-compose.yml'])
+        assert.deepEqual(entry.composePaths, ['/var/www/site/docker-compose.yml'])
         assert.deepEqual(entry.storage, {})
         assert.equal(entry.maxDomains, 3)
         assert.deepEqual(entry.backups.maxKeep, { daily: 14, weekly: 8, monthly: 12 })
         assert.deepEqual(registry.reserved, ['horizons.gg'])
         assert.deepEqual(registry.offsite.keep, { daily: 14, weekly: 8, monthly: 6 })
+    })
+
+    // A site whose host-specific settings live in an override is only described correctly when hostd
+    // passes both files, in the operator's order: compose merges them left to right.
+    it('accepts a list of compose files and keeps its order', () => {
+        const registry = parseRegistry(project({ compose: '[docker-compose.yml, docker-compose.override.yml]' }))
+        const entry = registry.projects.get('site')
+        assert.ok(entry, JSON.stringify([...registry.invalid]))
+        assert.deepEqual(entry.compose, ['docker-compose.yml', 'docker-compose.override.yml'])
+        assert.deepEqual(entry.composePaths, [
+            '/var/www/site/docker-compose.yml',
+            '/var/www/site/docker-compose.override.yml',
+        ])
     })
 
     it('reads a SQLite database as a file rather than a compose service', () => {
@@ -163,6 +177,18 @@ describe('parseRegistry, problems with one project', () => {
 
     it('refuses a compose path that climbs out of dir', () => {
         assert.match(invalidReason(project({ compose: '../other/docker-compose.yml' })) ?? '', /compose: path contains \.\./)
+        assert.match(invalidReason(project({ compose: '[docker-compose.yml, ../other/override.yml]' })) ?? '', /compose: path contains \.\./)
+    })
+
+    it('refuses a compose list that is empty, repeats a file or is longer than the cap', () => {
+        assert.match(invalidReason(project({ compose: '[]' })) ?? '', /compose must name at least one file/)
+        assert.match(invalidReason(project({ compose: '[docker-compose.yml, docker-compose.yml]' })) ?? '', /compose lists docker-compose\.yml twice/)
+        const many = Array.from({ length: MAX_COMPOSE_FILES + 1 }, (_, i) => `f${i}.yml`).join(', ')
+        assert.match(invalidReason(project({ compose: `[${many}]` })) ?? '', /compose may not name more than 8 files/)
+    })
+
+    it('refuses a compose entry that is not a string', () => {
+        assert.match(invalidReason(project({ compose: '[docker-compose.yml, 7]' })) ?? '', /compose: path must be a string/)
     })
 
     it('refuses a malformed upstream', () => {

@@ -739,6 +739,35 @@ phase 3's later open of the same path are still two separate moments, so **phase
 still open the storage root itself with `O_NOFOLLOW`**, the same as every component below it, rather than
 assume the root the guard last saw on a poll is the root it is opening now.
 
+### One compose file per project was never true of the dedi
+
+**The spec said:** the registry holds `compose: docker-compose.yml # relative to dir`, a single file,
+and the agent "runs `docker compose --project-directory <dir> -f <compose> config --format json` and
+checks the resolved project against the entry".
+
+**What is actually true:** two of the five client sites on the dedi, `1stcanzuk` and `spotondrones`,
+run with a base file plus a `docker-compose.override.yml` holding the settings that adapt them to this
+machine: which port the site publishes for Apache to proxy to, and which services are parked behind a
+profile. Compose loads `docker-compose.override.yml` by itself only when no `-f` is given, and
+`composeBase` always gives one, so the agent resolved and would have acted on the base file alone.
+
+**Why it matters:** the entry would still have been `"valid":true`. Everything the guard checks holds
+of the base file on its own: the project name resolves, the registered services exist, no storage
+directory is near anything compose reads. The divergence only surfaces on a `lifecycle` verb, where
+compose recreates the containers from the file set it was given: `1stcanzuk` would lose the
+`127.0.0.1:3000` publish its vhost proxies to and try to start a Caddy the override parks, and
+`spotondrones` would move from 5007 to a port another process on the host already holds. A start
+offered to a client through the portal would have taken their site down.
+
+**What was done:** `compose` now takes either a file or a list of files, parsed by `parseCompose` in
+`hostd/src/shared/registry.ts`, capped at `MAX_COMPOSE_FILES` and rejecting an empty list or a repeated
+file. `ProjectEntry.composePath` became `composePaths`, `composeBase` in `hostd/src/agent/compose.ts`
+emits one `-f` per file in the registry's order, and the storage guard in `hostd/src/agent/guard.ts`
+counts every one of them among the paths compose reads, so an override is as unwritable as a base file.
+This removes the trap but does not detect it: a registry that names too few files still validates.
+Enrolment therefore has to start from `docker compose ls`, whose `CONFIG FILES` column is the record of
+what the site is actually running with, and the runbook now says so.
+
 ### The agent hands docker its whole environment
 
 **The spec said:** the agent "Holds `RESTIC_PASSWORD` and the R2 credentials, so a compromised `api` cannot

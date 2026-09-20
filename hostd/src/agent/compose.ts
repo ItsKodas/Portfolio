@@ -19,7 +19,10 @@ const LIFECYCLE_ARGS: Record<LifecycleAction, string[]> = {
 }
 
 export function composeBase(project: ProjectEntry): string[] {
-    return ['compose', '--project-directory', project.dir, '-f', project.composePath]
+    // One -f per registered file, in the registry's order, because compose merges them left to right.
+    // An explicit -f also stops compose loading docker-compose.override.yml on its own, so a site with
+    // an override is only described correctly when the registry names it too.
+    return ['compose', '--project-directory', project.dir, ...project.composePaths.flatMap(path => ['-f', path])]
 }
 
 export function lifecycleArgv(project: ProjectEntry, action: LifecycleAction): string[] {
