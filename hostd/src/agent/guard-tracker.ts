@@ -65,6 +65,17 @@ export class GuardTracker {
         for (const project of registry.projects.values()) await this.check(project)
     }
 
+    // A project that is already invalid is usually invalid because its cause is being fixed right now, and a
+    // verdict that lags behind the fix reads as "still broken". Re-checking just those is cheap, so it runs
+    // far more often than the full sweep; a project that passes is left to the sweep and to the pre-start check.
+    async recheckInvalid(registry: Registry): Promise<void> {
+        for (const id of [...this.invalid.keys()]) {
+            const project = registry.projects.get(id)
+            if (project) await this.check(project)
+            else this.invalid.delete(id)
+        }
+    }
+
     warnings(): string[] {
         return [...this.invalid].map(([id, problem]) => `project ${id} is invalid: ${problem}`)
     }

@@ -20,6 +20,9 @@ const WWW = '/var/www'
 const POLL_MS = 10_000
 // Compose files can change without the registry changing, so the guard also runs on a timer.
 const GUARD_EVERY_MS = 10 * 60_000
+// Projects that are already invalid are re-checked much sooner, so a fix shows up in /projects in about a
+// minute instead of waiting out the full sweep. Only failing projects pay for the extra compose runs.
+const INVALID_EVERY_MS = 60_000
 // Roughly 75 seconds in total, as in mailops: long enough for a daemon still starting after a reboot.
 const BOOT_BACKOFF_MS = [5_000, 10_000, 20_000, 40_000]
 
@@ -92,6 +95,7 @@ async function main(): Promise<void> {
     log(`listening on ${SOCKET_PATH}`)
 
     let lastGuardRun = Date.now()
+    let lastInvalidRun = lastGuardRun
     let lastWarnings = ''
     for (;;) {
         const current = warnings()
@@ -109,6 +113,11 @@ async function main(): Promise<void> {
         if (changed || Date.now() - lastGuardRun >= GUARD_EVERY_MS) {
             await guard.checkAll(store.current())
             lastGuardRun = Date.now()
+            // The sweep covered the invalid projects too, so their own timer starts again from here.
+            lastInvalidRun = lastGuardRun
+        } else if (Date.now() - lastInvalidRun >= INVALID_EVERY_MS) {
+            await guard.recheckInvalid(store.current())
+            lastInvalidRun = Date.now()
         }
     }
 }
