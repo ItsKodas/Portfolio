@@ -1407,6 +1407,230 @@ Expected: clean.
 
 ---
 
+### Task 11: Somewhere to look at them
+
+Ten tasks built components and never put one on screen. Every test above can pass while a focus ring is
+invisible, a Field's error crowds its input, or an amber Chip is unreadable on the panel colour. This is the
+task that makes them visible.
+
+It lives at `/admin/ui`, behind the sign-in that already exists: `middleware.ts` matches `/admin/:path*`,
+`requireAdmin()` is the second layer every admin page already uses, and `scripts/wallpaper.mjs` already
+excludes `app/(admin)` from the static export, so nothing there needs changing. A development-only route was
+rejected for the reason the quote spec gives for rejecting a development sign-in bypass: a switch that can be
+left on will be.
+
+**Files:**
+- Create: `app/(admin)/admin/ui/page.tsx`
+- Create: `app/(admin)/admin/ui/gallery.tsx`
+- Create: `app/(admin)/admin/ui/gallery.module.css`
+
+**Interfaces:**
+- Consumes: every component built in Tasks 4 to 9
+- Produces: nothing other tasks depend on
+
+**No test.** A test asserting that a gallery renders a gallery is theatre. Its whole purpose is to be looked
+at, and the verification step below is a person looking at it. An import that breaks fails `npm run build`
+anyway.
+
+- [ ] **Step 1: Write the page**
+
+Create `app/(admin)/admin/ui/page.tsx`:
+
+```tsx
+import type { Metadata } from 'next'
+import { Container } from '@mui/material'
+
+import { requireAdmin } from '@/server/auth'
+import AdminHeader from '../header'
+import Gallery from './gallery'
+
+export const metadata: Metadata = { title: 'UI', robots: { index: false, follow: false } }
+
+export default async function UiGallery() {
+    await requireAdmin()
+    return (
+        <Container maxWidth="lg" sx={{ pb: 6 }}>
+            <AdminHeader />
+            <Gallery />
+        </Container>
+    )
+}
+```
+
+- [ ] **Step 2: Write the gallery**
+
+Create `app/(admin)/admin/ui/gallery.tsx`. Dialog and Tabs hold state, so this is a client component.
+
+```tsx
+'use client'
+
+import { useState } from 'react'
+
+import { Button } from '@/ui/Button/Button'
+import { Callout } from '@/ui/Callout/Callout'
+import { Chip } from '@/ui/Chip/Chip'
+import { Dialog } from '@/ui/Dialog/Dialog'
+import { Field } from '@/ui/Field/Field'
+import { StatusDot } from '@/ui/StatusDot/StatusDot'
+import { Tabs } from '@/ui/Tabs/Tabs'
+import * as icons from '@/ui/icons'
+import styles from './gallery.module.css'
+
+const TABS = [
+    { id: 'deploys', label: 'Deploys' },
+    { id: 'logs', label: 'Logs' },
+    { id: 'env', label: 'Environment' },
+]
+
+const STATES = ['up', 'down', 'deploying', 'stopped', 'paused'] as const
+
+function Row({ title, note, children }: { title: string, note?: string, children: React.ReactNode }) {
+    return (
+        <section className={styles.row}>
+            <h2 className={styles.title}>{title}</h2>
+            {note && <p className={styles.note}>{note}</p>}
+            <div className={styles.items}>{children}</div>
+        </section>
+    )
+}
+
+export default function Gallery() {
+    const [tab, setTab] = useState('logs')
+    const [open, setOpen] = useState(false)
+
+    return (
+        <div className={styles.gallery}>
+            <p className={styles.lead}>
+                Every component in `ui/`, in every state it has. This page exists to be looked at: if something
+                here reads badly, the component is wrong, not the page.
+            </p>
+
+            <Row title="Button" note="Tab through these to check the focus ring is visible on all three.">
+                <Button variant="primary">Roll back to 2e9d44a</Button>
+                <Button>Restart</Button>
+                <Button variant="quiet">More</Button>
+                <Button disabled>Stop</Button>
+                <Button size="small">Build log</Button>
+                <Button variant="primary" size="small">Retry</Button>
+            </Row>
+
+            <Row title="Field" note="Click each label: the input should take focus.">
+                <Field label="Email" name="a" placeholder="you@example.com" />
+                <Field label="Email" name="b" hint="We only use this to reply to your enquiry" />
+                <Field label="Email" name="c" error="Enter a valid email address" />
+                <Field label="Email" name="d" hint="We only use this to reply" error="Enter a valid email address" />
+                <Field as="textarea" label="What the client sees" name="e" rows={2} />
+            </Row>
+
+            <Row title="Dialog" note="Open it, press Escape, and check focus returns to this button.">
+                <Button variant="primary" onClick={() => setOpen(true)}>Open the dialog</Button>
+                <Dialog
+                    open={open}
+                    onClose={() => setOpen(false)}
+                    title="Roll back live to d40e7b8?"
+                    footer={<><Button onClick={() => setOpen(false)}>Cancel</Button><Button variant="primary" onClick={() => setOpen(false)}>Roll back live</Button></>}
+                >
+                    This puts the code back, and nothing else. Anything the database has recorded since Thursday
+                    stays exactly as it is.
+                </Dialog>
+            </Row>
+
+            <Row title="Tabs" note="Focus one and use the arrow keys. They should wrap at both ends.">
+                <Tabs tabs={TABS} selected={tab} onSelect={setTab} label="Example tools" />
+            </Row>
+
+            <Row title="Chip">
+                <Chip>nightly</Chip>
+                <Chip tone="good">on live now</Chip>
+                <Chip tone="warn">not yet</Chip>
+                <Chip tone="crit">failed</Chip>
+            </Row>
+
+            <Row title="Callout">
+                <Callout title="Backups run nightly">At 7 pm, kept for fourteen days.</Callout>
+                <Callout tone="warn" title="No offsite backup since Friday">The only copy is on the same disk as the site.</Callout>
+                <Callout tone="crit" title="The deploy failed">Live is untouched and still serving a3f19c2.</Callout>
+            </Row>
+
+            <Row title="StatusDot" note="The deploying one pulses, unless reduced motion is on.">
+                {STATES.map(state => <StatusDot key={state} state={state} />)}
+            </Row>
+
+            <Row title="Icons" note="All 26. Look for one at the wrong weight or the wrong optical size.">
+                {Object.entries(icons).map(([name, Icon]) => (
+                    <span key={name} className={styles.icon} title={name}><Icon /></span>
+                ))}
+            </Row>
+        </div>
+    )
+}
+```
+
+- [ ] **Step 3: Write the stylesheet**
+
+Create `app/(admin)/admin/ui/gallery.module.css`:
+
+```css
+.gallery { display: grid; gap: 28px; padding-bottom: 40px; }
+
+.lead { color: var(--ink-3); font-size: 13px; max-width: 70ch; margin: 0; }
+
+.row { border-top: 1px solid var(--rule); padding-top: 18px; }
+
+.title { font-size: 15px; font-weight: 600; margin: 0 0 4px; }
+
+.note { color: var(--ink-3); font-size: 12.5px; margin: 0 0 14px; max-width: 70ch; }
+
+.items { display: flex; flex-wrap: wrap; gap: 14px; align-items: flex-start; }
+
+.items > * { min-width: 0; }
+
+.icon { color: var(--ink-2); display: inline-flex; }
+```
+
+- [ ] **Step 4: Look at it**
+
+Run `npm run dev` and open `http://localhost:3000/admin/ui`. Signing in is required, so this is also a check
+that the route is actually protected.
+
+Go through it deliberately:
+- Tab through the buttons. Is the focus ring visible on the primary one, where the background is lake blue?
+- Click each Field label. Does the input take focus?
+- Does the error text crowd the input, or sit clear of it?
+- Open the dialog, press Escape, and check focus returns to the button that opened it.
+- Focus a tab and arrow left from the first one. Does it wrap to the last?
+- Is the amber Chip readable on the panel colour, at 11px?
+- Turn on reduced motion in the OS and reload. Does the deploying dot stop pulsing?
+- Is any icon visibly heavier or lighter than its neighbours?
+
+Fix what looks wrong in the component, not in this page. Anything fixed here is a component bug that every
+future screen would have inherited.
+
+- [ ] **Step 5: Check the build and the export**
+
+Run: `npm run build && npm run wallpaper && npm run lint && npx tsc --noEmit`
+Expected: all pass. The wallpaper export already skips `app/(admin)`, so it should not see this page at all.
+
+- [ ] **Step 6: Commit**
+
+```bash
+git add "app/(admin)/admin/ui"
+git commit -m "Add a gallery of the UI components at /admin/ui"
+```
+
+**Two things this task cannot show yet, recorded so they are not mistaken for omissions:**
+
+**Density.** `ui/tokens.ts` exports the `operator` and `client` scales, but no component reads them, so two
+columns at different densities would render identically. The comparison belongs in the conversion plan,
+where density is actually wired, and the gallery gains a second column then.
+
+**Life without MUI.** This page renders inside the admin layout, so MUI's `CssBaseline` is still applying its
+own resets underneath. That is honest for now, because every screen during the conversion renders that way
+too, but the gallery needs looking at again once MUI is removed, in case a component was quietly relying on
+a reset it no longer gets.
+
+---
+
 ## Self-review notes
 
 **Spec coverage.** The spec's component table lists `Button`, `Field`, `Dialog`, `Table`, `Tabs`,
