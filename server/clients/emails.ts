@@ -36,7 +36,9 @@ export function resetEmail(client: Who, token: string, options: Options): Email 
         `Hi ${client.name},`,
         'Open this link to set a new password:',
         `${options.siteUrl}/portal/reset/${token}`,
-        'The link is valid for one hour. You will be asked for a code from your authenticator app as well.',
+        // Softened rather than threaded through the three places that send this: a client who never finished
+        // enrolment is not asked for a code, and telling them they will be is worse than saying less
+        'The link is valid for one hour. If you have an authenticator app set up, you will be asked for a code as well.',
         "If you didn't ask for this, you can ignore this email and nothing will change.",
         'Koda',
     ], options)
