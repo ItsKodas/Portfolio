@@ -1,0 +1,15 @@
+.feed { list-style: none; margin: 0; padding: 0; }
+
+.event {
+    display: grid;
+    grid-template-columns: 44px 1fr;
+    gap: 11px;
+    padding: 6px 0;
+    font-size: 12.5px;
+    border-bottom: 1px solid var(--rule);
+}
+.event:last-child { border-bottom: 0; }
+
+.time { font-family: var(--font-mono), monospace; color: var(--ink-3); font-size: 11.5px; }
+.text { color: var(--ink-2); }
+.bad .text { color: var(--soft-red); }

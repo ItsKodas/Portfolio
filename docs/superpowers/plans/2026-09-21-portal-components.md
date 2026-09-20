@@ -45,7 +45,7 @@ The workhorse. Alerts, sites, containers, backups, updates and downloads are all
 **Interfaces:**
 - Produces: `Row`, props `{ tone?: 'crit' | 'warn', onClick?: () => void, lead?: ReactNode, title: ReactNode, sub?: ReactNode, aside?: ReactNode, meta?: ReactNode }`
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 Create `ui/Row/Row.test.tsx`:
 
@@ -87,12 +87,12 @@ describe('Row', () => {
 })
 ```
 
-- [ ] **Step 2: Run the test to verify it fails**
+- [x] **Step 2: Run the test to verify it fails**
 
 Run: `npx vitest run ui/Row/Row.test.tsx`
 Expected: FAIL, cannot resolve `./Row`.
 
-- [ ] **Step 3: Write the stylesheet**
+- [x] **Step 3: Write the stylesheet**
 
 Create `ui/Row/Row.module.css`:
 
@@ -126,7 +126,7 @@ button.row:focus-visible { outline: 2px solid var(--lake); outline-offset: -2px;
 .lead { flex: none; display: flex; align-items: center; }
 ```
 
-- [ ] **Step 4: Write the component**
+- [x] **Step 4: Write the component**
 
 Create `ui/Row/Row.tsx`:
 
@@ -166,12 +166,12 @@ export function Row({ tone, onClick, lead, title, sub, aside, meta }: Props) {
 }
 ```
 
-- [ ] **Step 5: Run the test to verify it passes**
+- [x] **Step 5: Run the test to verify it passes**
 
 Run: `npx vitest run ui/Row/Row.test.tsx`
 Expected: PASS, four tests.
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add ui/Row
@@ -189,7 +189,7 @@ git commit -m "Add the Row component"
 **Interfaces:**
 - Produces: `Meter`, props `{ label: string, value: string, percent: number, tone?: 'good' | 'warn' | 'crit', threshold?: number, note?: string, noteTone?: 'warn' }`
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 Create `ui/Meter/Meter.test.tsx`:
 
@@ -225,12 +225,12 @@ describe('Meter', () => {
 })
 ```
 
-- [ ] **Step 2: Run the test to verify it fails**
+- [x] **Step 2: Run the test to verify it fails**
 
 Run: `npx vitest run ui/Meter/Meter.test.tsx`
 Expected: FAIL, cannot resolve `./Meter`.
 
-- [ ] **Step 3: Write the stylesheet**
+- [x] **Step 3: Write the stylesheet**
 
 Create `ui/Meter/Meter.module.css`:
 
@@ -265,7 +265,7 @@ Create `ui/Meter/Meter.module.css`:
 .note.warn { color: var(--warn); }
 ```
 
-- [ ] **Step 4: Write the component**
+- [x] **Step 4: Write the component**
 
 Create `ui/Meter/Meter.tsx`:
 
@@ -307,12 +307,12 @@ export function Meter({ label, value, percent, tone, threshold, note, noteTone }
 }
 ```
 
-- [ ] **Step 5: Run the test to verify it passes**
+- [x] **Step 5: Run the test to verify it passes**
 
 Run: `npx vitest run ui/Meter/Meter.test.tsx`
 Expected: PASS, four tests.
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add ui/Meter
@@ -332,7 +332,7 @@ The row of figures under the greeting, divided by a rule above and below rather 
 **Interfaces:**
 - Produces: `StatStrip`, props `{ stats: { key: string, value: string, note?: string, tone?: 'good' | 'warn' | 'crit' }[] }`
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 Create `ui/StatStrip/StatStrip.test.tsx`:
 
@@ -369,12 +369,12 @@ describe('StatStrip', () => {
 })
 ```
 
-- [ ] **Step 2: Run the test to verify it fails**
+- [x] **Step 2: Run the test to verify it fails**
 
 Run: `npx vitest run ui/StatStrip/StatStrip.test.tsx`
 Expected: FAIL, cannot resolve `./StatStrip`.
 
-- [ ] **Step 3: Write the stylesheet**
+- [x] **Step 3: Write the stylesheet**
 
 Create `ui/StatStrip/StatStrip.module.css`:
 
@@ -402,7 +402,7 @@ Create `ui/StatStrip/StatStrip.module.css`:
 .note { color: var(--ink-3); font-size: 10px; margin-top: 1px; }
 ```
 
-- [ ] **Step 4: Write the component**
+- [x] **Step 4: Write the component**
 
 Create `ui/StatStrip/StatStrip.tsx`:
 
@@ -435,12 +435,12 @@ export function StatStrip({ stats }: { stats: Stat[] }) {
 }
 ```
 
-- [ ] **Step 5: Run the test to verify it passes**
+- [x] **Step 5: Run the test to verify it passes**
 
 Run: `npx vitest run ui/StatStrip/StatStrip.test.tsx`
 Expected: PASS, three tests.
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add ui/StatStrip
@@ -460,7 +460,7 @@ Two small ones. `KeyValue` is the facts list in the rail; `Feed` is the activity
 **Interfaces:**
 - Produces: `KeyValue`, props `{ pairs: { key: string, value: ReactNode, tone?: 'warn' | 'crit' }[] }`; `Feed`, props `{ events: { time: string, text: ReactNode, bad?: boolean }[] }`
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 Create `ui/KeyValue/KeyValue.test.tsx`:
 
@@ -517,12 +517,12 @@ describe('Feed', () => {
 })
 ```
 
-- [ ] **Step 2: Run the tests to verify they fail**
+- [x] **Step 2: Run the tests to verify they fail**
 
 Run: `npx vitest run ui/KeyValue ui/Feed`
 Expected: FAIL, two unresolved imports.
 
-- [ ] **Step 3: Write the stylesheets**
+- [x] **Step 3: Write the stylesheets**
 
 Create `ui/KeyValue/KeyValue.module.css`:
 
@@ -554,7 +554,7 @@ Create `ui/Feed/Feed.module.css`:
 .bad .text { color: var(--soft-red); }
 ```
 
-- [ ] **Step 4: Write the components**
+- [x] **Step 4: Write the components**
 
 Create `ui/KeyValue/KeyValue.tsx`:
 
@@ -613,12 +613,12 @@ export function Feed({ events }: { events: Event[] }) {
 }
 ```
 
-- [ ] **Step 5: Run the tests to verify they pass**
+- [x] **Step 5: Run the tests to verify they pass**
 
 Run: `npx vitest run ui/KeyValue ui/Feed`
 Expected: PASS, five tests.
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add ui/KeyValue ui/Feed
@@ -636,7 +636,7 @@ git commit -m "Add the KeyValue and Feed components"
 **Interfaces:**
 - Produces: `LogPane`, props `{ lines: { time: string, text: string, stream?: 'out' | 'err' }[], label: string, following?: boolean }`
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 Create `ui/LogPane/LogPane.test.tsx`:
 
@@ -679,12 +679,12 @@ describe('LogPane', () => {
 })
 ```
 
-- [ ] **Step 2: Run the test to verify it fails**
+- [x] **Step 2: Run the test to verify it fails**
 
 Run: `npx vitest run ui/LogPane/LogPane.test.tsx`
 Expected: FAIL, cannot resolve `./LogPane`.
 
-- [ ] **Step 3: Write the stylesheet**
+- [x] **Step 3: Write the stylesheet**
 
 Create `ui/LogPane/LogPane.module.css`:
 
@@ -710,7 +710,7 @@ Create `ui/LogPane/LogPane.module.css`:
 .empty { color: var(--ink-3); }
 ```
 
-- [ ] **Step 4: Write the component**
+- [x] **Step 4: Write the component**
 
 Create `ui/LogPane/LogPane.tsx`:
 
@@ -764,12 +764,12 @@ export function LogPane({ lines, label, following }: Props) {
 }
 ```
 
-- [ ] **Step 5: Run the test to verify it passes**
+- [x] **Step 5: Run the test to verify it passes**
 
 Run: `npx vitest run ui/LogPane/LogPane.test.tsx`
 Expected: PASS, four tests.
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add ui/LogPane
@@ -789,7 +789,7 @@ Deploy history, backups and domains are all tables. Real ones.
 **Interfaces:**
 - Produces: `DataTable`, props `{ label: string, columns: { key: string, head: string, numeric?: boolean }[], rows: Record<string, ReactNode>[] }`
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 Create `ui/DataTable/DataTable.test.tsx`:
 
@@ -836,12 +836,12 @@ describe('DataTable', () => {
 })
 ```
 
-- [ ] **Step 2: Run the test to verify it fails**
+- [x] **Step 2: Run the test to verify it fails**
 
 Run: `npx vitest run ui/DataTable/DataTable.test.tsx`
 Expected: FAIL, cannot resolve `./DataTable`.
 
-- [ ] **Step 3: Write the stylesheet**
+- [x] **Step 3: Write the stylesheet**
 
 Create `ui/DataTable/DataTable.module.css`:
 
@@ -880,7 +880,7 @@ Create `ui/DataTable/DataTable.module.css`:
 .empty { color: var(--ink-3); font-size: 12.5px; padding: 12px 0; }
 ```
 
-- [ ] **Step 4: Write the component**
+- [x] **Step 4: Write the component**
 
 Create `ui/DataTable/DataTable.tsx`:
 
@@ -935,12 +935,12 @@ export function DataTable({ label, columns, rows, empty = 'Nothing here yet.' }:
 }
 ```
 
-- [ ] **Step 5: Run the test to verify it passes**
+- [x] **Step 5: Run the test to verify it passes**
 
 Run: `npx vitest run ui/DataTable/DataTable.test.tsx`
 Expected: PASS, four tests.
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add ui/DataTable
@@ -960,7 +960,7 @@ The three zones, the top bar and the drawer. The biggest of these and the one ca
 **Interfaces:**
 - Produces: `Shell`, props `{ brand: ReactNode, bar?: ReactNode, nav: ReactNode, rail?: ReactNode, children: ReactNode }`
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 Create `ui/Shell/Shell.test.tsx`:
 
@@ -1030,12 +1030,12 @@ describe('Shell', () => {
 })
 ```
 
-- [ ] **Step 2: Run the test to verify it fails**
+- [x] **Step 2: Run the test to verify it fails**
 
 Run: `npx vitest run ui/Shell/Shell.test.tsx`
 Expected: FAIL, cannot resolve `./Shell`.
 
-- [ ] **Step 3: Write the stylesheet**
+- [x] **Step 3: Write the stylesheet**
 
 Create `ui/Shell/Shell.module.css`. **The rail is never `display: none`.** At every width it is either the third column or a band under the content.
 
@@ -1115,7 +1115,7 @@ Create `ui/Shell/Shell.module.css`. **The rail is never `display: none`.** At ev
 }
 ```
 
-- [ ] **Step 4: Write the component**
+- [x] **Step 4: Write the component**
 
 Create `ui/Shell/Shell.tsx`:
 
@@ -1201,7 +1201,7 @@ export function Shell({ brand, bar, nav, rail, children }: Props) {
 }
 ```
 
-- [ ] **Step 5: Run the test to verify it passes**
+- [x] **Step 5: Run the test to verify it passes**
 
 Run: `npx vitest run ui/Shell/Shell.test.tsx`
 Expected: PASS, six tests.
@@ -1210,7 +1210,7 @@ One thing to watch: the drawer's click handler closes on anything matching `butt
 choice dismisses it. If a control lands in the nav that should *not* close it (a disclosure toggle, say),
 that handler needs narrowing rather than the control needing a workaround.
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add ui/Shell
@@ -1224,7 +1224,7 @@ git commit -m "Add the Shell component, three zones and a drawer"
 **Files:**
 - Modify: `app/(admin)/admin/ui/gallery.tsx`
 
-- [ ] **Step 1: Add a row for each new component**
+- [x] **Step 1: Add a row for each new component**
 
 Follow the shape the gallery already uses: a `Row` helper per component with a title, a note saying what to
 look for, and every state side by side. Add, in this order: `Row` (plain, clickable, crit, warn), `Meter`
@@ -1248,7 +1248,7 @@ The palette changed from navy to Readout while this plan ran, so look at contras
 
 Fix what looks wrong in the component, not in the gallery.
 
-- [ ] **Step 3: Check everything**
+- [x] **Step 3: Check everything**
 
 Run: `npx vitest run && npm run build && npm run wallpaper && npm run lint && npx tsc --noEmit`
 Expected: all pass.
@@ -1256,7 +1256,7 @@ Expected: all pass.
 Then: `grep -rnE "#[0-9a-fA-F]{3,8}" ui/ --include=*.module.css`
 Expected: matches only inside `rgba()` alpha values.
 
-- [ ] **Step 4: Commit**
+- [x] **Step 4: Commit**
 
 ```bash
 git add "app/(admin)/admin/ui/gallery.tsx"
