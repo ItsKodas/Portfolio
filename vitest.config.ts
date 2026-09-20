@@ -36,6 +36,21 @@ export default defineConfig({
                     poolOptions: { forks: { singleFork: true } },
                 },
             },
+            {
+                extends: true,
+                // tsconfig.json sets jsx: "preserve", because Next does the transform itself. esbuild reads
+                // that and falls back to the classic React.createElement transform, which needs React in
+                // scope in every test file. The automatic runtime is what Next compiles with, so the tests
+                // compile the same way the app does.
+                esbuild: { jsx: 'automatic' },
+                test: {
+                    name: 'ui',
+                    // Components need a DOM, which the other two projects deliberately do without.
+                    environment: 'jsdom',
+                    include: ['ui/**/*.test.tsx'],
+                    setupFiles: ['./ui/testing/setup.ts'],
+                },
+            },
         ],
     },
 })
