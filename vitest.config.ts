@@ -20,14 +20,14 @@ export default defineConfig({
                 test: {
                     name: 'unit',
                     include: ['app/**/*.test.ts', 'server/**/*.test.ts'],
-                    exclude: ['server/clients/model.test.ts', 'server/quotes/repo.test.ts'],
+                    exclude: ['server/clients/model.test.ts', 'server/clients/repo.test.ts', 'server/quotes/repo.test.ts'],
                 },
             },
             {
                 extends: true,
                 test: {
                     name: 'db',
-                    include: ['server/clients/model.test.ts', 'server/quotes/repo.test.ts'],
+                    include: ['server/clients/model.test.ts', 'server/clients/repo.test.ts', 'server/quotes/repo.test.ts'],
                     // Both files run against the same real Postgres and TRUNCATE overlapping tables (Quote,
                     // Note) in beforeEach, so one file's TRUNCATE can land mid-test in the other. A single fork
                     // gives this project exactly one worker, so its files run one after another instead of
