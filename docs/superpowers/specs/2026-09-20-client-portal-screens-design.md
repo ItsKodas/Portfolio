@@ -2,7 +2,7 @@
 
 Date: 2026-09-20
 Status: mockups reviewed, no implementation
-Updated: 2026-09-20, reconciled against `2026-09-20-hostd-provisioning-design.md`
+Updated: 2026-09-20, mockups redrawn against `2026-09-20-hostd-provisioning-design.md` once it merged
 
 ## What this is
 
@@ -48,13 +48,17 @@ Ordered as asked: anything wrong, then a card per site, then activity across all
 built around. At 9pm the question is never only "what broke", it is "what changed just before it broke", and
 answering both in the same three lines is what makes rollback findable in a hurry.
 
-**A failed deploy and a bad deploy get different buttons.** A build that never finished left live untouched, so it
-offers the build log and a retry, and says plainly that live did not move. A deploy that landed and then killed
-the site offers a rollback. Conflating the two would put a destructive action next to a situation that does not
-need one.
+**There are three ways a deploy goes wrong, and they get three different buttons.** A build that never finished
+left live untouched, so it offers the build log and a retry, and says plainly that live did not move. A deploy
+that landed and then killed the site offers a rollback. A deploy that landed, failed its health check and was put
+back by hostd before anyone saw it offers the deploy log and a chance to try it again, and is amber rather than
+red: the site is fine, so the alert is about the commit, not the outage. Conflating any two of these would put the
+wrong action next to the situation.
 
-**The attention band is permanent.** With nothing wrong it collapses to a single green line rather than
-disappearing, so the top of the page always means the same thing and the cards never jump.
+**The attention band is permanent, and it folds.** With nothing wrong it collapses to a single green line rather
+than disappearing, so the top of the page always means the same thing and the cards never jump. With a lot wrong
+it shows everything critical plus up to four rows and folds the rest behind a count, so a bad night never pushes
+the sites below the fold. One site with two problems gets one row carrying both, rather than two rows.
 
 **Cards are ordered by trouble, not by name**, so a sick site is never below the fold.
 
@@ -75,6 +79,10 @@ that this puts the code back and nothing else: bookings and form submissions rec
 are, and older code may not read a database a newer version reshaped. It also says the branch is not touched, so
 the next push still deploys normally. Rolling back is done while panicking, so it has to explain itself.
 
+**A paused environment says why it stopped, not just that it did.** After three failed builds hostd stops
+watching the branch, and the Deploys tab explains the reasoning: rebuilding a broken branch every few minutes
+helps nobody. Deploying or switching branch by hand starts it again, and the button to do so is right there.
+
 **Backups admits its gap.** There is no restore button and the page says why: a restore overwrites a live
 database on a mis-click, so it stays a manual runbook job until the procedure has been used enough to trust. The
 page also says test is not backed up.
@@ -84,9 +92,11 @@ page also says test is not backed up.
 **Their words.** No containers, commits, shas, branches or test environment. Recent updates, not deploy history.
 Copies, not snapshots. The status is a sentence.
 
-**A failed deploy does not appear at all.** Live never moved, so from the client's side nothing happened. Only
-builds that reached live are listed, and a rollback reads as "Put back to an earlier version" rather than
-disguising itself as an ordinary change.
+**A deploy that did not stick does not appear at all.** A build that failed, one still running, and one that
+landed and was put straight back after a bad health check all left live where it was, so from the client's side
+none of them happened. Only a deploy that reached live and stayed there is an update. A rollback the operator
+chose does appear, reading as "Put back to an earlier version" rather than disguising itself as an ordinary
+change, because that one did change what their visitors see.
 
 **When their site is down, the page tells them to do nothing.** It leads with the fact that Koda already knows and
 is looking, and the primary action is to message him. Restart is offered, because clients can restart, but it is
@@ -122,26 +132,43 @@ when this section was rewritten against it, though its implementation is already
 | A client downloading their settings file | **Decided against, 2026-09-20.** Clients never read env files, in the original hostd design and again in the provisioning design. The mockups no longer offer it, and the client's page says so rather than staying quiet. |
 | The holding page for a site that is down, not only one mid-deploy | Designed. Apache serves it when a flag file exists or the upstream cannot be reached, so a planned deploy and an unplanned outage both look tidy, and the page can say which it is. |
 
-### What the mockups get wrong
+### What the design changed in the mockups
 
-Found by reading the provisioning design against the drawings. None of it is drawn yet.
+Seven things the screens got wrong, all now redrawn. The provisioning design merged byte for byte as it was
+reviewed, and grew no corrections section, so these were drawn against what landed.
 
-- **`rolled-back` is a deploy outcome the screens do not have.** A health check that fails after the swap sends
-  hostd back to the previous copy by itself. A site that broke and repaired itself overnight is a different row in
-  the deploy history from a build that failed, and a different line in the activity feed.
-- **Three consecutive failures pause an environment** and polling stops until the operator acts. That belongs in
-  the attention band, and nothing there covers it.
-- **Deploys are noticed by polling every two minutes.** The dashboard shows a push and its deploy beginning in the
-  same minute, which overstates how quickly the system reacts.
-- **A new project stops in `needs-setup`** after cloning, waiting for its env files, rather than arriving running.
-  The "Add a site" flow ends one screen too early.
-- **The deploy steps are prepare, build, swap, health check.** The progress box invents its own sequence.
-- **Env files are per file, not one flat list**: any `.env`-style file in the environment's folder, subfolders
-  included, with `.env.example` shown beside each. The Environment tab needs a file picker it does not have.
-- **Certificates are per environment**, Let's Encrypt or Cloudflare Origin. The dashboard's certificate alert
-  claims every site on the dedi is affected, which is only true of the Origin ones.
+- **`rolled-back` is a deploy outcome the screens did not have.** A health check that fails after the swap sends
+  hostd back to the previous copy by itself. PMPC Group carries it now: `3f7c1a2` built, swapped in at 4:12 am,
+  failed its health check, and was put back at 4:13. It is a **put back** row in the history, distinct from a
+  build that failed, and its alert is amber rather than red, because the site is fine. The alert says what is not
+  fine instead: the commit is still broken and the branch is still ahead of live.
+- **Three consecutive failures pause an environment.** Arby's test sits paused on develop. It is folded into
+  Arby's existing alert rather than given one of its own, so one site still means one row in the band.
+- **Deploys are noticed by polling every two minutes.** The push and the deploy no longer share a minute: Spot On
+  Drones is pushed at 21:15 and noticed at 21:17.
+- **A new project stops in `needs-setup`** after cloning, waiting for its env files. "Set this one up" now ends
+  there, saying why: a site that boots without its settings can write a broken schema to a database before it
+  fails.
+- **The deploy steps are prepare, build, swap, health check**, shown as four marks with the current one filled.
+- **Env files are per file**, so the Environment tab has a picker: `.env` plus whatever else the tree holds, with
+  `.env.example` noted beside the ones that have one.
+- **Certificates are per environment.** The certificate alert names ASOT and Arby's rather than claiming the whole
+  dedi, and the domains table carries a certificate column. Let's Encrypt renews itself; a Cloudflare Origin
+  certificate is renewed by hand and is shared, so its expiry is one problem for several environments at once.
+
+Two further changes came out of drawing those:
+
+- **The attention band folds.** Six alerts was more wall than the sites deserved, which was already an open
+  question below. Everything critical always shows, plus up to four, and the rest collapse behind a line saying
+  how many and that none of them are urgent.
+- **The client's view hides a rolled-back deploy**, alongside a failed one. That commit never stayed live, so from
+  their side it did not happen. Only a deploy that reached live and stayed there is an update.
 
 ### What still has no backend
+
+The merged work is the provisioning half: cloning, env files, ports, the registry write and `needs-setup`.
+**The deploy half is designed but not built**, so every deploy state the screens show, including the put back row
+and the paused branch, is drawn from the spec rather than from anything running.
 
 | The screens show | hostd today |
 | --- | --- |
@@ -157,8 +184,9 @@ Found by reading the provisioning design against the drawings. None of it is dra
 2. **Client facing update text.** Recent updates currently shows commit messages verbatim. Some read fine to a
    client ("New spring menu PDF") and some do not ("Switch to sharp for thumbnails"). A separate optional field
    for the client facing line may be worth the trouble.
-3. **Five tabs on the site page and five alerts on the dashboard.** Both may be one too many. The deploy history
-   table is also carrying a lot of columns.
+3. **Five tabs on the site page.** Still possibly one too many, and the deploy history table is carrying a lot of
+   columns. The alert half of this question has been answered: the band folds everything past the fourth row when
+   none of it is critical, which held at six alerts without the sites being pushed off the screen.
 4. **The domains tab.** Not asked for, added because hostd has the feature fully designed and it is clearly a site
    level concern. Confirm it belongs there rather than in a settings area.
 
