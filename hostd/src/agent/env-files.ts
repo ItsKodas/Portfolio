@@ -34,19 +34,24 @@ const nodeFs: EnvFs = {
     realpath: path => realpath(path),
 }
 
-// envPathProblem is lexical only: it cannot see that a directory earlier in the path is a symlink
-// pointing outside the environment folder (into /etc, or into another client's folder). This is the
-// check that catches that, by resolving where the path actually leads and comparing it against the
-// environment folder resolved the same way, so a symlinked environment folder is not itself mistaken
-// for an escape. It resolves the target's parent, not the target itself, because on a write the env
-// file may not exist yet. A realpath that throws (the parent does not exist) is a refusal, not a
-// crash, same as every other failure here.
-async function confinementProblem(fs: EnvFs, environment: EnvironmentEntry, relative: string, target: string): Promise<string | null> {
+// envPathProblem is lexical only: it cannot see that some path along the way is a symlink pointing
+// outside the environment folder (into /etc, or into another client's folder). This resolves `path`
+// with realpath and confirms the result is still inside the environment folder, which is also
+// resolved so a symlinked environment folder is not itself mistaken for an escape.
+async function confinedRealpath(fs: EnvFs, environment: EnvironmentEntry, path: string): Promise<{ ok: true, resolved: string } | { ok: false }> {
+    const resolvedRoot = await fs.realpath(environment.dir)
+    const resolved = await fs.realpath(path)
+    return isWithin(resolvedRoot, resolved) ? { ok: true, resolved } : { ok: false }
+}
+
+// The parent check every read and write needs: a directory earlier in the path can be a symlink,
+// which envPathProblem's lexical check cannot see. Checks the parent, not the target itself, because
+// on a write the env file may not exist yet. A realpath that throws (the parent does not exist) is a
+// refusal, not a crash, same as every other failure here.
+async function parentConfinementProblem(fs: EnvFs, environment: EnvironmentEntry, relative: string, target: string): Promise<string | null> {
     try {
-        const resolvedParent = await fs.realpath(posix.dirname(target))
-        const resolvedRoot = await fs.realpath(environment.dir)
-        if (!isWithin(resolvedRoot, resolvedParent)) return `${relative} resolves outside the environment folder`
-        return null
+        const result = await confinedRealpath(fs, environment, posix.dirname(target))
+        return result.ok ? null : `${relative} resolves outside the environment folder`
     } catch (error) {
         return `${relative} could not be resolved: ${describeError(error)}`
     }
@@ -67,6 +72,12 @@ async function walk(fs: EnvFs, root: string, dir: string, depth: number, found: 
         return
     }
     for (const entry of entries) {
+        // Explicitly neither: a symlink is what EnvFs's readdir reports when an entry is neither a
+        // real directory nor a real file (the same way Node's own Dirent, built from lstat and never
+        // from stat, reports one it has not followed). It falls through untouched: not descended into,
+        // not listed. Without this, a symlinked directory inside the environment (checked into a repo,
+        // pointing at /etc or another client's folder) would let a listing walk it and disclose what
+        // env files exist outside the environment folder, and their sizes.
         if (entry.isDirectory()) {
             if (SKIP_DIRECTORIES.has(entry.name)) continue
             if (depth < MAX_ENV_DEPTH - 1) await walk(fs, root, posix.join(dir, entry.name), depth + 1, found, allFiles)
@@ -106,8 +117,21 @@ export async function readEnvFile(
     const problem = envPathProblem(relative)
     if (problem) return { ok: false, problem }
     const target = posix.join(environment.dir, relative)
-    const confinement = await confinementProblem(fs, environment, relative, target)
-    if (confinement) return { ok: false, problem: confinement }
+    const parentProblem = await parentConfinementProblem(fs, environment, relative, target)
+    if (parentProblem) return { ok: false, problem: parentProblem }
+
+    // The parent check above stops a symlinked directory from redirecting the read, but the leaf
+    // itself can also be a symlink: a repo can check in `.env -> /etc/passwd` or
+    // `.env -> ../other-client/live/.env`, which passes both the lexical check and the parent check,
+    // and readFile would happily follow it. Resolve and confine the leaf too, unless it does not exist
+    // yet, which is not this check's problem: fall through and let readFile report that below.
+    try {
+        const result = await confinedRealpath(fs, environment, target)
+        if (!result.ok) return { ok: false, problem: `${relative} resolves outside the environment folder` }
+    } catch {
+        // Does not exist (or could not otherwise be resolved): readFile below reports this on its own.
+    }
+
     try {
         const text = await fs.readFile(target)
         return { ok: true, text }
@@ -123,10 +147,15 @@ export async function writeEnvFile(
     if (problem) return { ok: false, problem }
 
     const target = posix.join(environment.dir, relative)
-    const confinement = await confinementProblem(fs, environment, relative, target)
-    if (confinement) return { ok: false, problem: confinement }
+    const parentProblem = await parentConfinementProblem(fs, environment, relative, target)
+    if (parentProblem) return { ok: false, problem: parentProblem }
     if (Buffer.byteLength(text) > MAX_ENV_BYTES) return { ok: false, problem: `the file is larger than the ${MAX_ENV_BYTES} byte limit` }
 
+    // Unlike readEnvFile, this does not also resolve and confine the target itself: if the target is a
+    // symlink (say, checked in pointing at /etc/passwd), rename(2) replaces that directory entry rather
+    // than following it, so the write lands on target's own name, not on whatever it pointed to. Do not
+    // add a leaf check here on the assumption that write has the same hole read did; it does not.
+    //
     // Same directory, so the rename is atomic: a crash leaves either the old file or the new one, never
     // a half-written one. EnvFs has no unlink, so a failed rename can leave the temporary file behind;
     // that is a stray file, not a corrupted env file, and the next write overwrites it.

@@ -52,6 +52,17 @@ function setup(tree: Record<string, string> = {}, symlinks: Record<string, strin
 
     const fs: EnvFs = {
         async readdir(dir) {
+            // A name that is itself a registered symlink (its full apparent path is a `links` key)
+            // is reported as neither a directory nor a file, the same way a real Dirent (built from
+            // lstat, never from stat) reports a symlink entry it has not followed, whatever it points
+            // to. This is what lets a test prove a symlinked directory is not walked.
+            const symlinkNames = new Set<string>()
+            for (const apparent of links.keys()) {
+                const slash = apparent.lastIndexOf('/')
+                const parent = slash <= 0 ? '/' : apparent.slice(0, slash)
+                if (parent === dir) symlinkNames.add(apparent.slice(slash + 1))
+            }
+
             const real = resolve(dir)
             const prefix = real.endsWith('/') ? real : `${real}/`
             const seen = new Map<string, boolean>()
@@ -59,13 +70,15 @@ function setup(tree: Record<string, string> = {}, symlinks: Record<string, strin
                 if (!path.startsWith(prefix)) continue
                 const rest = path.slice(prefix.length)
                 const [name, ...more] = rest.split('/')
-                if (name) seen.set(name, more.length > 0)
+                if (name && !symlinkNames.has(name)) seen.set(name, more.length > 0)
             }
-            return [...seen.entries()].map(([name, isDir]) => ({
+            const entries = [...seen.entries()].map(([name, isDir]) => ({
                 name,
                 isDirectory: () => isDir,
                 isFile: () => !isDir,
             }))
+            for (const name of symlinkNames) entries.push({ name, isDirectory: () => false, isFile: () => false })
+            return entries
         },
         async readFile(path) {
             const text = files.get(resolve(path))
@@ -127,6 +140,15 @@ describe('listEnvFiles', () => {
         assert.deepEqual(list.map(entry => entry.path), ['.env'])
     })
 
+    it('does not walk into a symlinked directory, so a listing cannot disclose what is outside', async () => {
+        const { fs } = setup(
+            { [`${DIR}/.env`]: 'A=1', '/etc/.env': 'SECRET=leak' },
+            { [`${DIR}/shared`]: '/etc' },
+        )
+        const list = await listEnvFiles(environment(), fs)
+        assert.deepEqual(list.map(entry => entry.path), ['.env'])
+    })
+
     it('omits an env file whose stat fails between the walk and the read, instead of throwing the whole listing', async () => {
         const { fs } = setup({
             [`${DIR}/.env`]: 'A=1',
@@ -157,6 +179,31 @@ describe('readEnvFile', () => {
         const result = await readEnvFile(environment(), '.env', fs)
         assert.equal(result.ok, false)
         if (!result.ok) assert.ok(result.problem.length > 0)
+    })
+
+    // The parent-directory check alone does not catch this: `.env` itself, not any directory above it,
+    // is the symlink, so the parent resolves to the environment folder just fine.
+    it('a symlinked file inside the environment pointing outside makes a read refuse, and the outside file\'s contents never appear in the result', async () => {
+        const outside = 'root:x:0:0:root:/root:/bin/bash'
+        const { fs } = setup(
+            { '/etc/passwd': outside },
+            { [`${DIR}/.env`]: '/etc/passwd' },
+        )
+        const result = await readEnvFile(environment(), '.env', fs)
+        assert.equal(result.ok, false)
+        if (!result.ok) {
+            assert.match(result.problem, /outside the environment folder/)
+            assert.equal(result.problem.includes(outside), false)
+        }
+    })
+
+    it('a symlinked file pointing at another file inside the same environment still reads, so an ordinary symlink within the site is not broken', async () => {
+        const { fs } = setup(
+            { [`${DIR}/.env.production`]: 'A=1' },
+            { [`${DIR}/.env`]: `${DIR}/.env.production` },
+        )
+        const result = await readEnvFile(environment(), '.env', fs)
+        assert.deepEqual(result, { ok: true, text: 'A=1' })
     })
 })
 
