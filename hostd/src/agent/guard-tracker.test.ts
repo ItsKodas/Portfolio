@@ -100,6 +100,49 @@ describe('GuardTracker', () => {
         assert.equal(tracker.current().get('alpha'), 'storage media (/var/www/alpha/uploads) does not exist')
     })
 
+    it('re-checks only the projects that are currently invalid', async () => {
+        const registry = parseRegistry(text(['alpha', 'bravo']))
+        const configs: Record<string, unknown> = { '/var/www/bravo': goodConfig('bravo') }
+        const checked: string[] = []
+        const runner = composeRunner(configs)
+        const tracker = new GuardTracker(async (command, args, timeoutMs) => {
+            checked.push(args[args.indexOf('--project-directory') + 1] ?? '')
+            return runner(command, args, timeoutMs)
+        }, async () => true, storageOk)
+        await tracker.checkAll(registry)
+        assert.ok(tracker.current().has('alpha'))
+
+        // The operator has fixed alpha. bravo was already fine, so re-checking it would only spend a
+        // docker compose config run to learn nothing.
+        configs['/var/www/alpha'] = goodConfig('alpha')
+        checked.length = 0
+        await tracker.recheckInvalid(registry)
+        assert.deepEqual(tracker.current(), new Map())
+        assert.deepEqual(checked, ['/var/www/alpha'])
+    })
+
+    it('keeps a project that is still invalid marked, with its current reason', async () => {
+        const registry = parseRegistry(text(['alpha']))
+        const dirs = new Set<string>()
+        const tracker = new GuardTracker(composeRunner({}), async path => dirs.has(path), storageOk)
+        await tracker.checkAll(registry)
+        assert.equal(tracker.current().get('alpha'), '/var/www/alpha does not exist on the dedi')
+
+        // The directory now exists but its compose file still does not, so the project stays invalid and
+        // the reason moves on to what is actually wrong now.
+        dirs.add('/var/www/alpha')
+        await tracker.recheckInvalid(registry)
+        assert.match(tracker.current().get('alpha') ?? '', /^docker compose config failed: no configuration file provided/)
+    })
+
+    it('forgets projects that have left the registry when re-checking the invalid ones', async () => {
+        const tracker = new GuardTracker(composeRunner({}), async () => true, storageOk)
+        await tracker.checkAll(parseRegistry(text(['alpha'])))
+        assert.ok(tracker.current().has('alpha'))
+        await tracker.recheckInvalid(parseRegistry('projects: {}\n'))
+        assert.deepEqual(tracker.current(), new Map())
+    })
+
     it('marks a project whose storage root is a symlink rather than a real directory', async () => {
         const registry = parseRegistry(text(['alpha']))
         const tracker = new GuardTracker(
