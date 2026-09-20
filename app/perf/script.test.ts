@@ -264,6 +264,39 @@ describe('PERF_SCRIPT after a crash', () => {
     })
 })
 
+// The cap is for a phone being killed for memory, which is the crash this whole staged scene is about. A device with
+// a fine pointer was never the one at risk: it gets a budget it is nowhere near, and killing its tab does not reload
+// it into the same crash. Meanwhile the mark it is judged on is not proof of a crash at all. sessionStorage is copied
+// into a duplicated tab, and brought back by a session restore after the browser or the machine is restarted, so a
+// mark can be found with the page that wrote it still alive, or hours later. On a phone that costs one tier and stops
+// a real crash loop, which is the trade the guard is for. On a PC it left a capable machine a tier down for good, on
+// nothing, and no amount of reloading could talk it back out again.
+describe('PERF_SCRIPT crash cap on a fine pointer', () => {
+    const DESKTOP = { innerWidth: 1920, innerHeight: 1080, dpr: 2 }
+
+    it('does not cap a device with a fine pointer that finds a mark', () => {
+        const storage: Record<string, string> = {}
+        const attrs = run({ ...DESKTOP, storage, session: { 'scene-live': String(TIERS.length) } })
+        expect(attrs['data-scene']).toBe(ALL)
+        expect(attrs['data-scene-max']).toBe(String(TIERS.length))
+        expect(storage['scene-cap']).toBeUndefined()
+    })
+
+    it('ignores a cap an earlier false alarm already wrote, so a reload gets the scene back', () => {
+        const attrs = run({ ...DESKTOP, storage: { 'scene-cap': '0' } })
+        expect(attrs['data-scene']).toBe(ALL)
+        expect(attrs['data-scene-max']).toBe(String(TIERS.length))
+    })
+
+    it('keeps a remembered cap stored, for when the same device is held as a tablet', () => {
+        // a convertible reports a coarse pointer in tablet mode, and that is the mode the cap was for
+        const storage: Record<string, string> = { 'scene-cap': '0' }
+        run({ ...DESKTOP, storage })
+        expect(storage['scene-cap']).toBe('0')
+        expect(run({ coarse: true, storage })['data-scene-max']).toBe('0')
+    })
+})
+
 // The guard's own log, so a misfire on a phone that can't be attached to a profiler can be read off the page instead of
 // guessed at. Only kept once ?debug=perf has turned it on, so normal visitors write nothing.
 describe('PERF_SCRIPT guard log', () => {
