@@ -1,0 +1,7 @@
+/* The portal's own ground, so it does not depend on the body's. app/globals.css sets --background to the
+   landing scene's navy for the marketing pages, and that is not the portal's to change. */
+
+.ground {
+    background: var(--night);
+    min-height: 100%;
+}

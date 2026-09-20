@@ -1,0 +1,40 @@
+/* The portal paints its own ground. app/globals.css sets --background to the landing scene's navy and
+   Tailwind maps it, so the body's colour is not this page's to change.
+
+   Small by intent: the ui/ components carry their own look, and this is only the page's own frame. Every
+   colour here is a token or a neutral overlay, which is what ui/palette.test.ts asks of a stylesheet. That
+   test walks ui/ and does not reach this file, so the rule is kept here by hand. */
+
+.hello { margin-bottom: 18px; }
+.hello h1 { font-size: 21px; letter-spacing: -.02em; margin: 0; }
+.hello p { color: var(--ink-2); margin: 6px 0 0; font-size: 13.5px; }
+
+.block { margin-top: 24px; }
+.block h2 { font-size: 13px; margin: 0 0 10px; }
+
+.empty { color: var(--ink-3); font-size: 12.5px; }
+
+.nav {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 5px 8px;
+    border-radius: 5px;
+    font-size: 12.5px;
+    color: var(--ink-3);
+    text-decoration: none;
+}
+/* A neutral overlay rather than a tinted one: it is an operation on whatever is underneath, so it stays
+   correct through a retint, which a frozen copy of a token's value would not. */
+.nav:hover { color: var(--ink-2); background: rgba(255, 255, 255, .03); }
+.nav[aria-current] { color: var(--ink); background: var(--panel-hi); }
+.navName { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+.group { color: var(--ink-3); font-size: 10.5px; margin: 14px 0 5px; padding: 0 8px; }
+
+/* The rail is context, not decoration: it keeps its heading when it drops under the content on a narrow
+   window, which is why the heading lives here rather than being implied by position. */
+.railHead { font-size: 11px; color: var(--ink-3); margin: 0 0 10px; }
+.railSec { margin-top: 20px; padding-top: 16px; border-top: 1px solid var(--rule); }
+.railGap { margin-top: 13px; }
+.railNote { color: var(--ink-3); font-size: 11px; margin: 10px 0 0; line-height: 1.6; }
