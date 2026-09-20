@@ -28,17 +28,16 @@ export type SmtpConfig = {
     siteUrl: string
 }
 
-// Just the transport. Split out from the quote settings so a missing QUOTE_NOTIFY_TO can't stop a client
-// invite going out: the two features fail independently.
-export function smtpConfig(env: Env = process.env): SmtpConfig {
-    const problems: string[] = []
+// Collects rather than throws, so a caller that needs more than the transport can gather its own
+// problems into the same list and report everything missing in one error. A fresh deploy should
+// have to be told once what is missing, not once per group.
+function readSmtp(env: Env, problems: string[]): SmtpConfig {
     const host = required(env, 'SMTP_HOST', problems)
     const portText = required(env, 'SMTP_PORT', problems)
     const port = Number(portText)
     if (portText && (!Number.isInteger(port) || port < 1 || port > 65535)) problems.push('SMTP_PORT must be a port number, such as 587')
     const from = required(env, 'MAIL_FROM', problems)
     const siteUrl = required(env, 'AUTH_URL', problems)
-    if (problems.length) throw new EnvError(problems)
 
     return {
         host, port, from,
@@ -49,11 +48,20 @@ export function smtpConfig(env: Env = process.env): SmtpConfig {
     }
 }
 
+// Just the transport. Split out from the quote settings so a missing QUOTE_NOTIFY_TO can't stop a client
+// invite going out: the two features fail independently.
+export function smtpConfig(env: Env = process.env): SmtpConfig {
+    const problems: string[] = []
+    const config = readSmtp(env, problems)
+    if (problems.length) throw new EnvError(problems)
+    return config
+}
+
 export type MailConfig = SmtpConfig & { notifyTo: string, replyTo: string }
 
 export function quoteMailConfig(env: Env = process.env): MailConfig {
-    const base = smtpConfig(env)
     const problems: string[] = []
+    const base = readSmtp(env, problems)
     const notifyTo = required(env, 'QUOTE_NOTIFY_TO', problems)
     const replyTo = required(env, 'QUOTE_REPLY_TO', problems)
     if (problems.length) throw new EnvError(problems)
@@ -63,7 +71,11 @@ export function quoteMailConfig(env: Env = process.env): MailConfig {
 export type ClientMailConfig = SmtpConfig & { replyTo: string }
 
 export function clientMailConfig(env: Env = process.env): ClientMailConfig {
-    return { ...smtpConfig(env), replyTo: single(env, 'CLIENT_REPLY_TO') }
+    const problems: string[] = []
+    const base = readSmtp(env, problems)
+    const replyTo = required(env, 'CLIENT_REPLY_TO', problems)
+    if (problems.length) throw new EnvError(problems)
+    return { ...base, replyTo }
 }
 
 function single(env: Env, name: string): string {

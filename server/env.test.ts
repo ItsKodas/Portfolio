@@ -40,11 +40,6 @@ describe('quoteMailConfig', () => {
     it('names every missing setting at once', () => {
         expect(problemsOf(() => quoteMailConfig({}))).toEqual([
             'SMTP_HOST is not set', 'SMTP_PORT is not set', 'MAIL_FROM is not set', 'AUTH_URL is not set',
-        ])
-    })
-
-    it('names missing quote settings when SMTP is present', () => {
-        expect(problemsOf(() => quoteMailConfig(smtp))).toEqual([
             'QUOTE_NOTIFY_TO is not set', 'QUOTE_REPLY_TO is not set',
         ])
     })
@@ -79,8 +74,11 @@ describe('clientMailConfig', () => {
         expect(clientMailConfig({ ...smtp, CLIENT_REPLY_TO: 'info@dev.horizons.gg' }).replyTo).toBe('info@dev.horizons.gg')
     })
 
-    it('names the variable when it is missing', () => {
-        expect(() => clientMailConfig(smtp)).toThrow(/CLIENT_REPLY_TO/)
+    it('names every missing setting at once', () => {
+        expect(problemsOf(() => clientMailConfig({}))).toEqual([
+            'SMTP_HOST is not set', 'SMTP_PORT is not set', 'MAIL_FROM is not set', 'AUTH_URL is not set',
+            'CLIENT_REPLY_TO is not set',
+        ])
     })
 
     // The whole point of the split: a missing quote setting must not stop a client invite going out
