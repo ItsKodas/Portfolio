@@ -1,6 +1,6 @@
 import { describe, it } from 'node:test'
 import assert from 'node:assert/strict'
-import { guardProblems } from './guard.ts'
+import { guardProblems, guardAdvisories } from './guard.ts'
 import type { ResolvedCompose } from './compose.ts'
 import { parseRegistry, type ProjectEntry } from '../shared/registry.ts'
 
@@ -136,18 +136,28 @@ describe('guardProblems', () => {
     it('treats a trailing slash on a bind source as the same directory', () => {
         assert.deepEqual(guardProblems(entry(), resolved({ web: { volumes: [bind('/var/www/acme/uploads/')] } })), [])
     })
+})
 
+describe('guardAdvisories', () => {
     // A project with role: site on what is actually the database service (the exact state a freshly
-    // provisioned project, or a hand enrollment, can be in before review) makes databaseSources empty, so
-    // the overlap rule above can never fire even when storage really does sit on top of the database's
-    // own bind mount. This rule is the backstop for that: it fires on the mere absence of a database role
-    // wherever there is storage to protect, regardless of whether an overlap actually exists yet.
-    it('warns when storage exists but no service is marked role database', () => {
-        const problems = guardProblems(entryWithNoDatabaseRole(), resolved())
-        assert.deepEqual(problems, ['storage is configured but no service is marked role database; review the services before trusting the storage guard'])
+    // provisioned project, or a hand enrollment, can be in before review) makes guardProblems's overlap
+    // rule unable to fire even when storage really does sit on top of the database's own bind mount, since
+    // that rule only ever compares against a service marked database. This is advice for exactly that
+    // gap, not a guardProblems entry: it must never make checkStructure refuse a verb, both because a
+    // project that genuinely has no database would then have no way to ever pass, and because turning it
+    // into a hard failure would take an already-working, already-deployed site offline the next time an
+    // unrelated registry edit ran it through the guard again.
+    it('advises when storage exists but no service is marked role database', () => {
+        assert.deepEqual(guardAdvisories(entryWithNoDatabaseRole()), [
+            'project acme declares storage but no service with role database; if one of its services is a database, correct its role so the storage guard can protect it',
+        ])
     })
 
-    it('does not warn about a missing database role when there is no storage at all', () => {
+    it('says nothing when a service is marked role database', () => {
+        assert.deepEqual(guardAdvisories(entry()), [])
+    })
+
+    it('says nothing about a missing database role when there is no storage at all', () => {
         const registry = parseRegistry(`
 projects:
   acme:
@@ -159,6 +169,6 @@ projects:
       web: { role: site }
 `)
         const project = registry.projects.get('acme')!
-        assert.deepEqual(guardProblems(project, { name: 'acme', services: { web: { volumes: [] } } }), [])
+        assert.deepEqual(guardAdvisories(project), [])
     })
 })

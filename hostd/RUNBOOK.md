@@ -115,7 +115,7 @@ EOF
 cd /var/www/hostd-test && sudo docker compose up -d && cd -
 ```
 
-Add this entry under `projects:` in `hostd/projects.yaml`:
+Add this entry under `projects:` in `hostd/registry/projects.yaml`:
 
 ```yaml
   hostd-test:
@@ -200,9 +200,9 @@ Expect:
 
 ### A registry edit that breaks the file
 
-Add a stray `[` anywhere in `projects.yaml`. Within ten seconds, both logs show `WARN registry reload
-rejected, still using the last good version`, and check 2 still works. Remove the `[`, and the warning
-clears.
+Add a stray `[` anywhere in `registry/projects.yaml`. Within ten seconds, both logs show `WARN registry
+reload rejected, still using the last good version`, and check 2 still works. Remove the `[`, and the
+warning clears.
 
 ### Clean up
 
@@ -211,7 +211,7 @@ cd /var/www/hostd-test && sudo docker compose down && cd -
 sudo rm -rf /var/www/hostd-test
 ```
 
-Then remove the `hostd-test` entry from `projects.yaml`.
+Then remove the `hostd-test` entry from `registry/projects.yaml`.
 
 ## Enrolling a real site
 
@@ -298,7 +298,7 @@ Adding a test environment later is `POST /projects/acme-bakery/environments` wit
 
 | Symptom | Cause |
 | --- | --- |
-| `FATAL ... is not a file (was projects.yaml created before the first docker compose up?)` | Docker created a directory at `projects.yaml`. Remove it, create the file, start again. |
+| `FATAL ... is not a file (was projects.yaml created before the first docker compose up?)` | Docker created a directory at `hostd/registry/projects.yaml` because `registry/projects.yaml` did not exist before the first `docker compose up`. Remove the directory, create the file, start again. |
 | `FATAL HOSTD_API_TOKEN must be at least 32 characters` | `.env` is missing, or the token is empty or too short. |
 | `FATAL the agent is not answering on /run/hostd/agent.sock` (api) | The agent is not running or failed its own gate. Read `docker compose logs agent`. |
 | `503` with `"code":"agent-unavailable"` | The same, after startup. |
@@ -312,5 +312,6 @@ Adding a test environment later is `POST /projects/acme-bakery/environments` wit
 | A `create` or `add-environment` refusal `"... is already used by another project"` | The domain is already registered to a different project's environment. |
 | A `create` or `add-environment` refusal naming a Git failure | The fetcher could not clone. Check the branch exists on the remote, and that `GITHUB_TOKEN` in `.env.fetcher` can read the repo. |
 | A `create` or `add-environment` refusal `"the compose file declares no services"` | The compose file has no services in it at all, not merely none marked site. The cloned folder was removed and nothing was registered. |
+| A `create` or `add-environment` refusal `"at least one service must have role site"` | hostd's own image guess (see Creating a site) marked every service database, most likely because the compose file genuinely has no service that is not a database, or an app image happens to contain one of the five matched names by coincidence. The cloned folder was removed and nothing was registered; fix the compose file if the guess was wrong, or enroll the project by hand instead (see Enrolling a real site) if it genuinely has no site-role service under this scheme. |
 | A `create` or `add-environment` refusal naming a `docker compose config` error directly (a missing `env_file`, a syntax error) | hostd creates an empty file for any `.env.example` it finds with nothing real beside it yet, but only in the folders and depth a later env listing would itself reach; something the compose file needs still was not there. Fix the compose file or the repo, and try again. |
 | A `provision` or `env` refusal naming a registry problem (`"... could not be written"`, or `"... already exists"` for an add) | The write itself failed, or raced another one and lost. A folder left behind after a losing race is not that call's to remove; it is left for you to look at. |

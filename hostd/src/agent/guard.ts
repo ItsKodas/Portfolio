@@ -56,16 +56,6 @@ export function guardProblems(project: ProjectEntry, resolved: ResolvedCompose):
     const reads = [project.composePath, posix.join(project.dir, '.env')]
     for (const service of Object.values(resolved.services)) reads.push(...readsOf(service))
 
-    // The overlap check just below can only ever fire against a service actually marked database: a
-    // project provisioned automatically starts with every service guessed (compose.ts's resolveNewProject
-    // guesses from the image, which is a starting point, not a guarantee), and a project enrolled by hand
-    // can simply have the role wrong. Either way, storage with no database service at all to check it
-    // against would otherwise pass this guard clean even though nothing has verified a database's own
-    // directory is not what that storage entry actually points at.
-    if (Object.keys(project.storage).length > 0 && !Object.values(project.services).some(entry => entry.role === 'database')) {
-        problems.push('storage is configured but no service is marked role database; review the services before trusting the storage guard')
-    }
-
     for (const [name, storage] of Object.entries(project.storage)) {
         if (!siteSources.includes(storage.absolute)) {
             problems.push(`storage ${name} (${storage.absolute}) is not bind-mounted into a site service`)
@@ -78,4 +68,25 @@ export function guardProblems(project: ProjectEntry, resolved: ResolvedCompose):
         }
     }
     return problems
+}
+
+// Advice for the operator, never a reason to refuse anything: unlike guardProblems, this never reaches
+// GuardTracker's invalid map, so it can never make checkStructure refuse status, logs, lifecycle or env
+// for a project that is otherwise working fine. That distinction matters here specifically: the overlap
+// rule above (`storage ... overlaps a database service's mount`) can only ever fire against a service
+// actually marked database, so a project with no service marked database at all (a fresh guess from
+// compose.ts's resolveNewProject got it wrong, or a hand enrollment simply has it wrong, or the project
+// genuinely has no database) passes that rule with nothing to compare against, not because it is safe but
+// because nothing has checked. Making that a hard invalidation instead of a warning would have taken a
+// working, already-deployed site offline the moment an unrelated registry edit put it through the guard
+// again, with no way to clear it for a project that really has no database.
+export function guardAdvisories(project: ProjectEntry): string[] {
+    const advisories: string[] = []
+    if (Object.keys(project.storage).length > 0 && !Object.values(project.services).some(entry => entry.role === 'database')) {
+        advisories.push(
+            `project ${project.id} declares storage but no service with role database; if one of its ` +
+            'services is a database, correct its role so the storage guard can protect it',
+        )
+    }
+    return advisories
 }

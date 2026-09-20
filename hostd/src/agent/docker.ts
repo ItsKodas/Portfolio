@@ -127,14 +127,18 @@ export function pickPerService(containers: ContainerSummary[]): Map<string, Cont
     return chosen
 }
 
-// Every port any container has published to the host, regardless of which interface it is bound to
-// (127.0.0.1, a specific public address, or every interface via 0.0.0.0): a new container binding
-// 127.0.0.1:<port> would collide with a same-numbered publish on any of them, since an all-interfaces
-// bind already claims the loopback address too. This is the only view of host ports available to the
-// agent: it runs with network_mode: none, so it has no network namespace of its own to probe the loopback
-// interface directly (see ports.ts's header). It also cannot see a port some other, non-Docker process on
-// the host has bound, or one published by a container on a different Docker host reached via DOCKER_HOST,
-// though this deployment never sets one and binds nothing outside Docker.
+// Every port any currently running container has published to the host, regardless of which interface it
+// is bound to (127.0.0.1, a specific public address, or every interface via 0.0.0.0): a new container
+// binding 127.0.0.1:<port> would collide with a same-numbered publish on any of them, since an
+// all-interfaces bind already claims the loopback address too. A stopped container reports no Ports at
+// all (Docker only shows a bind while it is actually listening), so this cannot see a port that belongs
+// to a stopped hostd environment; takenPorts (ports.ts), reading the registry itself rather than Docker,
+// is what covers that case regardless of whether the environment happens to be running. This is the only
+// view of host ports available to the agent: it runs with network_mode: none, so it has no network
+// namespace of its own to probe the loopback interface directly (see ports.ts's header). It also cannot
+// see a port some other, non-Docker process on the host has bound, or one published by a container on a
+// different Docker host reached via DOCKER_HOST, though this deployment never sets one and binds nothing
+// outside Docker.
 export function publishedHostPorts(containers: ContainerSummary[]): Set<number> {
     const ports = new Set<number>()
     for (const container of containers) {

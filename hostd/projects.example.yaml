@@ -1,6 +1,6 @@
-# The registry of client projects. Copy to hostd/projects.yaml on the dedi (gitignored: it names
-# clients). hostd reads it and never writes it; edits take effect within 10 seconds, and an edit that
-# breaks the file is rejected as a whole, leaving the last good version in force.
+# The registry of client projects. Copy to hostd/registry/projects.yaml on the dedi (gitignored: it names
+# clients). Only the agent writes it, and only for provisioning; a hand edit takes effect within 10
+# seconds, and one that breaks the file is rejected as a whole, leaving the last good version in force.
 
 # Hostnames at or below these are never accepted as client domains (phase 4).
 reserved: [horizons.gg]
