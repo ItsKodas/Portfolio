@@ -54,6 +54,11 @@ export type ProvisionDeps = {
     // checks it against the compose file's own project name, the same guard the ongoing sweep runs, but
     // here before anything is written. collidesWith, only ever passed for a test environment, is the
     // live environment's own expected name, so pinning it there gets a message about the collision.
+    // composePath is deliberately singular, unlike the registry's own compose list: a fresh clone gives
+    // nothing that says which extra compose files (an override, a production file) the operator intends,
+    // so this only ever resolves the base docker-compose.yml. If the repo actually runs with more than
+    // one file, an unnamed one is invisible to hostd from here on; RUNBOOK.md's Creating a site, step 2,
+    // is where the operator is meant to list them all in the registry entry.
     resolve(expectedName: string, dir: string, composePath: string, collidesWith?: string): Promise<{ ok: true, services: Record<string, GuessedService> } | { ok: false, problem: string }>
     // Only ever used to stop the live environment before removeProject unregisters a whole project: there
     // is no per-environment lifecycle yet (see RUNBOOK.md), so this is never asked to touch test.

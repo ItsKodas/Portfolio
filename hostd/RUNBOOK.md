@@ -312,7 +312,12 @@ happen, in that order, before anything past step 1 does anything useful.
 
 2. Edit `hostd/registry/projects.yaml`: correct any service the guess above got wrong, and add
    `capabilities: [lifecycle, logs, provision, env]` (or whatever subset the client should have) to the
-   new entry. Wait ten seconds for the reload before going on to step 3.
+   new entry. If the repo ships more compose files than the one hostd just cloned it with (a
+   `docker-compose.override.yml`, a production file), list every one of them in the entry's `compose:` key
+   now, in the order they merge (see Enrolling a real site, step 2): `create` only ever resolves the base
+   `docker-compose.yml`, since nothing in a fresh clone says which extra files the operator intends, and an
+   unnamed override is one hostd cannot see, so the site would run differently under hostd than it does by
+   hand until this is corrected. Wait ten seconds for the reload before going on to step 3.
 
 3. Only now, with the roles right, add any `storage` entries the site needs (uploads, media and the
    like). **The storage guard cannot protect a database it believes is a site**: it refuses a storage
