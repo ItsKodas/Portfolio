@@ -4,7 +4,7 @@ import { EventEmitter } from 'node:events'
 import { PassThrough } from 'node:stream'
 import type { spawn as nodeSpawn } from 'node:child_process'
 import {
-    lifecycleArgv, configArgv, runLifecycle, resolveCompose, resolveNewProject, createSpawnRunner, tail,
+    lifecycleArgv, configArgv, runLifecycle, resolveCompose, resolveNewProject, composeNameProblem, createSpawnRunner, tail,
     LIFECYCLE_TIMEOUT_MS, OUTPUT_TAIL_BYTES, type Runner, type RunResult,
 } from './compose.ts'
 import { parseRegistry } from '../shared/registry.ts'
@@ -117,13 +117,26 @@ describe('resolveCompose', () => {
     })
 })
 
+describe('composeNameProblem', () => {
+    it('says nothing when the names match', () => {
+        assert.equal(composeNameProblem('acme', 'acme'), null)
+    })
+
+    it('names both the resolved name and the expected one when they differ', () => {
+        assert.equal(
+            composeNameProblem('acme-old', 'acme'),
+            'compose resolves the project name acme-old, not acme; set name: acme in the compose file, or rename the registry entry',
+        )
+    })
+})
+
 describe('resolveNewProject', () => {
     const location = { dir: '/var/www/bakery', composePath: '/var/www/bakery/docker-compose.yml' }
-    const resolving = (services: Record<string, { image?: string }>) => runnerReturning({ stdout: JSON.stringify({ name: 'bakery', services }) })
+    const resolving = (services: Record<string, { image?: string }>, name = 'bakery') => runnerReturning({ stdout: JSON.stringify({ name, services }) })
 
     it('marks a service with no recognisable database image as role site', async () => {
         const { run, calls } = resolving({ web: { image: 'acme/bakery-web:latest' }, worker: {} })
-        assert.deepEqual(await resolveNewProject(location, run), {
+        assert.deepEqual(await resolveNewProject(location, 'bakery', run), {
             ok: true, services: { web: { role: 'site' }, worker: { role: 'site' } },
         })
         assert.deepEqual(calls[0]?.args, configArgv(location))
@@ -142,13 +155,13 @@ describe('resolveNewProject', () => {
     ] as const) {
         it(`guesses role database (${engine}) for image ${image}`, async () => {
             const { run } = resolving({ db: { image } })
-            assert.deepEqual(await resolveNewProject(location, run), { ok: true, services: { db: { role: 'database', engine } } })
+            assert.deepEqual(await resolveNewProject(location, 'bakery', run), { ok: true, services: { db: { role: 'database', engine } } })
         })
     }
 
     it('is case-insensitive and matches the repository even with no tag', async () => {
         const { run } = resolving({ db: { image: 'Postgres' } })
-        assert.deepEqual(await resolveNewProject(location, run), { ok: true, services: { db: { role: 'database', engine: 'postgres' } } })
+        assert.deepEqual(await resolveNewProject(location, 'bakery', run), { ok: true, services: { db: { role: 'database', engine: 'postgres' } } })
     })
 
     // The match is a plain substring, exactly as specified (an image repository containing one of the
@@ -156,19 +169,32 @@ describe('resolveNewProject', () => {
     // the false positive the "starting point, not a guarantee" comment on guessRole is about.
     it('matches a substring of a larger repository name, false positives included', async () => {
         const { run } = resolving({ web: { image: 'acme/postgresql-admin-web:latest' } })
-        assert.deepEqual(await resolveNewProject(location, run), { ok: true, services: { web: { role: 'database', engine: 'postgres' } } })
+        assert.deepEqual(await resolveNewProject(location, 'bakery', run), { ok: true, services: { web: { role: 'database', engine: 'postgres' } } })
     })
 
     it('reports no services at all rather than inventing one', async () => {
         const { run } = resolving({})
-        assert.deepEqual(await resolveNewProject(location, run), { ok: true, services: {} })
+        assert.deepEqual(await resolveNewProject(location, 'bakery', run), { ok: true, services: {} })
     })
 
     it('passes a resolve failure through unchanged', async () => {
         const { run } = runnerReturning({ exitCode: 1, stderr: 'yaml: line 3: mapping values are not allowed' })
-        assert.deepEqual(await resolveNewProject(location, run), {
+        assert.deepEqual(await resolveNewProject(location, 'bakery', run), {
             ok: false, problem: 'docker compose config failed: yaml: line 3: mapping values are not allowed',
         })
+    })
+
+    // Must-exist, per the whole-branch review: the spec's step 3 says the same guards run at creation, so
+    // a repo whose compose file pins a mismatched name: must be refused here, before anything clones or
+    // registers, not only later when guard.ts's ongoing sweep catches up to an already-registered project.
+    it('refuses when the compose file resolves to a different project name than the one being created', async () => {
+        const { run, calls } = resolving({ web: {} }, 'acme-old')
+        assert.deepEqual(await resolveNewProject(location, 'bakery', run), {
+            ok: false, problem: 'compose resolves the project name acme-old, not bakery; set name: bakery in the compose file, or rename the registry entry',
+        })
+        // The check runs on the resolved config compose already produced: it never triggers a second
+        // command to find this out.
+        assert.equal(calls.length, 1)
     })
 })
 

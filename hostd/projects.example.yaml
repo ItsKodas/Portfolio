@@ -28,7 +28,7 @@ projects:
       # Each must be a bind mount of a site service, must not be mounted into a database service, and
       # must not contain the compose file, an env file, a build context or a Dockerfile.
       media: { path: uploads, mode: rw }         # rw | ro | hidden (backed up, never shown)
-    capabilities: [lifecycle, logs]              # lifecycle | logs | files | backups | domains
+    capabilities: [lifecycle, logs]              # lifecycle | logs | files | backups | domains | provision | env
 
   # A project with a live and a test environment. Each environment has its own folder, branch, domain,
   # port and certificate mode; repo, limits and portEnv live at the project level and apply to both.

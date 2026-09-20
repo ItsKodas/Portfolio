@@ -4,6 +4,7 @@
 // operator's comments and hand-written formatting intact.
 
 import { readFile, writeFile, rename, unlink } from 'node:fs/promises'
+import { randomBytes } from 'node:crypto'
 import { parseDocument, type Document } from 'yaml'
 
 import { parseRegistry, RegistryError, type CertificateMode, type EnvironmentName } from './registry.ts'
@@ -11,14 +12,14 @@ import { describeError, RESERVED_PROJECT_IDS, PROJECT_ID } from './formats.ts'
 
 export type RegistryWriteFs = {
     readFile(path: string): Promise<string>
-    writeFile(path: string, text: string): Promise<void>
+    writeFile(path: string, text: string, options?: { flag: string }): Promise<void>
     rename(from: string, to: string): Promise<void>
     unlink(path: string): Promise<void>
 }
 
 const nodeFs: RegistryWriteFs = {
     readFile: path => readFile(path, 'utf8'),
-    writeFile: (path, text) => writeFile(path, text, 'utf8'),
+    writeFile: (path, text, options) => writeFile(path, text, { encoding: 'utf8', flag: options?.flag }),
     rename: (from, to) => rename(from, to),
     unlink: path => unlink(path),
 }
@@ -159,10 +160,14 @@ export class RegistryWriter {
         const applied = applyChange(text, change)
         if (!applied.ok) return applied
 
-        // Same directory, so the rename is atomic: a crash leaves either the old file or the new one.
-        const temporary = this.path.replace(/([^/]+)$/, '.$1.tmp')
+        // Same directory, so the rename is atomic: a crash leaves either the old file or the new one. A
+        // random suffix, so the name cannot be guessed and pre-planted as a symlink by anything else that
+        // can write into this directory, and 'wx' (O_CREAT | O_EXCL), which fails on anything already at
+        // that path, symlink or not, rather than opening through it. Same defense as env-files.ts's own
+        // temp file.
+        const temporary = this.path.replace(/([^/]+)$/, `.$1.${randomBytes(6).toString('hex')}.tmp`)
         try {
-            await this.fs.writeFile(temporary, applied.text)
+            await this.fs.writeFile(temporary, applied.text, { flag: 'wx' })
             await this.fs.rename(temporary, this.path)
         } catch (error) {
             await this.fs.unlink(temporary).catch(() => {})

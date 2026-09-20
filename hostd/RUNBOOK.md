@@ -7,8 +7,9 @@ their env files. It is three containers:
 - `hostd-agent` holds the Docker socket. It has no network and listens only on a Unix socket.
 - `hostd-api` speaks HTTP on the private `hostd` Docker network. Nothing is published on the host.
 - `hostd-fetcher` does Git. It has a network and the GitHub token, and can write under `/var/www`, but
-  never gets the Docker socket, so a compromise there cannot touch a container, the registry or anything
-  outside `/var/www`.
+  never gets the Docker socket and never shares a socket with `api` (its own volume is mounted only in it
+  and the agent), so a compromise there cannot touch a container, the registry, impersonate the agent to
+  `api`, or reach anything outside `/var/www` and its own socket to the agent.
 
 Client sites never depend on hostd. If it is down, every site keeps serving; only the portal's controls
 stop working. The fetcher is narrower still: if only it is down, lifecycle and logs (what the deployed
@@ -29,8 +30,9 @@ site depends on) keep working, and only provisioning and env editing are unavail
 
 4. Create `hostd/registry/projects.yaml` from `hostd/projects.example.yaml` (`mkdir -p registry` first),
    and delete the example project for now. **This must exist before the first `docker compose up`:** if
-   it does not, Docker creates the missing pieces as directories instead, and all three containers refuse
-   to start with a message saying so. If that happens, remove the directory it created in place of the
+   it does not, Docker creates the missing pieces as directories instead, and the agent and api (the two
+   containers that actually read the registry) refuse to start with a message saying so; the fetcher never
+   reads it, so it starts regardless. If that happens, remove the directory it created in place of the
    file, create the file, and start again.
 
 ## Upgrading from phase 1
@@ -191,12 +193,18 @@ at its next healthcheck.
 docker port hostd-api
 docker inspect hostd-agent --format '{{.HostConfig.NetworkMode}}'
 docker exec hostd-agent ls -ln /run/hostd/agent.sock
+docker exec hostd-fetcher ls -ln /run/hostd-fetch/fetch.sock
+docker exec hostd-api ls /run/hostd-fetch
 ```
 
 Expect:
 - `docker port` prints nothing: no host port is published.
 - The network mode is `none`.
-- The socket is `srw-rw----` owned by `0 1000`.
+- The agent socket is `srw-rw----` owned by `0 1000`: `api`'s own gid, so it and nothing else can connect.
+- The fetch socket is `srw-------` owned by `0 0`: it lives in its own volume (`hostd-fetch-sock`), shared
+  only with the agent, never with `api`.
+- The last command fails with `No such file or directory`: `api` has no mount at `/run/hostd-fetch` at
+  all, so it has no way to reach the fetch protocol directly even if it wanted to.
 
 ### A registry edit that breaks the file
 
@@ -283,7 +291,15 @@ happen, in that order, before anything past step 1 does anything useful.
    ```
 
 Adding a test environment later is `POST /projects/acme-bakery/environments` with `branch`, `domain` and
-`certificate`, then the same review, env and start steps against the new `test` environment.
+`certificate`, then the same review and env steps (2 to 5 above) against the new `test` environment:
+correct any wrongly-guessed service role, set its capabilities, add its storage, list and fill its env
+files. **Do not run step 6 against it, and do not start it by hand either.** There is no per-environment
+lifecycle yet: every lifecycle verb, and the compose argv it builds, only ever resolves the project's
+`live` folder, so there is no supported way to start `test` today, and it stays inert until the deploy
+phase makes it startable. Starting it by hand is actively dangerous for exactly the repos step 1 above
+tells you to pin a `name:` into: running `docker compose up -d` in the test folder then resolves to that
+same fixed compose project name, which is also live's, and takes over live's already-running containers
+instead of starting a separate test stack.
 
 ## What is deliberately not automatic
 
@@ -291,8 +307,13 @@ Adding a test environment later is `POST /projects/acme-bakery/environments` wit
   every service role only guessed from its image, and env files are only ever listed, never filled in:
   nothing runs until the entry is reviewed, `lifecycle` (and whatever else) is enabled, and the env files
   are edited.
-- **Removing a project leaves its folder, volumes and databases in place.** `provision remove` only edits
-  the registry; nothing under `/var/www` is deleted. Clean those up by hand once you are sure.
+- **Removing a whole project stops it first, and refuses if the stop fails.** `provision remove` runs the
+  same `stop` a lifecycle call would against the live environment, then edits the registry; it never
+  unregisters a project that is still running, since nothing would then be able to stop it. Removing only
+  the test environment does not stop anything (there is no per-environment lifecycle yet, so there is
+  nothing safe for this to stop).
+- **Removing a project leaves its folder, volumes and databases in place.** `provision remove` only stops
+  and edits the registry; nothing under `/var/www` is deleted. Clean those up by hand once you are sure.
 
 ## Troubleshooting
 
@@ -307,6 +328,8 @@ Adding a test environment later is `POST /projects/acme-bakery/environments` wit
 | `api` unhealthy with `the audit log could not be written` | The `hostd-state` volume is full or has the wrong owner. |
 | Agent log `WARN the fetcher socket ... is not answering` | `hostd-fetcher` is not running or failed its own gate; provisioning and env editing are unavailable until it is, but lifecycle and logs are unaffected. Read `docker compose logs fetcher`. |
 | Agent log or health warnings show `project <id> declares storage but no service with role database; if one of its services is a database, correct its role so the storage guard can protect it` | **This is advice, not an error.** The project stays valid, and status, logs, lifecycle and env all keep working exactly as before; nothing is refused. It is only worth acting on if one of the project's services really is a database: if so, correct its role in `hostd/registry/projects.yaml` (see step 2 of Creating a site) so the storage guard can actually protect that database's data directory. A project that genuinely has no database can leave this as is. |
+| A `create` or `add-environment` refusal `"fix these invalid projects before provisioning: ..."` | The registry has at least one invalid entry. Provisioning refuses outright rather than risk handing out a port an invalid entry's own (possibly stopped) containers already hold: fix or remove the named entries first, wait ten seconds for the reload, then try again. |
+| A `create` or `add-environment` refusal `"compose resolves the project name ..., not ..."` | Same check and message as a `"valid":false` project below, but caught before anything is cloned or registered: the repo's compose file pins a `name:` that does not match the id you gave. The cloned folder was removed and nothing was registered; either add `name: <id>` to the compose file, or use the id the compose file already pins. |
 | A `create` or `add-environment` refusal `"no free port ... to ..."` | The configured port range (5000-5999) is full, by registry entry or by an already-published container port. Free one up, or extend `PORT_RANGE` in `src/shared/ports.ts`. |
 | A `create` refusal `"... is already registered"`, or an `add-environment` refusal naming a folder that `"already exists"` | The id is already taken, or its folder is already on disk under a different registration. |
 | A `create` or `add-environment` refusal `"... is already used by another project"` | The domain is already registered to a different project's environment. |

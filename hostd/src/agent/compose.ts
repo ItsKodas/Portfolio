@@ -63,11 +63,13 @@ class Capture {
     }
 }
 
-// Only what docker itself needs, taken from process.env when set. Phase 2 puts secrets (RESTIC_PASSWORD,
-// the R2 credentials) in this process's environment specifically to keep them out of reach of a
-// compromised api, so nothing else from process.env may reach the child: compose interpolates ${VAR}
-// from the child's environment into a project's own compose file.
-const DOCKER_ENV_KEYS = ['PATH', 'HOME', 'DOCKER_HOST', 'DOCKER_CONFIG', 'TZ'] as const
+// Only what the child needs, taken from process.env when set. Phase 2 puts secrets (RESTIC_PASSWORD, the
+// R2 credentials) in this process's environment specifically to keep them out of reach of a compromised
+// api, so nothing else from process.env may reach the child: compose interpolates ${VAR} from the child's
+// environment into a project's own compose file. This allowlist is shared by the fetcher's git runs too,
+// since createSpawnRunner is the only spawn path either process has: GIT_TERMINAL_PROMPT (see
+// ../fetcher/git.ts) is here for that reason, and is simply never set in the agent's own environment.
+const DOCKER_ENV_KEYS = ['PATH', 'HOME', 'DOCKER_HOST', 'DOCKER_CONFIG', 'TZ', 'GIT_TERMINAL_PROMPT'] as const
 
 function dockerEnv(): Record<string, string> {
     const env: Record<string, string> = {}
@@ -149,6 +151,16 @@ export async function resolveCompose(
     }
 }
 
+// Shared by guard.ts (the ongoing sweep, over an already-registered project) and resolveNewProject below
+// (at create time, before anything is registered), so the two can never drift into naming this two
+// different ways. A start under the wrong compose project name would create a second copy of the site
+// beside whatever is already running under the real one.
+export function composeNameProblem(resolvedName: string, expectedId: string): string | null {
+    return resolvedName === expectedId
+        ? null
+        : `compose resolves the project name ${resolvedName}, not ${expectedId}; set name: ${expectedId} in the compose file, or rename the registry entry`
+}
+
 export type GuessedService = { role: 'site' } | { role: 'database', engine: Exclude<Engine, 'sqlite'> }
 
 // A starting point for the operator to correct, not a guarantee: matches the image's repository part
@@ -186,12 +198,19 @@ function guessRole(service: ResolvedService): GuessedService {
 // which service plays which role, so each one is guessed from its image (see guessRole); the project
 // comes back needs-setup, and the operator's own review and edit of the registry, correcting whatever
 // this guessed wrong, is what happens next, exactly like enrolling a project by hand today.
+//
+// expectedId is checked here too, not only later by guard.ts's ongoing sweep: the spec's step 3 says the
+// same guards run at creation, and without this a repo whose compose file pins a mismatched name: would
+// clone and register cleanly, only to go invalid at the next sweep with the folder already on disk.
 export async function resolveNewProject(
     location: ComposeLocation,
+    expectedId: string,
     run: Runner,
 ): Promise<{ ok: true, services: Record<string, GuessedService> } | { ok: false, problem: string }> {
     const result = await resolveCompose(location, run)
     if (!result.ok) return result
+    const nameProblem = composeNameProblem(result.resolved.name, expectedId)
+    if (nameProblem) return { ok: false, problem: nameProblem }
     const services: Record<string, GuessedService> = {}
     for (const [name, service] of Object.entries(result.resolved.services)) services[name] = guessRole(service)
     return { ok: true, services }

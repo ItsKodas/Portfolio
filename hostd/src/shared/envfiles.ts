@@ -23,3 +23,14 @@ export function envPathProblem(relative: string): string | null {
     if (!isEnvFileName(parts[parts.length - 1]!)) return 'that is not an env file'
     return null
 }
+
+// The write-only half of the boundary. isEnvFileName deliberately still recognises a leading-dot example
+// (.env.example) as an env file, so envPathProblem lets it be listed and read like any other, letting the
+// portal show it beside the real file for review. A write is where the line has to be drawn instead: a
+// repo commits its .example to Git, so writing one here would dirty a file the repo tracks, for a file
+// that is never itself what a running site reads.
+export function envWriteProblem(relative: string): string | null {
+    const problem = envPathProblem(relative)
+    if (problem) return problem
+    return relative.endsWith('.example') ? 'an .example file is read-only; edit the real env file instead' : null
+}

@@ -283,6 +283,25 @@ describe('readEnvFile', () => {
 })
 
 describe('writeEnvFile', () => {
+    // Must-exist, per the whole-branch review: an .example file is a valid env file name (so listEnvFiles
+    // and readEnvFile both still work on it, letting the portal show it beside the real file for review),
+    // but the repo tracks it in Git, so writing it here would dirty a file the operator never asked the
+    // portal to change.
+    it('refuses to write an .example file, so the portal cannot dirty a git-tracked example', async () => {
+        const { fs, writeCalls } = setup({ [`${DIR}/.env.example`]: 'A=' })
+        const result = await writeEnvFile(environment(), '.env.example', 'A=1', fs)
+        assert.equal(result.ok, false)
+        if (!result.ok) assert.match(result.problem, /read-only/)
+        assert.deepEqual(writeCalls, [])
+    })
+
+    it('still allows reading and listing an .example file', async () => {
+        const { fs } = setup({ [`${DIR}/.env.example`]: 'A=' })
+        assert.deepEqual(await readEnvFile(environment(), '.env.example', fs), { ok: true, text: 'A=' })
+        const list = await listEnvFiles(environment(), fs)
+        assert.deepEqual(list.map(entry => entry.path), ['.env.example'])
+    })
+
     it('refuses to write anything that is not an env file, and writes nothing', async () => {
         const { fs, writeCalls } = setup({ [`${DIR}/src/index.ts`]: 'code' })
         const result = await writeEnvFile(environment(), 'src/index.ts', 'X=1', fs)

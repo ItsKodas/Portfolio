@@ -8,7 +8,7 @@ import { posix } from 'node:path'
 import type { EnvironmentEntry } from '../shared/registry.ts'
 import { describeError, isWithin } from '../shared/formats.ts'
 import {
-    envPathProblem, isEnvFileName, MAX_ENV_BYTES, MAX_ENV_DEPTH, SKIP_DIRECTORIES, type EnvFileList,
+    envPathProblem, envWriteProblem, isEnvFileName, MAX_ENV_BYTES, MAX_ENV_DEPTH, SKIP_DIRECTORIES, type EnvFileList,
 } from '../shared/envfiles.ts'
 
 export type { EnvFileList }
@@ -178,7 +178,7 @@ export async function readEnvFile(
 export async function writeEnvFile(
     environment: EnvironmentEntry, relative: string, text: string, fs: EnvFs = nodeFs,
 ): Promise<{ ok: true } | { ok: false, problem: string }> {
-    const problem = envPathProblem(relative)
+    const problem = envWriteProblem(relative)
     if (problem) return { ok: false, problem }
 
     const target = posix.join(environment.dir, relative)

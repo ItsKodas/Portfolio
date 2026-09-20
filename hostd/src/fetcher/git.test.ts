@@ -16,6 +16,16 @@ function recorder(results: RunResult[] = [ok]) {
     return { run, runs }
 }
 
+// Must-exist, per the whole-branch review: a bad or revoked token must fail as soon as the network round
+// trip says so, not sit out the full GIT_TIMEOUT_MS waiting on a stdin prompt this container has no
+// terminal to answer. Set at import time (this file already imported git.ts above), and carried into the
+// actual git child by compose.ts's own DOCKER_ENV_KEYS allowlist, which is what createSpawnRunner uses.
+describe('credential prompt suppression', () => {
+    it('disables the terminal credential prompt for every git run', () => {
+        assert.equal(process.env.GIT_TERMINAL_PROMPT, '0')
+    })
+})
+
 describe('argv', () => {
     it('clones one branch, without running repo hooks or prompting', () => {
         assert.deepEqual(cloneArgv('git@github.com:a/b.git', '/var/www/b', 'main'),

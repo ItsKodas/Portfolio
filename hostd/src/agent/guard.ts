@@ -5,7 +5,7 @@
 import { posix } from 'node:path'
 import { isWithin, overlaps } from '../shared/formats.ts'
 import { isComposeService, type ProjectEntry } from '../shared/registry.ts'
-import type { ResolvedCompose, ResolvedService } from './compose.ts'
+import { composeNameProblem, type ResolvedCompose, type ResolvedService } from './compose.ts'
 
 function withoutTrailingSlash(path: string): string {
     return path.length > 1 && path.endsWith('/') ? path.slice(0, -1) : path
@@ -36,9 +36,8 @@ function readsOf(service: ResolvedService): string[] {
 
 export function guardProblems(project: ProjectEntry, resolved: ResolvedCompose): string[] {
     const problems: string[] = []
-    if (resolved.name !== project.id) {
-        problems.push(`compose resolves the project name ${resolved.name}, not ${project.id}; set name: ${project.id} in the compose file, or rename the registry entry`)
-    }
+    const nameProblem = composeNameProblem(resolved.name, project.id)
+    if (nameProblem) problems.push(nameProblem)
 
     const siteSources: string[] = []
     const databaseSources: string[] = []

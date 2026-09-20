@@ -14,6 +14,7 @@ projects:
   acme:
     client: cl_1
     name: Acme
+    repo: git@github.com:ItsKodas/acme.git
     dir: /var/www/acme
     upstream: 127.0.0.1:5010
     services: { web: { role: site }, db: { role: database, engine: postgres } }
@@ -263,9 +264,25 @@ function fakeEnvFs(overrides: Partial<EnvFs> = {}): EnvFs {
     }
 }
 
+// A registry of its own, with no invalid entry: the top-level `registry` above deliberately keeps one
+// (`broken`) for the must-exist tests that prove the agent refuses an invalid project, but createProject
+// and addEnvironment now refuse provisioning entirely while any entry is invalid, which would make every
+// fake below trip on `broken` for a reason none of these tests are actually about.
+const provisionRegistry = parseRegistry(`
+projects:
+  acme:
+    client: cl_1
+    name: Acme
+    repo: git@github.com:ItsKodas/acme.git
+    dir: /var/www/acme
+    upstream: 127.0.0.1:5010
+    services: { web: { role: site }, db: { role: database, engine: postgres } }
+    capabilities: [lifecycle, logs, provision, env]
+`)
+
 function fakeProvisionDeps(overrides: Partial<ProvisionDeps> = {}): ProvisionDeps {
     return {
-        registry: () => registry,
+        registry: () => provisionRegistry,
         refreshRegistry: async () => {},
         writer: { write: async () => ({ ok: true }) } as unknown as ProvisionDeps['writer'],
         fetcher: { call: async () => ({ ok: true }) },
@@ -274,6 +291,7 @@ function fakeProvisionDeps(overrides: Partial<ProvisionDeps> = {}): ProvisionDep
         rmdir: async () => {},
         exists: async () => false,
         resolve: async () => ({ ok: true, services: { web: { role: 'site' } } }),
+        runner: async () => ({ exitCode: 0, stdout: '', stderr: '', timedOut: false }),
         log: () => {},
         ...overrides,
     }
@@ -385,5 +403,46 @@ describe('provisioning and env', () => {
         const { agent } = setup({ provision, guardInvalid: new Map([['acme', 'storage media overlaps a database mount']]) })
         const reply = replyOf(await agent.handle({ verb: 'provision', project: 'acme', args: { action: 'remove', environment: null } }))
         assert.equal(reply?.ok, true)
+    })
+
+    // Must-exist, per the whole-branch review: create and add-environment used to call createProject and
+    // addEnvironment without this.deps.envFs at all, the way env() already does, so their own env-file
+    // listing silently fell back to the real filesystem in every test that only overrode envFs.
+    it('forwards envFs into create, so its env listing never reaches the real filesystem', async () => {
+        const provision = fakeProvisionDeps()
+        const envFs = fakeEnvFs({
+            readdir: async dir => dir === '/var/www/bakery'
+                ? [{ name: '.env', isDirectory: () => false, isFile: () => true }]
+                : [],
+            stat: async () => ({ size: 3 }),
+        })
+        const { agent } = setup({ provision, envFs })
+        const reply = replyOf(await agent.handle(create('bakery')))
+        assert.ok(reply?.ok && 'envFiles' in reply)
+        assert.deepEqual(reply.ok && 'envFiles' in reply ? reply.envFiles.map(file => file.path) : [], ['.env'])
+    })
+
+    it('forwards envFs into add-environment, so its copy-and-rewrite step never reaches the real filesystem', async () => {
+        const envFs = fakeEnvFs({
+            readdir: async dir => dir === '/var/www/acme'
+                ? [{ name: '.env', isDirectory: () => false, isFile: () => true }]
+                : [],
+            readFile: async path => path === '/var/www/acme/.env' ? 'A=1' : (() => { throw new Error('ENOENT') })(),
+            stat: async () => ({ size: 3 }),
+        })
+        const writes: Array<{ path: string, text: string }> = []
+        const provision = fakeProvisionDeps({
+            resolve: async () => ({ ok: true, services: { web: { role: 'site' } } }),
+        })
+        const { agent } = setup({
+            provision,
+            envFs: { ...envFs, writeFile: async (path, text) => { writes.push({ path, text }) } },
+        })
+        const reply = replyOf(await agent.handle({
+            verb: 'provision', project: 'acme',
+            args: { action: 'add-environment', environment: 'test', branch: 'develop', domain: null, certificate: null },
+        }))
+        assert.equal(reply?.ok, true)
+        assert.ok(writes.some(write => write.path.startsWith('/var/www/acme-test/')))
     })
 })

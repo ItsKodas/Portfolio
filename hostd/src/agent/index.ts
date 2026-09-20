@@ -20,7 +20,7 @@ const REGISTRY_FILE = process.env.HOSTD_REGISTRY_FILE ?? '/etc/hostd/projects.ya
 const SOCKET_PATH = process.env.HOSTD_AGENT_SOCKET ?? '/run/hostd/agent.sock'
 const SOCKET_GID = Number(process.env.HOSTD_SOCKET_GID ?? '1000')
 const STATUS_FILE = process.env.HOSTD_STATUS_FILE ?? '/tmp/hostd-status.json'
-const FETCH_SOCKET_PATH = process.env.HOSTD_FETCH_SOCKET ?? '/run/hostd/fetch.sock'
+const FETCH_SOCKET_PATH = process.env.HOSTD_FETCH_SOCKET ?? '/run/hostd-fetch/fetch.sock'
 const WWW = '/var/www'
 const POLL_MS = 10_000
 // Compose files can change without the registry changing, so the guard also runs on a timer.
@@ -110,7 +110,8 @@ async function main(): Promise<void> {
         mkdir: dir => mkdir(dir),
         rmdir: dir => rm(dir, { recursive: true, force: true }),
         exists,
-        resolve: (dir, composePath) => resolveNewProject({ dir, composePath }, runner),
+        resolve: (id, dir, composePath) => resolveNewProject({ dir, composePath }, id, runner),
+        runner,
         log,
     }
 

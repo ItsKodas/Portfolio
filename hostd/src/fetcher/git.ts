@@ -4,6 +4,12 @@
 import { tail, type Runner } from '../agent/compose.ts'
 import type { Commit, FetchReply, FetchRequest } from '../shared/fetch-protocol.ts'
 
+// A bad or revoked token must fail as soon as the network round trip says so, not sit out the full
+// GIT_TIMEOUT_MS waiting on a stdin prompt this container has no terminal to answer. Set once, at import
+// time, since every git run here goes through the same createSpawnRunner, whose own allowlist (see
+// DOCKER_ENV_KEYS in ../agent/compose.ts) is what actually carries this into the child's environment.
+process.env.GIT_TERMINAL_PROMPT = '0'
+
 export const GIT_TIMEOUT_MS = 300_000
 // Bytes that cannot appear in a subject, author name or timestamp, so splitting on them is unambiguous.
 const FIELD = '\x1f'

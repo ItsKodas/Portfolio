@@ -15,7 +15,7 @@ services:
     environment:
       HOSTD_REGISTRY_FILE: /etc/hostd/projects.yaml
       HOSTD_AGENT_SOCKET: /run/hostd/agent.sock
-      HOSTD_FETCH_SOCKET: /run/hostd/fetch.sock
+      HOSTD_FETCH_SOCKET: /run/hostd-fetch/fetch.sock
       # The node user's group in the api image, so api can connect and nothing else can.
       HOSTD_SOCKET_GID: "1000"
       HOSTD_STATUS_FILE: /tmp/hostd-status.json
@@ -28,6 +28,10 @@ services:
       # from inside a container. Writable only here; api and fetcher get it read-only below.
       - ./registry:/etc/hostd
       - hostd-sock:/run/hostd
+      # Shared only with fetcher, never with api: api must never be able to reach the fetch protocol
+      # directly, and fetcher must never be able to touch agent.sock (in hostd-sock) to impersonate the
+      # agent to api. See fetcher's own volumes below for the other half of this.
+      - hostd-fetch-sock:/run/hostd-fetch
     healthcheck:
       test: ["CMD", "node", "--import", "tsx", "src/shared/healthcheck.ts", "/tmp/hostd-status.json"]
       interval: 60s
@@ -69,10 +73,15 @@ services:
       target: fetcher
     container_name: hostd-fetcher
     env_file: .env.fetcher
+    environment:
+      HOSTD_FETCH_SOCKET: /run/hostd-fetch/fetch.sock
     volumes:
       - /var/www:/var/www
       - ./registry:/etc/hostd:ro
-      - hostd-sock:/run/hostd
+      # Its own volume, shared only with agent: never hostd-sock, and never api. A compromise here can
+      # therefore never reach agent.sock to speak the agent's own protocol, or overwrite it to impersonate
+      # the agent to api.
+      - hostd-fetch-sock:/run/hostd-fetch
     networks:
       # It clones from and fetches GitHub, unlike agent and api. It never gets the Docker socket.
       - hostd
@@ -91,3 +100,4 @@ networks:
 volumes:
   hostd-state:
   hostd-sock:
+  hostd-fetch-sock:

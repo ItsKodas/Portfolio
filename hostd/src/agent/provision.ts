@@ -18,7 +18,7 @@ import {
 } from '../shared/registry.ts'
 import { RegistryWriter, type Change } from '../shared/registry-write.ts'
 import type { FetchClient } from './fetch-client.ts'
-import type { GuessedService } from './compose.ts'
+import { runLifecycle, type GuessedService, type Runner } from './compose.ts'
 import { listEnvFiles, readEnvFile, writeEnvFile, createMissingEnvFiles, type EnvFs } from './env-files.ts'
 import {
     refuse,
@@ -50,7 +50,12 @@ export type ProvisionDeps = {
     mkdir(dir: string): Promise<void>
     rmdir(dir: string): Promise<void>
     exists(dir: string): Promise<boolean>
-    resolve(dir: string, composePath: string): Promise<{ ok: true, services: Record<string, GuessedService> } | { ok: false, problem: string }>
+    // id is the registry id the clone must resolve to: resolveNewProject checks it against the compose
+    // file's own project name, the same guard the ongoing sweep runs, but here before anything is written.
+    resolve(id: string, dir: string, composePath: string): Promise<{ ok: true, services: Record<string, GuessedService> } | { ok: false, problem: string }>
+    // Only ever used to stop the live environment before removeProject unregisters a whole project: there
+    // is no per-environment lifecycle yet (see RUNBOOK.md), so this is never asked to touch test.
+    runner: Runner
     log(message: string): void
 }
 
@@ -74,6 +79,16 @@ function domainTaken(registry: Registry, domain: string, excludeId?: string): bo
         }
     }
     return false
+}
+
+// takenPorts only ever sees registry.projects, which excludes anything already invalid, and Docker's own
+// published ports only see running containers; a temporarily invalid entry whose containers are stopped
+// is invisible to both, so a new project could take its port and collide the moment that entry is fixed.
+// Refusing provisioning outright while anything is invalid is the honest fix: naming the ids and asking
+// the operator to fix them first, rather than trying to parse a port out of a broken entry.
+function invalidRegistryProblem(registry: Registry): string | null {
+    if (registry.invalid.size === 0) return null
+    return `fix these invalid projects before provisioning: ${[...registry.invalid.keys()].sort().join(', ')}`
 }
 
 function isDatabaseKey(key: string): boolean {
@@ -201,7 +216,7 @@ async function provisionOnDisk(attempt: ProvisionAttempt, deps: ProvisionDeps): 
             return refuse('failed', after.problem)
         }
 
-        const resolved = await deps.resolve(dir, composePath)
+        const resolved = await deps.resolve(id, dir, composePath)
         if (!resolved.ok) {
             // Named plainly, both in the log and the refusal: this is docker compose's own error (a
             // missing env_file, a syntax error, a command that could not run), not "no site service",
@@ -241,6 +256,8 @@ export async function createProject(args: ProvisionCreateArgs, deps: ProvisionDe
     // against a registry the store has not reloaded yet.
     await deps.refreshRegistry()
     const registry = deps.registry()
+    const invalidProblem = invalidRegistryProblem(registry)
+    if (invalidProblem) return refuse('unavailable', invalidProblem)
     if (RESERVED_PROJECT_IDS.has(args.id)) return refuse('bad-request', `${args.id} is reserved for the operator's own stacks`)
     if (registry.projects.has(args.id) || registry.invalid.has(args.id)) return refuse('bad-request', `${args.id} is already registered`)
     const dir = `/var/www/${args.id}`
@@ -298,6 +315,8 @@ export async function addEnvironment(project: ProjectEntry, args: ProvisionAddEn
     // choosePort, so both see the same snapshot.
     await deps.refreshRegistry()
     const registry = deps.registry()
+    const invalidProblem = invalidRegistryProblem(registry)
+    if (invalidProblem) return refuse('unavailable', invalidProblem)
     if (args.domain && domainTaken(registry, args.domain, project.id)) return refuse('bad-request', `${args.domain} is already used by another project`)
 
     const port = await deps.choosePort()
@@ -338,11 +357,29 @@ export async function addEnvironment(project: ProjectEntry, args: ProvisionAddEn
 }
 
 export async function removeProject(project: ProjectEntry, environment: EnvironmentName | null, deps: ProvisionDeps): Promise<AgentReply> {
+    // Removing the whole project must stop it first: otherwise the site keeps serving with nothing left
+    // in the registry able to stop it, since every lifecycle verb answers unknown-project the instant it
+    // is unregistered. runLifecycle only ever reaches the live environment's own compose file (there is
+    // no per-environment lifecycle yet, see RUNBOOK.md), which is exactly what removing a whole project,
+    // as opposed to only its test environment, needs stopped. A failed stop refuses rather than
+    // unregistering anyway: an operator can retry, or stop it by hand, but a project must never go
+    // unregistered while still running.
+    if (!environment) {
+        const stopped = await runLifecycle(project, 'stop', deps.runner)
+        if (!stopped.ok) return refuse('failed', `could not stop ${project.id} before removing it: ${stopped.message}`, stopped.output)
+    }
+
     const change: Change = environment ? { kind: 'remove-environment', id: project.id, environment } : { kind: 'remove-project', id: project.id }
     const written = await deps.writer.write(change)
     if (!written.ok) return refuse('failed', written.problem)
 
     const dir = (environment ? project.environments.get(environment)?.dir : undefined) ?? project.dir
-    deps.log(`provision ${project.id}: unregistered${environment ? ` (${environment})` : ''}, left ${dir} in place`)
-    return { ok: true, output: `${dir} was left in place, along with its volumes and databases` }
+    const stoppedNote = environment ? '' : ', its containers stopped first'
+    deps.log(`provision ${project.id}: unregistered${environment ? ` (${environment})` : ''}${stoppedNote}, left ${dir} in place`)
+    return {
+        ok: true,
+        output: environment
+            ? `${dir} was left in place, along with its volumes and databases`
+            : `${project.id} was stopped and unregistered; ${dir} was left in place, along with its volumes and databases`,
+    }
 }

@@ -5,7 +5,7 @@ import { createProject, addEnvironment, removeProject, type ProvisionDeps } from
 import { RegistryWriter, type RegistryWriteFs } from '../shared/registry-write.ts'
 import { parseRegistry, type ProjectEntry } from '../shared/registry.ts'
 import type { EnvFs } from './env-files.ts'
-import type { GuessedService } from './compose.ts'
+import { lifecycleArgv, type GuessedService, type Runner, type RunResult } from './compose.ts'
 import type { ProvisionCreateArgs, ProvisionAddEnvironmentArgs } from '../shared/protocol.ts'
 import type { FetchReply, FetchRequest } from '../shared/fetch-protocol.ts'
 
@@ -86,6 +86,7 @@ type SetupOptions = {
     portResult?: { ok: true, port: number } | { ok: false, problem: string }
     existsPaths?: string[]
     envTree?: Record<string, string>
+    runnerResult?: Partial<RunResult>
 }
 
 // Every dependency is a plain recorder, in the style the rest of hostd's tests use: no mocking library,
@@ -99,6 +100,7 @@ function setup(options: SetupOptions = {}) {
     const rmdirs: string[] = []
     const cloneRequests: FetchRequest[] = []
     const logs: string[] = []
+    const runnerCalls: Array<{ command: string, args: string[] }> = []
 
     const registryFiles = new Map<string, string>([[REGISTRY_PATH, yaml]])
     const registryFs: RegistryWriteFs = {
@@ -139,10 +141,14 @@ function setup(options: SetupOptions = {}) {
             calls.push('resolve')
             return options.resolveResult ?? { ok: true, services: { web: { role: 'site' } } }
         },
+        runner: (async (command, args) => {
+            runnerCalls.push({ command, args })
+            return { exitCode: 0, stdout: '', stderr: '', timedOut: false, ...options.runnerResult }
+        }) as Runner,
         log: message => logs.push(message),
     }
 
-    return { deps, registry, calls, mkdirs, rmdirs, cloneRequests, logs, registryFiles, envFs, envFsFiles }
+    return { deps, registry, calls, mkdirs, rmdirs, cloneRequests, logs, registryFiles, envFs, envFsFiles, runnerCalls }
 }
 
 const createArgs = (overrides: Partial<ProvisionCreateArgs> = {}): ProvisionCreateArgs => ({
@@ -263,6 +269,21 @@ describe('createProject', () => {
             assert.equal(reply.ok === false && reply.code, 'bad-request', id)
             assert.deepEqual(calls, [], id)
         }
+    })
+
+    // Must-exist, per the whole-branch review: takenPorts only ever sees registry.projects, which
+    // excludes anything already invalid, and Docker's own published ports only see running containers, so
+    // a temporarily invalid entry whose containers are stopped is invisible to both. Refusing outright
+    // while anything is invalid is the honest fix, named here rather than only in ports.ts, since that is
+    // where provisioning as a whole is refused.
+    it('refuses provisioning entirely while the registry has any invalid entry, naming it', async () => {
+        const yaml = `${REGISTRY_YAML}  broken:\n    client: cl_9\n`
+        const { deps, calls } = setup({ registryYaml: yaml })
+        const reply = await createProject(createArgs(), deps)
+        assert.equal(reply.ok, false)
+        assert.equal(reply.ok === false && reply.code, 'unavailable')
+        assert.match(reply.ok === false ? reply.message : '', /broken/)
+        assert.deepEqual(calls, [])
     })
 
     it('refuses when the folder already exists, before cloning', async () => {
@@ -519,6 +540,18 @@ describe('addEnvironment', () => {
         assert.match(reply.ok === false ? reply.message : '', /test\.acme\.com is already used by another project/)
     })
 
+    it('refuses provisioning entirely while the registry has any invalid entry, naming it', async () => {
+        const yaml = `${REGISTRY_YAML}  broken:\n    client: cl_9\n`
+        const { deps, calls } = setup({ registryYaml: yaml })
+        const reply = await addEnvironment(project(yaml), args(), deps)
+        assert.equal(reply.ok, false)
+        assert.equal(reply.ok === false && reply.code, 'unavailable')
+        assert.match(reply.ok === false ? reply.message : '', /broken/)
+        // exists() already ran (addEnvironment checks the folder before refreshing the registry), but
+        // choosePort never does: the refusal lands before it.
+        assert.deepEqual(calls, ['exists'])
+    })
+
     it('refuses a second test environment', async () => {
         const yaml = `
 projects:
@@ -541,23 +574,67 @@ projects:
 })
 
 describe('removeProject', () => {
-    it('removing a project unregisters it and deletes no files', async () => {
-        const { deps, rmdirs, registryFiles } = setup()
+    // Must-exist, per the whole-branch review: deleting a project used to only unregister it, leaving its
+    // containers running with nothing left in the registry able to stop them (every lifecycle verb then
+    // answers unknown-project). Removing the whole project must stop it first, the same stop a lifecycle
+    // call would run.
+    it('stops the project before unregistering it, and deletes no files', async () => {
+        const { deps, rmdirs, registryFiles, runnerCalls } = setup()
         const reply = await removeProject(project(), null, deps)
         assert.equal(reply.ok, true)
         assert.ok(reply.ok && 'output' in reply && reply.output.includes('/var/www/acme'))
+        assert.ok(reply.ok && 'output' in reply && reply.output.includes('stopped'))
         assert.deepEqual(rmdirs, [])
+        assert.deepEqual(runnerCalls, [{ command: 'docker', args: lifecycleArgv(project(), 'stop') }])
 
         const written = parseRegistry(registryFiles.get(REGISTRY_PATH)!)
         assert.equal(written.projects.has('acme'), false)
     })
 
+    // A failed stop must refuse, not unregister anyway: unregistering a project that is still running
+    // would leave nothing in the registry able to stop it. An operator can retry the removal, or stop the
+    // project by hand and then remove it.
+    it('refuses and leaves the registry untouched when the stop fails', async () => {
+        const { deps, registryFiles, runnerCalls } = setup({ runnerResult: { exitCode: 1, stderr: 'no such image' } })
+        const reply = await removeProject(project(), null, deps)
+        assert.equal(reply.ok, false)
+        assert.equal(reply.ok === false && reply.code, 'failed')
+        assert.match(reply.ok === false ? reply.message : '', /could not stop acme/)
+        assert.equal(runnerCalls.length, 1)
+        assert.equal(parseRegistry(registryFiles.get(REGISTRY_PATH)!).projects.has('acme'), true)
+    })
+
+    // Removing only the test environment must never run a stop through this path: runLifecycle's argv is
+    // always built from the project's own (live) dir and compose path, so asking it to stop here would
+    // stop live's containers while claiming to remove test, exactly the mistake there is no per-environment
+    // lifecycle yet to safely avoid (see RUNBOOK.md).
+    it('does not attempt to stop anything when only the test environment is removed', async () => {
+        const yaml = `
+projects:
+  acme:
+    client: cl_1
+    name: Acme
+    repo: git@github.com:ItsKodas/acme.git
+    services: { web: { role: site } }
+    capabilities: [provision, env]
+    environments:
+      live: { dir: /var/www/acme, branch: main, domain: acme.com, port: 5010, certificate: letsencrypt }
+      test: { dir: /var/www/acme-test, branch: develop, domain: test.acme.com, port: 5110, certificate: letsencrypt }
+`
+        const { deps, runnerCalls, registryFiles } = setup({ registryYaml: yaml })
+        const reply = await removeProject(parseRegistry(yaml).projects.get('acme')!, 'test', deps)
+        assert.equal(reply.ok, true)
+        assert.deepEqual(runnerCalls, [])
+        assert.equal(parseRegistry(registryFiles.get(REGISTRY_PATH)!).projects.get('acme')!.environments.has('test'), false)
+    })
+
     it('refuses to remove the live environment on its own', async () => {
-        const { deps, rmdirs, registryFiles } = setup()
+        const { deps, rmdirs, registryFiles, runnerCalls } = setup()
         const reply = await removeProject(project(), 'live', deps)
         assert.equal(reply.ok, false)
         assert.equal(reply.ok === false && reply.message.includes('live environment cannot be removed on its own'), true)
         assert.deepEqual(rmdirs, [])
+        assert.deepEqual(runnerCalls, [])
         assert.equal(parseRegistry(registryFiles.get(REGISTRY_PATH)!).projects.has('acme'), true)
     })
 

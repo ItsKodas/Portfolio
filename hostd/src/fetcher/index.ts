@@ -10,8 +10,7 @@ import { buildStatus, writeStatus } from '../shared/status.ts'
 import { describeError } from '../shared/formats.ts'
 import { handleFetchConnection } from './server.ts'
 
-const SOCKET_PATH = process.env.HOSTD_FETCH_SOCKET ?? '/run/hostd/fetch.sock'
-const SOCKET_GID = Number(process.env.HOSTD_SOCKET_GID ?? '1000')
+const SOCKET_PATH = process.env.HOSTD_FETCH_SOCKET ?? '/run/hostd-fetch/fetch.sock'
 const STATUS_FILE = process.env.HOSTD_STATUS_FILE ?? '/tmp/hostd-status.json'
 const WWW = '/var/www'
 const POLL_MS = 10_000
@@ -51,7 +50,13 @@ async function checkWritable(dir: string): Promise<boolean> {
         if (!info.isDirectory()) return false
         const probe = join(dir, `.hostd-write-check-${process.pid}`)
         await writeFile(probe, '')
-        await rm(probe, { force: true })
+        try {
+            await rm(probe, { force: true })
+        } catch {
+            // The write above already proved the mount is writable; failing to clean up the probe file is
+            // a stray file left behind, not evidence the mount cannot be written to. Reporting FATAL over
+            // it would refuse to boot a fetcher whose mount is perfectly fine.
+        }
         return true
     } catch {
         return false
@@ -59,8 +64,6 @@ async function checkWritable(dir: string): Promise<boolean> {
 }
 
 async function main(): Promise<void> {
-    if (!Number.isInteger(SOCKET_GID) || SOCKET_GID < 0) fail([`HOSTD_SOCKET_GID must be a group id, not ${process.env.HOSTD_SOCKET_GID}`])
-
     const token = process.env.GITHUB_TOKEN ?? null
     const runner = createSpawnRunner()
 
@@ -74,8 +77,10 @@ async function main(): Promise<void> {
     await writeCredentials(token as string, runner)
 
     await rm(SOCKET_PATH, { force: true })
-    // The socket is created 0660 rather than chmodded afterwards, so there is no moment when it is wider.
-    process.umask(0o117)
+    // The socket is created 0600 rather than chmodded afterwards, so there is no moment when it is wider.
+    // Owned by root, group root: this socket now lives in a volume shared only with the agent (never with
+    // api), so there is no group to widen it for the way agent.sock widens for api's gid.
+    process.umask(0o177)
     const server = createServer(socket => {
         handleFetchConnection(socket, request => runGit(request, runner), log)
             .catch(error => log(`connection failed: ${describeError(error)}`))
@@ -84,8 +89,8 @@ async function main(): Promise<void> {
         server.once('error', reject)
         server.listen(SOCKET_PATH, resolve)
     })
-    await chown(SOCKET_PATH, 0, SOCKET_GID)
-    await chmod(SOCKET_PATH, 0o660)
+    await chown(SOCKET_PATH, 0, 0)
+    await chmod(SOCKET_PATH, 0o600)
     log(`listening on ${SOCKET_PATH}`)
 
     for (;;) {

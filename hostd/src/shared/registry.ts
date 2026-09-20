@@ -1,6 +1,7 @@
-// The operator's registry of client projects. Hand-edited, read by both processes, never written by
-// either. A problem with one project marks only that project invalid; a problem with the file as a
-// whole throws, so the caller can keep the last good version instead.
+// The operator's registry of client projects. Hand-edited day to day, and read by every process; the
+// agent is also a writer now, but only for provisioning, and only through registry-write.ts's own narrow,
+// validated path. A problem with one project marks only that project invalid; a problem with the file as
+// a whole throws, so the caller can keep the last good version instead.
 
 import { parse } from 'yaml'
 import { posix } from 'node:path'

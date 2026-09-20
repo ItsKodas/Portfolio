@@ -108,21 +108,37 @@ describe('RegistryWriter', () => {
     function fakeFs(initial: string) {
         const files = new Map<string, string>([['/etc/hostd/projects.yaml', initial]])
         const calls: string[] = []
+        const writeCalls: { path: string, flag?: string }[] = []
         const fs: RegistryWriteFs = {
             readFile: async path => files.get(path) ?? Promise.reject(new Error('missing')),
-            writeFile: async (path, text) => { calls.push(`write ${path}`); files.set(path, text) },
+            writeFile: async (path, text, options) => { calls.push(`write ${path}`); writeCalls.push({ path, flag: options?.flag }); files.set(path, text) },
             rename: async (from, to) => { calls.push(`rename ${from} -> ${to}`); files.set(to, files.get(from)!); files.delete(from) },
             unlink: async path => { calls.push(`unlink ${path}`); files.delete(path) },
         }
-        return { fs, files, calls }
+        return { fs, files, calls, writeCalls }
     }
 
     it('writes a temporary file beside the registry and renames it over the original', async () => {
         const { fs, files, calls } = fakeFs(BASE)
         const writer = new RegistryWriter('/etc/hostd/projects.yaml', fs)
         assert.deepEqual(await writer.write(addProject), { ok: true })
-        assert.deepEqual(calls, ['write /etc/hostd/.projects.yaml.tmp', 'rename /etc/hostd/.projects.yaml.tmp -> /etc/hostd/projects.yaml'])
+        assert.equal(calls.length, 2)
+        // A random suffix, not a fixed name: two writes must never be able to collide on the same
+        // temporary path (see the concurrent-writes test below), and a fixed name could be pre-planted.
+        assert.match(calls[0]!, /^write \/etc\/hostd\/\.projects\.yaml\.[0-9a-f]+\.tmp$/)
+        assert.match(calls[1]!, /^rename \/etc\/hostd\/\.projects\.yaml\.[0-9a-f]+\.tmp -> \/etc\/hostd\/projects\.yaml$/)
         assert.match(files.get('/etc/hostd/projects.yaml')!, /bakery/)
+    })
+
+    // 'wx' is O_CREAT | O_EXCL, matching env-files.ts's own temp file: it fails on anything already at
+    // that path, symlink or not, rather than opening through it, so a pre-planted symlink at a guessed
+    // temp name cannot capture the write.
+    it('opens the temporary file exclusively, the same defense env-files.ts uses for its own temp file', async () => {
+        const { fs, writeCalls } = fakeFs(BASE)
+        const writer = new RegistryWriter('/etc/hostd/projects.yaml', fs)
+        await writer.write(addProject)
+        assert.equal(writeCalls.length, 1)
+        assert.equal(writeCalls[0]!.flag, 'wx')
     })
 
     it('leaves the file untouched when the change is refused', async () => {
@@ -141,7 +157,7 @@ describe('RegistryWriter', () => {
         const result = await writer.write(addProject)
         assert.equal(result.ok, false)
         assert.equal(files.get('/etc/hostd/projects.yaml'), BASE)
-        assert.ok(calls.includes('unlink /etc/hostd/.projects.yaml.tmp'))
+        assert.ok(calls.some(call => /^unlink \/etc\/hostd\/\.projects\.yaml\.[0-9a-f]+\.tmp$/.test(call)))
     })
 
     it('serialises concurrent writes, so two additions both survive', async () => {

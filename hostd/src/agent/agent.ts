@@ -101,7 +101,7 @@ export class Agent {
         if (this.provisioningBusy) return refuse('busy', 'another provisioning action is in progress')
         this.provisioningBusy = true
         try {
-            return await createProject(args, this.deps.provision)
+            return await createProject(args, this.deps.provision, this.deps.envFs)
         } finally {
             this.provisioningBusy = false
         }
@@ -113,7 +113,7 @@ export class Agent {
         this.provisioningBusy = true
         try {
             return args.action === 'add-environment'
-                ? await addEnvironment(project, args, this.deps.provision)
+                ? await addEnvironment(project, args, this.deps.provision, this.deps.envFs)
                 : await removeProject(project, args.environment, this.deps.provision)
         } finally {
             this.provisioningBusy = false
