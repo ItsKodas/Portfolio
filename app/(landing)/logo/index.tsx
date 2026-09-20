@@ -1,8 +1,9 @@
 'use client'
 
 import Image from 'next/image'
+import Link from 'next/link'
 import { Typography } from '@mui/material'
-import { SportsEsports, Casino } from '@mui/icons-material'
+import { SportsEsports, Language } from '@mui/icons-material'
 import { useEffect, useRef, useState } from 'react'
 import { useSpring, animated, to } from '@react-spring/web'
 
@@ -133,23 +134,24 @@ export default function AnimatedLogo() {
                     transformOrigin: 'top center',
                     pointerEvents: subtitle.p.to(q => q > 0.9 ? 'auto' : 'none'),
                 }}>
-                    {HERO_LINKS.map(({ label, href, icon: Icon, primary }) => (
-                        <a key={label} href={href} target="_blank" rel="noopener noreferrer"
-                            className={`flex items-center gap-3 whitespace-nowrap rounded-full border-2 px-8 py-3.5 text-[23px] font-semibold tracking-wide backdrop-blur-md transition-all duration-300 hover:-translate-y-1 focus-visible:outline-none focus-visible:ring-4 focus-visible:ring-white/50 ${primary
-                                ? 'border-white/80 bg-white/90 text-[#27336b] hover:bg-white shadow-[0_10px_40px_-10px_rgba(255,255,255,0.45)]'
-                                : 'border-white/60 bg-white/[0.08] text-white hover:bg-white/[0.18] hover:border-white'}`}>
-                            <Icon sx={{ fontSize: 28 }} />
-                            {label}
-                        </a>
-                    ))}
+                    {HERO_LINKS.map(({ label, href, icon: Icon, primary, external }) => {
+                        const className = `flex items-center gap-3 whitespace-nowrap rounded-full border-2 px-8 py-3.5 text-[23px] font-semibold tracking-wide backdrop-blur-md transition-all duration-300 hover:-translate-y-1 focus-visible:outline-none focus-visible:ring-4 focus-visible:ring-white/50 ${primary
+                            ? 'border-white/80 bg-white/90 text-[#27336b] hover:bg-white shadow-[0_10px_40px_-10px_rgba(255,255,255,0.45)]'
+                            : 'border-white/60 bg-white/[0.08] text-white hover:bg-white/[0.18] hover:border-white'}`
+                        const body = <><Icon sx={{ fontSize: 28 }} />{label}</>
+                        return external
+                            ? <a key={label} href={href} target="_blank" rel="noopener noreferrer" className={className}>{body}</a>
+                            : <Link key={label} href={href} className={className}>{body}</Link>
+                    })}
                 </animated.div>
             </div>
         </div>
     )
 }
 
-// Buttons under the hero title (drawn at the logo's natural size, and scaled with it)
+// Buttons under the hero title (drawn at the logo's natural size, and scaled with it). Internal links stay in
+// this tab; the portal one lands on the sign-in page for anyone who isn't already signed in.
 const HERO_LINKS = [
-    { label: 'Game Panel', href: 'https://pelican.horizons.gg', icon: SportsEsports, primary: true },
-    { label: 'The Back Room', href: 'https://thebackroom.dev', icon: Casino, primary: false },
+    { label: 'Game Panel', href: 'https://pelican.horizons.gg', icon: SportsEsports, primary: true, external: true },
+    { label: 'Client Portal', href: '/portal', icon: Language, primary: false, external: false },
 ]
