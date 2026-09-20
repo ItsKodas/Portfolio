@@ -2,6 +2,8 @@
 
 import { useEffect, useState } from 'react'
 
+import { describeCap } from './crashGuard'
+
 // A test mode for finding out why scrolling lags on a phone that can't be attached to a profiler. Open the page with
 // ?debug=perf and a small readout shows, once a second, how often the page got to draw and how often the browser told
 // it the page had scrolled, plus switches that each take one suspect out of the picture. Renders nothing otherwise.
@@ -19,8 +21,9 @@ const SWITCHES = [
 // Whether this browser can drive animations from the scroll position, and which iOS it is (every iOS browser uses the
 // system WebKit, and WebKit only runs scroll-driven animations off the main thread from 26.4)
 const timelines = () => typeof CSS !== 'undefined' && CSS.supports('animation-timeline: scroll()')
-// The tier this device has been held to since a crash, if it has been (see app/perf/crashGuard.ts)
-const storedCap = () => { try { return localStorage.getItem('scene-cap') ?? 'none' } catch (e) { return '-' } }
+// The tier this device has been held to since a crash, if it has been, and how long that still has to run
+// (see app/perf/crashGuard.ts)
+const storedCap = () => { try { return describeCap(localStorage.getItem('scene-cap')) } catch (e) { return '-' } }
 // The crash guard's log (see app/perf/crashGuard.ts), newest last: which load found which mark, and what it capped
 const guardLog = () => { try { return JSON.parse(localStorage.getItem('scene-log') ?? '[]') as string[] } catch (e) { return [] } }
 const iosVersion = () => navigator.userAgent.match(/OS (\d+)_(\d+)/)?.slice(1).join('.') ?? '-'

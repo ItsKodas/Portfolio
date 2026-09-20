@@ -10,6 +10,25 @@
 
 const LIVE = 'scene-live'
 
+// How long a cap holds a device before it detects afresh: a week to start with, doubling on every further crash found
+// while the cap is still live, to a ceiling of a year. A mark is not proof of a crash even per tab, since sessionStorage
+// is copied into a duplicated tab and brought back by a session restore, so a cap that was false costs a week of one
+// tier rather than the device's lifetime, while a phone that really can't hold the scene ratchets towards being left
+// alone. The head script imports both and does the storing and obeying, so this module stays free of the DOM at the
+// top level; see its own crash guard comment for the stored shape.
+export const CAP_WEEK_MS = 6048e5
+export const CAP_MAX_WEEKS = 52
+
+// A stored cap in the few characters the ?debug=perf readout has for it: the tier, and the days the cap still has to
+// run. Spent means its window is up (or it is a bare tier from a version that never expired one), so the next load on
+// this device throws it away and detects afresh.
+export function describeCap(stored: string | null) {
+    if (stored === null) return 'none'
+    const [tier, at, weeks] = stored.split(' ')
+    const left = Number(at) + Number(weeks) * CAP_WEEK_MS - Date.now()
+    return left > 0 ? `${tier} for ${Math.ceil(left / 864e5)}d` : `${tier} (spent)`
+}
+
 const forced = () => document.documentElement.hasAttribute('data-perf-forced')
 const onScreen = () => !document.hidden && !(document as { prerendering?: boolean }).prerendering
 const tiersOnScreen = () => (document.documentElement.getAttribute('data-scene') || '').split(/\s+/).filter(Boolean).length
