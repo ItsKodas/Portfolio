@@ -4,6 +4,7 @@
 // call requireClient() first, exactly as the admin actions call requireAdmin().
 
 import { redirect } from 'next/navigation'
+import { revalidatePath } from 'next/cache'
 
 import { CODE_PATH, PORTAL_HOME, SETUP_PATH, SIGN_IN_PATH, clearSessionCookie, readSession, requireClient, requirePendingSession, setSessionCookie } from '@/server/clients/auth'
 import { EnvError } from '@/server/env'
@@ -12,7 +13,11 @@ import { codeStep, passwordStep } from '@/server/clients/signIn'
 import { acknowledgeRecoveryCodes, completeInvite, confirmEnrolment } from '@/server/clients/setup'
 import { hashSessionToken } from '@/server/clients/session'
 import { RESET_SENT_MESSAGE, completeReset, requestReset } from '@/server/clients/reset'
-import { acknowledgeDeps, codeStepDeps, completeInviteDeps, completeResetDeps, confirmEnrolmentDeps, log, passwordStepDeps, repo, requestIpHash, requestResetDeps, requestUserAgent } from '@/server/clients/wiring'
+import {
+    acknowledgeDeps, changePasswordDeps, codeStepDeps, completeInviteDeps, completeResetDeps, confirmEnrolmentDeps,
+    log, passwordStepDeps, regenerateDeps, repo, requestIpHash, requestResetDeps, requestUserAgent,
+    runChangePassword, runRegenerate,
+} from '@/server/clients/wiring'
 
 export type PortalResult = { ok: true } | { ok: false, error: string }
 export type CodesResult = { ok: true, recoveryCodes: string[] } | { ok: false, error: string }
@@ -135,5 +140,47 @@ export async function completeResetAction(token: string, password: string, code:
     } catch (error) {
         if (error && typeof error === 'object' && 'digest' in error) throw error
         return failure('Completing a password reset', error)
+    }
+}
+
+// requireClient() runs first in every action below, exactly as requireAdmin() does for the admin actions: it is
+// what stands between a signed-out visitor, or one client, and another client's data.
+
+export async function changePasswordAction(current: string, next: string): Promise<PortalResult> {
+    const { client, sessionId } = await requireClient()
+    const parsed = passwordSchema.safeParse(next)
+    if (!parsed.success) return { ok: false, error: parsed.error.issues[0]?.message ?? INVALID.error }
+    if (typeof current !== 'string' || !current) return INVALID
+    try {
+        // sessionId travels through so the pipeline can spare the session doing the changing while it drops the rest
+        const result = await runChangePassword({ client, sessionId, current, next: parsed.data }, changePasswordDeps())
+        if (result.ok) revalidatePath('/portal/account')
+        return result
+    } catch (error) {
+        return failure('Changing a client password', error)
+    }
+}
+
+export async function regenerateCodesAction(password: string): Promise<CodesResult> {
+    const { client } = await requireClient()
+    if (typeof password !== 'string' || !password) return { ok: false, error: INVALID.error }
+    try {
+        const result = await runRegenerate({ client, password }, regenerateDeps())
+        if (result.ok) revalidatePath('/portal/account')
+        return result
+    } catch (error) {
+        const failed = failure('Regenerating recovery codes', error)
+        return failed.ok ? { ok: false, error: BROKEN.error } : failed
+    }
+}
+
+export async function signOutElsewhereAction(): Promise<PortalResult> {
+    const { client, sessionId } = await requireClient()
+    try {
+        await repo().deleteSessionsFor(client.id, sessionId)
+        revalidatePath('/portal/account')
+        return { ok: true }
+    } catch (error) {
+        return failure('Signing out other sessions', error)
     }
 }

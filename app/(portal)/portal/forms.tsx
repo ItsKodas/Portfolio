@@ -11,8 +11,9 @@ import { Alert, Box, Button, Paper, Stack, TextField, Typography } from '@mui/ma
 
 import { MIN_PASSWORD_LENGTH, codeSchema, emailSchema, passwordSchema } from '@/server/clients/schema'
 import {
-    acknowledgeCodesAction, codeAction, completeInviteAction, completeResetAction,
-    confirmEnrolmentAction, requestResetAction, signInAction, type PortalResult,
+    acknowledgeCodesAction, changePasswordAction, codeAction, completeInviteAction, completeResetAction,
+    confirmEnrolmentAction, regenerateCodesAction, requestResetAction, signInAction, signOutElsewhereAction,
+    type PortalResult,
 } from './actions'
 
 function useAction() {
@@ -104,8 +105,9 @@ export function CodeForm() {
     )
 }
 
-function RecoveryCodes({ codes }: { codes: string[] }) {
-    const { pending, error, run } = useAction()
+// The list-and-buttons half of showing a batch of recovery codes, shared by enrolment (RecoveryCodes below) and
+// the account page's RegenerateCodesForm. Each caller supplies its own notice and its own way to move on.
+function RecoveryCodesList({ codes, notice, children }: { codes: string[], notice: string, children: React.ReactNode }) {
     const [copied, setCopied] = useState(false)
     const text = codes.join('\n')
 
@@ -131,10 +133,7 @@ function RecoveryCodes({ codes }: { codes: string[] }) {
 
     return (
         <div>
-            <Typography variant="body2" sx={{ mb: 2 }}>
-                Save these recovery codes somewhere safe, like a password manager. Each one signs you in once, if
-                you ever lose access to your authenticator app. They will not be shown again.
-            </Typography>
+            <Typography variant="body2" sx={{ mb: 2 }}>{notice}</Typography>
             <Box component="ul" sx={{
                 fontFamily: 'monospace', listStyle: 'none', p: 2, m: 0, mb: 2,
                 bgcolor: 'background.default', borderRadius: 1,
@@ -145,10 +144,19 @@ function RecoveryCodes({ codes }: { codes: string[] }) {
                 <Button variant="outlined" fullWidth onClick={copyCodes}>{copied ? 'Copied' : 'Copy'}</Button>
                 <Button variant="outlined" fullWidth onClick={downloadCodes}>Download</Button>
             </Stack>
+            {children}
+        </div>
+    )
+}
+
+function RecoveryCodes({ codes }: { codes: string[] }) {
+    const { pending, error, run } = useAction()
+    return (
+        <RecoveryCodesList codes={codes} notice="Save these recovery codes somewhere safe, like a password manager. Each one signs you in once, if you ever lose access to your authenticator app. They will not be shown again.">
             <Button variant="contained" fullWidth size="large" disabled={pending}
                 onClick={() => run(() => acknowledgeCodesAction())}>I have saved these</Button>
             <Problem error={error} />
-        </div>
+        </RecoveryCodesList>
     )
 }
 
@@ -299,5 +307,106 @@ export function ResetForm({ token, needsCode }: { token: string, needsCode: bool
             </Button>
             <Problem error={error} />
         </form>
+    )
+}
+
+// The account page's own forms, below. Unlike everything above, these run against an already-signed-in
+// session, so none of them redirect on success: they update in place and leave the client on the page.
+
+export function ChangePasswordForm() {
+    const { pending, error, run } = useAction()
+    const [current, setCurrent] = useState('')
+    const [password, setPassword] = useState('')
+    const [confirm, setConfirm] = useState('')
+    const [done, setDone] = useState(false)
+    const passwordProblem = fieldProblem(password, passwordSchema)
+    const mismatch = confirm.length > 0 && confirm !== password
+    const canSubmit = !!current && !!password && !passwordProblem && !!confirm && !mismatch
+
+    function submit(event: React.FormEvent) {
+        event.preventDefault()
+        setDone(false)
+        run(() => changePasswordAction(current, password), () => {
+            setDone(true)
+            setCurrent('')
+            setPassword('')
+            setConfirm('')
+        })
+    }
+
+    return (
+        <form onSubmit={submit}>
+            <TextField label="Current password" type="password" fullWidth autoComplete="current-password" value={current}
+                onChange={event => setCurrent(event.target.value)} sx={{ mb: 2 }} />
+            <TextField label="New password" type="password" fullWidth autoComplete="new-password" value={password}
+                error={!!passwordProblem} helperText={passwordHint(password)}
+                onChange={event => setPassword(event.target.value)} sx={{ mb: 2 }} />
+            <TextField label="Confirm new password" type="password" fullWidth autoComplete="new-password" value={confirm}
+                error={mismatch} helperText={mismatch ? CONFIRM_MISMATCH : undefined}
+                onChange={event => setConfirm(event.target.value)} sx={{ mb: 2 }} />
+            <Button type="submit" variant="contained" disabled={pending || !canSubmit}>Change password</Button>
+            {done && (
+                <Alert severity="success" sx={{ mt: 2 }}>
+                    Your password has been changed. This device stays signed in, and every other session has been signed out.
+                </Alert>
+            )}
+            <Problem error={error} />
+        </form>
+    )
+}
+
+export function RegenerateCodesForm() {
+    const [pending, setPending] = useState(false)
+    const [error, setError] = useState<string | null>(null)
+    const [password, setPassword] = useState('')
+    // Set once, from regenerateCodesAction's own result, the same way enrolment holds its codes: this is the
+    // only place the plaintext exists, and there is nothing here worth persisting client-side.
+    const [codes, setCodes] = useState<string[] | null>(null)
+
+    async function submit(event: React.FormEvent) {
+        event.preventDefault()
+        setPending(true)
+        setError(null)
+        try {
+            const result = await regenerateCodesAction(password)
+            if (result.ok) setCodes(result.recoveryCodes)
+            else setError(result.error)
+        } catch {
+            setError('That did not work. Try reloading the page.')
+        } finally {
+            setPending(false)
+            setPassword('')
+        }
+    }
+
+    if (codes) {
+        return (
+            <RecoveryCodesList codes={codes} notice="Save these somewhere safe, like a password manager. Your previous recovery codes have stopped working. Each new one signs you in once, if you ever lose access to your authenticator app, and they will not be shown again.">
+                <Button variant="contained" fullWidth size="large" onClick={() => setCodes(null)}>Done</Button>
+            </RecoveryCodesList>
+        )
+    }
+
+    return (
+        <form onSubmit={submit}>
+            <Typography variant="body2" sx={{ mb: 2 }}>
+                Confirm your password to generate a new set of recovery codes. The old set stops working as soon as the new one is created.
+            </Typography>
+            <TextField label="Password" type="password" fullWidth autoComplete="current-password" value={password}
+                onChange={event => setPassword(event.target.value)} sx={{ mb: 2 }} />
+            <Button type="submit" variant="contained" disabled={pending || !password}>Generate new codes</Button>
+            <Problem error={error} />
+        </form>
+    )
+}
+
+export function SignOutElsewhereButton() {
+    const { pending, error, run } = useAction()
+    return (
+        <Box>
+            <Button variant="outlined" color="error" disabled={pending}
+                onClick={() => run(() => signOutElsewhereAction())}>Sign out everywhere else</Button>
+            <Problem error={error} />
+        </Box>
     )
 }
