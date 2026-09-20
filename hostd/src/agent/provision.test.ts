@@ -249,6 +249,61 @@ describe('createProject', () => {
         assert.equal(reply.ok === false && reply.code, 'bad-request')
         assert.deepEqual(calls, ['exists'])
     })
+
+    // A throw is not a returned failure, but it must roll back exactly the same way: the fetcher's own
+    // client throws FetcherUnavailableError on a timeout, a connection failure or an early close, and a
+    // real mkdir/rmdir/resolve can throw too. Nothing here may assume a dependency can only fail by
+    // returning `ok: false`.
+    it('rolls back when the fetcher throws instead of returning a failure', async () => {
+        const { deps, rmdirs, calls } = setup({
+            registryYaml: REGISTRY_YAML,
+        })
+        const throwingFetcher: ProvisionDeps['fetcher'] = { call: async () => { throw new Error('the fetcher connection failed: socket reset') } }
+        const reply = await createProject(createArgs(), { ...deps, fetcher: throwingFetcher })
+        assert.equal(reply.ok, false)
+        assert.equal(reply.ok === false && reply.code, 'failed')
+        assert.deepEqual(rmdirs, ['/var/www/bakery'])
+        assert.equal(calls.includes('write'), false)
+    })
+
+    it('rolls back when resolve throws instead of returning a failure', async () => {
+        const { deps, rmdirs } = setup()
+        const throwingResolve: ProvisionDeps['resolve'] = async () => { throw new Error('docker is not answering') }
+        const reply = await createProject(createArgs(), { ...deps, resolve: throwingResolve })
+        assert.equal(reply.ok, false)
+        assert.equal(reply.ok === false && reply.code, 'failed')
+        assert.deepEqual(rmdirs, ['/var/www/bakery'])
+    })
+
+    it('still attempts to remove the folder when mkdir itself throws', async () => {
+        const { deps, rmdirs } = setup()
+        const throwingMkdir: ProvisionDeps['mkdir'] = async () => { throw new Error('EACCES: permission denied') }
+        const reply = await createProject(createArgs(), { ...deps, mkdir: throwingMkdir })
+        assert.equal(reply.ok, false)
+        assert.equal(reply.ok === false && reply.code, 'failed')
+        assert.deepEqual(rmdirs, ['/var/www/bakery'])
+    })
+
+    // The busy lock in agent.ts is the primary defense against two overlapping creates of the same id;
+    // this is the fallback inside provision.ts itself, for whatever reaches the write despite that lock.
+    // A write failure that says the id is already registered means someone else's entry now owns it, so
+    // the folder this call made may already be theirs (or gone, or replaced): removing it is not this
+    // call's to do.
+    it('does not remove its folder when the registry write fails because the id is already registered', async () => {
+        const { deps, rmdirs } = setup()
+        const conflictingWriter = { write: async () => ({ ok: false, problem: 'bakery already exists' }) } as unknown as RegistryWriter
+        const reply = await createProject(createArgs(), { ...deps, writer: conflictingWriter })
+        assert.deepEqual(reply, { ok: false, code: 'failed', message: 'bakery already exists' })
+        assert.deepEqual(rmdirs, [])
+    })
+
+    it('still removes its folder when the write fails for an unrelated reason', async () => {
+        const { deps, rmdirs } = setup()
+        const otherFailure = { write: async () => ({ ok: false, problem: 'the registry could not be written: disk full' }) } as unknown as RegistryWriter
+        const reply = await createProject(createArgs(), { ...deps, writer: otherFailure })
+        assert.equal(reply.ok, false)
+        assert.deepEqual(rmdirs, ['/var/www/bakery'])
+    })
 })
 
 describe('addEnvironment', () => {
@@ -275,7 +330,17 @@ describe('addEnvironment', () => {
     it('copies live env files into a new test environment, pointing the site URL and database at test', async () => {
         const { deps, envFs, envFsFiles } = setup({
             envTree: {
-                '/var/www/acme/.env': 'SITE_URL=https://acme.com\nDATABASE_URL=postgres://user:pw@db:5432/acme\nOTHER=unrelated-value\n',
+                '/var/www/acme/.env': [
+                    'SITE_URL=https://acme.com',
+                    'DATABASE_URL=postgres://user:pw@db:5432/acme',
+                    // None of these name a database, and none of them may be touched even though every
+                    // one of them contains the project id as a plain substring.
+                    'S3_BUCKET=acme-assets',
+                    'GITHUB_REPO=ItsKodas/acme',
+                    'SMTP_USER=noreply@acme.com',
+                    'OTHER=unrelated-value',
+                    '',
+                ].join('\n'),
             },
         })
         const reply = await addEnvironment(project(), args(), deps, envFs)
@@ -283,7 +348,67 @@ describe('addEnvironment', () => {
         assert.ok(reply.ok && 'envFiles' in reply && reply.envFiles.some(file => file.path === '.env'))
 
         const copied = envFsFiles.get('/var/www/acme-test/.env')
-        assert.equal(copied, 'SITE_URL=https://test.acme.com\nDATABASE_URL=postgres://user:pw@db:5432/acme-test\nOTHER=unrelated-value\n')
+        assert.equal(copied, [
+            'SITE_URL=https://test.acme.com',
+            'DATABASE_URL=postgres://user:pw@db:5432/acme-test',
+            'S3_BUCKET=acme-assets',
+            'GITHUB_REPO=ItsKodas/acme',
+            'SMTP_USER=noreply@acme.com',
+            'OTHER=unrelated-value',
+            '',
+        ].join('\n'))
+    })
+
+    it('refuses and rolls back when an env file fails to copy, naming it in the refusal', async () => {
+        const { deps, rmdirs, envFs } = setup({ envTree: { '/var/www/acme/.env': 'A=1' } })
+        const flakyEnvFs: EnvFs = { ...envFs, writeFile: async () => { throw new Error('disk full') } }
+        const reply = await addEnvironment(project(), args(), deps, flakyEnvFs)
+        assert.equal(reply.ok, false)
+        assert.equal(reply.ok === false && reply.code, 'failed')
+        assert.match(reply.ok === false ? reply.message : '', /\.env/)
+        assert.deepEqual(rmdirs, ['/var/www/acme-test'])
+    })
+
+    it('removes the folder and writes nothing when the clone fails', async () => {
+        const { deps, rmdirs, calls } = setup({ cloneResult: { ok: false, code: 'failed', message: 'git clone failed: authentication required' } })
+        const reply = await addEnvironment(project(), args(), deps)
+        assert.deepEqual(reply, { ok: false, code: 'failed', message: 'git clone failed: authentication required' })
+        assert.deepEqual(rmdirs, ['/var/www/acme-test'])
+        assert.equal(calls.includes('write'), false)
+    })
+
+    it('removes the folder and writes nothing when the compose file has no site service', async () => {
+        const { deps, rmdirs, calls } = setup({ resolveResult: { ok: true, services: {} } })
+        const reply = await addEnvironment(project(), args(), deps)
+        assert.equal(reply.ok, false)
+        assert.equal(reply.ok === false && reply.code, 'invalid-project')
+        assert.deepEqual(rmdirs, ['/var/www/acme-test'])
+        assert.equal(calls.includes('write'), false)
+    })
+
+    it('removes the folder and writes nothing when the registry write fails for an unrelated reason', async () => {
+        const { deps, rmdirs } = setup()
+        const otherFailure = { write: async () => ({ ok: false, problem: 'the registry could not be written: disk full' }) } as unknown as RegistryWriter
+        const reply = await addEnvironment(project(), args(), { ...deps, writer: otherFailure })
+        assert.equal(reply.ok, false)
+        assert.deepEqual(rmdirs, ['/var/www/acme-test'])
+    })
+
+    it('does not remove its folder when the write fails because the project already has a test environment', async () => {
+        const { deps, rmdirs } = setup()
+        const conflictingWriter = { write: async () => ({ ok: false, problem: 'acme already has a test environment' }) } as unknown as RegistryWriter
+        const reply = await addEnvironment(project(), args(), { ...deps, writer: conflictingWriter })
+        assert.deepEqual(reply, { ok: false, code: 'failed', message: 'acme already has a test environment' })
+        assert.deepEqual(rmdirs, [])
+    })
+
+    it('rolls back when the fetcher throws instead of returning a failure', async () => {
+        const { deps, rmdirs } = setup()
+        const throwingFetcher: ProvisionDeps['fetcher'] = { call: async () => { throw new Error('the fetcher connection failed: socket reset') } }
+        const reply = await addEnvironment(project(), args(), { ...deps, fetcher: throwingFetcher })
+        assert.equal(reply.ok, false)
+        assert.equal(reply.ok === false && reply.code, 'failed')
+        assert.deepEqual(rmdirs, ['/var/www/acme-test'])
     })
 
     it('refuses a second test environment', async () => {
@@ -335,13 +460,18 @@ describe('removeProject', () => {
 
 describe('secrecy', () => {
     it('never puts repo credentials or an env value into a log line', async () => {
+        // A fetcher failure's message is deliberately passed through into the refusal reply, not
+        // redacted here: git.ts's own redact() already strips a userinfo section and a bare token from
+        // Git's stderr before the fetcher ever answers, so what reaches provision.ts is already safe to
+        // hand to the caller. This is what the log lines must never do regardless: even an already-safe
+        // fetcher message is not logged verbatim, on the principle that provision.ts's own log calls carry
+        // only ids, paths and fixed words, never a value from anywhere else.
+        const fetcherMessage = 'fatal: authentication failed for https://x-access-token:ghp_SECRETTOKEN@github.com/acme/site.git'
         const { deps: createDeps, logs: createLogs } = setup({
-            cloneResult: {
-                ok: false, code: 'failed',
-                message: 'fatal: authentication failed for https://x-access-token:ghp_SECRETTOKEN@github.com/acme/site.git',
-            },
+            cloneResult: { ok: false, code: 'failed', message: fetcherMessage },
         })
-        await createProject(createArgs(), createDeps)
+        const reply = await createProject(createArgs(), createDeps)
+        assert.deepEqual(reply, { ok: false, code: 'failed', message: fetcherMessage })
         assert.ok(createLogs.length > 0)
         assert.ok(createLogs.every(line => !line.includes('ghp_SECRETTOKEN')))
 

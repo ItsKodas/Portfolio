@@ -4,8 +4,8 @@
 import {
     checkStructure, refuse,
     type AgentReply, type AgentRequest, type EnvArgs, type HealthReply, type LifecycleAction, type LifecycleReply,
-    type LogLine, type LogsArgs, type ProvisionAddEnvironmentArgs, type ProvisionRemoveArgs, type Refusal,
-    type ServiceStatus,
+    type LogLine, type LogsArgs, type ProvisionAddEnvironmentArgs, type ProvisionCreateArgs, type ProvisionRemoveArgs,
+    type Refusal, type ServiceStatus,
 } from '../shared/protocol.ts'
 import { environmentOf, type ProjectEntry, type Registry } from '../shared/registry.ts'
 import { runLifecycle, type Runner } from './compose.ts'
@@ -46,6 +46,12 @@ export class Agent {
     // Keyed <project>:<environment>, exactly like lifecycleBusy, so two writes to the same env file
     // never race through this process even though writeEnvFile's own temp-file dance is otherwise safe.
     private readonly envBusy = new Set<string>()
+    // Keyed by the target project id: a create by its own args.id, add-environment and remove by the
+    // existing project's id. Without this, two overlapping creates (or a create and an add-environment)
+    // for the same id both read the same registry snapshot, both see the id or port free, and both
+    // proceed; this is what makes provisioning of one id one at a time, the same guarantee lifecycleBusy
+    // gives a single project's lifecycle actions.
+    private readonly provisionBusy = new Set<string>()
 
     constructor(private readonly deps: AgentDeps) {}
 
@@ -58,7 +64,7 @@ export class Agent {
         if (!('project' in request)) {
             // The only request left without a project id is provision create: nothing is registered yet
             // for checkStructure to look up, so there is nothing structural to check before it runs.
-            return reply(this.deps.provision ? await createProject(request.args, this.deps.provision) : refuse('unavailable', 'provisioning is not configured'))
+            return reply(await this.provisionCreate(request.args))
         }
         const checked = checkStructure(this.deps.registry(), request, this.deps.guardInvalid())
         if (!checked.ok) return reply(checked)
@@ -90,11 +96,28 @@ export class Agent {
         return buildServiceStatuses(project, inspected)
     }
 
+    private async provisionCreate(args: ProvisionCreateArgs): Promise<AgentReply> {
+        if (!this.deps.provision) return refuse('unavailable', 'provisioning is not configured')
+        if (this.provisionBusy.has(args.id)) return refuse('busy', `${args.id} already has a provisioning action running`)
+        this.provisionBusy.add(args.id)
+        try {
+            return await createProject(args, this.deps.provision)
+        } finally {
+            this.provisionBusy.delete(args.id)
+        }
+    }
+
     private async provisionExisting(project: ProjectEntry, args: ProvisionAddEnvironmentArgs | ProvisionRemoveArgs): Promise<AgentReply> {
         if (!this.deps.provision) return refuse('unavailable', 'provisioning is not configured')
-        return args.action === 'add-environment'
-            ? addEnvironment(project, args, this.deps.provision)
-            : removeProject(project, args.environment, this.deps.provision)
+        if (this.provisionBusy.has(project.id)) return refuse('busy', `${project.id} already has a provisioning action running`)
+        this.provisionBusy.add(project.id)
+        try {
+            return args.action === 'add-environment'
+                ? await addEnvironment(project, args, this.deps.provision)
+                : await removeProject(project, args.environment, this.deps.provision)
+        } finally {
+            this.provisionBusy.delete(project.id)
+        }
     }
 
     private async env(project: ProjectEntry, args: EnvArgs): Promise<AgentReply> {

@@ -1,13 +1,16 @@
 // Creates and removes projects and environments end to end. Every step here is undoable only while the
 // steps after it have not happened yet, so the order below is load-bearing: nothing is registered before
-// it exists on disk, and a failure partway through removes whatever this put on disk and writes nothing
-// to the registry. `log` never receives a repo URL, a git message or an env value; only ids, paths and
-// fixed words, so a compromised or merely careless log sink can never leak a secret.
+// it exists on disk, and a failure partway through, whether returned or thrown, removes whatever this put
+// on disk and writes nothing to the registry. Concurrent provisioning of the same id is Agent's job to
+// serialise (see provisionBusy in agent.ts); the rollback here still refuses to remove a folder a write
+// failure says is already claimed, since that folder is then someone else's, not this call's own.
+// `log` never receives a repo URL, a git message or an env value; only ids, paths and fixed words, so a
+// compromised or merely careless log sink can never leak a secret.
 
 import { posix } from 'node:path'
 import { randomBytes } from 'node:crypto'
 
-import { PROJECT_ID, CLIENT_ID, HOSTNAME, RESERVED_PROJECT_IDS } from '../shared/formats.ts'
+import { PROJECT_ID, CLIENT_ID, HOSTNAME, RESERVED_PROJECT_IDS, describeError } from '../shared/formats.ts'
 import {
     GIT_REF, GIT_REPO,
     type CertificateMode, type EnvironmentEntry, type EnvironmentName, type ProjectEntry, type Registry,
@@ -17,13 +20,19 @@ import type { FetchClient } from './fetch-client.ts'
 import { listEnvFiles, readEnvFile, writeEnvFile, type EnvFs } from './env-files.ts'
 import {
     refuse,
-    type AgentReply, type ProvisionAddEnvironmentArgs, type ProvisionCreateArgs,
+    type AgentReply, type ProvisionAddEnvironmentArgs, type ProvisionCreateArgs, type Refusal,
 } from '../shared/protocol.ts'
 
 const COMPOSE_FILE = 'docker-compose.yml'
 // The keys a value's domain gets rewritten under, and nothing else: a database password or an API key
 // that happens to end in one of these letters is never touched, because those never end with them.
 const DOMAIN_KEY_SUFFIXES = ['_URL', '_HOST', '_DOMAIN', '_ORIGIN']
+// Exactly which keys name a database, and nothing else: an unrestricted substring replacement over every
+// value would also rewrite S3_BUCKET=acme-assets, GITHUB_REPO=ItsKodas/acme or SMTP_USER=noreply@acme.com
+// whenever the project id happens to appear inside them, corrupting values that have nothing to do with
+// the database this is actually meant to repoint.
+const DATABASE_KEYS = new Set(['DATABASE_URL', 'DATABASE_NAME', 'DB_NAME', 'DB_DATABASE'])
+const DATABASE_KEY_SUFFIXES = ['_DATABASE', '_DB']
 const ENV_LINE = /^([A-Za-z_][A-Za-z0-9_]*)=(.*)$/
 
 export type ProvisionDeps = {
@@ -39,8 +48,8 @@ export type ProvisionDeps = {
 }
 
 function fieldProblem(args: ProvisionCreateArgs): string | null {
-    if (!PROJECT_ID.test(args.id)) return `id must match ${PROJECT_ID}`
-    if (!CLIENT_ID.test(args.client)) return `client must match ${CLIENT_ID}`
+    if (!PROJECT_ID.test(args.id)) return 'id must be lowercase letters, digits and hyphens, 2 to 31 characters'
+    if (!CLIENT_ID.test(args.client)) return 'client must be 1 to 64 letters, digits, underscores or hyphens'
     if (args.name.length < 1 || args.name.length > 100) return 'name must be 1 to 100 characters'
     if (!GIT_REPO.test(args.repo)) return 'repo must be an ssh or https git URL'
     if (!GIT_REF.test(args.branch)) return 'branch must be a plain branch name'
@@ -60,6 +69,10 @@ function domainTaken(registry: Registry, domain: string, excludeId?: string): bo
     return false
 }
 
+function isDatabaseKey(key: string): boolean {
+    return DATABASE_KEYS.has(key) || DATABASE_KEY_SUFFIXES.some(suffix => key.endsWith(suffix))
+}
+
 // A best-effort text rewrite, not an env-file parser: a line that is not KEY=VALUE (a comment, a blank
 // line, something malformed) is carried through untouched rather than guessed at.
 //
@@ -68,7 +81,9 @@ function domainTaken(registry: Registry, domain: string, excludeId?: string): bo
 // for project acme), so substituting the domain first and then blindly replacing every occurrence of the
 // database name would re-match "acme" inside the domain this just wrote, corrupting it. Parking the
 // substituted domain behind a placeholder the database rule cannot match, then restoring it last, avoids
-// that regardless of how the two happen to overlap.
+// that regardless of how the two happen to overlap. The database rule itself is restricted to keys that
+// actually name a database (see isDatabaseKey), so it never touches an unrelated value that merely
+// contains the project id as a substring.
 function rewriteEnvText(
     text: string,
     live: { domain: string | null, database: string },
@@ -81,25 +96,31 @@ function rewriteEnvText(
         const key = match[1]!
         let value = match[2]!
         const rewriteDomain = Boolean(live.domain && test.domain && value.includes(live.domain) && DOMAIN_KEY_SUFFIXES.some(suffix => key.endsWith(suffix)))
+        const rewriteDatabase = isDatabaseKey(key) && value.includes(live.database)
         if (rewriteDomain) value = value.split(live.domain!).join(placeholder)
-        if (value.includes(live.database)) value = value.split(live.database).join(test.database)
+        if (rewriteDatabase) value = value.split(live.database).join(test.database)
         if (rewriteDomain) value = value.split(placeholder).join(test.domain!)
         return `${key}=${value}`
     }).join('\n')
 }
 
 // Copies every env file the live environment has into the freshly cloned test folder, pointing anything
-// that looks like the site's own URL or database at the test side instead. Best-effort per file: a file
-// that vanishes between the listing and the read is skipped, not fatal to the whole environment.
+// that looks like the site's own URL or database at the test side instead. Returns the paths that could
+// not be copied: a silently-missing file is not a safe outcome here, because the clone has already put
+// the repo's own committed copy of that file in place, which plausibly still points at the live database.
 async function copyEnvFiles(
     projectId: string, live: EnvironmentEntry, test: EnvironmentEntry, envFs: EnvFs | undefined, deps: ProvisionDeps,
-): Promise<void> {
+): Promise<string[]> {
     const files = await listEnvFiles(live, envFs)
     const liveDatabase = projectId
     const testDatabase = `${projectId}-test`
+    const failures: string[] = []
     for (const file of files) {
         const read = await readEnvFile(live, file.path, envFs)
-        if (!read.ok) continue
+        if (!read.ok) {
+            failures.push(file.path)
+            continue
+        }
         const rewritten = rewriteEnvText(
             read.text,
             { domain: live.domain, database: liveDatabase },
@@ -107,8 +128,96 @@ async function copyEnvFiles(
         )
         const written = await writeEnvFile(test, file.path, rewritten, envFs)
         if (written.ok) deps.log(`provision ${projectId}: copied ${file.path} into the test environment`)
+        else failures.push(file.path)
+    }
+    return failures
+}
+
+type ProvisionAttempt = {
+    id: string
+    dir: string
+    repo: string
+    branch: string
+    // Runs after a successful clone, before resolve. A no-op for create; addEnvironment copies and
+    // rewrites env files here, using the composePath's directory as the freshly cloned test folder.
+    afterClone: (composePath: string) => Promise<{ ok: true } | { ok: false, problem: string }>
+    // Given the site services resolve found, attempts the registry write. Only createProject's services
+    // are ever non-empty going in; addEnvironment's write ignores the argument.
+    write: (services: Record<string, { role: 'site' }>) => Promise<{ ok: true } | { ok: false, problem: string }>
+    // True when a write failure means someone else's entry already claims this id or environment: the
+    // folder this call made is then not this call's to remove, because it may not even be this call's
+    // folder any more (see the concurrent-create race this guards against, and provisionBusy in agent.ts,
+    // which is the primary defense; this is the fallback for whatever provisionBusy does not cover).
+    isConflict: (problem: string) => boolean
+}
+
+// The mkdir/clone/resolve/write sequence shared by createProject and addEnvironment: the exact ordering
+// that makes each step undoable only while the later ones have not happened. A throw from any dependency
+// (the fetcher on a timeout or a dropped connection, a filesystem call, resolve) is rolled back exactly
+// like a returned failure would be: nothing here assumes a dependency can only fail by returning `ok:
+// false`.
+async function provisionOnDisk(attempt: ProvisionAttempt, deps: ProvisionDeps): Promise<Refusal | { ok: true, composePath: string }> {
+    const { id, dir } = attempt
+
+    const rollback = async (reason: string): Promise<void> => {
+        deps.log(`provision ${id}: ${reason}, removing ${dir}`)
+        try {
+            await deps.rmdir(dir)
+        } catch (error) {
+            deps.log(`provision ${id}: could not remove ${dir}: ${describeError(error)}`)
+        }
+    }
+
+    deps.log(`provision ${id}: creating ${dir}`)
+    try {
+        await deps.mkdir(dir)
+    } catch (error) {
+        // mkdir itself may have half-succeeded (the directory created, a later step inside it failing);
+        // best-effort clean it up rather than assume it is untouched.
+        await rollback(`could not create ${dir}`)
+        return refuse('failed', describeError(error))
+    }
+
+    try {
+        const cloned = await deps.fetcher.call({ verb: 'clone', repo: attempt.repo, dir, branch: attempt.branch })
+        if (!cloned.ok) {
+            await rollback('clone failed')
+            return refuse('failed', cloned.message)
+        }
+
+        const composePath = posix.join(dir, COMPOSE_FILE)
+
+        const after = await attempt.afterClone(composePath)
+        if (!after.ok) {
+            await rollback('setup failed')
+            return refuse('failed', after.problem)
+        }
+
+        const resolved = await deps.resolve(dir, composePath)
+        if (!resolved.ok || Object.keys(resolved.services).length === 0) {
+            await rollback('compose has no site service')
+            return refuse('invalid-project', resolved.ok ? 'the compose file has no service with role site' : resolved.problem)
+        }
+
+        const written = await attempt.write(resolved.services)
+        if (!written.ok) {
+            if (attempt.isConflict(written.problem)) {
+                deps.log(`provision ${id}: registry write failed, leaving ${dir} in place (already claimed)`)
+                return refuse('failed', written.problem)
+            }
+            await rollback('registry write failed')
+            return refuse('failed', written.problem)
+        }
+
+        deps.log(`provision ${id}: created`)
+        return { ok: true, composePath }
+    } catch (error) {
+        await rollback(`unexpected error (${describeError(error)})`)
+        return refuse('failed', describeError(error))
     }
 }
+
+const noSetup = async (): Promise<{ ok: true }> => ({ ok: true })
 
 export async function createProject(args: ProvisionCreateArgs, deps: ProvisionDeps, envFs?: EnvFs): Promise<AgentReply> {
     const problem = fieldProblem(args)
@@ -124,44 +233,29 @@ export async function createProject(args: ProvisionCreateArgs, deps: ProvisionDe
     const port = await deps.choosePort()
     if (!port.ok) return refuse('unavailable', port.problem)
 
-    deps.log(`provision ${args.id}: creating ${dir}`)
-    await deps.mkdir(dir)
-
-    const cloned = await deps.fetcher.call({ verb: 'clone', repo: args.repo, dir, branch: args.branch })
-    if (!cloned.ok) {
-        deps.log(`provision ${args.id}: clone failed, removing ${dir}`)
-        await deps.rmdir(dir)
-        return refuse('failed', cloned.message)
-    }
-
-    const composePath = posix.join(dir, COMPOSE_FILE)
-    const resolved = await deps.resolve(dir, composePath)
-    if (!resolved.ok || Object.keys(resolved.services).length === 0) {
-        deps.log(`provision ${args.id}: compose has no site service, removing ${dir}`)
-        await deps.rmdir(dir)
-        return refuse('invalid-project', resolved.ok ? 'the compose file has no service with role site' : resolved.problem)
-    }
-
-    const written = await deps.writer.write({
-        kind: 'add-project',
+    const attempt = await provisionOnDisk({
         id: args.id,
-        project: {
-            client: args.client,
-            name: args.name,
-            repo: args.repo,
-            services: resolved.services,
-            environment: { name: 'live', dir, branch: args.branch, domain: args.domain, port: port.port, certificate: args.certificate },
-        },
-    })
-    if (!written.ok) {
-        deps.log(`provision ${args.id}: registry write failed, removing ${dir}`)
-        await deps.rmdir(dir)
-        return refuse('failed', written.problem)
-    }
+        dir,
+        repo: args.repo,
+        branch: args.branch,
+        afterClone: noSetup,
+        write: services => deps.writer.write({
+            kind: 'add-project',
+            id: args.id,
+            project: {
+                client: args.client,
+                name: args.name,
+                repo: args.repo,
+                services,
+                environment: { name: 'live', dir, branch: args.branch, domain: args.domain, port: port.port, certificate: args.certificate },
+            },
+        }),
+        isConflict: problem => problem === `${args.id} already exists`,
+    }, deps)
+    if (!attempt.ok) return attempt
 
-    deps.log(`provision ${args.id}: created`)
     const live: EnvironmentEntry = {
-        name: 'live', dir, composePath, branch: args.branch, domain: args.domain, port: port.port, certificate: args.certificate, deployed: null,
+        name: 'live', dir, composePath: attempt.composePath, branch: args.branch, domain: args.domain, port: port.port, certificate: args.certificate, deployed: null,
     }
     const envFiles = await listEnvFiles(live, envFs)
     return { ok: true, project: { id: args.id, state: 'needs-setup' }, envFiles }
@@ -182,42 +276,32 @@ export async function addEnvironment(project: ProjectEntry, args: ProvisionAddEn
     const port = await deps.choosePort()
     if (!port.ok) return refuse('unavailable', port.problem)
 
-    deps.log(`provision ${project.id}: creating ${dir}`)
-    await deps.mkdir(dir)
-
-    const cloned = await deps.fetcher.call({ verb: 'clone', repo: project.repo, dir, branch: args.branch })
-    if (!cloned.ok) {
-        deps.log(`provision ${project.id}: clone failed, removing ${dir}`)
-        await deps.rmdir(dir)
-        return refuse('failed', cloned.message)
-    }
-
-    const composePath = posix.join(dir, COMPOSE_FILE)
-    const test: EnvironmentEntry = {
-        name: 'test', dir, composePath, branch: args.branch, domain: args.domain, port: port.port, certificate: args.certificate, deployed: null,
-    }
-    const live = project.environments.get('live')
-    if (live) await copyEnvFiles(project.id, live, test, envFs, deps)
-
-    const resolved = await deps.resolve(dir, composePath)
-    if (!resolved.ok || Object.keys(resolved.services).length === 0) {
-        deps.log(`provision ${project.id}: compose has no site service, removing ${dir}`)
-        await deps.rmdir(dir)
-        return refuse('invalid-project', resolved.ok ? 'the compose file has no service with role site' : resolved.problem)
-    }
-
-    const written = await deps.writer.write({
-        kind: 'add-environment',
+    const attempt = await provisionOnDisk({
         id: project.id,
-        environment: { name: 'test', dir, branch: args.branch, domain: args.domain, port: port.port, certificate: args.certificate },
-    })
-    if (!written.ok) {
-        deps.log(`provision ${project.id}: registry write failed, removing ${dir}`)
-        await deps.rmdir(dir)
-        return refuse('failed', written.problem)
-    }
+        dir,
+        repo: project.repo,
+        branch: args.branch,
+        afterClone: async composePath => {
+            const live = project.environments.get('live')
+            if (!live) return { ok: true }
+            const test: EnvironmentEntry = {
+                name: 'test', dir, composePath, branch: args.branch, domain: args.domain, port: port.port, certificate: args.certificate, deployed: null,
+            }
+            const failures = await copyEnvFiles(project.id, live, test, envFs, deps)
+            return failures.length === 0 ? { ok: true } : { ok: false, problem: `could not copy ${failures.join(', ')} from the live environment` }
+        },
+        write: () => deps.writer.write({
+            kind: 'add-environment',
+            id: project.id,
+            environment: { name: 'test', dir, branch: args.branch, domain: args.domain, port: port.port, certificate: args.certificate },
+        }),
+        isConflict: problem => problem === `${project.id} already has a test environment`,
+    }, deps)
+    if (!attempt.ok) return attempt
 
-    deps.log(`provision ${project.id}: test environment created`)
+    const test: EnvironmentEntry = {
+        name: 'test', dir, composePath: attempt.composePath, branch: args.branch, domain: args.domain, port: port.port, certificate: args.certificate, deployed: null,
+    }
     const envFiles = await listEnvFiles(test, envFs)
     return { ok: true, project: { id: project.id, state: 'needs-setup' }, envFiles }
 }

@@ -5,6 +5,10 @@ export const MAX_ENV_BYTES = 64 * 1024
 export const MAX_ENV_DEPTH = 4
 export const SKIP_DIRECTORIES = new Set(['.git', 'node_modules', 'vendor', 'dist', '.next'])
 
+// The shape of a directory listing of env files. Lives here, not in agent/env-files.ts (which walks the
+// disk to build one), so the wire protocol can name it without importing from the agent.
+export type EnvFileList = { path: string, example: string | null, bytes: number }[]
+
 const ENV_FILE = /^(\.env(\.[A-Za-z0-9_-]+)?|[A-Za-z0-9_-]+\.env)$/
 
 export const isEnvFileName = (name: string) => ENV_FILE.test(name)

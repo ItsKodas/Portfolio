@@ -152,7 +152,7 @@ projects:
     services:
       web: { role: site }
       appdb: { role: database, engine: sqlite, file: data/app.db }
-    capabilities: [logs, env]
+    capabilities: [logs, env, provision]
   broken:
     client: cl_1
 `)
@@ -180,6 +180,22 @@ describe('checkStructure', () => {
     it('refuses a project the storage guard marked invalid', () => {
         const result = checkStructure(registry, status('acme'), new Map([['acme', 'storage media overlaps a database mount']]))
         assert.deepEqual(result, { ok: false, code: 'invalid-project', message: 'acme is invalid: storage media overlaps a database mount' })
+    })
+
+    // Every other verb reads the compose file or its mounts; removing a project touches no files at all,
+    // and a guard failure is exactly the kind of problem that makes an operator want to unregister it.
+    it('passes provision remove for a project the storage guard marked invalid, unlike every other verb', () => {
+        const guardInvalid = new Map([['acme', 'storage media overlaps a database mount']])
+        const remove = checkStructure(registry, { verb: 'provision', project: 'acme', args: { action: 'remove', environment: null } }, guardInvalid)
+        assert.equal(remove.ok, true)
+
+        const addEnvironment = checkStructure(
+            registry, { verb: 'provision', project: 'acme', args: { action: 'add-environment', environment: 'test', branch: 'main', domain: null, certificate: null } }, guardInvalid,
+        )
+        assert.deepEqual(addEnvironment, { ok: false, code: 'invalid-project', message: 'acme is invalid: storage media overlaps a database mount' })
+
+        const status = checkStructure(registry, { verb: 'status', project: 'acme' }, guardInvalid)
+        assert.deepEqual(status, { ok: false, code: 'invalid-project', message: 'acme is invalid: storage media overlaps a database mount' })
     })
 
     it('refuses a verb whose capability is switched off', () => {

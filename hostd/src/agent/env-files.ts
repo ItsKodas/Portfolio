@@ -7,9 +7,11 @@ import { posix } from 'node:path'
 
 import type { EnvironmentEntry } from '../shared/registry.ts'
 import { describeError, isWithin } from '../shared/formats.ts'
-import { envPathProblem, isEnvFileName, MAX_ENV_BYTES, MAX_ENV_DEPTH, SKIP_DIRECTORIES } from '../shared/envfiles.ts'
+import {
+    envPathProblem, isEnvFileName, MAX_ENV_BYTES, MAX_ENV_DEPTH, SKIP_DIRECTORIES, type EnvFileList,
+} from '../shared/envfiles.ts'
 
-export type EnvFileList = { path: string, example: string | null, bytes: number }[]
+export type { EnvFileList }
 
 export type EnvFs = {
     readdir(dir: string): Promise<{ name: string, isDirectory(): boolean, isFile(): boolean }[]>

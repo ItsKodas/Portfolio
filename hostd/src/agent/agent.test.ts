@@ -309,4 +309,65 @@ describe('provisioning and env', () => {
         assert.equal(replyOf(await first)?.ok, true)
         assert.equal(replyOf(await agent.handle(envWrite()))?.ok, true)
     })
+
+    const create = (id: string): AgentRequest => ({
+        verb: 'provision',
+        args: { action: 'create', id, client: 'cl_2', name: 'Bakery', repo: 'git@github.com:ItsKodas/bakery.git', branch: 'main', domain: null, certificate: null },
+    })
+
+    it('serialises provisioning per id: a second create for the same id is refused busy, and never touches the first\'s folder', async () => {
+        const mkdirs: string[] = []
+        const rmdirs: string[] = []
+        let release: () => void = () => {}
+        const blocked = new Promise<void>(resolve => { release = resolve })
+        const provision = fakeProvisionDeps({
+            mkdir: async dir => { mkdirs.push(dir) },
+            rmdir: async dir => { rmdirs.push(dir) },
+            fetcher: { call: async () => { await blocked; return { ok: true, commit: 'abc1234' } } },
+        })
+        const { agent } = setup({ provision })
+
+        const first = agent.handle(create('bakery'))
+        await new Promise(resolve => setImmediate(resolve))
+        assert.deepEqual(replyOf(await agent.handle(create('bakery'))), { ok: false, code: 'busy', message: 'bakery already has a provisioning action running' })
+        // The busy refusal never even reached mkdir, so there is nothing for it to have removed.
+        assert.deepEqual(rmdirs, [])
+
+        release()
+        assert.equal(replyOf(await first)?.ok, true)
+        assert.deepEqual(mkdirs, ['/var/www/bakery'])
+        assert.deepEqual(rmdirs, [])
+        // The lock is released once the first call finishes, so a later create for the same id is not busy.
+        assert.equal(replyOf(await agent.handle(create('bakery')))?.ok, true)
+    })
+
+    it('does not serialise different ids, and neither create removes the other\'s folder', async () => {
+        const rmdirs: string[] = []
+        let release: () => void = () => {}
+        const blocked = new Promise<void>(resolve => { release = resolve })
+        const provision = fakeProvisionDeps({
+            rmdir: async dir => { rmdirs.push(dir) },
+            fetcher: { call: async () => { await blocked; return { ok: true, commit: 'abc1234' } } },
+        })
+        const { agent } = setup({ provision })
+
+        const first = agent.handle(create('bakery'))
+        const second = agent.handle(create('cafe'))
+        await new Promise(resolve => setImmediate(resolve))
+        release()
+        const [firstReply, secondReply] = await Promise.all([first, second])
+        assert.equal(replyOf(firstReply)?.ok, true)
+        assert.equal(replyOf(secondReply)?.ok, true)
+        assert.deepEqual(rmdirs, [])
+    })
+
+    // The mirror of "does not re-run the guard before a stop": removal touches no files, so a project the
+    // storage guard has just failed must still be removable, and is exactly the kind of project an
+    // operator wants to unregister.
+    it('removes a project despite a storage guard failure', async () => {
+        const provision = fakeProvisionDeps()
+        const { agent } = setup({ provision, guardInvalid: new Map([['acme', 'storage media overlaps a database mount']]) })
+        const reply = replyOf(await agent.handle({ verb: 'provision', project: 'acme', args: { action: 'remove', environment: null } }))
+        assert.equal(reply?.ok, true)
+    })
 })

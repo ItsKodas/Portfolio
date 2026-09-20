@@ -7,9 +7,7 @@ import {
     isComposeService, environmentOf, ENVIRONMENTS, CERTIFICATE_MODES,
     type Capability, type CertificateMode, type EnvironmentName, type ProjectEntry, type Registry,
 } from './registry.ts'
-// Type-only: the shape of a directory listing of env files. Owned by the agent, where the files
-// themselves are read; the wire protocol only ever names the shape, never the module that walks them.
-import type { EnvFileList } from '../agent/env-files.ts'
+import type { EnvFileList } from './envfiles.ts'
 
 export const MAX_REQUEST_BYTES = 64 * 1024
 export const MAX_TAIL = 5000
@@ -297,8 +295,13 @@ export function checkStructure(
     if (registryProblem !== undefined) return refuse('invalid-project', `${id} is invalid: ${registryProblem}`)
     const project = registry.projects.get(id)
     if (!project) return refuse('unknown-project', `${id} is not registered`)
+    // Every other verb reads the compose file or its mounts, directly or by asking the agent to touch
+    // them, so a project the guard has just failed must stay refused. Removing a project touches no files
+    // at all, so it is safe regardless, and a guard failure is exactly the kind of problem that makes an
+    // operator want to unregister the project in the first place.
+    const removingProject = request.verb === 'provision' && request.args.action === 'remove'
     const guardProblem = guardInvalid.get(id)
-    if (guardProblem !== undefined) return refuse('invalid-project', `${id} is invalid: ${guardProblem}`)
+    if (guardProblem !== undefined && !removingProject) return refuse('invalid-project', `${id} is invalid: ${guardProblem}`)
 
     const capability = VERB_CAPABILITY[request.verb]
     if (capability && !project.capabilities.has(capability)) return refuse('capability-disabled', `${capability} is not enabled for ${id}`)
