@@ -1,12 +1,14 @@
 import type { Metadata, Viewport } from "next"
-import { Montserrat } from "next/font/google"
+import { IBM_Plex_Mono, Montserrat } from "next/font/google"
 import "./globals.css"
 import { PERF_SCRIPT } from "./perf/script"
 import { SITE, SKILLS } from "./site"
 
 
 
-const montserrat = Montserrat({ subsets: ["latin"] })
+const montserrat = Montserrat({ subsets: ["latin"], variable: "--font-sans" })
+// Machine text only: commit ids, container names, branches, log lines and file paths
+const plexMono = IBM_Plex_Mono({ subsets: ["latin"], weight: ["400", "500"], variable: "--font-mono" })
 
 
 export const viewport: Viewport = {
@@ -61,7 +63,7 @@ export default function RootLayout({ children }: Readonly<{ children: React.Reac
 				<script dangerouslySetInnerHTML={{ __html: PERF_SCRIPT }} />
 			</head>
 
-			<body className={`${montserrat.className} antialiased h-full`}>
+			<body className={`${montserrat.variable} ${plexMono.variable} ${montserrat.className} antialiased h-full`}>
 				{children}
 			</body>
 		</html>
