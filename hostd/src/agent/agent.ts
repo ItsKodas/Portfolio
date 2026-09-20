@@ -4,12 +4,14 @@
 import {
     checkStructure, refuse,
     type AgentReply, type AgentRequest, type EnvArgs, type HealthReply, type LifecycleAction, type LifecycleReply,
-    type LogLine, type LogsArgs, type ProvisionAddEnvironmentArgs, type ProvisionCreateArgs, type ProvisionRemoveArgs,
-    type Refusal, type ServiceStatus,
+    type LogLine, type LogsArgs, type ProjectStatus, type ProvisionAddEnvironmentArgs, type ProvisionCreateArgs,
+    type ProvisionRemoveArgs, type Refusal, type ServiceStatus, type StatusesReply,
 } from '../shared/protocol.ts'
 import { environmentOf, type ProjectEntry, type Registry } from '../shared/registry.ts'
+import { describeError } from '../shared/formats.ts'
+import type { SystemUsage } from '../shared/system.ts'
 import { runLifecycle, type Runner } from './compose.ts'
-import { buildServiceStatuses, pickPerService, type ContainerInspect, type DockerApi } from './docker.ts'
+import { buildServiceStatuses, groupByProject, pickPerService, type ContainerInspect, type ContainerSummary, type DockerApi } from './docker.ts'
 import { createLogDecoder } from './logframes.ts'
 import { listEnvFiles, readEnvFile, writeEnvFile, type EnvFs } from './env-files.ts'
 import { createProject, addEnvironment, removeProject, type ProvisionDeps } from './provision.ts'
@@ -23,6 +25,9 @@ export type AgentDeps = {
     warnings: () => string[]
     docker: DockerApi
     runner: Runner
+    // The machine's own figures for health: memory, CPU load and the system disk. Injected whole, so the
+    // agent never names a path or touches node:os itself, and the tests never read the real machine.
+    system: () => Promise<SystemUsage>
     // Re-runs the storage guard for one project: its problem, or null when it passes.
     recheck: (project: ProjectEntry) => Promise<string | null>
     followMaxMs?: number
@@ -60,7 +65,10 @@ export class Agent {
     }
 
     async handle(request: AgentRequest): Promise<Outcome> {
-        if (request.verb === 'health') return reply(this.health())
+        if (request.verb === 'health') return reply(await this.health())
+        // Its own branch before the check below: statuses names many projects, so it checks each one for
+        // itself and reports the refusals among the results instead of refusing the whole request.
+        if (request.verb === 'statuses') return reply(await this.statuses(request.projects))
         if (!('project' in request)) {
             // The only request left without a project id is provision create: nothing is registered yet
             // for checkStructure to look up, so there is nothing structural to check before it runs.
@@ -82,18 +90,65 @@ export class Agent {
         }
     }
 
-    private health(): HealthReply {
+    private async health(): Promise<HealthReply> {
         const invalid = Object.fromEntries([...this.deps.registry().invalid, ...this.deps.guardInvalid()])
-        return { ok: true, warnings: this.deps.warnings(), invalid }
+        // system is figures for the portal to draw, kept apart from warnings on purpose: nothing it
+        // reports, however alarming the number, may make this process unhealthy.
+        return { ok: true, warnings: this.deps.warnings(), invalid, system: await this.deps.system() }
     }
 
     private async status(project: ProjectEntry): Promise<ServiceStatus[]> {
-        const chosen = pickPerService(await this.deps.docker.listProjectContainers(project.id))
+        return this.statusOf(project, await this.deps.docker.listProjectContainers(project.id))
+    }
+
+    // The containers are passed in rather than fetched, so one listing can serve many projects.
+    private async statusOf(project: ProjectEntry, containers: ContainerSummary[]): Promise<ServiceStatus[]> {
+        const chosen = pickPerService(containers)
         const inspected = new Map<string, ContainerInspect>()
         for (const [service, container] of chosen) {
             if (Object.hasOwn(project.services, service)) inspected.set(service, await this.deps.docker.inspect(container.Id))
         }
         return buildServiceStatuses(project, inspected)
+    }
+
+    // Status for several projects at once. Failures are collected per project, never thrown and never
+    // allowed to take the batch down with them: the dashboard that asks for this draws every site it can.
+    private async statuses(ids: string[]): Promise<StatusesReply> {
+        const registry = this.deps.registry()
+        const guardInvalid = this.deps.guardInvalid()
+        const results = new Map<string, ProjectStatus>()
+        const wanted = new Map<string, ProjectEntry>()
+
+        for (const id of ids) {
+            // The same structural check every single-project status runs, so an unregistered, invalid or
+            // capability-less project is refused here with exactly the wording GET /projects/:id gives.
+            const checked = checkStructure(registry, { verb: 'status', project: id }, guardInvalid)
+            if (checked.ok) wanted.set(id, checked.project)
+            else results.set(id, { project: id, ok: false, code: checked.code, message: checked.message })
+        }
+
+        if (wanted.size > 0) {
+            let grouped: Map<string, ContainerSummary[]>
+            try {
+                grouped = groupByProject(await this.deps.docker.listAllContainers())
+            } catch (error) {
+                const message = `the Docker API could not be read: ${describeError(error)}`
+                for (const id of wanted.keys()) results.set(id, { project: id, ok: false, code: 'failed', message })
+                grouped = new Map()
+            }
+            for (const [id, project] of wanted) {
+                if (results.has(id)) continue
+                try {
+                    results.set(id, { project: id, ok: true, services: await this.statusOf(project, grouped.get(id) ?? []) })
+                } catch (error) {
+                    // One container that disappeared between the listing and its inspect must not cost
+                    // the other projects their status.
+                    results.set(id, { project: id, ok: false, code: 'failed', message: `the Docker API could not be read: ${describeError(error)}` })
+                }
+            }
+        }
+
+        return { ok: true, projects: ids.flatMap(id => { const found = results.get(id); return found ? [found] : [] }) }
     }
 
     private async provisionCreate(args: ProvisionCreateArgs): Promise<AgentReply> {

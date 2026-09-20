@@ -7,6 +7,7 @@ import { RegistryStore, explainRegistryError } from '../shared/registry-store.ts
 import { RegistryWriter } from '../shared/registry-write.ts'
 import { choosePort } from '../shared/ports.ts'
 import { buildStatus, writeStatus } from '../shared/status.ts'
+import { readSystemUsage, systemSource, DEFAULT_SYSTEM_DISK_PATH } from '../shared/system.ts'
 import { describeError } from '../shared/formats.ts'
 import { createDockerApi, dockerPortCheck } from './docker.ts'
 import { createSpawnRunner, resolveNewProject } from './compose.ts'
@@ -21,6 +22,9 @@ const SOCKET_PATH = process.env.HOSTD_AGENT_SOCKET ?? '/run/hostd/agent.sock'
 const SOCKET_GID = Number(process.env.HOSTD_SOCKET_GID ?? '1000')
 const STATUS_FILE = process.env.HOSTD_STATUS_FILE ?? '/tmp/hostd-status.json'
 const FETCH_SOCKET_PATH = process.env.HOSTD_FETCH_SOCKET ?? '/run/hostd-fetch/fetch.sock'
+// Which filesystem health reports as the system disk. The default is the host's /var/www, bind-mounted
+// here at the same path, so the figure is the host's disk rather than this container's own overlay.
+const SYSTEM_DISK_PATH = process.env.HOSTD_SYSTEM_DISK_PATH ?? DEFAULT_SYSTEM_DISK_PATH
 const WWW = '/var/www'
 const POLL_MS = 10_000
 // Compose files can change without the registry changing, so the guard also runs on a timer.
@@ -122,12 +126,16 @@ async function main(): Promise<void> {
         ...(fetcherProblem ? [fetcherProblem] : []),
     ]
 
+    const source = systemSource()
     const agent = new Agent({
         registry: () => store.current(),
         guardInvalid: () => guard.current(),
         warnings,
         docker,
         runner,
+        // Read fresh on every health request rather than polled and cached: both readings are a syscall
+        // apiece, and a figure the portal draws as live should not be a minute old.
+        system: () => readSystemUsage(source, SYSTEM_DISK_PATH),
         recheck: project => guard.check(project),
         provision,
     })

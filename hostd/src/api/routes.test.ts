@@ -10,6 +10,7 @@ import { AuditLog } from './audit.ts'
 import { AgentUnavailableError, type AgentClient } from './agent-client.ts'
 import { parseRegistry } from '../shared/registry.ts'
 import type { AgentReply, AgentRequest, LogLine } from '../shared/protocol.ts'
+import type { SystemUsage } from '../shared/system.ts'
 
 const TOKEN = 'k'.repeat(64)
 const registry = parseRegistry(`
@@ -40,6 +41,12 @@ projects:
 `)
 
 const logLine: LogLine = { stream: 'stdout', ts: '2026-09-20T00:00:00Z', text: 'hello', truncated: false }
+const usage: SystemUsage = {
+    memory: { totalBytes: 8_000_000_000, usedBytes: 3_000_000_000, availableBytes: 5_000_000_000 },
+    cpu: { cores: 4, load1: 0.5, load5: 0.4, load15: 0.25 },
+    disk: { path: '/var/www', totalBytes: 500_000_000_000, usedBytes: 200_000_000_000, freeBytes: 275_000_000_000 },
+    problems: [],
+}
 
 // The agent as api sees it. Tests replace call or stream to simulate refusals and outages.
 function fakeAgent() {
@@ -48,8 +55,9 @@ function fakeAgent() {
         calls,
         reply: request => {
             switch (request.verb) {
-                case 'health': return { ok: true, warnings: [], invalid: { acme: 'guard says no' } }
+                case 'health': return { ok: true, warnings: [], invalid: { acme: 'guard says no' }, system: usage }
                 case 'status': return { ok: true, services: [] }
+                case 'statuses': return { ok: true, projects: request.projects.map(project => ({ project, ok: true as const, services: [] })) }
                 default: return { ok: true, output: 'done' }
             }
         },
@@ -107,6 +115,8 @@ describe('matchRoute', () => {
     it('matches every phase 1 route and refuses the rest', () => {
         assert.deepEqual(matchRoute('GET', '/projects'), { verb: 'list' })
         assert.deepEqual(matchRoute('GET', '/audit'), { verb: 'audit-all' })
+        assert.deepEqual(matchRoute('GET', '/health'), { verb: 'health' })
+        assert.deepEqual(matchRoute('POST', '/health'), { verb: 'method-not-allowed' })
         assert.deepEqual(matchRoute('GET', '/projects/acme'), { verb: 'status', project: 'acme' })
         assert.deepEqual(matchRoute('POST', '/projects/acme/restart'), { verb: 'lifecycle', project: 'acme', action: 'restart' })
         assert.deepEqual(matchRoute('GET', '/projects/acme/logs'), { verb: 'logs', project: 'acme' })
@@ -186,6 +196,63 @@ describe('GET /projects', () => {
     it('shows the admin every project, invalid registry entries included', async () => {
         const body = await (await request('/projects', { actor: 'admin' })).json() as { projects: Array<{ id: string, valid: boolean }> }
         assert.deepEqual(body.projects.map(p => [p.id, p.valid]), [['acme', false], ['quiet', true], ['other', true], ['broken', false]])
+    })
+
+    it('asks the agent for nothing but health, so the plain listing costs no Docker read', async () => {
+        await request('/projects')
+        assert.deepEqual(agent.calls, [{ verb: 'health' }])
+    })
+
+    it('carries each project\'s status with status=1, asking only for the ones this actor can see', async () => {
+        const body = await (await request('/projects?status=1')).json() as { projects: Array<Record<string, unknown>> }
+        assert.deepEqual(agent.calls, [{ verb: 'health' }, { verb: 'statuses', projects: ['acme', 'quiet'] }])
+        assert.deepEqual(body.projects, [
+            { id: 'acme', name: 'Acme', capabilities: ['lifecycle', 'logs', 'provision', 'env'], valid: false, reason: 'guard says no', status: { ok: true, services: [] } },
+            { id: 'quiet', name: 'Quiet', capabilities: [], valid: true, status: { ok: true, services: [] } },
+        ])
+    })
+
+    it('answers an invalid registry entry\'s status from the registry, without asking the agent about it', async () => {
+        const body = await (await request('/projects?status=1', { actor: 'admin' })).json() as { projects: Array<{ id: string, status: { ok: boolean, code?: string } }> }
+        assert.deepEqual(agent.calls[1], { verb: 'statuses', projects: ['acme', 'quiet', 'other'] })
+        const broken = body.projects.find(project => project.id === 'broken')
+        assert.deepEqual([broken?.status.ok, broken?.status.code], [false, 'invalid-project'])
+    })
+
+    it('carries a refusal per project rather than failing the list', async () => {
+        agent.reply = request => request.verb === 'statuses'
+            ? { ok: true, projects: [{ project: 'acme', ok: false, code: 'failed', message: 'the Docker API could not be read' }] }
+            : { ok: true, warnings: [], invalid: {}, system: usage }
+        const response = await request('/projects?status=1')
+        assert.equal(response.status, 200)
+        const body = await response.json() as { projects: Array<{ id: string, status: Record<string, unknown> }> }
+        assert.deepEqual(body.projects.map(project => [project.id, project.status]), [
+            ['acme', { ok: false, code: 'failed', message: 'the Docker API could not be read' }],
+            // Nothing came back for quiet at all, which is still an answer the dashboard can draw.
+            ['quiet', { ok: false, code: 'failed', message: 'the agent returned no status for quiet' }],
+        ])
+    })
+
+    it('refuses a status flag it cannot read rather than treating it as off', async () => {
+        const response = await request('/projects?status=yes')
+        assert.equal(response.status, 400)
+        assert.deepEqual(agent.calls, [])
+    })
+})
+
+describe('GET /health', () => {
+    it('gives the admin the machine\'s figures', async () => {
+        const response = await request('/health', { actor: 'admin' })
+        assert.equal(response.status, 200)
+        assert.deepEqual(await response.json(), { ok: true, warnings: [], invalid: { acme: 'guard says no' }, system: usage })
+    })
+
+    it('refuses a client', async () => {
+        const response = await request('/health')
+        assert.equal(response.status, 403)
+        assert.deepEqual(agent.calls, [])
+        const [entry] = await audit.read({ limit: 1 })
+        assert.deepEqual([entry?.outcome, entry?.reason], ['refused', 'admin-only'])
     })
 })
 

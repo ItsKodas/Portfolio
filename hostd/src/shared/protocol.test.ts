@@ -27,6 +27,26 @@ describe('parseAgentRequest', () => {
         )
     })
 
+    it('parses statuses, and deduplicates the list it is given', () => {
+        assert.deepEqual(parsed({ verb: 'statuses', projects: [] }), { ok: true, request: { verb: 'statuses', projects: [] } })
+        assert.deepEqual(
+            parsed({ verb: 'statuses', projects: ['acme', 'quiet', 'acme'] }),
+            { ok: true, request: { verb: 'statuses', projects: ['acme', 'quiet'] } },
+        )
+    })
+
+    it('refuses a statuses list that is malformed, oversized or carries a bad id', () => {
+        assert.equal(refusalOf({ verb: 'statuses' }), 'bad-request: projects must be a list')
+        assert.equal(refusalOf({ verb: 'statuses', projects: 'acme' }), 'bad-request: projects must be a list')
+        assert.equal(refusalOf({ verb: 'statuses', projects: ['acme'], tail: 1 }), 'bad-request: statuses takes only projects')
+        assert.equal(refusalOf({ verb: 'statuses', projects: ['../etc'] }), 'bad-request: a project id is malformed')
+        assert.equal(refusalOf({ verb: 'statuses', projects: [7] }), 'bad-request: a project id is malformed')
+        assert.equal(
+            refusalOf({ verb: 'statuses', projects: Array.from({ length: 201 }, (_, index) => `p${index}`) }),
+            'bad-request: statuses takes at most 200 projects',
+        )
+    })
+
     it('defaults tail, since and follow for logs', () => {
         assert.deepEqual(
             parsed({ verb: 'logs', project: 'acme', args: { service: 'web' } }),

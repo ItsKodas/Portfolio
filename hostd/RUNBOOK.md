@@ -182,6 +182,8 @@ Wait ten seconds for the reload, then run each check. Each one says what to expe
 | 10 | `ACTOR=client:someone-else hc -X POST http://hostd-api:8080/projects/hostd-test/stop` | `404`; check 2 shows the site still running |
 | 11 | `hc http://hostd-api:8080/projects/hostd-test/audit` | the stop, start, restart, log streams and refusals above, newest first |
 | 12 | `docker logs hostd-agent \| tail -20` | the agent's own record of the same verbs |
+| 13 | `hc 'http://hostd-api:8080/projects?status=1'` | the same list as check 1, each entry now carrying a `status` holding the services check 2 shows |
+| 14 | `hc http://hostd-api:8080/health` | `system` with `memory`, `cpu` and `disk` figures for the dedi and an empty `problems`; `ACTOR=client:cl_test` on the same URL gets `403` |
 
 ### The capability switch
 

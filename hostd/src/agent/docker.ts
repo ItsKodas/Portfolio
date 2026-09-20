@@ -127,6 +127,22 @@ export function pickPerService(containers: ContainerSummary[]): Map<string, Cont
     return chosen
 }
 
+// One listing of every container, split by the compose project each belongs to. This is what lets a
+// status read covering N projects cost one call to the Docker API rather than N: containersPath filters
+// server-side for one project at a time, which is right for a single project's page and wrong for a
+// dashboard listing every site. Containers with no compose project label are not ours and are dropped.
+export function groupByProject(containers: ContainerSummary[]): Map<string, ContainerSummary[]> {
+    const grouped = new Map<string, ContainerSummary[]>()
+    for (const container of containers) {
+        const project = container.Labels?.['com.docker.compose.project']
+        if (!project) continue
+        const existing = grouped.get(project)
+        if (existing) existing.push(container)
+        else grouped.set(project, [container])
+    }
+    return grouped
+}
+
 // Every port any currently running container has published to the host, regardless of which interface it
 // is bound to (127.0.0.1, a specific public address, or every interface via 0.0.0.0): a new container
 // binding 127.0.0.1:<port> would collide with a same-numbered publish on any of them, since an

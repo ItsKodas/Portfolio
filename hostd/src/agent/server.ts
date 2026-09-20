@@ -52,6 +52,9 @@ function describe(request: AgentRequest): string {
     switch (request.verb) {
         case 'health': return 'health'
         case 'status': return `status ${request.project}`
+        // A count, not the ids: this line is written for every dashboard render, and the ids are already
+        // in the registry the operator can read.
+        case 'statuses': return `statuses (${request.projects.length} projects)`
         case 'lifecycle': return `lifecycle ${request.project} ${request.args.action}`
         case 'logs': return `logs ${request.project} ${request.args.service}${request.args.follow ? ' follow' : ''}`
         // Never the repo URL, a branch or a domain here: this line is exactly what reaches the log.

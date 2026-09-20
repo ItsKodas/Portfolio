@@ -5,7 +5,7 @@ import { PassThrough } from 'node:stream'
 import type { ClientRequest, IncomingMessage, RequestOptions } from 'node:http'
 import {
     containersPath, logsPath, checkedId, createDockerApi, pickPerService, buildServiceStatuses,
-    publishedHostPorts, dockerPortCheck, ALL_CONTAINERS_PATH,
+    groupByProject, publishedHostPorts, dockerPortCheck, ALL_CONTAINERS_PATH,
     type ContainerInspect, type ContainerSummary, type DockerApi,
 } from './docker.ts'
 import { parseRegistry } from '../shared/registry.ts'
@@ -140,6 +140,21 @@ describe('pickPerService', () => {
         ]
         const picked = pickPerService(containers)
         assert.deepEqual([...picked].map(([service, c]) => [service, c.Id]), [['web', '2'], ['db', '3']])
+    })
+})
+
+describe('groupByProject', () => {
+    it('splits one listing by compose project and drops what is not ours', () => {
+        const containers: ContainerSummary[] = [
+            { Id: '1', State: 'running', Labels: { 'com.docker.compose.project': 'acme', 'com.docker.compose.service': 'web' } },
+            { Id: '2', State: 'running', Labels: { 'com.docker.compose.project': 'acme', 'com.docker.compose.service': 'db' } },
+            { Id: '3', State: 'running', Labels: { 'com.docker.compose.project': 'quiet', 'com.docker.compose.service': 'web' } },
+            // Started by hand, or by something that is not compose at all.
+            { Id: '4', State: 'running' },
+        ]
+        const grouped = groupByProject(containers)
+        assert.deepEqual([...grouped].map(([project, list]) => [project, list.map(c => c.Id)]), [['acme', ['1', '2']], ['quiet', ['3']]])
+        assert.deepEqual(grouped.get('ghost'), undefined)
     })
 })
 

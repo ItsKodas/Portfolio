@@ -8,16 +8,25 @@ import {
     type Capability, type CertificateMode, type EnvironmentName, type ProjectEntry, type Registry,
 } from './registry.ts'
 import type { EnvFileList } from './envfiles.ts'
+import type { SystemUsage } from './system.ts'
 
 export const MAX_REQUEST_BYTES = 64 * 1024
 export const MAX_TAIL = 5000
 export const DEFAULT_TAIL = 200
+// The bound on one statuses request. api only ever asks for the projects one actor can see, so this is
+// far above any real registry; it is here because the list arrives over the wire, and nothing that
+// arrives over the wire is unbounded.
+export const MAX_STATUS_PROJECTS = 200
 export const LIFECYCLE_ACTIONS = ['start', 'stop', 'restart'] as const
 export type LifecycleAction = typeof LIFECYCLE_ACTIONS[number]
 
 export type LogsArgs = { service: string, tail: number, since: number | null, follow: boolean }
 export type HealthRequest = { verb: 'health' }
 export type StatusRequest = { verb: 'status', project: string }
+// Several projects in one request, so a dashboard showing every site costs one call rather than one per
+// site. It names the projects rather than meaning "all of them": the agent has no idea who is asking, so
+// api is what decides which ones an actor may see, exactly as it does for every other verb.
+export type StatusesRequest = { verb: 'statuses', projects: string[] }
 export type LifecycleRequest = { verb: 'lifecycle', project: string, args: { action: LifecycleAction } }
 export type LogsRequest = { verb: 'logs', project: string, args: LogsArgs }
 
@@ -52,7 +61,7 @@ export type EnvArgs = EnvListArgs | EnvReadArgs | EnvWriteArgs
 export type EnvRequest = { verb: 'env', project: string, args: EnvArgs }
 
 export type ProjectRequest = StatusRequest | LifecycleRequest | LogsRequest | ProvisionOnProjectRequest | EnvRequest
-export type AgentRequest = HealthRequest | ProvisionCreateRequest | ProjectRequest
+export type AgentRequest = HealthRequest | StatusesRequest | ProvisionCreateRequest | ProjectRequest
 export type Verb = AgentRequest['verb']
 
 export type RefusalCode =
@@ -73,8 +82,17 @@ export type ServiceStatus = {
     restartCount: number | null
     image: string | null
 }
-export type HealthReply = { ok: true, warnings: string[], invalid: Record<string, string> }
+// system carries figures only. Nothing in it is a check, and none of its problems reach warnings, so a
+// busy machine never makes hostd unhealthy (see system.ts).
+export type HealthReply = { ok: true, warnings: string[], invalid: Record<string, string>, system: SystemUsage }
 export type StatusReply = { ok: true, services: ServiceStatus[] }
+// One project's status inside a statuses reply. A project the agent refuses (unregistered, invalid, or a
+// Docker read that failed) carries its refusal here instead of failing the whole batch: the dashboard
+// must still draw the other sites.
+export type ProjectStatus =
+    | { project: string, ok: true, services: ServiceStatus[] }
+    | { project: string, ok: false, code: RefusalCode, message: string }
+export type StatusesReply = { ok: true, projects: ProjectStatus[] }
 export type LifecycleReply = { ok: true, output: string }
 // Provisioning never starts a site on its own: an operator still has to fill in the env files this
 // names before lifecycle start makes sense, which is what state carries across the wire.
@@ -82,13 +100,14 @@ export type ProvisionReply = { ok: true, project: { id: string, state: 'needs-se
 export type EnvListReply = { ok: true, files: EnvFileList }
 export type EnvReadReply = { ok: true, text: string }
 export type StreamHeader = { ok: true, stream: true }
-export type AgentReply = HealthReply | StatusReply | LifecycleReply | ProvisionReply | EnvListReply | EnvReadReply | Refusal
+export type AgentReply = HealthReply | StatusReply | StatusesReply | LifecycleReply | ProvisionReply | EnvListReply | EnvReadReply | Refusal
 export type LogLine = { stream: 'stdout' | 'stderr', ts: string | null, text: string, truncated: boolean }
 
 // Status is visible to anyone who may see the project at all; everything else needs its capability.
 export const VERB_CAPABILITY: Record<Verb, Capability | null> = {
     health: null,
     status: null,
+    statuses: null,
     lifecycle: 'lifecycle',
     logs: 'logs',
     provision: 'provision',
@@ -243,6 +262,20 @@ export function parseAgentRequest(line: string): Parsed {
             const project = projectOf(raw)
             if (!project) return refuse('bad-request', 'project is malformed')
             return { ok: true, request: { verb: 'status', project } }
+        }
+
+        case 'statuses': {
+            if (!onlyKeys(raw, ['verb', 'projects'])) return refuse('bad-request', 'statuses takes only projects')
+            if (!Array.isArray(raw.projects)) return refuse('bad-request', 'projects must be a list')
+            if (raw.projects.length > MAX_STATUS_PROJECTS) return refuse('bad-request', `statuses takes at most ${MAX_STATUS_PROJECTS} projects`)
+            const projects: string[] = []
+            for (const value of raw.projects) {
+                if (typeof value !== 'string' || !PROJECT_ID.test(value)) return refuse('bad-request', 'a project id is malformed')
+                // Deduplicated here rather than in the handler, so a caller cannot multiply the Docker
+                // work by repeating one id. The list is short enough that a scan beats a Set.
+                if (!projects.includes(value)) projects.push(value)
+            }
+            return { ok: true, request: { verb: 'statuses', projects } }
         }
 
         case 'lifecycle': {

@@ -3,11 +3,12 @@ import assert from 'node:assert/strict'
 import { PassThrough } from 'node:stream'
 import { Agent, MAX_FOLLOWS_PER_PROJECT, type AgentDeps, type Outcome } from './agent.ts'
 import { lifecycleArgv, type Runner, type RunResult } from './compose.ts'
-import type { ContainerInspect, DockerApi } from './docker.ts'
+import type { ContainerInspect, ContainerSummary, DockerApi } from './docker.ts'
 import type { EnvFs } from './env-files.ts'
 import type { ProvisionDeps } from './provision.ts'
 import { parseRegistry, type ProjectEntry } from '../shared/registry.ts'
 import type { AgentRequest, LogLine } from '../shared/protocol.ts'
+import type { SystemUsage } from '../shared/system.ts'
 
 const registry = parseRegistry(`
 projects:
@@ -29,7 +30,23 @@ projects:
     client: cl_1
 `)
 
+// The machine's figures as health reports them. Injected, so nothing here reads the real machine.
+const usage: SystemUsage = {
+    memory: { totalBytes: 8_000_000_000, usedBytes: 3_000_000_000, availableBytes: 5_000_000_000 },
+    cpu: { cores: 4, load1: 0.5, load5: 0.4, load15: 0.25 },
+    disk: { path: '/var/www', totalBytes: 500_000_000_000, usedBytes: 200_000_000_000, freeBytes: 275_000_000_000 },
+    problems: [],
+}
+
 const WEB = 'a'.repeat(64)
+const QUIET_WEB = 'b'.repeat(64)
+// What listAllContainers sees: both projects at once, each container labelled with the compose project
+// it belongs to, which is how the agent tells them apart without a filtered call per project.
+const ALL_CONTAINERS: ContainerSummary[] = [
+    { Id: WEB, State: 'running', Labels: { 'com.docker.compose.project': 'acme', 'com.docker.compose.service': 'web' } },
+    { Id: QUIET_WEB, State: 'running', Labels: { 'com.docker.compose.project': 'quiet', 'com.docker.compose.service': 'web' } },
+    { Id: 'c'.repeat(64), State: 'running', Labels: { 'com.docker.compose.service': 'web' } },
+]
 const inspectWeb: ContainerInspect = {
     Id: WEB,
     RestartCount: 0,
@@ -48,12 +65,14 @@ type SetupOptions = Partial<Omit<AgentDeps, 'guardInvalid'>> & {
     runResult?: Partial<RunResult>
     guardInvalid?: Map<string, string>
     containers?: boolean
+    allContainers?: () => Promise<ContainerSummary[]>
 }
 
 function setup(options: SetupOptions = {}) {
     // The test-only knobs are taken out first, so only real AgentDeps fields are spread into deps.
-    const { runResult, guardInvalid, containers, ...overrides } = options
+    const { runResult, guardInvalid, containers, allContainers, ...overrides } = options
     const runs: Array<{ command: string, args: string[] }> = []
+    let listedAll = 0
     const rechecked: string[] = []
     const logStreams: PassThrough[] = []
     const runner: Runner = async (command, args) => {
@@ -63,7 +82,10 @@ function setup(options: SetupOptions = {}) {
     const docker: DockerApi = {
         ping: async () => true,
         listProjectContainers: async () => containers === false ? [] : [{ Id: WEB, State: 'running', Labels: { 'com.docker.compose.service': 'web' } }],
-        listAllContainers: async () => [],
+        listAllContainers: async () => {
+            listedAll += 1
+            return allContainers ? allContainers() : ALL_CONTAINERS
+        },
         inspect: async () => inspectWeb,
         logs: async () => {
             const stream = new PassThrough()
@@ -77,13 +99,14 @@ function setup(options: SetupOptions = {}) {
         warnings: () => [],
         docker,
         runner,
+        system: async () => usage,
         recheck: async (project: ProjectEntry) => {
             rechecked.push(project.id)
             return null
         },
         ...overrides,
     }
-    return { agent: new Agent(deps), runs, rechecked, logStreams }
+    return { agent: new Agent(deps), runs, rechecked, logStreams, listedAll: () => listedAll }
 }
 
 function replyOf(outcome: Outcome) {
@@ -197,6 +220,83 @@ describe('status and health', () => {
         assert.deepEqual(reply.warnings, ['registry reload rejected'])
         assert.equal(reply.invalid.acme, 'guard problem')
         assert.ok(reply.invalid.broken)
+    })
+
+    it('reports the machine\'s memory, CPU and disk as figures, never as warnings', async () => {
+        const busy: SystemUsage = {
+            memory: { totalBytes: 8_000_000_000, usedBytes: 7_800_000_000, availableBytes: 200_000_000 },
+            cpu: { cores: 4, load1: 19, load5: 17, load15: 12 },
+            disk: { path: '/var/www', totalBytes: 100, usedBytes: 99, freeBytes: 1 },
+            problems: ['the disk holding /elsewhere could not be read: ENOENT'],
+        }
+        const { agent } = setup({ system: async () => busy })
+        const reply = replyOf(await agent.handle({ verb: 'health' }))
+        assert.ok(reply && reply.ok && 'system' in reply)
+        assert.deepEqual(reply.system, busy)
+        // The whole point of change 2: a machine at 97% memory, a load of 19 and a full disk is still
+        // healthy as far as hostd is concerned. These are figures to draw, not checks.
+        assert.deepEqual(reply.warnings, [])
+    })
+})
+
+describe('statuses', () => {
+    const statuses = (...projects: string[]): AgentRequest => ({ verb: 'statuses', projects })
+
+    it('reports every project from a single container listing', async () => {
+        const { agent, listedAll } = setup()
+        const reply = replyOf(await agent.handle(statuses('acme', 'quiet')))
+        assert.ok(reply && reply.ok && 'projects' in reply)
+        assert.deepEqual(reply.projects, [
+            {
+                project: 'acme',
+                ok: true,
+                services: [
+                    { service: 'web', role: 'site', state: 'running', health: null, startedAt: '2026-09-20T00:00:00Z', restartCount: 0, image: 'acme-web' },
+                    { service: 'db', role: 'database', state: 'missing', health: null, startedAt: null, restartCount: null, image: null },
+                ],
+            },
+            {
+                project: 'quiet',
+                ok: true,
+                services: [
+                    { service: 'web', role: 'site', state: 'running', health: null, startedAt: '2026-09-20T00:00:00Z', restartCount: 0, image: 'acme-web' },
+                ],
+            },
+        ])
+        // One listing for both, which is the reason this verb exists rather than api calling status twice.
+        assert.equal(listedAll(), 1)
+    })
+
+    it('answers in the order asked, and refuses one project without losing the others', async () => {
+        const { agent } = setup({ guardInvalid: new Map([['quiet', 'guard problem']]) })
+        const reply = replyOf(await agent.handle(statuses('ghost', 'quiet', 'acme')))
+        assert.ok(reply && reply.ok && 'projects' in reply)
+        assert.deepEqual(reply.projects.map(status => [status.project, status.ok]), [['ghost', false], ['quiet', false], ['acme', true]])
+        assert.deepEqual(
+            reply.projects.flatMap(status => (status.ok ? [] : [[status.code, status.message]])),
+            [['unknown-project', 'ghost is not registered'], ['invalid-project', 'quiet is invalid: guard problem']],
+        )
+    })
+
+    it('reports a Docker failure per project rather than failing the whole batch', async () => {
+        const { agent } = setup({ allContainers: async () => { throw new Error('socket gone') } })
+        const reply = replyOf(await agent.handle(statuses('acme', 'ghost')))
+        assert.ok(reply && reply.ok && 'projects' in reply)
+        const [acme, ghost] = reply.projects
+        assert.ok(acme && !acme.ok)
+        assert.equal(acme.code, 'failed')
+        assert.match(acme.message, /socket gone/)
+        // The refusal that needed no Docker at all is unaffected.
+        assert.ok(ghost && !ghost.ok)
+        assert.equal(ghost.code, 'unknown-project')
+    })
+
+    it('touches Docker at all only when some project survived the registry check', async () => {
+        const { agent, listedAll } = setup()
+        const reply = replyOf(await agent.handle(statuses('ghost', 'broken')))
+        assert.ok(reply && reply.ok && 'projects' in reply)
+        assert.deepEqual(reply.projects.map(status => status.ok), [false, false])
+        assert.equal(listedAll(), 0)
     })
 })
 
