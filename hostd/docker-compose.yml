@@ -13,7 +13,7 @@ services:
     # Root, because it holds the Docker socket. It listens only on the Unix socket in hostd-sock.
     network_mode: none
     environment:
-      HOSTD_REGISTRY_FILE: /etc/hostd/projects.yaml
+      HOSTD_REGISTRY_FILE: /etc/hostd/registry/projects.yaml
       HOSTD_AGENT_SOCKET: /run/hostd/agent.sock
       # The node user's group in the api image, so api can connect and nothing else can.
       HOSTD_SOCKET_GID: "1000"
@@ -23,7 +23,11 @@ services:
       # The same path inside as outside: compose hands bind mount sources to the daemon as host paths.
       # Read-only in phase 1, which only reads compose files; file access in phase 3 changes this.
       - /var/www:/var/www:ro
-      - ./projects.yaml:/etc/hostd/projects.yaml:ro
+      # The registry's directory, not the file: a single-file bind mount pins the container to one
+      # inode, so an editor or sed -i replacing the file by rename detaches the mount silently and
+      # every later edit is invisible. registry/ holds nothing but the registry, so neither container
+      # gains sight of .env or .env.agent.
+      - ./registry:/etc/hostd/registry:ro
       - hostd-sock:/run/hostd
     healthcheck:
       test: ["CMD", "node", "--import", "tsx", "src/shared/healthcheck.ts", "/tmp/hostd-status.json"]
@@ -40,12 +44,13 @@ services:
     container_name: hostd-api
     env_file: .env
     environment:
-      HOSTD_REGISTRY_FILE: /etc/hostd/projects.yaml
+      HOSTD_REGISTRY_FILE: /etc/hostd/registry/projects.yaml
       HOSTD_AGENT_SOCKET: /run/hostd/agent.sock
       HOSTD_STATE_DIR: /state
       HOSTD_STATUS_FILE: /tmp/hostd-status.json
     volumes:
-      - ./projects.yaml:/etc/hostd/projects.yaml:ro
+      # The directory, for the reason given on the agent's mount above.
+      - ./registry:/etc/hostd/registry:ro
       - hostd-state:/state
       - hostd-sock:/run/hostd
     networks:
