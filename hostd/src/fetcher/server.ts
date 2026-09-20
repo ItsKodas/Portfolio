@@ -27,17 +27,23 @@ export async function handleFetchConnection(
 ): Promise<void> {
     socket.on('error', () => socket.destroy())
 
-    const line = await readRequestLine(socket)
+    const result = await readRequestLine(socket)
     // Anything after the request line is ignored, but the socket keeps reading so a peer leaving is seen.
     socket.resume()
 
-    if (line === null) {
+    if (result.line === null) {
+        if (result.reason === 'empty') {
+            // A bare connect-and-close, like the agent's own fetcherReachable probe of this socket, is not
+            // a request: end quietly rather than logging a refusal for every probe tick.
+            socket.end()
+            return
+        }
         log('refused bad-request: no request line')
         socket.end(lineOf({ ok: false, code: 'bad-request', message: 'expected one request line of at most 64 KB' }))
         return
     }
 
-    const parsed = parseFetchRequest(line)
+    const parsed = parseFetchRequest(result.line)
     if (!parsed.ok) {
         log(`refused ${parsed.code}: ${parsed.message}`)
         socket.end(lineOf(parsed))

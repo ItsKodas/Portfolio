@@ -9,31 +9,39 @@ import type { Outcome } from './agent.ts'
 
 export type AgentHandler = { handle(request: AgentRequest): Promise<Outcome> }
 
-// Resolves with the first line, or null if the peer sends more than maxBytes without a newline or leaves.
-export function readRequestLine(input: Readable, maxBytes = MAX_REQUEST_BYTES): Promise<string | null> {
+// Resolves with the first line, or with why there wasn't one: 'empty' means the peer left without sending
+// a byte (a bare connect-and-close, such as a health probe), 'incomplete' means it sent some bytes then
+// left before a newline arrived, and 'oversize' means it sent more than maxBytes without a newline. The
+// three are indistinguishable from a raw null, which is why fetcher/server.ts needs this split: an empty
+// close is not a request at all, while the other two are malformed requests worth refusing and logging.
+export type RequestLineResult = { line: string } | { line: null, reason: 'empty' | 'incomplete' | 'oversize' }
+
+export function readRequestLine(input: Readable, maxBytes = MAX_REQUEST_BYTES): Promise<RequestLineResult> {
     return new Promise(resolve => {
         const chunks: Buffer[] = []
         let size = 0
-        const finish = (value: string | null) => {
+        let sawData = false
+        const finish = (value: RequestLineResult) => {
             input.off('data', onData)
             input.off('end', onEnd)
             input.off('error', onEnd)
             resolve(value)
         }
         const onData = (chunk: Buffer | string) => {
+            sawData = true
             const bytes = typeof chunk === 'string' ? Buffer.from(chunk) : chunk
             const newline = bytes.indexOf(0x0a)
             if (newline !== -1) {
                 chunks.push(bytes.subarray(0, newline))
                 size += newline
-                finish(size > maxBytes ? null : Buffer.concat(chunks).toString('utf8'))
+                finish(size > maxBytes ? { line: null, reason: 'oversize' } : { line: Buffer.concat(chunks).toString('utf8') })
                 return
             }
             chunks.push(bytes)
             size += bytes.length
-            if (size > maxBytes) finish(null)
+            if (size > maxBytes) finish({ line: null, reason: 'oversize' })
         }
-        const onEnd = () => finish(null)
+        const onEnd = () => finish({ line: null, reason: sawData ? 'incomplete' : 'empty' })
         input.on('data', onData)
         input.on('end', onEnd)
         input.on('error', onEnd)
@@ -83,16 +91,20 @@ export async function handleConnection(socket: Duplex, agent: AgentHandler, log:
         socket.off('close', markGone)
     }
 
-    const line = await readRequestLine(socket)
+    const result = await readRequestLine(socket)
     // Anything after the request line is ignored, but the socket keeps reading so the peer leaving is seen.
     socket.resume()
 
-    if (line === null) {
+    if (result.line === null) {
         stopWatching()
+        // Every reason is logged and refused here, including an empty close: unlike the fetcher, nothing
+        // probes this socket with a bare connect-and-close (api always sends a real health verb), so a
+        // silent connection to the agent is unexpected and worth keeping in the log.
         log('refused bad-request: no request line')
         socket.end(lineOf(refuse('bad-request', 'expected one request line of at most 64 KB')))
         return
     }
+    const line = result.line
 
     const parsed = parseAgentRequest(line)
     if (!parsed.ok) {
