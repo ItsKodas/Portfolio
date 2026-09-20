@@ -27,10 +27,12 @@ export type CodesResult = { ok: true, recoveryCodes: string[] } | { ok: false, e
 const INVALID = { ok: false, error: 'That request was not valid.' } as const
 const BROKEN = { ok: false, error: 'Something went wrong. Please try again.' } as const
 
-// EnvError names the missing variable and never its value, so it is safe to show
+// A missing setting is Koda's problem, not the client's: naming the variable tells them nothing they can act
+// on, and asking them to report it makes the site's own configuration their errand. The admin side still
+// shows the real message, which is where an operator can do something about it.
 const failure = (where: string, error: unknown): PortalResult => {
-    if (error instanceof EnvError) return { ok: false, error: `${error.message}. Please let Koda know.` }
-    log(`${where} failed`, error)
+    if (error instanceof EnvError) log(`${where} failed: ${error.message}`, error)
+    else log(`${where} failed`, error)
     return BROKEN
 }
 
