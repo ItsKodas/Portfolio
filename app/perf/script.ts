@@ -83,8 +83,10 @@ export const PERF_SCRIPT = `(function () {
         return
     }
 
-    var ceiling = 0
+    var ceiling = 0, coarse = false
     try {
+        coarse = window.matchMedia('(pointer: coarse)').matches
+
         // Drawing without the graphics card? Then nothing beyond the still scene is affordable, whatever the
         // memory says.
         var software = false
@@ -106,7 +108,7 @@ export const PERF_SCRIPT = `(function () {
                 window.innerHeight,
                 window.devicePixelRatio || 1,
                 navigator.deviceMemory,
-                window.matchMedia('(pointer: coarse)').matches,
+                coarse,
                 ${JSON.stringify(TIERS)},
                 ${JSON.stringify(BASE)},
                 ${TILE_MIN},
@@ -129,18 +131,29 @@ export const PERF_SCRIPT = `(function () {
     // storage every page of the site shares, and be read and written whether or not the page was showing, so a page
     // the browser preloaded, or one opened alongside, took another page's mark for a crash: a phone was held to the
     // still scene on every plain load with no crash at all. A page out of sight still obeys a cap already remembered.
+    //
+    // Only a touch device is judged this way, because only a touch device is what the guard is for. The cost of the
+    // trade is that a mark is not actually proof of a crash: sessionStorage is copied into a duplicated tab, and
+    // brought back by a session restore after the browser or the machine restarts, so a mark can be read with the page
+    // that wrote it still alive, or hours after the fact. On a phone that is worth it, because the alternative is the
+    // crash loop. A device with a fine pointer was never the one at risk, gets a budget it is nowhere near, and is not
+    // reloaded into the same crash when its tab is killed, so there the trade is all cost: a capable PC was left a
+    // tier down for good on no crash at all, with no reload able to talk it back out of it. The cap stays in storage
+    // rather than being cleared, for a convertible whose next visit is in tablet mode.
     var shown = document.visibilityState === 'visible' && !document.prerendering
     var live = null, before = null, cap = null
     try {
         localStorage.removeItem('scene-live')   // (where older versions kept the mark)
         cap = before = localStorage.getItem('scene-cap')
-        if (shown) live = sessionStorage.getItem('scene-live')
-        if (live !== null) {
-            var held = Number(live) > 1 ? 1 : 0
-            cap = String(cap === null ? held : Math.min(Number(cap), held))
-            localStorage.setItem('scene-cap', cap)
+        if (coarse) {
+            if (shown) live = sessionStorage.getItem('scene-live')
+            if (live !== null) {
+                var held = Number(live) > 1 ? 1 : 0
+                cap = String(cap === null ? held : Math.min(Number(cap), held))
+                localStorage.setItem('scene-cap', cap)
+            }
+            if (cap !== null) ceiling = Math.min(ceiling, Number(cap))
         }
-        if (cap !== null) ceiling = Math.min(ceiling, Number(cap))
     } catch (e) {}
 
     var handed = ceiling === count ? count : 0

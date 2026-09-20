@@ -280,9 +280,10 @@ scene must not do that again.
   hidden, `pagehide`) and restores it when shown again (`visibilitychange` to visible, `pageshow`). The one way the
   mark survives is the page dying while on screen. Clearing on hide is what keeps a phone discarding a backgrounded
   tab from being mistaken for a crash.
-- A load that finds the mark holds the device to `depth` from then on (`scene-cap`), or to the still scene if it died
-  at `depth` or below. Straight to `depth` rather than one tier down, because the stars on `sky` are the big memory
-  cost, and stepping down a tier at a time would keep them through two more crashes. A cap only ever lowers.
+- A load on a touch device that finds the mark holds the device to `depth` from then on (`scene-cap`), or to the still
+  scene if it died at `depth` or below. Straight to `depth` rather than one tier down, because the stars on `sky` are
+  the big memory cost, and stepping down a tier at a time would keep them through two more crashes. A cap only ever
+  lowers. A fine pointer neither writes nor obeys a cap at all: see "Only a touch device is judged by the mark", below.
 - `?perf=auto` forgets an old cap (in `localStorage`, so it applies to the device), but not a crash that has only just
   happened. The browser reloads a crashed page
   at the same address, so a `?perf=auto` that threw the fresh mark away would hand the scene out again on every reload,
@@ -299,6 +300,26 @@ its first second or two, which is exactly the mark that produces a cap of 0.
 
 So the mark is kept per tab in `sessionStorage`, which a browser keeps through reloading a crashed tab, and only a page
 on screen reads or writes it. The cap it produces stays in `localStorage`, since it describes the device.
+
+### Only a touch device is judged by the mark
+
+A mark is not proof of a crash even per tab, because `sessionStorage` outlives the page that wrote it in two ways that
+have nothing to do with crashing: a browser copies it into a duplicated tab, and a session restore brings it back after
+the browser or the machine is restarted. So a load can find a mark while the page that wrote it is still open, or hours
+after it was written.
+
+On a phone that is worth living with. The cost of a false mark is one tier, and the thing it buys is the crash loop not
+happening, which is the whole reason any of this exists.
+
+A device with a fine pointer gets neither side of that trade. It was never the one at risk: it is handed a budget it is
+nowhere near (1 GiB against a full scene of about 390 MiB at 1440p), and a desktop tab that is killed is not reloaded
+straight back into the same crash the way a phone's is. So the guard there was all cost, and it showed: a capable PC
+reported the scene a tier down for good, on no crash at all, and no amount of reloading would talk it back out of it,
+because the cap it was obeying was written to `localStorage` and only `?perf=auto` cleared it.
+
+So the cap is read and written only when the pointer is coarse. A fine pointer detects afresh on every load, which is
+what the rest of the system already does: the climb and the frame watch keep no state between loads either. A cap
+already in storage is left there rather than cleared, for a convertible whose next visit is in tablet mode.
 
 Checked in headless Chrome at phone size: moving between addresses in one tab leaves no false cap; crashing a tab's
 renderer (`Page.crash`) and reloading that same tab holds it to `depth`; another tab afterwards keeps the device's cap
