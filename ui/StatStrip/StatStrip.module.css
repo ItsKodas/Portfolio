@@ -1,0 +1,21 @@
+.strip {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(122px, 1fr));
+    border-block: 1px solid var(--rule);
+    padding-block: 12px;
+    margin: 0;
+}
+
+.stat { padding-right: 16px; }
+.key { color: var(--ink-3); font-size: 10.5px; }
+.value {
+    margin: 2px 0 0;
+    font-family: var(--font-mono), monospace;
+    font-size: 19px;
+    font-weight: 500;
+    font-variant-numeric: tabular-nums;
+}
+.value.good { color: var(--good); }
+.value.warn { color: var(--warn); }
+.value.crit { color: var(--crit); }
+.note { color: var(--ink-3); font-size: 10px; margin-top: 1px; }
