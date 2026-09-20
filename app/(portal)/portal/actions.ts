@@ -134,7 +134,10 @@ export async function completeResetAction(token: string, password: string, code:
     if (!parsed.success) return { ok: false, error: parsed.error.issues[0]?.message ?? INVALID.error }
     if (typeof token !== 'string' || !token || typeof code !== 'string') return INVALID
     try {
-        const result = await completeReset({ tokenHash: hashSessionToken(token), password: parsed.data, code }, completeResetDeps())
+        const result = await completeReset(
+            { tokenHash: hashSessionToken(token), password: parsed.data, code },
+            completeResetDeps(await requestIpHash()),
+        )
         if (!result.ok) return result
         redirect(`${SIGN_IN_PATH}?reset=1`)
     } catch (error) {

@@ -150,10 +150,13 @@ export const requestResetDeps = (ipHash: string) => {
     }
 }
 
-export const completeResetDeps = () => {
+export const completeResetDeps = (ipHash: string) => {
     const clients = repo()
     return {
         tokenByHash: clients.tokenByHash,
+        countAttempts: clients.countAttempts,
+        recordAttempt: clients.recordAttempt,
+        recordFailure: clients.recordFailure,
         decryptSecret: (stored: string) => Buffer.from(decryptSecret(stored, key()), 'base64'),
         verifyTotp,
         recordTotpUse: clients.recordTotpUse,
@@ -169,7 +172,7 @@ export const completeResetDeps = () => {
         sendChanged: async (client: ClientRecord) => {
             await sendClientEmail(options => passwordChangedEmail(client, options))
         },
-        now, log,
+        now, log, ipHash,
     }
 }
 

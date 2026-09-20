@@ -117,6 +117,12 @@ export async function codeStep(
 
     if (overIpLimit(await deps.countAttempts(ipHash, ipWindowStart(now)))) return { ok: false, error: TOO_MANY_ERROR }
 
+    // The ladder this step writes below is worth nothing unless it is read back here too. Without it, someone
+    // who already has the password can keep guessing codes while the account is nominally locked, and the only
+    // live bound is the per-IP counter, which a pool of addresses sidesteps. Safe to show for the same reason
+    // it is safe in passwordStep: reaching this step means the password was already right.
+    if (isLocked(client, now)) return { ok: false, error: LOCKED_ERROR }
+
     const finish = async () => {
         await deps.completeMfa(session.id, now, activeExpiry(session.createdAt, now))
         await deps.recordSuccess(client.id, now)

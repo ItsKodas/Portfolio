@@ -190,6 +190,17 @@ describe('codeStep', () => {
         expect(await codeStep({ session, code: '123456' }, deps)).toEqual({ ok: false, error: TOO_MANY_ERROR })
         expect(deps.decryptSecret).not.toHaveBeenCalled()
     })
+
+    // The ladder this step writes on every wrong code is only a bound if it is read back here. Without it,
+    // someone holding the password grinds codes through a locked account and only the per-IP counter stops
+    // them, which a pool of addresses sidesteps.
+    it('refuses a locked client, even with a valid code', async () => {
+        const deps = codeDeps()
+        const locked = { id: 'session1', createdAt: now, client: client({ lockedUntil: new Date('2026-09-20T10:05:00Z') }) } as never
+        expect(await codeStep({ session: locked, code: '123456' }, deps)).toEqual({ ok: false, error: LOCKED_ERROR })
+        expect(deps.completeMfa).not.toHaveBeenCalled()
+        expect(deps.decryptSecret).not.toHaveBeenCalled()
+    })
 })
 
 // The test the whole design rests on

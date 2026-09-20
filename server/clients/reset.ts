@@ -5,9 +5,12 @@ import 'server-only'
 
 import type { ClientTokenPurpose } from '../generated/prisma/client'
 import { normaliseRecoveryCode } from './ids'
-import { ipWindowStart, overIpLimit } from './limits'
+import { afterFailure, ipWindowStart, isLocked, overIpLimit, type LockUpdate } from './limits'
 import type { ClientRecord } from './repo'
 import { LINK_ERROR, RESET_TTL_MS, tokenProblem } from './setup'
+// Imported rather than restated, so the reset page and the sign-in page cannot drift apart on the wording a
+// throttled or locked person sees
+import { LOCKED_ERROR, TOO_MANY_ERROR } from './signIn'
 
 // Said whether or not the address matched anything
 export const RESET_SENT_MESSAGE = 'If that address has an account, a reset link is on its way. It is valid for one hour.'
@@ -64,6 +67,9 @@ export async function requestReset(input: { email: string }, deps: RequestResetD
 
 export type CompleteResetDeps = {
     tokenByHash(tokenHash: string): Promise<({ id: string, purpose: ClientTokenPurpose, usedAt: Date | null, expiresAt: Date, client: ClientRecord }) | null>
+    countAttempts(ipHash: string, since: Date): Promise<number>
+    recordAttempt(ipHash: string): Promise<void>
+    recordFailure(id: string, update: LockUpdate): Promise<void>
     decryptSecret(stored: string): Buffer
     verifyTotp(secret: Buffer, code: string, now: Date): bigint | null
     recordTotpUse(clientId: string, step: bigint): Promise<boolean>
@@ -79,6 +85,7 @@ export type CompleteResetDeps = {
     sendChanged(client: ClientRecord): Promise<void>
     now(): Date
     log(message: string, error?: unknown): void
+    ipHash?: string
 }
 
 export async function completeReset(
@@ -86,6 +93,13 @@ export async function completeReset(
     deps: CompleteResetDeps,
 ): Promise<{ ok: true } | { ok: false, error: string }> {
     const now = deps.now()
+    const ipHash = deps.ipHash ?? 'unknown'
+
+    // First, before anything is looked up. A wrong code here is otherwise free to the person guessing: the
+    // hashing only runs once the code is accepted, and the link is only spent on success, so it stays live for
+    // its full hour. Without this the second factor the page demands has no bound at all.
+    if (overIpLimit(await deps.countAttempts(ipHash, ipWindowStart(now)))) return { ok: false, error: TOO_MANY_ERROR }
+
     const token = await deps.tokenByHash(input.tokenHash)
     // The purpose check is what stops a reset token being spent at the invite endpoint: an invite needs no
     // second factor, so a reset token accepted there would let a compromised mailbox alone change a password.
@@ -94,6 +108,10 @@ export async function completeReset(
 
     const client = token.client
 
+    // The ladder the failures below write is only a bound if something reads it back. Showing the lock here
+    // tells a stranger nothing: reaching this line already needs a live link out of the client's own mailbox.
+    if (isLocked(client, now)) return { ok: false, error: LOCKED_ERROR }
+
     // A client with an authenticator must use it: an email compromise alone must not be enough. A client who
     // has never enrolled has nothing to give, and is forced through enrolment before the session is usable.
     // totpConfirmedAt alone, not totpSecret as well: a row with the flag set and no secret is corrupted,
@@ -101,7 +119,12 @@ export async function completeReset(
     // below is only for a client who genuinely never enrolled.
     if (client.totpConfirmedAt) {
         const accepted = await acceptSecondFactor(client, input.code, deps, now)
-        if (!accepted) return { ok: false, error: CODE_REQUIRED }
+        if (!accepted) {
+            // Counted the same way codeStep counts a wrong code, against the IP and against the account
+            await deps.recordAttempt(ipHash)
+            await deps.recordFailure(client.id, afterFailure(client, now))
+            return { ok: false, error: CODE_REQUIRED }
+        }
     }
 
     await deps.setPassword(client.id, await deps.hashPassword(input.password), now)
