@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it } from 'vitest'
 
-import { recordLive, startCrashGuard } from './crashGuard'
+import { CAP_WEEK_MS, describeCap, recordLive, startCrashGuard } from './crashGuard'
 
 // A stand-in document, window and storage, enough to hide, show and leave a page and see what it remembers
 
@@ -152,5 +152,32 @@ describe('the crash guard', () => {
         startCrashGuard()
         h.hide()
         expect(h.log()).toEqual([])
+    })
+})
+
+const DAY = 864e5
+
+// The cap the head script stores carries the moment it was written and the weeks it is good for, which is three numbers
+// and far more than the ?debug=perf readout has room for on a phone. So it is read back as the tier and the days the cap
+// still has to run, and a cap past its window says so rather than looking like one still in force.
+describe('a stored cap, as the readout shows it', () => {
+    it('reads a live cap back as its tier and the days it has left', () => {
+        expect(describeCap(`1 ${Date.now() - 5 * DAY} 1`)).toBe('1 for 2d')
+    })
+
+    it('counts the longer window a re-earned cap was given', () => {
+        expect(describeCap(`0 ${Date.now() - 5 * DAY} 2`)).toBe('0 for 9d')
+    })
+
+    it('says so when the device has no cap at all', () => {
+        expect(describeCap(null)).toBe('none')
+    })
+
+    it('calls a cap past its window spent, because the next load drops it', () => {
+        expect(describeCap(`0 ${Date.now() - 8 * DAY} 1`)).toBe('0 (spent)')
+    })
+
+    it('calls a bare cap from an earlier version spent too, for the same reason', () => {
+        expect(describeCap('0')).toBe('0 (spent)')
     })
 })

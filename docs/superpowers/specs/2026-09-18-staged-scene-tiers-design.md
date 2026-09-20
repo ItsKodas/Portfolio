@@ -280,10 +280,11 @@ scene must not do that again.
   hidden, `pagehide`) and restores it when shown again (`visibilitychange` to visible, `pageshow`). The one way the
   mark survives is the page dying while on screen. Clearing on hide is what keeps a phone discarding a backgrounded
   tab from being mistaken for a crash.
-- A load on a touch device that finds the mark holds the device to `depth` from then on (`scene-cap`), or to the still
+- A load on a touch device that finds the mark holds the device to `depth` (`scene-cap`), or to the still
   scene if it died at `depth` or below. Straight to `depth` rather than one tier down, because the stars on `sky` are
   the big memory cost, and stepping down a tier at a time would keep them through two more crashes. A cap only ever
-  lowers. A fine pointer neither writes nor obeys a cap at all: see "Only a touch device is judged by the mark", below.
+  lowers, and it runs for a week at first rather than for good: see "A cap expires, and each crash under one doubles
+  it", below. A fine pointer neither writes nor obeys a cap at all: see "Only a touch device is judged by the mark".
 - `?perf=auto` forgets an old cap (in `localStorage`, so it applies to the device), but not a crash that has only just
   happened. The browser reloads a crashed page
   at the same address, so a `?perf=auto` that threw the fresh mark away would hand the scene out again on every reload,
@@ -319,7 +320,11 @@ because the cap it was obeying was written to `localStorage` and only `?perf=aut
 
 So the cap is read and written only when the pointer is coarse. A fine pointer detects afresh on every load, which is
 what the rest of the system already does: the climb and the frame watch keep no state between loads either. A cap
-already in storage is left there rather than cleared, for a convertible whose next visit is in tablet mode.
+already in storage is left there rather than cleared, window and all, for a convertible whose next visit is in tablet
+mode.
+
+That removed the false cap from desktops entirely, and left it on phones, where the mark is as weak as ever. The section
+below is what stops it being permanent there.
 
 Checked in headless Chrome at phone size: moving between addresses in one tab leaves no false cap; crashing a tab's
 renderer (`Page.crash`) and reloading that same tab holds it to `depth`; another tab afterwards keeps the device's cap
@@ -330,7 +335,51 @@ only. On iOS it is expected, since WebKit keeps session storage outside the web 
 log (`scene-log` in `localStorage`, the last 30 lines, until `?debug=off`). The head script records every load: its
 address, whether it was shown, hidden or prerendering, the mark it found, the cap before and after, and the ceiling. The
 client records every mark and clear with its reason. The `?debug=perf` readout shows it. A load straight after a crash
-should read `mark 3 cap - > 1`; one reading `mark -` there would mean the mark did not survive the crash.
+should read `mark 3 cap - > 1 for 1w`; one reading `mark -` there would mean the mark did not survive the crash.
+
+### A cap expires, and each crash under one doubles it
+
+On a phone the false mark above cost the device its scene for good: one duplicated tab or one session restore pinned it
+to `depth`, or to the still scene, and only the `?perf=auto` URL cleared it, which no visitor knows about and no reload
+reaches. The phone, unlike the PC, does need the guard, so the cap could not simply go the same way.
+
+So a cap is no longer forever. `scene-cap` holds `<tier> <written at> <weeks>`, and a load past those weeks throws the
+cap away and detects afresh. The weeks start at one. Each crash found while a cap is still live doubles them, to a
+ceiling of 52:
+
+| what happened | cap after it |
+| --- | --- |
+| crash at `forest`, nothing stored | `depth` for 1 week |
+| crash at `depth` under that cap | still scene for 2 weeks |
+| crash again under that one | still scene for 4 weeks, then 8, 16, 32, 52 |
+| no crash until the weeks are up | cap dropped, device detects afresh |
+
+A phone that genuinely cannot hold the scene therefore ratchets towards being left alone: it pays one crash, and each
+further one buys a longer quiet period, so it is not crashing once per fresh tab forever. A phone whose mark was false
+pays a week of one tier instead of the rest of its life, and a single spurious mark can never compound, because doubling
+needs a crash found while a cap is already live.
+
+`Date.now()` is all the clock this needs, and a device whose clock is wrong is no worse off than under a cap that never
+expired. The window unit and the ceiling are `CAP_WEEK_MS` and `CAP_MAX_WEEKS` in `crashGuard.ts`, which is also where
+`describeCap` reads the stored shape back for the `?debug=perf` readout (`1 for 5d`, or `spent` for a cap the next load
+will drop). The head script imports both.
+
+Three alternatives were weighed and rejected:
+
+- **Keep the cap in `sessionStorage` only.** The crashing tab is the tab that gets reloaded, so a per-tab cap does break
+  the loop, and a false mark then costs one tab. But a phone that really cannot hold the scene would crash once in every
+  fresh tab, for good, which is a worse deal than a permanent cap for the device the guard exists for.
+- **Cap this load from the mark, but persist only on a second sighting.** Fixes the one-off clone or restore, but the
+  sighting count would itself have to expire, or two false marks years apart still pin the device forever. And a phone
+  that crashes at `sky` and then holds fine at `depth` never reaches a second sighting, so it too crashes once per tab.
+- **Expire after some number of visits that ended cleanly.** A capped device never runs the full scene again, so a clean
+  visit at `depth` is no evidence it could hold `sky`. Counting them would mean the client writing a counter on
+  `pagehide` for no more information than the clock already gives.
+
+Caps written by the version before this one are bare tiers with no window, and are dropped on sight rather than granted
+one: each was written when a single false mark pinned a device for good, so there is no telling whether it was earned,
+and a phone that really cannot hold the scene earns a fresh one on its next crash. Anything else unreadable in the slot
+is dropped the same way, which is also what keeps a garbled value from being obeyed as `NaN`.
 
 ### Phones stop one tier short
 
@@ -600,12 +649,14 @@ consistent with tier 0 being the no-JS state, but it was never stated outright u
 - `?perf=lite` and `?perf=full` keep working, mapping to no tokens and all tokens, and keep
   being remembered in `localStorage` as today. `?perf=auto` returns to detection.
 - `?scene=depth+sky` forces an exact token set, for testing a specific tier.
+- `?perf=auto` also clears a crash cap outright, rather than waiting out the weeks it had left.
 
 ## Error handling
 
 | case | behaviour |
 | --- | --- |
 | head script throws | falls back to tier 0, the safe state |
+| `scene-cap` unreadable or from an older version | dropped, and the load detects afresh |
 | `localStorage` unavailable | caught and ignored, detection proceeds |
 | `navigator.deviceMemory` undefined | `memFactor` of 1, the conservative middle |
 | tab hidden during climb | `sampleFrames` resets its baseline on the next tick, effectively pausing |

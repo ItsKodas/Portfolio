@@ -1,8 +1,24 @@
-import { describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { CAP_MAX_WEEKS, CAP_WEEK_MS } from './crashGuard'
 import { TIERS } from './tiers'
 import { PERF_SCRIPT } from './script'
 
 const ALL = TIERS.map(t => t.token).join(' ')
+
+// The clock the loads below run on, so a cap's window can be driven by hand rather than waited out
+const NOW = Date.parse('2026-09-20T12:00:00Z')
+
+// What the script stores for a cap: the tier, the moment it was written, and the weeks it is good for
+const cap = (tier: number, weeks: number, writtenAgo = 0) => `${tier} ${NOW - writtenAgo} ${weeks}`
+
+beforeEach(() => {
+    vi.useFakeTimers({ toFake: ['Date'] })
+    vi.setSystemTime(NOW)
+})
+
+afterEach(() => {
+    vi.useRealTimers()
+})
 
 interface Env {
     search?: string
@@ -184,30 +200,30 @@ describe('PERF_SCRIPT after a crash', () => {
         const attrs = run({ coarse: true, storage, session })
         expect(attrs['data-scene-max']).toBe('1')
         expect(attrs['data-scene']).toBe('')   // climbs to depth from the still scene like any capped device
-        expect(storage['scene-cap']).toBe('1')
+        expect(storage['scene-cap']).toBe(cap(1, 1))
     })
 
     it('drops to the still scene after a crash at the depth tier', () => {
         const storage: Record<string, string> = {}
         const attrs = run({ coarse: true, storage, session: { 'scene-live': '1' } })
         expect(attrs['data-scene-max']).toBe('0')
-        expect(storage['scene-cap']).toBe('0')
+        expect(storage['scene-cap']).toBe(cap(0, 1))
     })
 
     it('keeps to a remembered cap on later loads', () => {
-        const attrs = run({ coarse: true, storage: { 'scene-cap': '1' } })
+        const attrs = run({ coarse: true, storage: { 'scene-cap': cap(1, 1) } })
         expect(attrs['data-scene-max']).toBe('1')
     })
 
     it('never raises a cap it already has', () => {
-        const storage: Record<string, string> = { 'scene-cap': '0' }
+        const storage: Record<string, string> = { 'scene-cap': cap(0, 1) }
         const attrs = run({ coarse: true, storage, session: { 'scene-live': String(TIERS.length) } })
         expect(attrs['data-scene-max']).toBe('0')
-        expect(storage['scene-cap']).toBe('0')
+        expect(storage['scene-cap']).toBe(cap(0, 2))   // a crash under a live cap, so the cap lasts longer (below)
     })
 
     it('forgets an old cap on ?perf=auto', () => {
-        const storage: Record<string, string> = { 'scene-cap': '0' }
+        const storage: Record<string, string> = { 'scene-cap': cap(0, 1) }
         const attrs = run({ search: '?perf=auto', coarse: true, storage })
         expect(attrs['data-scene-max']).toBe(String(TIERS.length - 1))
         expect(storage['scene-cap']).toBeUndefined()
@@ -216,15 +232,15 @@ describe('PERF_SCRIPT after a crash', () => {
     it('still honours a crash that has only just happened on ?perf=auto', () => {
         // The browser reloads a crashed page at the same address. If ?perf=auto threw the fresh mark away along with
         // the old cap, every reload would hand the scene out again and crash again: a crash loop forced by a URL.
-        const storage: Record<string, string> = { 'scene-cap': '0' }
+        const storage: Record<string, string> = { 'scene-cap': cap(0, 1) }
         const attrs = run({ search: '?perf=auto', coarse: true, storage, session: { 'scene-live': String(TIERS.length - 1) } })
         expect(attrs['data-scene-max']).toBe('1')
-        expect(storage['scene-cap']).toBe('1')
+        expect(storage['scene-cap']).toBe(cap(1, 1))
     })
 
     it('neither marks nor obeys it when a mode is forced', () => {
         const session: Record<string, string> = {}
-        const attrs = run({ search: '?perf=full', coarse: true, storage: { 'scene-cap': '0' }, session })
+        const attrs = run({ search: '?perf=full', coarse: true, storage: { 'scene-cap': cap(0, 1) }, session })
         expect(attrs['data-scene']).toBe(ALL)
         expect(session['scene-live']).toBeUndefined()
     })
@@ -259,7 +275,7 @@ describe('PERF_SCRIPT after a crash', () => {
     })
 
     it('still applies a remembered cap to a page loading out of sight', () => {
-        const attrs = run({ coarse: true, visibility: 'hidden', storage: { 'scene-cap': '1' } })
+        const attrs = run({ coarse: true, visibility: 'hidden', storage: { 'scene-cap': cap(1, 1) } })
         expect(attrs['data-scene-max']).toBe('1')
     })
 })
@@ -283,17 +299,84 @@ describe('PERF_SCRIPT crash cap on a fine pointer', () => {
     })
 
     it('ignores a cap an earlier false alarm already wrote, so a reload gets the scene back', () => {
-        const attrs = run({ ...DESKTOP, storage: { 'scene-cap': '0' } })
+        const attrs = run({ ...DESKTOP, storage: { 'scene-cap': cap(0, 1) } })
         expect(attrs['data-scene']).toBe(ALL)
         expect(attrs['data-scene-max']).toBe(String(TIERS.length))
     })
 
     it('keeps a remembered cap stored, for when the same device is held as a tablet', () => {
         // a convertible reports a coarse pointer in tablet mode, and that is the mode the cap was for
-        const storage: Record<string, string> = { 'scene-cap': '0' }
+        const storage: Record<string, string> = { 'scene-cap': cap(0, 1) }
         run({ ...DESKTOP, storage })
-        expect(storage['scene-cap']).toBe('0')
+        expect(storage['scene-cap']).toBe(cap(0, 1))   // window and all: a fine pointer does not start its clock either
         expect(run({ coarse: true, storage })['data-scene-max']).toBe('0')
+    })
+})
+
+// A mark is not proof of a crash even on a phone, so a cap earned by one does not last forever. It is stored with the
+// moment it was written and the weeks it is good for, and once those are up it is thrown away and the device detects
+// afresh. Each further crash while a cap is live doubles the weeks, so a phone that genuinely cannot hold the scene
+// ratchets towards being left alone, while a duplicated tab or a restored session costs it one week of one tier.
+describe('PERF_SCRIPT cap expiry', () => {
+    const CRASHED = { 'scene-live': String(TIERS.length - 1) }   // what a phone shows, found again on the next load
+
+    it('stores a fresh cap with the week it is good for', () => {
+        const storage: Record<string, string> = {}
+        run({ coarse: true, storage, session: { ...CRASHED } })
+        expect(storage['scene-cap']).toBe(cap(1, 1))
+    })
+
+    it('keeps to a stored cap while its week is still running', () => {
+        const attrs = run({ coarse: true, storage: { 'scene-cap': cap(1, 1, CAP_WEEK_MS - 1000) } })
+        expect(attrs['data-scene-max']).toBe('1')
+    })
+
+    it('forgets a cap once its week is up, and detects afresh', () => {
+        const storage: Record<string, string> = { 'scene-cap': cap(0, 1, CAP_WEEK_MS + 1000) }
+        const attrs = run({ coarse: true, storage })
+        expect(attrs['data-scene-max']).toBe(String(TIERS.length - 1))
+        expect(storage['scene-cap']).toBeUndefined()
+    })
+
+    it('honours the longer window a re-earned cap was given', () => {
+        const attrs = run({ coarse: true, storage: { 'scene-cap': cap(1, 4, 3 * CAP_WEEK_MS) } })
+        expect(attrs['data-scene-max']).toBe('1')
+    })
+
+    it('doubles the weeks when a crash is found under a cap that is still live', () => {
+        // the device was already held to depth and died there, so the cap was not wrong and was not enough
+        const storage: Record<string, string> = { 'scene-cap': cap(1, 2) }
+        const attrs = run({ coarse: true, storage, session: { 'scene-live': '1' } })
+        expect(attrs['data-scene-max']).toBe('0')
+        expect(storage['scene-cap']).toBe(cap(0, 4))
+    })
+
+    it('starts the weeks over at one when the cap it crashed under had already run out', () => {
+        const storage: Record<string, string> = { 'scene-cap': cap(1, 4, 5 * CAP_WEEK_MS) }
+        run({ coarse: true, storage, session: { ...CRASHED } })
+        expect(storage['scene-cap']).toBe(cap(1, 1))
+    })
+
+    it('stops doubling the weeks at a year', () => {
+        const storage: Record<string, string> = { 'scene-cap': cap(0, CAP_MAX_WEEKS) }
+        run({ coarse: true, storage, session: { 'scene-live': '0' } })
+        expect(storage['scene-cap']).toBe(cap(0, CAP_MAX_WEEKS))
+    })
+
+    it('drops a bare cap left by an earlier version, which carried no window at all', () => {
+        // every one of those was written when a single false mark pinned the device for good, so there is no telling
+        // whether it was earned; a phone that really cannot hold the scene earns a new one on its next crash
+        const storage: Record<string, string> = { 'scene-cap': '0' }
+        const attrs = run({ coarse: true, storage })
+        expect(attrs['data-scene-max']).toBe(String(TIERS.length - 1))
+        expect(storage['scene-cap']).toBeUndefined()
+    })
+
+    it('drops a cap it cannot read, rather than obeying it forever', () => {
+        const storage: Record<string, string> = { 'scene-cap': 'nonsense here' }
+        const attrs = run({ coarse: true, storage })
+        expect(attrs['data-scene-max']).toBe(String(TIERS.length - 1))
+        expect(storage['scene-cap']).toBeUndefined()
     })
 })
 

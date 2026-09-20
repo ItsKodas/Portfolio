@@ -1,3 +1,4 @@
+import { CAP_MAX_WEEKS, CAP_WEEK_MS } from './crashGuard'
 import { BASE, BUDGETS, TIERS, TILE_MIN, ceilingFor } from './tiers'
 
 // Decides, before the page first paints, how much of the hero scene this browser is given, and marks it on the root
@@ -123,34 +124,48 @@ export const PERF_SCRIPT = `(function () {
     // A phone that can't hold what it's handed dies on screen and the browser reloads it, in the same tab. The page
     // marks the tiers it is showing as live for that tab and clears the mark whenever it is hidden or left normally
     // (see crashGuard.ts), so finding the mark here means the last page in this tab died on screen. Then this device is
-    // held to the depth tier from now on (or the still scene, if it died there): straight to depth rather than one
-    // tier down, because the stars are the big memory cost, and stepping down one tier at a time would keep them
-    // through two more crashes.
+    // held to the depth tier (or the still scene, if it died there): straight to depth rather than one tier down,
+    // because the stars are the big memory cost, and stepping down one tier at a time would keep them through two more
+    // crashes.
     //
     // The mark is per tab (sessionStorage), and only a page actually on screen reads or writes it. It used to live in
     // storage every page of the site shares, and be read and written whether or not the page was showing, so a page
     // the browser preloaded, or one opened alongside, took another page's mark for a crash: a phone was held to the
     // still scene on every plain load with no crash at all. A page out of sight still obeys a cap already remembered.
     //
-    // Only a touch device is judged this way, because only a touch device is what the guard is for. The cost of the
-    // trade is that a mark is not actually proof of a crash: sessionStorage is copied into a duplicated tab, and
-    // brought back by a session restore after the browser or the machine restarts, so a mark can be read with the page
-    // that wrote it still alive, or hours after the fact. On a phone that is worth it, because the alternative is the
-    // crash loop. A device with a fine pointer was never the one at risk, gets a budget it is nowhere near, and is not
-    // reloaded into the same crash when its tab is killed, so there the trade is all cost: a capable PC was left a
-    // tier down for good on no crash at all, with no reload able to talk it back out of it. The cap stays in storage
-    // rather than being cleared, for a convertible whose next visit is in tablet mode.
+    // Only a touch device is judged this way, because only a touch device is what the guard is for. A device with a
+    // fine pointer was never the one at risk, gets a budget it is nowhere near, and is not reloaded into the same crash
+    // when its tab is killed, so there the trade is all cost: a capable PC was left a tier down on no crash at all. Its
+    // cap stays in storage rather than being cleared, for a convertible whose next visit is in tablet mode.
+    //
+    // Even on a phone a mark is not proof of a crash. sessionStorage is copied into a duplicated tab, and brought back
+    // by a session restore after the browser or the machine restarts, so a mark can be read with the page that wrote it
+    // still alive, or hours later, after a shutdown that looked graceful because pagehide never fired. So a cap is
+    // stored with the moment it was written and the weeks it is good for, and once those are up the device detects
+    // afresh; each crash found while a cap is still live doubles the weeks, to a year. A phone that genuinely can't
+    // hold the scene ratchets towards being left alone after a single crash, which is what the guard is for, while a
+    // clone or a restore costs a week of one tier rather than the device's lifetime.
     var shown = document.visibilityState === 'visible' && !document.prerendering
-    var live = null, before = null, cap = null
+    var live = null, before = null, cap = null, weeks = 0
     try {
         localStorage.removeItem('scene-live')   // (where older versions kept the mark)
-        cap = before = localStorage.getItem('scene-cap')
         if (coarse) {
+            // <tier> <written at> <weeks>. Anything else is dropped rather than obeyed, which covers the bare tier
+            // older versions wrote, when a cap never expired and one false mark pinned the device for good.
+            var stored = localStorage.getItem('scene-cap'), kept = (stored || '').split(' ')
+            if (kept.length === 3 && Date.now() - Number(kept[1]) < Number(kept[2]) * ${CAP_WEEK_MS}) {
+                cap = before = kept[0]
+                weeks = Number(kept[2])
+            } else if (stored !== null) localStorage.removeItem('scene-cap')
+
             if (shown) live = sessionStorage.getItem('scene-live')
             if (live !== null) {
                 var held = Number(live) > 1 ? 1 : 0
+                // A crash found under a cap that is still live says the cap was neither wrong nor enough, so the new
+                // one holds for twice as long; one found with no cap in place starts again at a single week.
+                weeks = cap === null ? 1 : Math.min(weeks * 2, ${CAP_MAX_WEEKS})
                 cap = String(cap === null ? held : Math.min(Number(cap), held))
-                localStorage.setItem('scene-cap', cap)
+                localStorage.setItem('scene-cap', cap + ' ' + Date.now() + ' ' + weeks)
             }
             if (cap !== null) ceiling = Math.min(ceiling, Number(cap))
         }
@@ -160,6 +175,6 @@ export const PERF_SCRIPT = `(function () {
     apply(handed === count ? all : '', ceiling, false)
     if (shown) try { sessionStorage.setItem('scene-live', String(handed)) } catch (e) {}
     note('load ' + (location.search || '/') + ' ' + (shown ? 'shown' : document.prerendering ? 'prerender' : 'hidden')
-        + ' mark ' + (live === null ? '-' : live) + ' cap ' + (before === null ? '-' : before) + ' > ' + (cap === null ? '-' : cap)
-        + ' max ' + ceiling)
+        + ' mark ' + (live === null ? '-' : live) + ' cap ' + (before === null ? '-' : before)
+        + ' > ' + (cap === null ? '-' : cap + ' for ' + weeks + 'w') + ' max ' + ceiling)
 })()`
