@@ -2,27 +2,27 @@
 // stylesheet, such as a meter's fill. ui/tokens.test.ts fails if the two drift apart.
 
 export const TOKENS: Record<string, string> = {
-    'night': '#0b101f',
-    'deep': '#0d1429',
-    'panel': '#111a38',
-    'panel-hi': '#16224a',
-    'rule': '#1f2b52',
-    'rule-hi': '#2c3c6e',
+    'night': '#0c0d10',
+    'deep': '#101216',
+    'panel': '#101216',
+    'panel-hi': '#181a20',
+    'rule': '#1d1f25',
+    'rule-hi': '#282b33',
 
     'scene-bg': '#101727',
     'scene-paper': '#0b0d1c',
 
-    'ink': '#eef2ff',
-    'ink-2': '#a9b6dd',
-    'ink-3': '#6f7da8',
+    'ink': '#e8eaee',
+    'ink-2': '#9ba1ad',
+    'ink-3': '#6b717d',
 
     'lake': '#8fd4f5',
     'lake-hi': '#a8ddf7',
     'blush': '#f19bb3',
 
-    'good': '#6fd39b',
-    'warn': '#f0b45c',
-    'crit': '#f4685f',
+    'good': '#5fc98d',
+    'warn': '#e0a84e',
+    'crit': '#e4574c',
     'soft-red': '#ffb3ad',
 
     'radius-chip': '4px',
