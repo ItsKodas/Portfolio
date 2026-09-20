@@ -815,3 +815,32 @@ containing only `PATH`, `HOME`, `DOCKER_HOST`, `DOCKER_CONFIG` and `TZ`, each in
 set. Phase 2 should keep this allowlist in mind when it adds `RESTIC_PASSWORD` and the R2 credentials: they
 are not reachable from a project's compose file today, and no later change to `createSpawnRunner` should
 widen the allowlist without the same reasoning that narrowed it.
+
+### The API grew two things the portal needs
+
+Added 2026-09-21, alongside the two requests recorded in `2026-09-20-portal-hostd-client-design.md`.
+Not a correction: the design was true, it was incomplete for the screens built on it.
+
+**The spec said:** `GET /projects` returns "projects visible to the actor" and `GET /projects/:id`
+"status per service", and health is a set of conditions that "degrade and shout" into `status.json` for
+the Docker healthcheck to read.
+
+**What was missing:** a dashboard drawing a live badge per site paid one request plus one per site, each
+one a separate read of the Docker API; and nothing measured the machine itself, nor exposed health over
+HTTP at all, so the portal's server panel had nothing to draw and no way to fetch it.
+
+**What was done:**
+
+- `GET /projects?status=1` carries each project's status in the listing. The flag defaults to off, so
+  the plain listing stays a registry read with no Docker in it. It is served by a new agent verb,
+  `statuses`, which takes the ids api has already decided this actor may see and answers them from one
+  `/containers/json` listing grouped by compose project, rather than one filtered call per project. A
+  project that cannot be read (unregistered, invalid, or a Docker failure) carries its refusal in its own
+  `status` field instead of failing the list.
+- `GET /health`, admin only, relays the agent's health verb: the warnings and invalid projects it
+  already reported, plus a new `system` section with total and available memory, the load averages with
+  the core count to read them against, and the filesystem holding `/var/www` (the system disk on this
+  dedi, measurable from a container only because it is bind-mounted at the same path).
+- `system` is figures, never checks. Nothing in it produces a warning or reaches `status.json`, so no
+  memory, load or disk number can make hostd unhealthy on its own. The conditions listed under **Degrade
+  and shout** are still the only things that can, and the backup disk check named there stays phase 2's.

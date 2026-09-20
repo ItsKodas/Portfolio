@@ -2,10 +2,12 @@ import { describe, it } from 'node:test'
 import assert from 'node:assert/strict'
 import { duplexPair } from 'node:stream'
 import { handleConnection, readRequestLine, type AgentHandler } from './server.ts'
-import type { AgentRequest, LogLine } from '../shared/protocol.ts'
+import type { AgentRequest, HealthReply, LogLine } from '../shared/protocol.ts'
 import { MAX_REQUEST_BYTES } from '../shared/protocol.ts'
 
 const line: LogLine = { stream: 'stdout', ts: null, text: 'hello', truncated: false }
+// Any reply will do for a transport test; health is the smallest real one.
+const health: HealthReply = { ok: true, warnings: [], invalid: {}, system: { memory: null, cpu: null, disk: null, problems: [] } }
 
 function stubAgent(handle: AgentHandler['handle']): AgentHandler & { requests: AgentRequest[] } {
     const requests: AgentRequest[] = []
@@ -63,8 +65,8 @@ describe('readRequestLine', () => {
 
 describe('handleConnection', () => {
     it('answers a request with one JSON line and closes', async () => {
-        const agent = stubAgent(async () => ({ kind: 'reply', reply: { ok: true, warnings: [], invalid: {} } }))
-        assert.deepEqual(await exchange(agent, '{"verb":"health"}\n'), ['{"ok":true,"warnings":[],"invalid":{}}'])
+        const agent = stubAgent(async () => ({ kind: 'reply', reply: health }))
+        assert.deepEqual(await exchange(agent, '{"verb":"health"}\n'), [JSON.stringify(health)])
         assert.deepEqual(agent.requests, [{ verb: 'health' }])
     })
 

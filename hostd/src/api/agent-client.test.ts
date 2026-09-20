@@ -3,9 +3,10 @@ import assert from 'node:assert/strict'
 import { duplexPair, type Duplex } from 'node:stream'
 import { createAgentClient, AgentUnavailableError, type Connect } from './agent-client.ts'
 import { handleConnection, type AgentHandler } from '../agent/server.ts'
-import type { LogLine } from '../shared/protocol.ts'
+import type { HealthReply, LogLine } from '../shared/protocol.ts'
 
 const line: LogLine = { stream: 'stdout', ts: '2026-09-20T00:00:00Z', text: 'hello', truncated: false }
+const health: HealthReply = { ok: true, warnings: [], invalid: {}, system: { memory: null, cpu: null, disk: null, problems: [] } }
 
 // Each connect() gets a fresh socket pair whose far end is served by the real agent server.
 function connectTo(agent: AgentHandler): Connect {
@@ -33,8 +34,8 @@ async function collect(lines: AsyncIterable<LogLine>): Promise<LogLine[]> {
 
 describe('call', () => {
     it('returns the agent\'s reply', async () => {
-        const client = createAgentClient(connectTo({ handle: async () => ({ kind: 'reply', reply: { ok: true, warnings: [], invalid: {} } }) }))
-        assert.deepEqual(await client.call({ verb: 'health' }), { ok: true, warnings: [], invalid: {} })
+        const client = createAgentClient(connectTo({ handle: async () => ({ kind: 'reply', reply: health }) }))
+        assert.deepEqual(await client.call({ verb: 'health' }), health)
     })
 
     it('returns a refusal as a value, not an error', async () => {

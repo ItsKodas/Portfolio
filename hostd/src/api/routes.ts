@@ -5,7 +5,7 @@ import type { IncomingMessage, ServerResponse } from 'node:http'
 import { PROJECT_ID, CLIENT_ID, SERVICE_NAME, isRecord, describeError } from '../shared/formats.ts'
 import {
     LIFECYCLE_ACTIONS, MAX_TAIL, DEFAULT_TAIL, MAX_REQUEST_BYTES,
-    type AgentReply, type AgentRequest, type LifecycleAction, type LogsArgs, type RefusalCode,
+    type AgentReply, type AgentRequest, type LifecycleAction, type LogsArgs, type ProjectStatus, type RefusalCode,
     type ProvisionCreateArgs, type ProvisionAddEnvironmentArgs,
 } from '../shared/protocol.ts'
 import {
@@ -30,6 +30,7 @@ export type ApiDeps = {
 
 export type Route =
     | { verb: 'list' }
+    | { verb: 'health' }
     | { verb: 'audit-all' }
     | { verb: 'status', project: string }
     | { verb: 'lifecycle', project: string, action: LifecycleAction }
@@ -69,6 +70,7 @@ export function matchRoute(method: string, pathname: string): Route {
         return { verb: 'method-not-allowed' }
     }
     if (parts.length === 1 && parts[0] === 'audit') return only('GET', { verb: 'audit-all' })
+    if (parts.length === 1 && parts[0] === 'health') return only('GET', { verb: 'health' })
     if (parts[0] !== 'projects' || parts.length < 2) return { verb: 'not-found' }
 
     const project = parts[1] ?? ''
@@ -125,9 +127,17 @@ export function parseLogsQuery(params: URLSearchParams): { ok: true, args: LogsA
         since = seconds
     }
 
-    const followRaw = params.get('follow')
-    if (followRaw !== null && !['0', '1', 'true', 'false'].includes(followRaw)) return { ok: false, message: 'follow must be 1 or 0' }
-    return { ok: true, args: { service, tail, since, follow: followRaw === '1' || followRaw === 'true' } }
+    const follow = parseFlag(params.get('follow'))
+    if (follow === null) return { ok: false, message: 'follow must be 1 or 0' }
+    return { ok: true, args: { service, tail, since, follow } }
+}
+
+// A query flag: absent means off, anything unspellable is null so the caller can refuse it rather than
+// quietly reading a typo as false.
+export function parseFlag(raw: string | null): boolean | null {
+    if (raw === null || raw === '0' || raw === 'false') return false
+    if (raw === '1' || raw === 'true') return true
+    return null
 }
 
 function parseLimit(params: URLSearchParams): number | null {
@@ -377,11 +387,38 @@ export function createHandler(deps: ApiDeps): (req: IncomingMessage, res: Server
                 return refuseRoute(405, 'method-not-allowed', `${req.method} is not allowed here`, null, 'unknown', url.pathname.slice(0, 200))
 
             case 'list': {
+                // Off by default, so this stays the cheap listing every other caller wants: names, and
+                // whether an entry is valid, without a Docker read per project. The dashboard, which
+                // draws a live badge per site, asks for status=1 and gets the lot in this one request
+                // instead of one more request per site.
+                const wantStatus = parseFlag(url.searchParams.get('status'))
+                if (wantStatus === null) return refuseRoute(400, 'bad-request', 'status must be 1 or 0', null, 'list')
+
                 const health = await callAgent({ verb: 'health' })
                 if (!health) return
                 const invalid = health.ok && 'invalid' in health ? health.invalid : {}
                 const registry = deps.registry()
-                const projects: Array<Record<string, unknown>> = visibleProjects(registry, caller.actor).map(project => {
+                const entries = visibleProjects(registry, caller.actor)
+
+                // Asked for by id, and only for the projects this actor can already see: the agent has no
+                // idea who is asking, so nothing here may widen what the list itself shows.
+                let statuses: Map<string, ProjectStatus> | null = null
+                if (wantStatus && entries.length > 0) {
+                    const reply = await callAgent({ verb: 'statuses', projects: entries.map(project => project.id) })
+                    if (!reply) return
+                    if (!reply.ok) return refuseRoute(AGENT_STATUS[reply.code], reply.code, reply.message, null, 'list')
+                    statuses = new Map(('projects' in reply ? reply.projects : []).map(status => [status.project, status]))
+                }
+                // The id is already the entry's own field, so the copy inside the agent's answer is
+                // dropped rather than repeated.
+                const statusOf = (id: string): Record<string, unknown> => {
+                    const found = statuses?.get(id)
+                    if (!found) return { status: { ok: false, code: 'failed', message: `the agent returned no status for ${id}` } }
+                    const { project: _id, ...status } = found
+                    return { status }
+                }
+
+                const projects: Array<Record<string, unknown>> = entries.map(project => {
                     const reason = Object.hasOwn(invalid, project.id) ? invalid[project.id] : undefined
                     return {
                         id: project.id,
@@ -389,12 +426,30 @@ export function createHandler(deps: ApiDeps): (req: IncomingMessage, res: Server
                         capabilities: [...project.capabilities],
                         valid: reason === undefined,
                         ...(reason === undefined ? {} : { reason }),
+                        ...(wantStatus ? statusOf(project.id) : {}),
                     }
                 })
                 if (caller.actor.kind === 'admin') {
-                    for (const [id, reason] of registry.invalid) projects.push({ id, valid: false, reason })
+                    // An entry the registry itself could not parse has no services to ask about, and the
+                    // agent would only refuse it, so its reason is answered from here.
+                    for (const [id, reason] of registry.invalid) {
+                        projects.push({
+                            id, valid: false, reason,
+                            ...(wantStatus ? { status: { ok: false, code: 'invalid-project', message: `${id} is invalid: ${reason}` } } : {}),
+                        })
+                    }
                 }
                 return sendJson(res, 200, { ok: true, projects })
+            }
+
+            case 'health': {
+                // Admin only: these are the operator's figures for the whole machine, and they say
+                // nothing about any one client's site.
+                if (caller.actor.kind !== 'admin') return refuseRoute(403, 'admin-only', 'only the admin can read hostd\'s health', null, 'health')
+                const reply = await callAgent({ verb: 'health' })
+                if (!reply) return
+                if (!reply.ok) return refuseRoute(AGENT_STATUS[reply.code], reply.code, reply.message, null, 'health')
+                return sendJson(res, 200, reply)
             }
 
             case 'audit-all': {
