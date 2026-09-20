@@ -26,14 +26,26 @@ Read from the running code, not assumed:
 
 | Endpoint | Shape |
 | --- | --- |
-| `GET /projects/:id/:env/env` | Lists the env files in that environment. `:env` is `live` or `test`. |
-| `GET /projects/:id/:env/env/<path>` | One file's contents. |
-| `PUT /projects/:id/:env/env/<path>` | Saves one file. Raw body. |
+| `GET /projects/:id/:env/env` | Lists the env files. `:env` is `live` or `test`. Answers `{ ok: true, files: [{ path, example, bytes }] }`, where `example` is the path of that file's `.example` sibling or `null`. |
+| `GET /projects/:id/:env/env/<path>` | One file. Answers `{ ok: true, text }`. |
+| `PUT /projects/:id/:env/env/<path>` | Saves one file. The body is **JSON**, `{ "text": "..." }`, and `text` is its only permitted key. Answers `{ ok: true, output }`. |
 | `GET /projects/:id/logs?service=&tail=&since=&follow=` | Server-Sent Events. Two event types: `line` carrying one log line, and `end`. Idle streams carry `: keepalive` comments. A dead agent gives `503` with code `agent-unavailable`. |
 
 ---
 
 ### Task 1: Env files
+
+> **Corrected 2026-09-21.** The first version of this task had hostd's env contract wrong in three places,
+> and its tests asserted the wrong contract rather than catching it: a test expecting a raw PUT body would
+> have gone green over code hostd answers with a 400. The three are recorded below so the mistake is
+> visible rather than quietly patched. Read the shapes in the table above; they were checked against
+> `hostd/src/api/routes.ts`, `hostd/src/agent/agent.ts` and `hostd/src/agent/env-files.ts`.
+>
+> | Was | Is |
+> | --- | --- |
+> | PUT sends the file contents as a raw body | PUT sends JSON, `{ "text": "..." }`, and `text` is its only permitted key |
+> | A read answers `{ contents }` | A read answers `{ ok: true, text }` |
+> | A list entry is `{ path, example?: string }` | A list entry is `{ path, example: string \| null, bytes: number }` |
 
 **Files:**
 - Create: `server/hostd/env.ts`
@@ -41,7 +53,7 @@ Read from the running code, not assumed:
 
 **Interfaces:**
 - Consumes: `hostdRequest`, `HostdResult` from `./client`; `Caller` from `./actor`; `HostdConfig` from `./config`
-- Produces: `type EnvironmentName = 'live' | 'test'`, `type EnvFile = { path: string, example?: string }`, `listEnvFiles(...)`, `readEnvFile(...)`, `writeEnvFile(...)`
+- Produces: `type EnvironmentName = 'live' | 'test'`, `type EnvFile = { path: string, example: string | null, bytes: number }`, `listEnvFiles(...)`, `readEnvFile(...)`, `writeEnvFile(...)`
 
 - [ ] **Step 1: Write the failing test**
 
@@ -56,25 +68,25 @@ const config = { url: 'http://hostd-api:8080', token: 'a'.repeat(32) }
 const admin = { actor: 'admin', user: 'koda@horizons.gg' }
 
 function fakeFetch(body: unknown, status = 200) {
-    const calls: { url: string, method?: string, body?: unknown }[] = []
+    const calls: { url: string, method?: string, body?: unknown, headers?: Record<string, string> }[] = []
     const fetchImpl = (async (url: string, init: RequestInit) => {
-        calls.push({ url, method: init.method, body: init.body })
+        calls.push({ url, method: init.method, body: init.body, headers: init.headers as Record<string, string> })
         return new Response(JSON.stringify(body), { status, headers: { 'content-type': 'application/json' } })
     }) as unknown as typeof fetch
     return { fetchImpl, calls }
 }
 
 describe('listEnvFiles', () => {
-    it('asks for the environment the caller named', async () => {
-        const { fetchImpl, calls } = fakeFetch({ files: [{ path: '.env', example: '.env.example' }] })
+    it('asks for the environment the caller named, and unwraps the list', async () => {
+        const files = [{ path: '.env', example: '.env.example', bytes: 412 }, { path: 'worker/.env', example: null, bytes: 96 }]
+        const { fetchImpl, calls } = fakeFetch({ ok: true, files })
         const result = await listEnvFiles(config, admin, 'acme-bakery', 'test', fetchImpl)
-        expect(result.ok).toBe(true)
-        if (result.ok) expect(result.value[0].path).toBe('.env')
+        expect(result).toEqual({ ok: true, value: files })
         expect(calls[0].url).toBe('http://hostd-api:8080/projects/acme-bakery/test/env')
     })
 
     it('refuses a project id hostd would not recognise, before asking', async () => {
-        const { fetchImpl, calls } = fakeFetch({ files: [] })
+        const { fetchImpl, calls } = fakeFetch({ ok: true, files: [] })
         const result = await listEnvFiles(config, admin, '../etc', 'live', fetchImpl)
         expect(result).toEqual({ ok: false, code: 'not-found', message: 'no such project' })
         expect(calls).toHaveLength(0)
@@ -82,14 +94,15 @@ describe('listEnvFiles', () => {
 })
 
 describe('readEnvFile', () => {
-    it('puts the file path after the environment', async () => {
-        const { fetchImpl, calls } = fakeFetch({ contents: 'NODE_ENV=production' })
-        await readEnvFile(config, admin, 'acme-bakery', 'live', 'worker/.env', fetchImpl)
+    it('puts the file path after the environment, and returns the text itself', async () => {
+        const { fetchImpl, calls } = fakeFetch({ ok: true, text: 'NODE_ENV=production\n' })
+        const result = await readEnvFile(config, admin, 'acme-bakery', 'live', 'worker/.env', fetchImpl)
+        expect(result).toEqual({ ok: true, value: 'NODE_ENV=production\n' })
         expect(calls[0].url).toBe('http://hostd-api:8080/projects/acme-bakery/live/env/worker/.env')
     })
 
     it('refuses a path that climbs out of the environment', async () => {
-        const { fetchImpl, calls } = fakeFetch({ contents: '' })
+        const { fetchImpl, calls } = fakeFetch({ ok: true, text: '' })
         for (const path of ['../.env', 'a/../../b', '/etc/passwd', 'a\\b']) {
             const result = await readEnvFile(config, admin, 'acme-bakery', 'live', path, fetchImpl)
             expect(result, path).toEqual({ ok: false, code: 'bad-request', message: 'not a file inside this environment' })
@@ -99,11 +112,19 @@ describe('readEnvFile', () => {
 })
 
 describe('writeEnvFile', () => {
-    it('sends the contents as a raw PUT body', async () => {
-        const { fetchImpl, calls } = fakeFetch({ ok: true })
+    it('sends the contents as JSON under text, which is the only key hostd accepts', async () => {
+        const { fetchImpl, calls } = fakeFetch({ ok: true, output: '.env was written' })
         await writeEnvFile(config, admin, 'acme-bakery', 'live', '.env', 'NODE_ENV=production\n', fetchImpl)
         expect(calls[0].method).toBe('PUT')
-        expect(calls[0].body).toBe('NODE_ENV=production\n')
+        expect(calls[0].headers?.['content-type']).toBe('application/json')
+        expect(JSON.parse(calls[0].body as string)).toEqual({ text: 'NODE_ENV=production\n' })
+    })
+
+    it('refuses the same paths a read refuses', async () => {
+        const { fetchImpl, calls } = fakeFetch({ ok: true, output: '' })
+        const result = await writeEnvFile(config, admin, 'acme-bakery', 'live', '../.env', 'X=1', fetchImpl)
+        expect(result).toEqual({ ok: false, code: 'bad-request', message: 'not a file inside this environment' })
+        expect(calls).toHaveLength(0)
     })
 })
 ```
@@ -132,7 +153,9 @@ export type EnvironmentName = 'live' | 'test'
 
 export type EnvFile = {
     path: string
-    example?: string
+    // The path of this file's .example sibling, or null when it has none
+    example: string | null
+    bytes: number
 }
 
 // Matches hostd's registry id rule
@@ -167,10 +190,11 @@ export async function readEnvFile(
     environment: EnvironmentName,
     path: string,
     fetchImpl: typeof fetch = fetch,
-): Promise<HostdResult<{ contents: string }>> {
+): Promise<HostdResult<string>> {
     if (!PROJECT_ID.test(id)) return NO_PROJECT
     if (!safePath(path)) return BAD_PATH
-    return hostdRequest<{ contents: string }>(config, caller, `/projects/${id}/${environment}/env/${path}`, {}, fetchImpl)
+    const result = await hostdRequest<{ text: string }>(config, caller, `/projects/${id}/${environment}/env/${path}`, {}, fetchImpl)
+    return result.ok ? { ok: true, value: result.value.text } : result
 }
 
 export async function writeEnvFile(
@@ -179,16 +203,18 @@ export async function writeEnvFile(
     id: string,
     environment: EnvironmentName,
     path: string,
-    contents: string,
+    text: string,
     fetchImpl: typeof fetch = fetch,
-): Promise<HostdResult<{ ok: boolean }>> {
+): Promise<HostdResult<{ output: string }>> {
     if (!PROJECT_ID.test(id)) return NO_PROJECT
     if (!safePath(path)) return BAD_PATH
-    return hostdRequest<{ ok: boolean }>(
+    // JSON, with text as its only key. hostd reads the body with readJsonBody and then refuses any other
+    // key, so a raw body is answered with a 400.
+    return hostdRequest<{ output: string }>(
         config,
         caller,
         `/projects/${id}/${environment}/env/${path}`,
-        { method: 'PUT', body: contents },
+        { method: 'PUT', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ text }) },
         fetchImpl,
     )
 }
@@ -197,9 +223,17 @@ export async function writeEnvFile(
 - [ ] **Step 4: Run the test to verify it passes**
 
 Run: `npx vitest run server/hostd/env.test.ts`
-Expected: PASS, five tests.
+Expected: PASS, six tests.
 
-- [ ] **Step 5: Commit**
+- [ ] **Step 5: Check the contract against hostd itself**
+
+The last version of this task was wrong precisely because it was written from the URL shapes without
+reading the handlers. Before committing, open `hostd/src/api/routes.ts` and confirm by eye that
+`parseEnvWriteBody` still accepts only `text`, and that the agent's `env` action still answers `files` for
+a list and `text` for a read. If any of it has moved, stop and say so rather than adjusting the code to
+match a test.
+
+- [ ] **Step 6: Commit**
 
 ```bash
 git add server/hostd/env.ts server/hostd/env.test.ts
