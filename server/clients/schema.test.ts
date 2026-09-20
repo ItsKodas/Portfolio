@@ -7,8 +7,13 @@ const ok = (schema: { safeParse: (value: unknown) => { success: boolean } }, val
 
 describe('passwordSchema', () => {
     it('demands twelve characters', () => {
+        // The literal matters: asserting only against the constant would let someone lower the policy
+        // to six and still see a green suite
+        expect(MIN_PASSWORD_LENGTH).toBe(12)
         expect(ok(passwordSchema, 'a'.repeat(MIN_PASSWORD_LENGTH))).toBe(true)
         expect(ok(passwordSchema, 'a'.repeat(MIN_PASSWORD_LENGTH - 1))).toBe(false)
+        expect(ok(passwordSchema, 'a'.repeat(12))).toBe(true)
+        expect(ok(passwordSchema, 'a'.repeat(11))).toBe(false)
     })
 
     // No composition rules. A long all lower-case passphrase is exactly what current NIST guidance wants.
