@@ -2,6 +2,7 @@
 
 Date: 2026-09-20
 Status: mockups reviewed, no implementation
+Updated: 2026-09-20, reconciled against `2026-09-20-hostd-provisioning-design.md`
 
 ## What this is
 
@@ -99,31 +100,60 @@ asked. They are simply not the same size as restart.
 **Live logs are framed honestly**, collapsed, and introduced as raw output that nothing in day to day use requires
 them to read.
 
-**Downloads are a selling point, not a footnote.** The section is headed "Your site is yours" and says a copy of
-anything can be taken at any time without asking, and that this is everything another developer would need. For a
-freelancer that is a differentiator worth the room.
+**Downloads are a selling point, not a footnote.** The section is headed "Your site is yours": source code,
+uploads and database, taken whenever they like and without asking. For a freelancer that is a differentiator worth
+the room. The settings file is the one thing deliberately missing, and the page says so plainly rather than
+staying quiet about it, because a gap a client finds for themselves reads worse than one they were told about.
 
-## Where the mockups run ahead of hostd
+## Where the mockups meet hostd
 
-The screens were drawn from the brief, not from `2026-09-20-hostd-design.md`. Several things they show have no
-backend designed for them. Recorded here so the gap is deliberate rather than discovered during implementation.
+The screens were drawn from the brief, not from a backend. Since they were drawn,
+`2026-09-20-hostd-provisioning-design.md` has settled most of what they assumed. That design had not yet merged
+when this section was rewritten against it, though its implementation is already landing in pieces.
+
+### What the provisioning design settles
+
+| The screens show | Where it stands |
+| --- | --- |
+| Deploys on every push, build history, one click rollback, a maintenance page | All designed. Build into a new copy before swapping, a maintenance flag during the swap, a health check after it, and an automatic return to the previous copy when that check fails. |
+| Two environments per site, each with its own branch, folder, domain and containers | Designed. The registry grows an `environments` block with a folder, branch, domain, port and certificate mode each. The single environment shape stays valid and means live only. |
+| Editing a site's `.env` from the site page | Designed, operator only, and confined to env files inside one environment's folder so that path can never change code. |
+| "Set this one up" turning a won quote into a client and a site | **Now possible.** hostd writes `projects.yaml` itself through a validated `POST /projects`, deriving the id, folders and ports rather than accepting them. The first version of this note said the opposite, on the basis that the registry was hand edited and never written by the service. That is no longer true. |
+| A client downloading their settings file | **Decided against, 2026-09-20.** Clients never read env files, in the original hostd design and again in the provisioning design. The mockups no longer offer it, and the client's page says so rather than staying quiet. |
+| The holding page for a site that is down, not only one mid-deploy | Designed. Apache serves it when a flag file exists or the upstream cannot be reached, so a planned deploy and an unplanned outage both look tidy, and the page can say which it is. |
+
+### What the mockups get wrong
+
+Found by reading the provisioning design against the drawings. None of it is drawn yet.
+
+- **`rolled-back` is a deploy outcome the screens do not have.** A health check that fails after the swap sends
+  hostd back to the previous copy by itself. A site that broke and repaired itself overnight is a different row in
+  the deploy history from a build that failed, and a different line in the activity feed.
+- **Three consecutive failures pause an environment** and polling stops until the operator acts. That belongs in
+  the attention band, and nothing there covers it.
+- **Deploys are noticed by polling every two minutes.** The dashboard shows a push and its deploy beginning in the
+  same minute, which overstates how quickly the system reacts.
+- **A new project stops in `needs-setup`** after cloning, waiting for its env files, rather than arriving running.
+  The "Add a site" flow ends one screen too early.
+- **The deploy steps are prepare, build, swap, health check.** The progress box invents its own sequence.
+- **Env files are per file, not one flat list**: any `.env`-style file in the environment's folder, subfolders
+  included, with `.env.example` shown beside each. The Environment tab needs a file picker it does not have.
+- **Certificates are per environment**, Let's Encrypt or Cloudflare Origin. The dashboard's certificate alert
+  claims every site on the dedi is affected, which is only true of the Origin ones.
+
+### What still has no backend
 
 | The screens show | hostd today |
 | --- | --- |
-| Deploys on every push, build history, one click rollback, a maintenance page | Nothing. hostd has no concept of git, builds or deploys. This is a whole new phase, or a separate service. |
-| Two environments per site, each with its own branch, folder, domain and containers | The registry holds one project per site: one `dir`, one `compose`, one `upstream`. Either every site becomes two registered projects, or the registry grows environments. |
-| Editing a site's `.env` from the site page | Explicitly out of scope: "Editing the registry, compose files, `.env` files or source code through the service". A client who can edit anything compose reads, then press start, is root, so if this is built it must be admin only and must not weaken the storage guard. |
-| A client downloading their source and settings file | Backups deliberately exclude the compose file, `.env` and source, reasoning that a downloaded backup must not carry the operator's secrets. See the open question below. |
-| Server health: system disk, memory, CPU | Health reports backup disk free, stale offsite copies, invalid projects, failed Apache reloads. Memory, CPU and system disk are a small addition. |
-| The holding page for a site that is down, not only one mid-deploy | The vhost template proxies to the upstream, so a stopped container gives Cloudflare a 502. Serving the holding page instead is an `ErrorDocument` decision in the same template hostd already owns. |
-| "Set this one up" turning a won quote into a client and a site | The registry is hand edited and the service never writes it, on purpose. Creating a site stays an operator step; the portal can at most prepare the client account and hand Koda the registry entry to paste. |
+| Server health: system disk, memory, CPU | Health reports backup disk free, stale offsite copies, invalid projects and failed Apache reloads. The rest is a small addition. |
+| A client downloading their source code | Not addressed anywhere. Backups exclude source, and general file access (phase 3) covers declared storage directories rather than the repo tree. Still open. |
 
 ## Open questions
 
-1. **Client downloads of source and the settings file.** The brief asks for them; the hostd design rules them out.
-   The mockups follow the brief and resolve it by keeping both out of backups while offering the settings file as
-   its own separate download carrying an explicit warning, never bundled into anything. If hostd's rule wins
-   instead, the section loses two rows and becomes "Your files and data".
+1. **Client downloads of the settings file. Decided 2026-09-20: no.** Two designs ruled it out independently, and
+   the mockups now match. The client's page names the gap instead of hiding it, and says the file is handed over
+   directly if they ever move to another developer. Their **source code** is a separate question and is still
+   open: nothing has designed it either way.
 2. **Client facing update text.** Recent updates currently shows commit messages verbatim. Some read fine to a
    client ("New spring menu PDF") and some do not ("Switch to sharp for thumbnails"). A separate optional field
    for the client facing line may be worth the trouble.
