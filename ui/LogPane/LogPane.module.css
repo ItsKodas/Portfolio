@@ -1,0 +1,19 @@
+.pane {
+    background: var(--night);
+    border: 1px solid var(--rule);
+    border-radius: 6px;
+    height: 290px;
+    overflow: auto;
+    padding: 10px 12px;
+    font-family: var(--font-mono), monospace;
+    font-size: 11.5px;
+    line-height: 1.75;
+}
+.pane:focus-visible { outline: 2px solid var(--lake); outline-offset: 2px; }
+
+.line { display: flex; gap: 13px; }
+.time { color: var(--ink-3); flex: none; }
+.text { color: var(--ink-2); white-space: pre-wrap; word-break: break-word; }
+.err .text { color: var(--soft-red); }
+
+.empty { color: var(--ink-3); }
