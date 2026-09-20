@@ -4,6 +4,8 @@ import { PassThrough } from 'node:stream'
 import { Agent, MAX_FOLLOWS_PER_PROJECT, type AgentDeps, type Outcome } from './agent.ts'
 import { lifecycleArgv, type Runner, type RunResult } from './compose.ts'
 import type { ContainerInspect, DockerApi } from './docker.ts'
+import type { EnvFs } from './env-files.ts'
+import type { ProvisionDeps } from './provision.ts'
 import { parseRegistry, type ProjectEntry } from '../shared/registry.ts'
 import type { AgentRequest, LogLine } from '../shared/protocol.ts'
 
@@ -12,10 +14,11 @@ projects:
   acme:
     client: cl_1
     name: Acme
+    repo: git@github.com:ItsKodas/acme.git
     dir: /var/www/acme
     upstream: 127.0.0.1:5010
     services: { web: { role: site }, db: { role: database, engine: postgres } }
-    capabilities: [lifecycle, logs]
+    capabilities: [lifecycle, logs, provision, env]
   quiet:
     client: cl_1
     name: Quiet
@@ -60,6 +63,7 @@ function setup(options: SetupOptions = {}) {
     const docker: DockerApi = {
         ping: async () => true,
         listProjectContainers: async () => containers === false ? [] : [{ Id: WEB, State: 'running', Labels: { 'com.docker.compose.service': 'web' } }],
+        listAllContainers: async () => [],
         inspect: async () => inspectWeb,
         logs: async () => {
             const stream = new PassThrough()
@@ -245,5 +249,200 @@ describe('logs', () => {
             clearInterval(keepAlive)
         }
         assert.equal(agent.followCount('acme'), 0)
+    })
+})
+
+function fakeEnvFs(overrides: Partial<EnvFs> = {}): EnvFs {
+    return {
+        readdir: async () => [],
+        readFile: async () => { throw new Error('ENOENT: no such file or directory') },
+        writeFile: async () => {},
+        rename: async () => {},
+        stat: async () => ({ size: 0 }),
+        realpath: async path => path,
+        ...overrides,
+    }
+}
+
+// A registry of its own, with no invalid entry: the top-level `registry` above deliberately keeps one
+// (`broken`) for the must-exist tests that prove the agent refuses an invalid project, but createProject
+// and addEnvironment now refuse provisioning entirely while any entry is invalid, which would make every
+// fake below trip on `broken` for a reason none of these tests are actually about.
+const provisionRegistry = parseRegistry(`
+projects:
+  acme:
+    client: cl_1
+    name: Acme
+    repo: git@github.com:ItsKodas/acme.git
+    dir: /var/www/acme
+    upstream: 127.0.0.1:5010
+    services: { web: { role: site }, db: { role: database, engine: postgres } }
+    capabilities: [lifecycle, logs, provision, env]
+`)
+
+function fakeProvisionDeps(overrides: Partial<ProvisionDeps> = {}): ProvisionDeps {
+    return {
+        registry: () => provisionRegistry,
+        refreshRegistry: async () => {},
+        writer: { write: async () => ({ ok: true }) } as unknown as ProvisionDeps['writer'],
+        fetcher: { call: async () => ({ ok: true }) },
+        choosePort: async () => ({ ok: true, port: 5100 }),
+        mkdir: async () => {},
+        rmdir: async () => {},
+        exists: async () => false,
+        resolve: async () => ({ ok: true, services: { web: { role: 'site' } } }),
+        runner: async () => ({ exitCode: 0, stdout: '', stderr: '', timedOut: false }),
+        log: () => {},
+        ...overrides,
+    }
+}
+
+describe('provisioning and env', () => {
+    const envWrite = (project = 'acme'): AgentRequest => ({ verb: 'env', project, args: { action: 'write', environment: 'live', path: '.env', text: 'A=1' } })
+
+    it('refuses provision and env when the capability is off', async () => {
+        const { agent } = setup({ provision: fakeProvisionDeps() })
+        const provisionReply = replyOf(await agent.handle({ verb: 'provision', project: 'quiet', args: { action: 'remove', environment: null } }))
+        assert.equal(provisionReply?.ok === false && provisionReply.code, 'capability-disabled')
+
+        const envReply = replyOf(await agent.handle({ verb: 'env', project: 'quiet', args: { action: 'list', environment: 'live' } }))
+        assert.equal(envReply?.ok === false && envReply.code, 'capability-disabled')
+    })
+
+    it('refuses an env write whose path is not an env file', async () => {
+        const { agent } = setup({ envFs: fakeEnvFs() })
+        const reply = replyOf(await agent.handle({ verb: 'env', project: 'acme', args: { action: 'write', environment: 'live', path: 'src/index.ts', text: 'x' } }))
+        assert.equal(reply?.ok, false)
+        assert.equal(reply?.ok === false && reply.code, 'bad-request')
+        assert.match(reply?.ok === false ? reply.message : '', /env file/)
+    })
+
+    it('holds the env lock while writing, so a second write is refused as busy', async () => {
+        let release: () => void = () => {}
+        const blocked = new Promise<void>(resolve => { release = resolve })
+        const { agent } = setup({ envFs: fakeEnvFs({ writeFile: async () => { await blocked } }) })
+
+        const first = agent.handle(envWrite())
+        await new Promise(resolve => setImmediate(resolve))
+        assert.deepEqual(replyOf(await agent.handle(envWrite())), { ok: false, code: 'busy', message: 'acme already has an env write running for live' })
+        release()
+        assert.equal(replyOf(await first)?.ok, true)
+        assert.equal(replyOf(await agent.handle(envWrite()))?.ok, true)
+    })
+
+    const create = (id: string): AgentRequest => ({
+        verb: 'provision',
+        args: { action: 'create', id, client: 'cl_2', name: 'Bakery', repo: 'git@github.com:ItsKodas/bakery.git', branch: 'main', domain: null, certificate: null },
+    })
+
+    it('serialises every provisioning action, regardless of id, and never touches the first\'s folder', async () => {
+        const mkdirs: string[] = []
+        const rmdirs: string[] = []
+        let release: () => void = () => {}
+        const blocked = new Promise<void>(resolve => { release = resolve })
+        const provision = fakeProvisionDeps({
+            mkdir: async dir => { mkdirs.push(dir) },
+            rmdir: async dir => { rmdirs.push(dir) },
+            fetcher: { call: async () => { await blocked; return { ok: true, commit: 'abc1234' } } },
+        })
+        const { agent } = setup({ provision })
+
+        const first = agent.handle(create('bakery'))
+        await new Promise(resolve => setImmediate(resolve))
+        // A different id is refused too: choosePort and the domain check both read one registry snapshot,
+        // which two overlapping creates for different ids would race exactly as badly as two for the same
+        // id, so the lock is not keyed by id at all.
+        assert.deepEqual(replyOf(await agent.handle(create('cafe'))), { ok: false, code: 'busy', message: 'another provisioning action is in progress' })
+        // The busy refusal never even reached mkdir, so there is nothing for it to have removed.
+        assert.deepEqual(rmdirs, [])
+
+        release()
+        assert.equal(replyOf(await first)?.ok, true)
+        assert.deepEqual(mkdirs, ['/var/www/bakery'])
+        assert.deepEqual(rmdirs, [])
+        // The lock is released once the first call finishes, so a later create is not busy.
+        assert.equal(replyOf(await agent.handle(create('bakery')))?.ok, true)
+    })
+
+    it('does not let a second create choose a port until the first is done, so they cannot both pick the same free one', async () => {
+        const ports: number[] = []
+        let nextPort = 5100
+        let release: () => void = () => {}
+        const blocked = new Promise<void>(resolve => { release = resolve })
+        let calls = 0
+        const provision = fakeProvisionDeps({
+            choosePort: async () => {
+                const port = nextPort++
+                ports.push(port)
+                return { ok: true, port }
+            },
+            // Only the first call blocks: once serialised, the second is free to run to completion.
+            fetcher: { call: async () => { calls++; if (calls === 1) await blocked; return { ok: true, commit: 'abc1234' } } },
+        })
+        const { agent } = setup({ provision })
+
+        const first = agent.handle(create('bakery'))
+        await new Promise(resolve => setImmediate(resolve))
+        assert.deepEqual(replyOf(await agent.handle(create('cafe'))), { ok: false, code: 'busy', message: 'another provisioning action is in progress' })
+
+        release()
+        assert.equal(replyOf(await first)?.ok, true)
+
+        // Only now that the first is fully done does the second run for real, and choosePort is called
+        // again rather than reusing the first's stale answer.
+        assert.equal(replyOf(await agent.handle(create('cafe')))?.ok, true)
+        assert.equal(ports.length, 2)
+        assert.notEqual(ports[0], ports[1])
+    })
+
+    // The mirror of "does not re-run the guard before a stop": removal touches no files, so a project the
+    // storage guard has just failed must still be removable, and is exactly the kind of project an
+    // operator wants to unregister.
+    it('removes a project despite a storage guard failure', async () => {
+        const provision = fakeProvisionDeps()
+        const { agent } = setup({ provision, guardInvalid: new Map([['acme', 'storage media overlaps a database mount']]) })
+        const reply = replyOf(await agent.handle({ verb: 'provision', project: 'acme', args: { action: 'remove', environment: null } }))
+        assert.equal(reply?.ok, true)
+    })
+
+    // Must-exist, per the whole-branch review: create and add-environment used to call createProject and
+    // addEnvironment without this.deps.envFs at all, the way env() already does, so their own env-file
+    // listing silently fell back to the real filesystem in every test that only overrode envFs.
+    it('forwards envFs into create, so its env listing never reaches the real filesystem', async () => {
+        const provision = fakeProvisionDeps()
+        const envFs = fakeEnvFs({
+            readdir: async dir => dir === '/var/www/bakery'
+                ? [{ name: '.env', isDirectory: () => false, isFile: () => true }]
+                : [],
+            stat: async () => ({ size: 3 }),
+        })
+        const { agent } = setup({ provision, envFs })
+        const reply = replyOf(await agent.handle(create('bakery')))
+        assert.ok(reply?.ok && 'envFiles' in reply)
+        assert.deepEqual(reply.ok && 'envFiles' in reply ? reply.envFiles.map(file => file.path) : [], ['.env'])
+    })
+
+    it('forwards envFs into add-environment, so its copy-and-rewrite step never reaches the real filesystem', async () => {
+        const envFs = fakeEnvFs({
+            readdir: async dir => dir === '/var/www/acme'
+                ? [{ name: '.env', isDirectory: () => false, isFile: () => true }]
+                : [],
+            readFile: async path => path === '/var/www/acme/.env' ? 'A=1' : (() => { throw new Error('ENOENT') })(),
+            stat: async () => ({ size: 3 }),
+        })
+        const writes: Array<{ path: string, text: string }> = []
+        const provision = fakeProvisionDeps({
+            resolve: async () => ({ ok: true, services: { web: { role: 'site' } } }),
+        })
+        const { agent } = setup({
+            provision,
+            envFs: { ...envFs, writeFile: async (path, text) => { writes.push({ path, text }) } },
+        })
+        const reply = replyOf(await agent.handle({
+            verb: 'provision', project: 'acme',
+            args: { action: 'add-environment', environment: 'test', branch: 'develop', domain: null, certificate: null },
+        }))
+        assert.equal(reply?.ok, true)
+        assert.ok(writes.some(write => write.path.startsWith('/var/www/acme-test/')))
     })
 })

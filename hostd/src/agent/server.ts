@@ -46,6 +46,10 @@ function describe(request: AgentRequest): string {
         case 'status': return `status ${request.project}`
         case 'lifecycle': return `lifecycle ${request.project} ${request.args.action}`
         case 'logs': return `logs ${request.project} ${request.args.service}${request.args.follow ? ' follow' : ''}`
+        // Never the repo URL, a branch or a domain here: this line is exactly what reaches the log.
+        case 'provision': return 'project' in request ? `provision ${request.args.action} ${request.project}` : `provision create ${request.args.id}`
+        // Never args.text: that is the one place an env write carries the file's own contents.
+        case 'env': return `env ${request.args.action} ${request.project} ${request.args.environment}`
     }
 }
 

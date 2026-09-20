@@ -3,13 +3,16 @@
 
 import {
     checkStructure, refuse,
-    type AgentRequest, type HealthReply, type LifecycleAction, type LifecycleReply, type LogLine,
-    type LogsArgs, type Refusal, type ServiceStatus, type StatusReply,
+    type AgentReply, type AgentRequest, type EnvArgs, type HealthReply, type LifecycleAction, type LifecycleReply,
+    type LogLine, type LogsArgs, type ProvisionAddEnvironmentArgs, type ProvisionCreateArgs, type ProvisionRemoveArgs,
+    type Refusal, type ServiceStatus,
 } from '../shared/protocol.ts'
-import type { ProjectEntry, Registry } from '../shared/registry.ts'
+import { environmentOf, type ProjectEntry, type Registry } from '../shared/registry.ts'
 import { runLifecycle, type Runner } from './compose.ts'
 import { buildServiceStatuses, pickPerService, type ContainerInspect, type DockerApi } from './docker.ts'
 import { createLogDecoder } from './logframes.ts'
+import { listEnvFiles, readEnvFile, writeEnvFile, type EnvFs } from './env-files.ts'
+import { createProject, addEnvironment, removeProject, type ProvisionDeps } from './provision.ts'
 
 export const MAX_FOLLOWS_PER_PROJECT = 4
 export const FOLLOW_MAX_MS = 60 * 60_000
@@ -23,17 +26,32 @@ export type AgentDeps = {
     // Re-runs the storage guard for one project: its problem, or null when it passes.
     recheck: (project: ProjectEntry) => Promise<string | null>
     followMaxMs?: number
+    // Absent until the production entrypoint wires a fetcher socket and a registry path to write:
+    // provision and env then refuse unavailable instead of crashing.
+    provision?: ProvisionDeps
+    // Defaults to the real filesystem (env-files.ts's own default) when absent; only ever overridden in
+    // tests, so env reads and writes never depend on a real /var/www while this suite runs.
+    envFs?: EnvFs
 }
 
 export type Outcome =
-    | { kind: 'reply', reply: HealthReply | StatusReply | LifecycleReply | Refusal }
+    | { kind: 'reply', reply: AgentReply }
     | { kind: 'stream', lines: AsyncIterable<LogLine>, close: () => void }
 
-const reply = (value: HealthReply | StatusReply | LifecycleReply | Refusal): Outcome => ({ kind: 'reply', reply: value })
+const reply = (value: AgentReply): Outcome => ({ kind: 'reply', reply: value })
 
 export class Agent {
     private readonly lifecycleBusy = new Set<string>()
     private readonly follows = new Map<string, number>()
+    // Keyed <project>:<environment>, exactly like lifecycleBusy, so two writes to the same env file
+    // never race through this process even though writeEnvFile's own temp-file dance is otherwise safe.
+    private readonly envBusy = new Set<string>()
+    // A single global lock, not one per id like lifecycleBusy: provisioning is a rare, operator-driven
+    // action, and choosePort/domainTaken both read a registry snapshot that two overlapping creates for
+    // DIFFERENT ids would race just as badly as two for the same one (both see the same free port, or the
+    // same free domain, before either has written). Serialising every provisioning action against every
+    // other one is the honest fix for that, not a lock keyed narrowly enough to miss it.
+    private provisioningBusy = false
 
     constructor(private readonly deps: AgentDeps) {}
 
@@ -43,6 +61,11 @@ export class Agent {
 
     async handle(request: AgentRequest): Promise<Outcome> {
         if (request.verb === 'health') return reply(this.health())
+        if (!('project' in request)) {
+            // The only request left without a project id is provision create: nothing is registered yet
+            // for checkStructure to look up, so there is nothing structural to check before it runs.
+            return reply(await this.provisionCreate(request.args))
+        }
         const checked = checkStructure(this.deps.registry(), request, this.deps.guardInvalid())
         if (!checked.ok) return reply(checked)
         switch (request.verb) {
@@ -52,6 +75,10 @@ export class Agent {
                 return reply(await this.lifecycle(checked.project, request.args.action))
             case 'logs':
                 return this.logs(checked.project, request.args)
+            case 'provision':
+                return reply(await this.provisionExisting(checked.project, request.args))
+            case 'env':
+                return reply(await this.env(checked.project, request.args))
         }
     }
 
@@ -67,6 +94,52 @@ export class Agent {
             if (Object.hasOwn(project.services, service)) inspected.set(service, await this.deps.docker.inspect(container.Id))
         }
         return buildServiceStatuses(project, inspected)
+    }
+
+    private async provisionCreate(args: ProvisionCreateArgs): Promise<AgentReply> {
+        if (!this.deps.provision) return refuse('unavailable', 'provisioning is not configured')
+        if (this.provisioningBusy) return refuse('busy', 'another provisioning action is in progress')
+        this.provisioningBusy = true
+        try {
+            return await createProject(args, this.deps.provision, this.deps.envFs)
+        } finally {
+            this.provisioningBusy = false
+        }
+    }
+
+    private async provisionExisting(project: ProjectEntry, args: ProvisionAddEnvironmentArgs | ProvisionRemoveArgs): Promise<AgentReply> {
+        if (!this.deps.provision) return refuse('unavailable', 'provisioning is not configured')
+        if (this.provisioningBusy) return refuse('busy', 'another provisioning action is in progress')
+        this.provisioningBusy = true
+        try {
+            return args.action === 'add-environment'
+                ? await addEnvironment(project, args, this.deps.provision, this.deps.envFs)
+                : await removeProject(project, args.environment, this.deps.provision)
+        } finally {
+            this.provisioningBusy = false
+        }
+    }
+
+    private async env(project: ProjectEntry, args: EnvArgs): Promise<AgentReply> {
+        // checkStructure has already confirmed this environment exists on the project.
+        const environment = environmentOf(project, args.environment)!
+
+        if (args.action === 'list') return { ok: true, files: await listEnvFiles(environment, this.deps.envFs) }
+
+        if (args.action === 'read') {
+            const result = await readEnvFile(environment, args.path, this.deps.envFs)
+            return result.ok ? { ok: true, text: result.text } : refuse('bad-request', result.problem)
+        }
+
+        const key = `${project.id}:${environment.name}`
+        if (this.envBusy.has(key)) return refuse('busy', `${project.id} already has an env write running for ${environment.name}`)
+        this.envBusy.add(key)
+        try {
+            const result = await writeEnvFile(environment, args.path, args.text, this.deps.envFs)
+            return result.ok ? { ok: true, output: `${args.path} was written` } : refuse('bad-request', result.problem)
+        } finally {
+            this.envBusy.delete(key)
+        }
     }
 
     private async lifecycle(project: ProjectEntry, action: LifecycleAction): Promise<LifecycleReply | Refusal> {

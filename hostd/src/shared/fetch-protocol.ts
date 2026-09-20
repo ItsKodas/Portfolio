@@ -1,0 +1,115 @@
+// The fetcher's own protocol. Structured exactly like protocol.ts: one JSON request line, one switch on
+// the verb, an onlyKeys guard per verb, and every field validated before it is read. The fetcher runs
+// Git on the caller's behalf without a network of its own reaching anywhere but the remote it is told,
+// so a path or option smuggled through a field here is the only way in.
+
+import { isRecord } from './formats.ts'
+import { GIT_COMMIT, GIT_REF, GIT_REPO } from './registry.ts'
+
+// One segment directly under /var/www: what stops any path from the caller reaching Git.
+const FETCH_DIR = /^\/var\/www\/[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/
+const MAX_LOG_LIMIT = 500
+
+export type FetchRequest =
+    | { verb: 'clone', repo: string, dir: string, branch: string }
+    | { verb: 'fetch', dir: string }
+    | { verb: 'checkout', dir: string, worktree: string, commit: string }
+    | { verb: 'log', dir: string, branch: string, limit: number }
+    | { verb: 'tip', dir: string, branch: string }
+
+export type Commit = { commit: string, subject: string, author: string, at: string }
+
+export type FetchReply =
+    | { ok: true, commit?: string, commits?: Commit[] }
+    | { ok: false, code: 'bad-request' | 'failed' | 'unavailable', message: string }
+
+type Parsed = { ok: true, request: FetchRequest } | FetchReply
+
+function onlyKeys(value: Record<string, unknown>, allowed: string[]): boolean {
+    return Object.keys(value).every(key => allowed.includes(key))
+}
+
+function refuse(message: string): { ok: false, code: 'bad-request', message: string } {
+    return { ok: false, code: 'bad-request', message }
+}
+
+function dirOf(raw: Record<string, unknown>, field: string): string | null {
+    const value = raw[field]
+    return typeof value === 'string' && FETCH_DIR.test(value) ? value : null
+}
+
+function branchOf(raw: Record<string, unknown>): string | null {
+    const value = raw.branch
+    return typeof value === 'string' && GIT_REF.test(value) ? value : null
+}
+
+// Names the rejected value when it was at least a string, so a caller (and an audit log) can see
+// which branch was refused, not just that some branch was.
+function branchRefusal(raw: Record<string, unknown>): { ok: false, code: 'bad-request', message: string } {
+    const value = raw.branch
+    return refuse(typeof value === 'string' ? `branch ${value} is malformed` : 'branch is malformed')
+}
+
+export function parseFetchRequest(line: string): Parsed {
+    let raw: unknown
+    try {
+        raw = JSON.parse(line)
+    } catch {
+        return refuse('request is not JSON')
+    }
+    if (!isRecord(raw)) return refuse('request must be a JSON object')
+
+    switch (raw.verb) {
+        case 'clone': {
+            if (!onlyKeys(raw, ['verb', 'repo', 'dir', 'branch'])) return refuse('clone takes only repo, dir and branch')
+            if (typeof raw.repo !== 'string' || !GIT_REPO.test(raw.repo)) return refuse('repo must be an ssh or https git URL')
+            const dir = dirOf(raw, 'dir')
+            if (!dir) return refuse('dir must be a folder directly under /var/www')
+            const branch = branchOf(raw)
+            if (!branch) return branchRefusal(raw)
+            return { ok: true, request: { verb: 'clone', repo: raw.repo, dir, branch } }
+        }
+
+        case 'fetch': {
+            if (!onlyKeys(raw, ['verb', 'dir'])) return refuse('fetch takes only dir')
+            const dir = dirOf(raw, 'dir')
+            if (!dir) return refuse('dir must be a folder directly under /var/www')
+            return { ok: true, request: { verb: 'fetch', dir } }
+        }
+
+        case 'checkout': {
+            if (!onlyKeys(raw, ['verb', 'dir', 'worktree', 'commit'])) return refuse('checkout takes only dir, worktree and commit')
+            const dir = dirOf(raw, 'dir')
+            if (!dir) return refuse('dir must be a folder directly under /var/www')
+            const worktree = dirOf(raw, 'worktree')
+            if (!worktree) return refuse('worktree must be a folder directly under /var/www')
+            if (typeof raw.commit !== 'string' || !GIT_COMMIT.test(raw.commit)) return refuse('commit is malformed')
+            return { ok: true, request: { verb: 'checkout', dir, worktree, commit: raw.commit } }
+        }
+
+        case 'log': {
+            if (!onlyKeys(raw, ['verb', 'dir', 'branch', 'limit'])) return refuse('log takes only dir, branch and limit')
+            const dir = dirOf(raw, 'dir')
+            if (!dir) return refuse('dir must be a folder directly under /var/www')
+            const branch = branchOf(raw)
+            if (!branch) return branchRefusal(raw)
+            const limit = raw.limit
+            if (typeof limit !== 'number' || !Number.isInteger(limit) || limit < 1 || limit > MAX_LOG_LIMIT) {
+                return refuse(`limit must be a whole number from 1 to ${MAX_LOG_LIMIT}`)
+            }
+            return { ok: true, request: { verb: 'log', dir, branch, limit } }
+        }
+
+        case 'tip': {
+            if (!onlyKeys(raw, ['verb', 'dir', 'branch'])) return refuse('tip takes only dir and branch')
+            const dir = dirOf(raw, 'dir')
+            if (!dir) return refuse('dir must be a folder directly under /var/www')
+            const branch = branchOf(raw)
+            if (!branch) return branchRefusal(raw)
+            return { ok: true, request: { verb: 'tip', dir, branch } }
+        }
+
+        default:
+            return refuse('unknown verb')
+    }
+}

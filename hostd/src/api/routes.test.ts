@@ -17,10 +17,11 @@ projects:
   acme:
     client: cl_1
     name: Acme
-    dir: /var/www/acme
-    upstream: 127.0.0.1:5010
     services: { web: { role: site } }
-    capabilities: [lifecycle, logs]
+    capabilities: [lifecycle, logs, provision, env]
+    environments:
+      live: { dir: /var/www/acme, port: 5010 }
+      test: { dir: /var/www/acme-test, port: 5013 }
   quiet:
     client: cl_1
     name: Quiet
@@ -90,10 +91,16 @@ beforeEach(async () => {
     handler = createHandler({ token: TOKEN, registry: () => registry, agent, audit, keepaliveMs: 60_000 })
 })
 
-function request(path: string, options: { method?: string, actor?: string, token?: string | null } = {}) {
+function request(
+    path: string,
+    options: { method?: string, actor?: string, token?: string | null, body?: unknown, rawBody?: string } = {},
+) {
     const headers: Record<string, string> = { 'x-hostd-actor': options.actor ?? 'client:cl_1', 'x-hostd-user': 'user_1' }
     if (options.token !== null) headers.authorization = `Bearer ${options.token ?? TOKEN}`
-    return fetch(`${base}${path}`, { method: options.method ?? 'GET', headers })
+    const hasBody = options.body !== undefined || options.rawBody !== undefined
+    if (hasBody) headers['content-type'] = 'application/json'
+    const body = options.rawBody !== undefined ? options.rawBody : hasBody ? JSON.stringify(options.body) : undefined
+    return fetch(`${base}${path}`, { method: options.method ?? 'GET', headers, body })
 }
 
 describe('matchRoute', () => {
@@ -105,10 +112,26 @@ describe('matchRoute', () => {
         assert.deepEqual(matchRoute('GET', '/projects/acme/logs'), { verb: 'logs', project: 'acme' })
         assert.deepEqual(matchRoute('GET', '/projects/acme/audit'), { verb: 'audit', project: 'acme' })
         assert.deepEqual(matchRoute('GET', '/projects/acme/start'), { verb: 'method-not-allowed' })
-        assert.deepEqual(matchRoute('DELETE', '/projects/acme'), { verb: 'method-not-allowed' })
         assert.deepEqual(matchRoute('GET', '/projects/%2e%2e'), { verb: 'not-found' })
         assert.deepEqual(matchRoute('GET', '/projects/acme/files'), { verb: 'not-found' })
         assert.deepEqual(matchRoute('GET', '/'), { verb: 'not-found' })
+    })
+
+    it('matches the provisioning and env routes, and refuses the rest', () => {
+        assert.deepEqual(matchRoute('POST', '/projects'), { verb: 'create' })
+        assert.deepEqual(matchRoute('DELETE', '/projects'), { verb: 'method-not-allowed' })
+        assert.deepEqual(matchRoute('DELETE', '/projects/acme'), { verb: 'delete', project: 'acme' })
+        assert.deepEqual(matchRoute('POST', '/projects/acme/environments'), { verb: 'add-environment', project: 'acme' })
+        assert.deepEqual(matchRoute('GET', '/projects/acme/environments'), { verb: 'method-not-allowed' })
+        assert.deepEqual(matchRoute('DELETE', '/projects/acme/environments/test'), { verb: 'remove-environment', project: 'acme', environment: 'test' })
+        assert.deepEqual(matchRoute('DELETE', '/projects/acme/environments/staging'), { verb: 'not-found' })
+        assert.deepEqual(matchRoute('GET', '/projects/acme/environments/test'), { verb: 'method-not-allowed' })
+        assert.deepEqual(matchRoute('GET', '/projects/acme/live/env'), { verb: 'env-list', project: 'acme', environment: 'live' })
+        assert.deepEqual(matchRoute('POST', '/projects/acme/live/env'), { verb: 'method-not-allowed' })
+        assert.deepEqual(matchRoute('GET', '/projects/acme/test/env/db/.env'), { verb: 'env-file', project: 'acme', environment: 'test', path: 'db/.env' })
+        assert.deepEqual(matchRoute('PUT', '/projects/acme/test/env/.env'), { verb: 'env-file', project: 'acme', environment: 'test', path: '.env' })
+        assert.deepEqual(matchRoute('DELETE', '/projects/acme/test/env/.env'), { verb: 'method-not-allowed' })
+        assert.deepEqual(matchRoute('GET', '/projects/acme/staging/env'), { verb: 'not-found' })
     })
 })
 
@@ -154,7 +177,7 @@ describe('GET /projects', () => {
         assert.deepEqual(body, {
             ok: true,
             projects: [
-                { id: 'acme', name: 'Acme', capabilities: ['lifecycle', 'logs'], valid: false, reason: 'guard says no' },
+                { id: 'acme', name: 'Acme', capabilities: ['lifecycle', 'logs', 'provision', 'env'], valid: false, reason: 'guard says no' },
                 { id: 'quiet', name: 'Quiet', capabilities: [], valid: true },
             ],
         })
@@ -225,7 +248,7 @@ describe('project routes', () => {
     })
 
     it('answers 405 and 404 for the wrong method or path', async () => {
-        assert.equal((await request('/projects/acme', { method: 'DELETE' })).status, 405)
+        assert.equal((await request('/projects/acme', { method: 'PUT' })).status, 405)
         assert.equal((await request('/nope')).status, 404)
     })
 })
@@ -273,5 +296,234 @@ describe('audit routes', () => {
     it('refuses a bad limit', async () => {
         assert.equal((await request('/projects/acme/audit?limit=0')).status, 400)
         assert.equal((await request('/projects/acme/audit?limit=501')).status, 400)
+    })
+})
+
+const CREATE_BODY = {
+    id: 'newsite', client: 'cl_1', name: 'New Site', repo: 'git@example.com:cl1/newsite.git',
+    branch: 'main', domain: null, certificate: null,
+}
+
+describe('POST /projects', () => {
+    it('creates a project and returns what the agent replied', async () => {
+        const provisionReply: AgentReply = { ok: true, project: { id: 'newsite', state: 'needs-setup' }, envFiles: [] }
+        agent.reply = () => provisionReply
+        const response = await request('/projects', { method: 'POST', actor: 'admin', body: CREATE_BODY })
+        assert.equal(response.status, 200)
+        assert.deepEqual(await response.json(), provisionReply)
+        assert.deepEqual(agent.calls, [{ verb: 'provision', args: { action: 'create', ...CREATE_BODY } }])
+        const [entry] = await audit.read({ limit: 1 })
+        assert.deepEqual(
+            [entry?.actor, entry?.project, entry?.verb, entry?.target, entry?.outcome],
+            ['admin', 'newsite', 'provision', 'newsite create', 'ok'],
+        )
+    })
+
+    it('refuses a create with a missing or malformed field, without calling the agent', async () => {
+        const { domain: _domain, ...withoutDomain } = CREATE_BODY
+        const missing = await request('/projects', { method: 'POST', actor: 'admin', body: withoutDomain })
+        assert.equal(missing.status, 400)
+
+        const malformed = await request('/projects', { method: 'POST', actor: 'admin', body: { ...CREATE_BODY, id: 42 } })
+        assert.equal(malformed.status, 400)
+
+        const extraField = await request('/projects', { method: 'POST', actor: 'admin', body: { ...CREATE_BODY, extra: 'nope' } })
+        assert.equal(extraField.status, 400)
+
+        assert.deepEqual(agent.calls, [])
+    })
+
+    it('returns 503 when the agent refuses because provisioning is not configured', async () => {
+        // This is a well-formed agent reply (a Refusal with code 'unavailable'), not a dropped
+        // connection: it exercises the ordinary refusal pass-through in respondAgentAction, mapped
+        // through AGENT_STATUS like any other refusal code.
+        agent.reply = () => ({ ok: false, code: 'unavailable', message: 'provisioning is not configured' })
+        const response = await request('/projects', { method: 'POST', actor: 'admin', body: CREATE_BODY })
+        assert.equal(response.status, 503)
+        assert.deepEqual(await response.json(), { ok: false, code: 'unavailable', message: 'provisioning is not configured' })
+        const [entry] = await audit.read({ limit: 1 })
+        assert.equal(entry?.outcome, 'refused')
+    })
+
+    it('returns 503 with code agent-unavailable when the agent connection is actually lost', async () => {
+        agent.call = async () => { throw new AgentUnavailableError('the agent closed the connection without answering') }
+        const response = await request('/projects', { method: 'POST', actor: 'admin', body: CREATE_BODY })
+        assert.equal(response.status, 503)
+        assert.equal(((await response.json()) as { code: string }).code, 'agent-unavailable')
+        const [entry] = await audit.read({ limit: 1 })
+        assert.deepEqual([entry?.verb, entry?.outcome], ['provision', 'failed'])
+    })
+
+    it('refuses a body over the 64 KB cap without calling the agent', async () => {
+        const response = await request('/projects', { method: 'POST', actor: 'admin', rawBody: 'x'.repeat(64 * 1024 + 1) })
+        assert.equal(response.status, 400)
+        const responseBody = await response.json() as { code: string }
+        assert.equal(responseBody.code, 'bad-request')
+        assert.deepEqual(agent.calls, [])
+    })
+})
+
+describe('DELETE /projects/:id', () => {
+    it('requires the project name typed back to delete, and refuses when it does not match', async () => {
+        const wrongName = await request('/projects/acme', { method: 'DELETE', actor: 'admin', body: { name: 'Not Acme' } })
+        assert.equal(wrongName.status, 400)
+        assert.deepEqual(agent.calls, [])
+        const [refusal] = await audit.read({ limit: 1 })
+        assert.deepEqual([refusal?.verb, refusal?.target, refusal?.outcome, refusal?.reason], ['provision', 'acme remove', 'refused', 'bad-request'])
+
+        agent.reply = () => ({ ok: true, output: '/var/www/acme was left in place, along with its volumes and databases' })
+        const rightName = await request('/projects/acme', { method: 'DELETE', actor: 'admin', body: { name: 'Acme' } })
+        assert.equal(rightName.status, 200)
+        assert.deepEqual(agent.calls, [{ verb: 'provision', project: 'acme', args: { action: 'remove', environment: null } }])
+        const [entry] = await audit.read({ limit: 1 })
+        assert.deepEqual([entry?.verb, entry?.target, entry?.outcome], ['provision', 'acme remove', 'ok'])
+    })
+
+    it('refuses a missing or malformed confirmation body without calling the agent', async () => {
+        assert.equal((await request('/projects/acme', { method: 'DELETE', actor: 'admin' })).status, 400)
+        assert.equal((await request('/projects/acme', { method: 'DELETE', actor: 'admin', body: {} })).status, 400)
+        assert.equal((await request('/projects/acme', { method: 'DELETE', actor: 'admin', body: { name: 1 } })).status, 400)
+        assert.deepEqual(agent.calls, [])
+    })
+})
+
+describe('POST /projects/:id/environments', () => {
+    it('adds the test environment through the agent', async () => {
+        const provisionReply: AgentReply = { ok: true, project: { id: 'acme', state: 'needs-setup' }, envFiles: [] }
+        agent.reply = () => provisionReply
+        const response = await request('/projects/acme/environments', {
+            method: 'POST', actor: 'admin', body: { branch: 'main', domain: null, certificate: null },
+        })
+        assert.equal(response.status, 200)
+        assert.deepEqual(agent.calls, [{
+            verb: 'provision', project: 'acme',
+            args: { action: 'add-environment', environment: 'test', branch: 'main', domain: null, certificate: null },
+        }])
+        const [entry] = await audit.read({ limit: 1 })
+        assert.deepEqual([entry?.verb, entry?.target, entry?.outcome], ['provision', 'acme add-environment', 'ok'])
+    })
+})
+
+describe('DELETE /projects/:id/environments/:env', () => {
+    it('requires the project name typed back too, and passes the environment through on a match', async () => {
+        agent.reply = () => ({ ok: true, output: 'unregistered' })
+        const wrongName = await request('/projects/acme/environments/test', { method: 'DELETE', actor: 'admin', body: { name: 'nope' } })
+        assert.equal(wrongName.status, 400)
+        const [refusal] = await audit.read({ limit: 1 })
+        assert.deepEqual([refusal?.verb, refusal?.target, refusal?.outcome], ['provision', 'acme remove test', 'refused'])
+
+        const response = await request('/projects/acme/environments/test', { method: 'DELETE', actor: 'admin', body: { name: 'Acme' } })
+        assert.equal(response.status, 200)
+        assert.deepEqual(agent.calls, [{ verb: 'provision', project: 'acme', args: { action: 'remove', environment: 'test' } }])
+    })
+
+    // registry-write.ts refuses to remove the live environment on its own (it is not this route's job
+    // to know that; the agent is what enforces it). This just confirms that refusal comes back through
+    // respondAgentAction as a failure, not silently as something else.
+    it('passes a downstream refusal to remove live on its own through as a failure', async () => {
+        agent.reply = () => ({ ok: false, code: 'failed', message: 'the live environment cannot be removed on its own' })
+        const response = await request('/projects/acme/environments/live', { method: 'DELETE', actor: 'admin', body: { name: 'Acme' } })
+        assert.equal(response.status, 502)
+        assert.deepEqual(await response.json(), { ok: false, code: 'failed', message: 'the live environment cannot be removed on its own' })
+        const [entry] = await audit.read({ limit: 1 })
+        assert.deepEqual([entry?.verb, entry?.target, entry?.outcome, entry?.reason], ['provision', 'acme remove live', 'failed', 'the live environment cannot be removed on its own'])
+    })
+})
+
+describe('GET /projects/:id/:env/env', () => {
+    it('lists the environment\'s env files', async () => {
+        const listReply: AgentReply = { ok: true, files: [{ path: '.env', example: null, bytes: 12 }] }
+        agent.reply = () => listReply
+        const response = await request('/projects/acme/live/env', { actor: 'admin' })
+        assert.equal(response.status, 200)
+        assert.deepEqual(await response.json(), listReply)
+        assert.deepEqual(agent.calls, [{ verb: 'env', project: 'acme', args: { action: 'list', environment: 'live' } }])
+        const [entry] = await audit.read({ limit: 1 })
+        assert.deepEqual([entry?.verb, entry?.target, entry?.outcome], ['env', 'live', 'ok'])
+    })
+})
+
+describe('GET|PUT /projects/:id/:env/env/*path', () => {
+    it('reads an env file and returns its text', async () => {
+        agent.reply = () => ({ ok: true, text: 'SECRET=shh\n' })
+        const response = await request('/projects/acme/live/env/.env', { actor: 'admin' })
+        assert.equal(response.status, 200)
+        assert.deepEqual(await response.json(), { ok: true, text: 'SECRET=shh\n' })
+        assert.deepEqual(agent.calls, [{ verb: 'env', project: 'acme', args: { action: 'read', environment: 'live', path: '.env' } }])
+        const [entry] = await audit.read({ limit: 1 })
+        // The environment is part of the target, not just the path: live and test each have their own
+        // .env, and the audit trail for secret access has to say which one.
+        assert.deepEqual([entry?.verb, entry?.target, entry?.outcome], ['env', 'live/.env', 'ok'])
+    })
+
+    it('passes an env write through with its path and text, and audits it without the text', async () => {
+        agent.reply = () => ({ ok: true, output: '.env was written' })
+        const response = await request('/projects/acme/live/env/.env', { method: 'PUT', actor: 'admin', body: { text: 'SECRET=shh' } })
+        assert.equal(response.status, 200)
+        assert.deepEqual(agent.calls, [{
+            verb: 'env', project: 'acme', args: { action: 'write', environment: 'live', path: '.env', text: 'SECRET=shh' },
+        }])
+        const [entry] = await audit.read({ limit: 1 })
+        assert.deepEqual([entry?.verb, entry?.target, entry?.outcome], ['env', 'live/.env', 'ok'])
+        const serialised = JSON.stringify(entry)
+        assert.equal(serialised.includes('shh'), false)
+        assert.equal(serialised.includes('SECRET'), false)
+    })
+
+    it('rejects an env path that cannot be a real env file, before the agent is called', async () => {
+        // A literal .. segment can never arrive here: `new URL()` collapses ../ and even %2e%2e/ per
+        // the URL Standard's dot-segment rule before matchRoute ever sees the path, for any request
+        // built the normal way (fetch does this, and so does this handler's own `new URL(req.url, ...)`
+        // for a raw request line). What envPathProblem is left to catch at this boundary is anything
+        // that only looks like an escape once written out, such as a slash smuggled inside one segment.
+        const response = await request('/projects/acme/live/env/..%2Fsecret.env', { actor: 'admin' })
+        assert.equal(response.status, 400)
+        assert.deepEqual(agent.calls, [])
+    })
+
+    it('rejects a path with too many folders, before the agent is called', async () => {
+        const response = await request('/projects/acme/live/env/a/b/c/d/e.env', { actor: 'admin' })
+        assert.equal(response.status, 400)
+        assert.deepEqual(agent.calls, [])
+    })
+
+    it('refuses a malformed write body without calling the agent', async () => {
+        assert.equal((await request('/projects/acme/live/env/.env', { method: 'PUT', actor: 'admin', body: {} })).status, 400)
+        assert.equal((await request('/projects/acme/live/env/.env', { method: 'PUT', actor: 'admin', body: { text: 1 } })).status, 400)
+        assert.equal((await request('/projects/acme/live/env/.env', { method: 'PUT', actor: 'admin', body: { text: 'x', extra: 1 } })).status, 400)
+        assert.deepEqual(agent.calls, [])
+    })
+
+    // The 64 KB cap is on the whole JSON envelope, not the file text: MAX_ENV_BYTES (also 64 KB) bounds
+    // the text alone, but wrapping it in {"text":"..."} pushes the envelope over its own cap first, so
+    // this refuses before the agent, and before MAX_ENV_BYTES, ever gets a say.
+    it('refuses a write whose JSON envelope is over the 64 KB cap, without calling the agent', async () => {
+        const response = await request('/projects/acme/live/env/.env', {
+            method: 'PUT', actor: 'admin', rawBody: `{"text":"${'x'.repeat(64 * 1024)}"}`,
+        })
+        assert.equal(response.status, 400)
+        assert.deepEqual(agent.calls, [])
+    })
+})
+
+describe('provisioning and env routes refuse a client actor', () => {
+    it('refuses every new route for a client actor, and audits the refusal', async () => {
+        const attempts = [
+            () => request('/projects', { method: 'POST', body: CREATE_BODY }),
+            () => request('/projects/acme', { method: 'DELETE', body: { name: 'Acme' } }),
+            () => request('/projects/acme/environments', { method: 'POST', body: { branch: 'main', domain: null, certificate: null } }),
+            () => request('/projects/acme/environments/test', { method: 'DELETE', body: { name: 'Acme' } }),
+            () => request('/projects/acme/live/env'),
+            () => request('/projects/acme/live/env/.env'),
+            () => request('/projects/acme/live/env/.env', { method: 'PUT', body: { text: 'x' } }),
+        ]
+        for (const attempt of attempts) {
+            const response = await attempt()
+            assert.equal(response.status, 404, await response.text())
+        }
+        assert.deepEqual(agent.calls, [])
+        const events = await audit.read({ limit: attempts.length })
+        assert.equal(events.length, attempts.length)
+        assert.ok(events.every(event => event.outcome === 'refused' && event.reason === 'not-found'))
     })
 })

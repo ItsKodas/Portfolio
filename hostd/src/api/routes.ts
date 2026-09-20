@@ -2,12 +2,17 @@
 // before the agent hears of it; every change, every stream opened and every refusal is audited.
 
 import type { IncomingMessage, ServerResponse } from 'node:http'
-import { PROJECT_ID, SERVICE_NAME, describeError } from '../shared/formats.ts'
+import { PROJECT_ID, CLIENT_ID, SERVICE_NAME, isRecord, describeError } from '../shared/formats.ts'
 import {
-    LIFECYCLE_ACTIONS, MAX_TAIL, DEFAULT_TAIL,
+    LIFECYCLE_ACTIONS, MAX_TAIL, DEFAULT_TAIL, MAX_REQUEST_BYTES,
     type AgentReply, type AgentRequest, type LifecycleAction, type LogsArgs, type RefusalCode,
+    type ProvisionCreateArgs, type ProvisionAddEnvironmentArgs,
 } from '../shared/protocol.ts'
-import type { Registry } from '../shared/registry.ts'
+import {
+    ENVIRONMENTS, CERTIFICATE_MODES,
+    type CertificateMode, type EnvironmentName, type ProjectEntry, type Registry,
+} from '../shared/registry.ts'
+import { envPathProblem } from '../shared/envfiles.ts'
 import { authenticate, actorLabel, type Caller } from './auth.ts'
 import { authorize, visibleProjects, type PolicyVerb } from './policy.ts'
 import { AgentUnavailableError, type AgentClient } from './agent-client.ts'
@@ -30,6 +35,12 @@ export type Route =
     | { verb: 'lifecycle', project: string, action: LifecycleAction }
     | { verb: 'logs', project: string }
     | { verb: 'audit', project: string }
+    | { verb: 'create' }
+    | { verb: 'delete', project: string }
+    | { verb: 'add-environment', project: string }
+    | { verb: 'remove-environment', project: string, environment: EnvironmentName }
+    | { verb: 'env-list', project: string, environment: EnvironmentName }
+    | { verb: 'env-file', project: string, environment: EnvironmentName, path: string }
     | { verb: 'not-found' }
     | { verb: 'method-not-allowed' }
 
@@ -38,6 +49,7 @@ const AGENT_STATUS: Record<RefusalCode, number> = {
     'capability-disabled': 403,
     'unknown-project': 404,
     'unknown-service': 404,
+    'unknown-environment': 404,
     'invalid-project': 409,
     busy: 409,
     failed: 502,
@@ -50,16 +62,50 @@ const KEEPALIVE_MS = 25_000
 export function matchRoute(method: string, pathname: string): Route {
     const parts = pathname.split('/').filter(part => part !== '')
     const only = (wanted: string, route: Route): Route => (method === wanted ? route : { verb: 'method-not-allowed' })
-    if (parts.length === 1 && parts[0] === 'projects') return only('GET', { verb: 'list' })
+
+    if (parts.length === 1 && parts[0] === 'projects') {
+        if (method === 'GET') return { verb: 'list' }
+        if (method === 'POST') return { verb: 'create' }
+        return { verb: 'method-not-allowed' }
+    }
     if (parts.length === 1 && parts[0] === 'audit') return only('GET', { verb: 'audit-all' })
-    if (parts[0] !== 'projects' || parts.length < 2 || parts.length > 3) return { verb: 'not-found' }
+    if (parts[0] !== 'projects' || parts.length < 2) return { verb: 'not-found' }
+
     const project = parts[1] ?? ''
     if (!PROJECT_ID.test(project)) return { verb: 'not-found' }
-    if (parts.length === 2) return only('GET', { verb: 'status', project })
-    const action = parts[2] ?? ''
-    if ((LIFECYCLE_ACTIONS as readonly string[]).includes(action)) return only('POST', { verb: 'lifecycle', project, action: action as LifecycleAction })
-    if (action === 'logs') return only('GET', { verb: 'logs', project })
-    if (action === 'audit') return only('GET', { verb: 'audit', project })
+
+    if (parts.length === 2) {
+        if (method === 'GET') return { verb: 'status', project }
+        if (method === 'DELETE') return { verb: 'delete', project }
+        return { verb: 'method-not-allowed' }
+    }
+
+    const segment = parts[2] ?? ''
+
+    if (parts.length === 3) {
+        if ((LIFECYCLE_ACTIONS as readonly string[]).includes(segment)) return only('POST', { verb: 'lifecycle', project, action: segment as LifecycleAction })
+        if (segment === 'logs') return only('GET', { verb: 'logs', project })
+        if (segment === 'audit') return only('GET', { verb: 'audit', project })
+        if (segment === 'environments') return only('POST', { verb: 'add-environment', project })
+        return { verb: 'not-found' }
+    }
+
+    if (segment === 'environments') {
+        if (parts.length !== 4) return { verb: 'not-found' }
+        const environment = parts[3] ?? ''
+        if (!(ENVIRONMENTS as readonly string[]).includes(environment)) return { verb: 'not-found' }
+        return only('DELETE', { verb: 'remove-environment', project, environment: environment as EnvironmentName })
+    }
+
+    // /projects/:id/:env/env, and /projects/:id/:env/env/<path...> for one file inside it.
+    if ((ENVIRONMENTS as readonly string[]).includes(segment)) {
+        const environment = segment as EnvironmentName
+        if (parts[3] !== 'env') return { verb: 'not-found' }
+        if (parts.length === 4) return only('GET', { verb: 'env-list', project, environment })
+        if (method !== 'GET' && method !== 'PUT') return { verb: 'method-not-allowed' }
+        return { verb: 'env-file', project, environment, path: parts.slice(4).join('/') }
+    }
+
     return { verb: 'not-found' }
 }
 
@@ -89,6 +135,120 @@ function parseLimit(params: URLSearchParams): number | null {
     if (raw === null) return DEFAULT_AUDIT_LIMIT
     const limit = /^\d{1,4}$/.test(raw) ? Number(raw) : 0
     return limit >= 1 && limit <= MAX_AUDIT_READ ? limit : null
+}
+
+function onlyKeys(value: Record<string, unknown>, allowed: string[]): boolean {
+    return Object.keys(value).every(key => allowed.includes(key))
+}
+
+// Reads the body with a hard cap enforced as bytes arrive, not from a trusted Content-Length: the same
+// 64 KB the agent's own wire protocol allows itself, so nothing a client can post to api is bigger than
+// what would reach the agent anyway. Note this bounds the whole JSON envelope, not just an env file's
+// text: MAX_ENV_BYTES in envfiles.ts is also 64 KB, but of the file's raw text, and JSON-escaping that
+// text (quotes, backslashes, newlines) can inflate it past this envelope cap before MAX_ENV_BYTES is
+// ever checked. An admin editing a large env file hits this refusal first; its message says so.
+//
+// On the over-limit path this deliberately does not call req.destroy(): req and res share one socket,
+// and destroying it here would destroy the response before refuseRoute ever gets to write to it,
+// turning a 400 into a dead socket (at worst ERR_STREAM_DESTROYED). Removing the listeners is enough:
+// once flowing (data has already been read), a Readable with no 'data' listener just discards further
+// chunks instead of buffering them, so the rest of the body drains in the background while the caller
+// writes its response on the still-live socket.
+function readBody(req: IncomingMessage, maxBytes: number): Promise<{ ok: true, raw: string } | { ok: false, message: string }> {
+    return new Promise(resolve => {
+        const chunks: Buffer[] = []
+        let bytes = 0
+        let settled = false
+        const finish = (result: { ok: true, raw: string } | { ok: false, message: string }) => {
+            if (settled) return
+            settled = true
+            req.off('data', onData)
+            req.off('end', onEnd)
+            req.off('error', onError)
+            // A no-op listener stays attached for the life of the drain below: with none at all, an
+            // aborted request emitting 'error' while nothing is listening is unhandled, and Node throws.
+            req.on('error', () => {})
+            resolve(result)
+        }
+        const onData = (chunk: Buffer) => {
+            bytes += chunk.length
+            if (bytes > maxBytes) {
+                finish({ ok: false, message: `the request body must be ${maxBytes} bytes (${Math.floor(maxBytes / 1024)} KB) or fewer` })
+                return
+            }
+            chunks.push(chunk)
+        }
+        const onEnd = () => finish({ ok: true, raw: Buffer.concat(chunks).toString('utf8') })
+        const onError = () => finish({ ok: false, message: 'the request body could not be read' })
+        req.on('data', onData)
+        req.on('end', onEnd)
+        req.on('error', onError)
+    })
+}
+
+async function readJsonBody(req: IncomingMessage, maxBytes: number): Promise<{ ok: true, value: Record<string, unknown> } | { ok: false, message: string }> {
+    const body = await readBody(req, maxBytes)
+    if (!body.ok) return body
+    if (body.raw === '') return { ok: false, message: 'a request body is required' }
+    let parsed: unknown
+    try {
+        parsed = JSON.parse(body.raw)
+    } catch {
+        return { ok: false, message: 'the request body is not JSON' }
+    }
+    if (!isRecord(parsed)) return { ok: false, message: 'the request body must be a JSON object' }
+    return { ok: true, value: parsed }
+}
+
+function parseCreateBody(value: Record<string, unknown>): { ok: true, args: ProvisionCreateArgs } | { ok: false, message: string } {
+    if (!onlyKeys(value, ['id', 'client', 'name', 'repo', 'branch', 'domain', 'certificate'])) {
+        return { ok: false, message: 'create takes only id, client, name, repo, branch, domain and certificate' }
+    }
+    // Validated against the same grammar as everywhere else an id is trusted, not just typeof: an
+    // unvalidated id is what would otherwise end up as the project field of an audit entry below.
+    if (typeof value.id !== 'string' || !PROJECT_ID.test(value.id)) return { ok: false, message: 'id is malformed' }
+    if (typeof value.client !== 'string' || !CLIENT_ID.test(value.client)) return { ok: false, message: 'client is malformed' }
+    if (typeof value.name !== 'string') return { ok: false, message: 'name is malformed' }
+    if (typeof value.repo !== 'string') return { ok: false, message: 'repo is malformed' }
+    if (typeof value.branch !== 'string') return { ok: false, message: 'branch is malformed' }
+    const domain = value.domain
+    if (domain !== null && typeof domain !== 'string') return { ok: false, message: 'domain is malformed' }
+    const certificate = value.certificate
+    if (certificate !== null && !(CERTIFICATE_MODES as readonly string[]).includes(certificate as string)) return { ok: false, message: 'certificate is malformed' }
+    return {
+        ok: true,
+        args: {
+            action: 'create', id: value.id, client: value.client, name: value.name, repo: value.repo, branch: value.branch,
+            domain: domain as string | null, certificate: certificate as CertificateMode | null,
+        },
+    }
+}
+
+function parseAddEnvironmentBody(value: Record<string, unknown>): { ok: true, args: ProvisionAddEnvironmentArgs } | { ok: false, message: string } {
+    if (!onlyKeys(value, ['branch', 'domain', 'certificate'])) {
+        return { ok: false, message: 'add-environment takes only branch, domain and certificate' }
+    }
+    if (typeof value.branch !== 'string') return { ok: false, message: 'branch is malformed' }
+    const domain = value.domain
+    if (domain !== null && typeof domain !== 'string') return { ok: false, message: 'domain is malformed' }
+    const certificate = value.certificate
+    if (certificate !== null && !(CERTIFICATE_MODES as readonly string[]).includes(certificate as string)) return { ok: false, message: 'certificate is malformed' }
+    return { ok: true, args: { action: 'add-environment', environment: 'test', branch: value.branch, domain: domain as string | null, certificate: certificate as CertificateMode | null } }
+}
+
+// Shared by both delete routes: the whole-project one and the single-environment one. Typing the name
+// back is the only thing standing between a stray click and an irreversible-looking unregister, so a
+// missing or mismatched name refuses before the agent ever hears about it.
+function parseConfirmBody(value: Record<string, unknown>): { ok: true, name: string } | { ok: false, message: string } {
+    if (!onlyKeys(value, ['name'])) return { ok: false, message: 'delete takes only name' }
+    if (typeof value.name !== 'string') return { ok: false, message: 'name is malformed' }
+    return { ok: true, name: value.name }
+}
+
+function parseEnvWriteBody(value: Record<string, unknown>): { ok: true, text: string } | { ok: false, message: string } {
+    if (!onlyKeys(value, ['text'])) return { ok: false, message: 'writing an env file takes only text' }
+    if (typeof value.text !== 'string') return { ok: false, message: 'text is malformed' }
+    return { ok: true, text: value.text }
 }
 
 function sendJson(res: ServerResponse, status: number, body: unknown): void {
@@ -134,11 +294,20 @@ export function createHandler(deps: ApiDeps): (req: IncomingMessage, res: Server
             sendJson(res, status, { ok: false, code, message })
         }
 
-        const decide = async (project: string, verb: PolicyVerb, target: string | null) => {
+        // The policy check every project route runs first: refuses and audits exactly like refuseRoute
+        // when the actor may not do this at all, otherwise hands back the project entry the routes that
+        // need one (a delete needs its name; provision's create has none to look up in the first place,
+        // see the 'create' case below).
+        const authorizeProject = async (project: string, verb: PolicyVerb, target: string | null): Promise<ProjectEntry | null> => {
             const decision = authorize(deps.registry(), caller.actor, project, verb)
-            if (!decision.ok) await refuseRoute(decision.status, decision.code, decision.message, project, verb, target)
-            return decision.ok
+            if (!decision.ok) {
+                await refuseRoute(decision.status, decision.code, decision.message, project, verb, target)
+                return null
+            }
+            return decision.project
         }
+
+        const decide = async (project: string, verb: PolicyVerb, target: string | null) => (await authorizeProject(project, verb, target)) !== null
 
         const callAgent = async (request: AgentRequest): Promise<AgentReply | null> => {
             try {
@@ -148,6 +317,56 @@ export function createHandler(deps: ApiDeps): (req: IncomingMessage, res: Server
                 sendJson(res, 503, { ok: false, code: 'agent-unavailable', message: error.message })
                 return null
             }
+        }
+
+        // provision and env are both mutations (or, for env, a read of something secret-adjacent), so
+        // unlike plain status reads a dropped agent connection here is audited, the same way lifecycle
+        // and logs already audit it.
+        const callAgentAudited = async (request: AgentRequest, project: string, verb: string, target: string | null): Promise<AgentReply | null> => {
+            try {
+                return await deps.agent.call(request)
+            } catch (error) {
+                if (!(error instanceof AgentUnavailableError)) throw error
+                await audit(who, { project, verb, target, outcome: 'failed', reason: error.message })
+                sendJson(res, 503, { ok: false, code: 'agent-unavailable', message: error.message })
+                return null
+            }
+        }
+
+        // provision and env share one reply shape at the HTTP boundary: an ok reply passes straight
+        // through and is audited as ok, a refusal maps through AGENT_STATUS and is audited as failed or
+        // refused. Neither ever puts the agent's reply body itself into the audit entry, only the
+        // target and (on a refusal) the code or message, so an env file's text can only ever reach the
+        // caller's own response, never the audit trail.
+        const respondAgentAction = async (verb: 'provision' | 'env', reply: AgentReply, project: string, target: string) => {
+            if (reply.ok) {
+                await audit(who, { project, verb, target, outcome: 'ok' })
+                return sendJson(res, 200, reply)
+            }
+            const outcome: AuditOutcome = reply.code === 'failed' ? 'failed' : 'refused'
+            await audit(who, { project, verb, target, outcome, reason: outcome === 'failed' ? reply.message : reply.code })
+            return sendJson(res, AGENT_STATUS[reply.code], reply)
+        }
+
+        // Shared by DELETE /projects/:id (environment null, the whole project) and
+        // DELETE /projects/:id/environments/:env (one environment): the confirmation is the safety
+        // mechanism of both, so it lives in exactly one place rather than two copies that could drift.
+        const removeProject = async (project: string, environment: EnvironmentName | null): Promise<void> => {
+            const target = environment ? `${project} remove ${environment}` : `${project} remove`
+            const entry = await authorizeProject(project, 'provision', target)
+            if (!entry) return
+
+            const body = await readJsonBody(req, MAX_REQUEST_BYTES)
+            if (!body.ok) return refuseRoute(400, 'bad-request', body.message, project, 'provision', target)
+            const parsed = parseConfirmBody(body.value)
+            if (!parsed.ok) return refuseRoute(400, 'bad-request', parsed.message, project, 'provision', target)
+            if (parsed.name !== entry.name) {
+                return refuseRoute(400, 'bad-request', 'name must match the project name to confirm deletion', project, 'provision', target)
+            }
+
+            const reply = await callAgentAudited({ verb: 'provision', project, args: { action: 'remove', environment } }, project, 'provision', target)
+            if (!reply) return
+            return respondAgentAction('provision', reply, project, target)
         }
 
         switch (route.verb) {
@@ -198,6 +417,103 @@ export function createHandler(deps: ApiDeps): (req: IncomingMessage, res: Server
                 if (!reply) return
                 if (!reply.ok) return refuseRoute(AGENT_STATUS[reply.code], reply.code, reply.message, route.project, 'status')
                 return sendJson(res, 200, reply)
+            }
+
+            case 'create': {
+                // There is no existing project for authorize() to look up (the id has not been claimed
+                // yet), so the ownership machinery in policy.ts does not apply here: the rule is simply
+                // that only the admin may provision at all, the same admin-only rule authorize() applies
+                // to every other provision and env request.
+                if (caller.actor.kind !== 'admin') return refuseRoute(404, 'not-found', 'no such route', null, 'provision', null)
+
+                const body = await readJsonBody(req, MAX_REQUEST_BYTES)
+                if (!body.ok) return refuseRoute(400, 'bad-request', body.message, null, 'provision', null)
+                const parsed = parseCreateBody(body.value)
+                if (!parsed.ok) {
+                    const id = typeof body.value.id === 'string' && PROJECT_ID.test(body.value.id) ? body.value.id : null
+                    return refuseRoute(400, 'bad-request', parsed.message, id, 'provision', null)
+                }
+
+                const target = `${parsed.args.id} create`
+                const reply = await callAgentAudited({ verb: 'provision', args: parsed.args }, parsed.args.id, 'provision', target)
+                if (!reply) return
+                return respondAgentAction('provision', reply, parsed.args.id, target)
+            }
+
+            case 'delete':
+                return removeProject(route.project, null)
+
+            case 'add-environment': {
+                const target = `${route.project} add-environment`
+                const project = await authorizeProject(route.project, 'provision', target)
+                if (!project) return
+
+                const body = await readJsonBody(req, MAX_REQUEST_BYTES)
+                if (!body.ok) return refuseRoute(400, 'bad-request', body.message, route.project, 'provision', target)
+                const parsed = parseAddEnvironmentBody(body.value)
+                if (!parsed.ok) return refuseRoute(400, 'bad-request', parsed.message, route.project, 'provision', target)
+
+                const reply = await callAgentAudited(
+                    { verb: 'provision', project: route.project, args: parsed.args },
+                    route.project, 'provision', target,
+                )
+                if (!reply) return
+                return respondAgentAction('provision', reply, route.project, target)
+            }
+
+            case 'remove-environment':
+                return removeProject(route.project, route.environment)
+
+            case 'env-list': {
+                const target = route.environment
+                const project = await authorizeProject(route.project, 'env', target)
+                if (!project) return
+
+                const reply = await callAgentAudited(
+                    { verb: 'env', project: route.project, args: { action: 'list', environment: route.environment } },
+                    route.project, 'env', target,
+                )
+                if (!reply) return
+                return respondAgentAction('env', reply, route.project, target)
+            }
+
+            case 'env-file': {
+                // Includes the environment, not just the path: this is the audit trail for access to
+                // secrets, and 'live' and 'test' each have their own .env, so the target has to say
+                // which one, the same way env-list's target (just the environment) reads as one
+                // namespace with this one. Truncated the same way 'not-found' already truncates a raw
+                // pathname, since route.path comes straight from the URL.
+                const target = `${route.environment}/${route.path}`.slice(0, 200)
+                const project = await authorizeProject(route.project, 'env', target)
+                if (!project) return
+
+                // Lexical only, same as envfiles.ts's own comment says: the agent checks the same path
+                // again itself, against the real filesystem, once it knows which environment folder it
+                // resolves relative to. That is not duplication to remove, it is the only place a
+                // symlink planted inside the environment folder can be caught.
+                const pathProblem = envPathProblem(route.path)
+                if (pathProblem) return refuseRoute(400, 'bad-request', pathProblem, route.project, 'env', target)
+
+                if (req.method === 'GET') {
+                    const reply = await callAgentAudited(
+                        { verb: 'env', project: route.project, args: { action: 'read', environment: route.environment, path: route.path } },
+                        route.project, 'env', target,
+                    )
+                    if (!reply) return
+                    return respondAgentAction('env', reply, route.project, target)
+                }
+
+                const body = await readJsonBody(req, MAX_REQUEST_BYTES)
+                if (!body.ok) return refuseRoute(400, 'bad-request', body.message, route.project, 'env', target)
+                const parsed = parseEnvWriteBody(body.value)
+                if (!parsed.ok) return refuseRoute(400, 'bad-request', parsed.message, route.project, 'env', target)
+
+                const reply = await callAgentAudited(
+                    { verb: 'env', project: route.project, args: { action: 'write', environment: route.environment, path: route.path, text: parsed.text } },
+                    route.project, 'env', target,
+                )
+                if (!reply) return
+                return respondAgentAction('env', reply, route.project, target)
             }
 
             case 'lifecycle': {

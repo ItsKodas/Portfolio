@@ -1,21 +1,26 @@
 // The agent: boot gate, then the storage guard over every project, then the socket. It runs as root with
 // the Docker socket, so it listens on nothing but a Unix socket shared with api.
 
-import { createServer } from 'node:net'
-import { chmod, chown, rm, stat } from 'node:fs/promises'
+import { createServer, createConnection } from 'node:net'
+import { chmod, chown, mkdir, rm, stat } from 'node:fs/promises'
 import { RegistryStore, explainRegistryError } from '../shared/registry-store.ts'
+import { RegistryWriter } from '../shared/registry-write.ts'
+import { choosePort } from '../shared/ports.ts'
 import { buildStatus, writeStatus } from '../shared/status.ts'
 import { describeError } from '../shared/formats.ts'
-import { createDockerApi } from './docker.ts'
-import { createSpawnRunner } from './compose.ts'
+import { createDockerApi, dockerPortCheck } from './docker.ts'
+import { createSpawnRunner, resolveNewProject } from './compose.ts'
 import { GuardTracker } from './guard-tracker.ts'
+import { createFetchClient, socketConnect } from './fetch-client.ts'
 import { Agent } from './agent.ts'
+import type { ProvisionDeps } from './provision.ts'
 import { handleConnection } from './server.ts'
 
 const REGISTRY_FILE = process.env.HOSTD_REGISTRY_FILE ?? '/etc/hostd/registry/projects.yaml'
 const SOCKET_PATH = process.env.HOSTD_AGENT_SOCKET ?? '/run/hostd/agent.sock'
 const SOCKET_GID = Number(process.env.HOSTD_SOCKET_GID ?? '1000')
 const STATUS_FILE = process.env.HOSTD_STATUS_FILE ?? '/tmp/hostd-status.json'
+const FETCH_SOCKET_PATH = process.env.HOSTD_FETCH_SOCKET ?? '/run/hostd-fetch/fetch.sock'
 const WWW = '/var/www'
 const POLL_MS = 10_000
 // Compose files can change without the registry changing, so the guard also runs on a timer.
@@ -65,10 +70,56 @@ async function main(): Promise<void> {
     const guard = new GuardTracker(runner)
     await guard.checkAll(store.current())
 
+    // A raw connect probe, not a call through FetchClient: there is no fetcher verb that means "are you
+    // there", and a failed connect (ENOENT, ECONNREFUSED) resolves at once, so this never needs a timeout.
+    const fetcherReachable = () => new Promise<boolean>(resolve => {
+        const socket = createConnection(FETCH_SOCKET_PATH)
+        const finish = (ok: boolean) => { socket.destroy(); resolve(ok) }
+        socket.once('connect', () => finish(true))
+        socket.once('error', () => finish(false))
+    })
+    const checkFetcher = async (): Promise<string | null> => (
+        (await fetcherReachable())
+            ? null
+            : `the fetcher socket ${FETCH_SOCKET_PATH} is not answering (has hostd-fetcher started?); provisioning and env editing are unavailable until it is`
+    )
+    // Named and tracked exactly like the agent's other boot-time checks, but never fatal: lifecycle and
+    // logs are what the deployed site depends on today, and they need nothing the fetcher provides.
+    let fetcherProblem = await checkFetcher()
+
+    const writer = new RegistryWriter(REGISTRY_FILE)
+    const fetcher = createFetchClient(socketConnect(FETCH_SOCKET_PATH))
+    const exists = async (path: string): Promise<boolean> => {
+        try {
+            await stat(path)
+            return true
+        } catch {
+            return false
+        }
+    }
+    const provision: ProvisionDeps = {
+        registry: () => store.current(),
+        // provision.ts calls this itself, before it reads registry(), so the id, domain and port checks
+        // it makes in one call all see the same fresh snapshot.
+        refreshRegistry: async () => { await store.refresh() },
+        writer,
+        fetcher,
+        // A fresh dockerPortCheck per call, so it takes its own snapshot of every container's published
+        // ports rather than reusing one from an earlier provisioning action.
+        choosePort: async () => choosePort(store.current(), dockerPortCheck(docker)),
+        mkdir: dir => mkdir(dir),
+        rmdir: dir => rm(dir, { recursive: true, force: true }),
+        exists,
+        resolve: (expectedName, dir, composePath, collidesWith) => resolveNewProject({ dir, composePaths: [composePath] }, expectedName, runner, collidesWith),
+        runner,
+        log,
+    }
+
     const warnings = () => [
         ...store.warnings(),
         ...[...store.current().invalid].map(([id, problem]) => `project ${id} is invalid: ${problem}`),
         ...guard.warnings(),
+        ...(fetcherProblem ? [fetcherProblem] : []),
     ]
 
     const agent = new Agent({
@@ -78,6 +129,7 @@ async function main(): Promise<void> {
         docker,
         runner,
         recheck: project => guard.check(project),
+        provision,
     })
 
     await rm(SOCKET_PATH, { force: true })
@@ -108,6 +160,7 @@ async function main(): Promise<void> {
         await writeStatus(STATUS_FILE, buildStatus(current, new Date()))
             .catch(error => log(`could not write status: ${describeError(error)}`))
         await sleep(POLL_MS)
+        fetcherProblem = await checkFetcher()
         const changed = await store.refresh()
         if (changed) log('registry reloaded')
         if (changed || Date.now() - lastGuardRun >= GUARD_EVERY_MS) {

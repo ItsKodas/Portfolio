@@ -1,0 +1,66 @@
+import { describe, it } from 'node:test'
+import assert from 'node:assert/strict'
+import { duplexPair } from 'node:stream'
+import { handleFetchConnection } from './server.ts'
+import type { FetchRequest, FetchReply } from '../shared/fetch-protocol.ts'
+import { MAX_REQUEST_BYTES } from '../shared/protocol.ts'
+
+function stubRun(run: (request: FetchRequest) => Promise<FetchReply>) {
+    const requests: FetchRequest[] = []
+    return {
+        requests,
+        run: async (request: FetchRequest) => {
+            requests.push(request)
+            return run(request)
+        },
+    }
+}
+
+// Sends raw bytes as the client and returns every line the server wrote before closing.
+async function exchange(run: (request: FetchRequest) => Promise<FetchReply>, raw: string, log: (message: string) => void = () => {}): Promise<string[]> {
+    const [client, server] = duplexPair()
+    const done = handleFetchConnection(server, run, log)
+    client.write(raw)
+    client.setEncoding('utf8')
+    let text = ''
+    for await (const chunk of client) text += chunk
+    await done
+    return text.split('\n').filter(part => part !== '')
+}
+
+describe('handleFetchConnection', () => {
+    it('answers one request per connection and ends the socket', async () => {
+        const stub = stubRun(async () => ({ ok: true, commit: 'a1b2c3d' }))
+        const lines = await exchange(stub.run, '{"verb":"tip","dir":"/var/www/acme","branch":"main"}\n')
+        assert.deepEqual(lines, ['{"ok":true,"commit":"a1b2c3d"}'])
+        assert.deepEqual(stub.requests, [{ verb: 'tip', dir: '/var/www/acme', branch: 'main' }])
+    })
+
+    it('refuses an oversized line without reading all of it', async () => {
+        const stub = stubRun(async () => { throw new Error('must not be called') })
+        const [reply] = await exchange(stub.run, 'x'.repeat(MAX_REQUEST_BYTES + 10))
+        assert.deepEqual(JSON.parse(reply ?? ''), { ok: false, code: 'bad-request', message: 'expected one request line of at most 64 KB' })
+        assert.deepEqual(stub.requests, [])
+    })
+
+    it('refuses a malformed request with bad-request, and never calls git', async () => {
+        const stub = stubRun(async () => { throw new Error('must not be called') })
+        const [reply] = await exchange(stub.run, '{"verb":"exec"}\n')
+        assert.deepEqual(JSON.parse(reply ?? ''), { ok: false, code: 'bad-request', message: 'unknown verb' })
+        assert.deepEqual(stub.requests, [])
+    })
+
+    it('turns a thrown error into unavailable rather than crashing the process', async () => {
+        const stub = stubRun(async () => { throw new Error('fatal: could not read from remote repository') })
+        const [reply] = await exchange(stub.run, '{"verb":"fetch","dir":"/var/www/acme"}\n')
+        assert.deepEqual(JSON.parse(reply ?? ''), { ok: false, code: 'unavailable', message: 'fatal: could not read from remote repository' })
+    })
+
+    it('logs every request with its verb and outcome, and never a credential', async () => {
+        const logged: string[] = []
+        const stub = stubRun(async () => ({ ok: false, code: 'failed', message: 'https://ghp_leakedtoken123@github.com/acme/site.git: fatal: authentication failed' }))
+        await exchange(stub.run, '{"verb":"clone","repo":"https://github.com/acme/site.git","dir":"/var/www/acme","branch":"main"}\n', message => logged.push(message))
+        assert.deepEqual(logged, ['clone /var/www/acme main failed'])
+        assert.ok(!logged.join('\n').includes('ghp_'))
+    })
+})

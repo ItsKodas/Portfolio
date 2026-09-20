@@ -5,7 +5,8 @@ import { PassThrough } from 'node:stream'
 import type { ClientRequest, IncomingMessage, RequestOptions } from 'node:http'
 import {
     containersPath, logsPath, checkedId, createDockerApi, pickPerService, buildServiceStatuses,
-    type ContainerInspect, type ContainerSummary,
+    publishedHostPorts, dockerPortCheck, ALL_CONTAINERS_PATH,
+    type ContainerInspect, type ContainerSummary, type DockerApi,
 } from './docker.ts'
 import { parseRegistry } from '../shared/registry.ts'
 
@@ -17,6 +18,10 @@ describe('paths', () => {
         assert.ok(path.startsWith('/containers/json?all=1&filters='))
         const filters = JSON.parse(decodeURIComponent(path.split('filters=')[1] ?? ''))
         assert.deepEqual(filters, { label: ['com.docker.compose.project=acme'] })
+    })
+
+    it('asks for every container, unfiltered, to see every published port on the box', () => {
+        assert.equal(ALL_CONTAINERS_PATH, '/containers/json?all=1')
     })
 
     it('asks for timestamped stdout and stderr with the requested tail, since and follow', () => {
@@ -135,6 +140,61 @@ describe('pickPerService', () => {
         ]
         const picked = pickPerService(containers)
         assert.deepEqual([...picked].map(([service, c]) => [service, c.Id]), [['web', '2'], ['db', '3']])
+    })
+})
+
+describe('publishedHostPorts', () => {
+    it('collects a port published on a specific interface', () => {
+        const containers: ContainerSummary[] = [
+            { Id: '1', State: 'running', Ports: [{ IP: '127.0.0.1', PrivatePort: 80, PublicPort: 5010, Type: 'tcp' }] },
+        ]
+        assert.deepEqual(publishedHostPorts(containers), new Set([5010]))
+    })
+
+    it('collects a port published on every interface', () => {
+        const containers: ContainerSummary[] = [
+            { Id: '1', State: 'running', Ports: [{ IP: '0.0.0.0', PrivatePort: 80, PublicPort: 5011, Type: 'tcp' }] },
+        ]
+        assert.deepEqual(publishedHostPorts(containers), new Set([5011]))
+    })
+
+    it('ignores a port the container exposes internally without publishing to the host', () => {
+        const containers: ContainerSummary[] = [
+            { Id: '1', State: 'running', Ports: [{ PrivatePort: 5432, Type: 'tcp' }] },
+        ]
+        assert.deepEqual(publishedHostPorts(containers), new Set())
+    })
+
+    it('ignores a container with no Ports at all', () => {
+        assert.deepEqual(publishedHostPorts([{ Id: '1', State: 'running' }]), new Set())
+    })
+
+    it('collects from every container, deduplicating repeats', () => {
+        const containers: ContainerSummary[] = [
+            { Id: '1', State: 'running', Ports: [{ IP: '127.0.0.1', PrivatePort: 80, PublicPort: 5010, Type: 'tcp' }] },
+            { Id: '2', State: 'running', Ports: [{ IP: '0.0.0.0', PrivatePort: 80, PublicPort: 5010, Type: 'tcp' }, { IP: '0.0.0.0', PrivatePort: 443, PublicPort: 5011, Type: 'tcp' }] },
+        ]
+        assert.deepEqual(publishedHostPorts(containers), new Set([5010, 5011]))
+    })
+})
+
+describe('dockerPortCheck', () => {
+    it('reports a published port as in use and an unpublished one as free', async () => {
+        const containers: ContainerSummary[] = [{ Id: '1', State: 'running', Ports: [{ IP: '0.0.0.0', PrivatePort: 80, PublicPort: 5010, Type: 'tcp' }] }]
+        const docker = { listAllContainers: async () => containers } as unknown as DockerApi
+        const check = dockerPortCheck(docker)
+        assert.equal(await check(5010), true)
+        assert.equal(await check(5011), false)
+    })
+
+    it('fetches the container list once per instance, not once per port checked', async () => {
+        let calls = 0
+        const docker = { listAllContainers: async () => { calls++; return [] } } as unknown as DockerApi
+        const check = dockerPortCheck(docker)
+        await check(5000)
+        await check(5001)
+        await check(5002)
+        assert.equal(calls, 1)
     })
 })
 

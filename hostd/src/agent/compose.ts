@@ -3,7 +3,7 @@
 
 import { spawn as nodeSpawn } from 'node:child_process'
 import { isRecord } from '../shared/formats.ts'
-import type { ProjectEntry } from '../shared/registry.ts'
+import type { Engine, ProjectEntry } from '../shared/registry.ts'
 import type { LifecycleAction } from '../shared/protocol.ts'
 
 export const LIFECYCLE_TIMEOUT_MS = 120_000
@@ -18,7 +18,12 @@ const LIFECYCLE_ARGS: Record<LifecycleAction, string[]> = {
     restart: ['restart'],
 }
 
-export function composeBase(project: ProjectEntry): string[] {
+// What compose needs to resolve or run a project: every ProjectEntry has these, but so does a folder
+// that provisioning has just cloned and not registered yet, which is the whole reason this is its own
+// type rather than ProjectEntry itself.
+export type ComposeLocation = { dir: string, composePaths: string[] }
+
+export function composeBase(project: ComposeLocation): string[] {
     // One -f per registered file, in the registry's order, because compose merges them left to right.
     // An explicit -f also stops compose loading docker-compose.override.yml on its own, so a site with
     // an override is only described correctly when the registry names it too.
@@ -29,7 +34,7 @@ export function lifecycleArgv(project: ProjectEntry, action: LifecycleAction): s
     return [...composeBase(project), ...LIFECYCLE_ARGS[action]]
 }
 
-export function configArgv(project: ProjectEntry): string[] {
+export function configArgv(project: ComposeLocation): string[] {
     // --no-env-resolution keeps env_file as the path list the guard reads, instead of compose inlining
     // every project's env values (database passwords among them) into this captured stdout. On a compose
     // too old to know the flag, the command exits non-zero and resolveCompose fails closed.
@@ -61,11 +66,13 @@ class Capture {
     }
 }
 
-// Only what docker itself needs, taken from process.env when set. Phase 2 puts secrets (RESTIC_PASSWORD,
-// the R2 credentials) in this process's environment specifically to keep them out of reach of a
-// compromised api, so nothing else from process.env may reach the child: compose interpolates ${VAR}
-// from the child's environment into a project's own compose file.
-const DOCKER_ENV_KEYS = ['PATH', 'HOME', 'DOCKER_HOST', 'DOCKER_CONFIG', 'TZ'] as const
+// Only what the child needs, taken from process.env when set. Phase 2 puts secrets (RESTIC_PASSWORD, the
+// R2 credentials) in this process's environment specifically to keep them out of reach of a compromised
+// api, so nothing else from process.env may reach the child: compose interpolates ${VAR} from the child's
+// environment into a project's own compose file. This allowlist is shared by the fetcher's git runs too,
+// since createSpawnRunner is the only spawn path either process has: GIT_TERMINAL_PROMPT (see
+// ../fetcher/git.ts) is here for that reason, and is simply never set in the agent's own environment.
+const DOCKER_ENV_KEYS = ['PATH', 'HOME', 'DOCKER_HOST', 'DOCKER_CONFIG', 'TZ', 'GIT_TERMINAL_PROMPT'] as const
 
 function dockerEnv(): Record<string, string> {
     const env: Record<string, string> = {}
@@ -127,11 +134,12 @@ export type ResolvedService = {
     // remove that flag.
     env_file?: Array<string | { path?: string }>
     build?: string | { context?: string, dockerfile?: string }
+    image?: string
 }
 export type ResolvedCompose = { name: string, services: Record<string, ResolvedService> }
 
 export async function resolveCompose(
-    project: ProjectEntry,
+    project: ComposeLocation,
     run: Runner,
 ): Promise<{ ok: true, resolved: ResolvedCompose } | { ok: false, problem: string }> {
     const result = await run('docker', configArgv(project), CONFIG_TIMEOUT_MS)
@@ -144,4 +152,85 @@ export async function resolveCompose(
     } catch {
         return { ok: false, problem: 'docker compose config returned unreadable output' }
     }
+}
+
+// Shared by guard.ts (the ongoing sweep, over an already-registered project) and resolveNewProject below
+// (at create time, before anything is registered), so the two can never drift into naming this two
+// different ways. A start under the wrong compose project name would create a second copy of the site
+// beside whatever is already running under the real one.
+//
+// collidesWith is only ever the live environment's own expected name, passed by resolveNewProject while
+// creating a test environment: an unpinned compose file resolving to test's own folder is the ordinary
+// case and passes; one pinning live's name instead is not just "wrong", it is the specific danger the
+// runbook warns about, since starting test would then take over live's already-running containers, so it
+// gets a message that says that instead of only "not what was expected".
+export function composeNameProblem(resolvedName: string, expectedName: string, collidesWith?: string): string | null {
+    if (resolvedName === expectedName) return null
+    if (collidesWith !== undefined && resolvedName === collidesWith) {
+        return `compose resolves the project name ${resolvedName}, the same as the live environment; a test environment cannot share live's compose project name, since starting it would take over live's already-running containers instead of starting a separate stack. Set name: ${expectedName} in the compose file, or rename the registry entry.`
+    }
+    return `compose resolves the project name ${resolvedName}, not ${expectedName}; set name: ${expectedName} in the compose file, or rename the registry entry`
+}
+
+export type GuessedService = { role: 'site' } | { role: 'database', engine: Exclude<Engine, 'sqlite'> }
+
+// A starting point for the operator to correct, not a guarantee: matches the image's repository part
+// (the part before a tag or digest) against the common database images by name. Anything that does not
+// match, including a database run from a custom or renamed image, comes back site. The storage guard
+// (guard.ts) also refuses a project with storage but no service marked database, specifically so a
+// database this guessed wrong does not silently keep its data directory unprotected.
+const DATABASE_IMAGES: Array<{ match: string, engine: Exclude<Engine, 'sqlite'> }> = [
+    { match: 'postgres', engine: 'postgres' },
+    { match: 'mariadb', engine: 'mariadb' },
+    { match: 'mysql', engine: 'mysql' },
+    { match: 'mongo', engine: 'mongodb' },
+    { match: 'redis', engine: 'redis' },
+]
+
+// Everything up to a tag or digest: a registry port (registry.example.com:5000/repo) must not be mistaken
+// for a tag separator, so this looks for the last ':' after the last '/', not the first ':' anywhere.
+function repositoryOf(image: string): string {
+    const withoutDigest = image.split('@')[0] ?? image
+    const lastSlash = withoutDigest.lastIndexOf('/')
+    const tagColon = withoutDigest.indexOf(':', lastSlash + 1)
+    return tagColon === -1 ? withoutDigest : withoutDigest.slice(0, tagColon)
+}
+
+function guessRole(service: ResolvedService): GuessedService {
+    if (service.image) {
+        const repository = repositoryOf(service.image).toLowerCase()
+        const database = DATABASE_IMAGES.find(({ match }) => repository.includes(match))
+        if (database) return { role: 'database', engine: database.engine }
+    }
+    return { role: 'site' }
+}
+
+// What a freshly cloned, not-yet-registered project resolves to. There is no registry entry yet to say
+// which service plays which role, so each one is guessed from its image (see guessRole); the project
+// comes back needs-setup, and the operator's own review and edit of the registry, correcting whatever
+// this guessed wrong, is what happens next, exactly like enrolling a project by hand today.
+//
+// expectedName is checked here too, not only later by guard.ts's ongoing sweep: the spec's step 3 says the
+// same guards run at creation, and without this a repo whose compose file pins a mismatched name: would
+// clone and register cleanly, only to go invalid at the next sweep with the folder already on disk.
+//
+// expectedName is the environment's own folder basename (what an unpinned compose file resolves to by
+// default), not the registry id: those are the same thing for live (/var/www/<id>), but not for test
+// (/var/www/<id>-test), and comparing test's resolved name against the bare id would refuse the ordinary,
+// unpinned case for every repo, which is most of them. collidesWith is passed only when creating a test
+// environment, so a compose file pinning live's own name gets the specific collision message above rather
+// than a plain "not what was expected" one.
+export async function resolveNewProject(
+    location: ComposeLocation,
+    expectedName: string,
+    run: Runner,
+    collidesWith?: string,
+): Promise<{ ok: true, services: Record<string, GuessedService> } | { ok: false, problem: string }> {
+    const result = await resolveCompose(location, run)
+    if (!result.ok) return result
+    const nameProblem = composeNameProblem(result.resolved.name, expectedName, collidesWith)
+    if (nameProblem) return { ok: false, problem: nameProblem }
+    const services: Record<string, GuessedService> = {}
+    for (const [name, service] of Object.entries(result.resolved.services)) services[name] = guessRole(service)
+    return { ok: true, services }
 }

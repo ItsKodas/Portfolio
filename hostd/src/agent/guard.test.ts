@@ -1,6 +1,6 @@
 import { describe, it } from 'node:test'
 import assert from 'node:assert/strict'
-import { guardProblems } from './guard.ts'
+import { guardProblems, guardAdvisories } from './guard.ts'
 import type { ResolvedCompose } from './compose.ts'
 import { parseRegistry, type ProjectEntry } from '../shared/registry.ts'
 
@@ -20,6 +20,28 @@ projects:
     storage:
       media: { path: uploads, mode: rw }
 ${extra}`)
+    const project = registry.projects.get('acme')
+    assert.ok(project, JSON.stringify([...registry.invalid]))
+    return project
+}
+
+// Same shape as entry() above, but with every service (including what would otherwise be db) given
+// role: site: exactly the state a freshly provisioned project can be in before the operator has reviewed
+// it, since resolveNewProject's own guess can be wrong and a hand enrollment can simply get it wrong too.
+function entryWithNoDatabaseRole(): ProjectEntry {
+    const registry = parseRegistry(`
+projects:
+  acme:
+    client: cl_1
+    name: Acme
+    dir: /var/www/acme
+    upstream: 127.0.0.1:5010
+    services:
+      web: { role: site }
+      db: { role: site }
+    storage:
+      media: { path: uploads, mode: rw }
+`)
     const project = registry.projects.get('acme')
     assert.ok(project, JSON.stringify([...registry.invalid]))
     return project
@@ -122,5 +144,40 @@ describe('guardProblems', () => {
 
     it('treats a trailing slash on a bind source as the same directory', () => {
         assert.deepEqual(guardProblems(entry(), resolved({ web: { volumes: [bind('/var/www/acme/uploads/')] } })), [])
+    })
+})
+
+describe('guardAdvisories', () => {
+    // A project with role: site on what is actually the database service (the exact state a freshly
+    // provisioned project, or a hand enrollment, can be in before review) makes guardProblems's overlap
+    // rule unable to fire even when storage really does sit on top of the database's own bind mount, since
+    // that rule only ever compares against a service marked database. This is advice for exactly that
+    // gap, not a guardProblems entry: it must never make checkStructure refuse a verb, both because a
+    // project that genuinely has no database would then have no way to ever pass, and because turning it
+    // into a hard failure would take an already-working, already-deployed site offline the next time an
+    // unrelated registry edit ran it through the guard again.
+    it('advises when storage exists but no service is marked role database', () => {
+        assert.deepEqual(guardAdvisories(entryWithNoDatabaseRole()), [
+            'project acme declares storage but no service with role database; if one of its services is a database, correct its role so the storage guard can protect it',
+        ])
+    })
+
+    it('says nothing when a service is marked role database', () => {
+        assert.deepEqual(guardAdvisories(entry()), [])
+    })
+
+    it('says nothing about a missing database role when there is no storage at all', () => {
+        const registry = parseRegistry(`
+projects:
+  acme:
+    client: cl_1
+    name: Acme
+    dir: /var/www/acme
+    upstream: 127.0.0.1:5010
+    services:
+      web: { role: site }
+`)
+        const project = registry.projects.get('acme')!
+        assert.deepEqual(guardAdvisories(project), [])
     })
 })

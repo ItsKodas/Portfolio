@@ -2,5 +2,7 @@ node_modules/
 registry/projects.yaml
 # The pre-2026-09-20 location. A leftover copy there must never be committed either.
 projects.yaml
+registry/projects.yaml
 .env
 .env.*
+.env.fetcher

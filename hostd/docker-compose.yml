@@ -15,20 +15,26 @@ services:
     environment:
       HOSTD_REGISTRY_FILE: /etc/hostd/registry/projects.yaml
       HOSTD_AGENT_SOCKET: /run/hostd/agent.sock
+      HOSTD_FETCH_SOCKET: /run/hostd-fetch/fetch.sock
       # The node user's group in the api image, so api can connect and nothing else can.
       HOSTD_SOCKET_GID: "1000"
       HOSTD_STATUS_FILE: /tmp/hostd-status.json
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
       # The same path inside as outside: compose hands bind mount sources to the daemon as host paths.
-      # Read-only in phase 1, which only reads compose files; file access in phase 3 changes this.
-      - /var/www:/var/www:ro
+      # Writable now: provisioning writes env files and swaps trees under here.
+      - /var/www:/var/www
       # The registry's directory, not the file: a single-file bind mount pins the container to one
-      # inode, so an editor or sed -i replacing the file by rename detaches the mount silently and
-      # every later edit is invisible. registry/ holds nothing but the registry, so neither container
-      # gains sight of .env or .env.agent.
-      - ./registry:/etc/hostd/registry:ro
+      # inode, so an editor, sed -i, or registry-write.ts's own atomic rename replacing the file detaches
+      # the mount silently and every later edit (or write) is invisible. registry/ holds nothing but the
+      # registry, so neither container gains sight of .env or .env.agent. Writable only here, because
+      # provisioning writes it; api gets it read-only below.
+      - ./registry:/etc/hostd/registry
       - hostd-sock:/run/hostd
+      # Shared only with fetcher, never with api: api must never be able to reach the fetch protocol
+      # directly, and fetcher must never be able to touch agent.sock (in hostd-sock) to impersonate the
+      # agent to api. See fetcher's own volumes below for the other half of this.
+      - hostd-fetch-sock:/run/hostd-fetch
     healthcheck:
       test: ["CMD", "node", "--import", "tsx", "src/shared/healthcheck.ts", "/tmp/hostd-status.json"]
       interval: 60s
@@ -49,7 +55,8 @@ services:
       HOSTD_STATE_DIR: /state
       HOSTD_STATUS_FILE: /tmp/hostd-status.json
     volumes:
-      # The directory, for the reason given on the agent's mount above.
+      # The directory, for the reason given on the agent's mount above. Read-only: api never writes the
+      # registry itself, even for provisioning, which goes through the agent.
       - ./registry:/etc/hostd/registry:ro
       - hostd-state:/state
       - hostd-sock:/run/hostd
@@ -65,6 +72,34 @@ services:
       start_period: 120s
     restart: unless-stopped
 
+  fetcher:
+    build:
+      context: .
+      target: fetcher
+    container_name: hostd-fetcher
+    env_file: .env.fetcher
+    environment:
+      HOSTD_FETCH_SOCKET: /run/hostd-fetch/fetch.sock
+    volumes:
+      - /var/www:/var/www
+      # No registry mount: the fetcher never reads it (it only ever does what the agent tells it to, over
+      # the fetch socket below), so it does not get a copy of client data it has no use for.
+      #
+      # The socket volume is its own, shared only with agent: never hostd-sock, and never api. A
+      # compromise here can therefore never reach agent.sock to speak the agent's own protocol, or
+      # overwrite it to impersonate the agent to api.
+      - hostd-fetch-sock:/run/hostd-fetch
+    networks:
+      # It clones from and fetches GitHub, unlike agent and api. It never gets the Docker socket.
+      - hostd
+    healthcheck:
+      test: ["CMD", "node", "--import", "tsx", "src/shared/healthcheck.ts", "/tmp/hostd-status.json"]
+      interval: 60s
+      timeout: 15s
+      retries: 3
+      start_period: 120s
+    restart: unless-stopped
+
 networks:
   hostd:
     name: hostd
@@ -72,3 +107,4 @@ networks:
 volumes:
   hostd-state:
   hostd-sock:
+  hostd-fetch-sock:

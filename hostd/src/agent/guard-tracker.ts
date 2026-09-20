@@ -5,7 +5,7 @@ import { lstat, stat } from 'node:fs/promises'
 import type { ProjectEntry, Registry } from '../shared/registry.ts'
 import { describeError } from '../shared/formats.ts'
 import { resolveCompose, type Runner } from './compose.ts'
-import { guardProblems } from './guard.ts'
+import { guardProblems, guardAdvisories } from './guard.ts'
 
 export type DirCheck = (path: string) => Promise<boolean>
 
@@ -33,6 +33,9 @@ const storageRootOnDisk: StorageRootCheck = async path => {
 
 export class GuardTracker {
     private readonly invalid = new Map<string, string>()
+    // Kept apart from invalid on purpose: nothing here may ever reach checkStructure's guardInvalid gate,
+    // since an advisory must never refuse a verb. See guardAdvisories's own comment for why that matters.
+    private readonly advisories = new Map<string, string>()
 
     constructor(
         private readonly run: Runner,
@@ -55,12 +58,22 @@ export class GuardTracker {
         }
         if (problem) this.invalid.set(project.id, problem)
         else this.invalid.delete(project.id)
+
+        // Needs nothing this call resolved from compose or disk, only the registry entry itself, so it
+        // runs regardless of whether the project above passed or failed.
+        const advisories = guardAdvisories(project)
+        if (advisories.length > 0) this.advisories.set(project.id, advisories.join('; '))
+        else this.advisories.delete(project.id)
+
         return problem
     }
 
     async checkAll(registry: Registry): Promise<void> {
         for (const id of [...this.invalid.keys()]) {
             if (!registry.projects.has(id)) this.invalid.delete(id)
+        }
+        for (const id of [...this.advisories.keys()]) {
+            if (!registry.projects.has(id)) this.advisories.delete(id)
         }
         for (const project of registry.projects.values()) await this.check(project)
     }
@@ -77,7 +90,10 @@ export class GuardTracker {
     }
 
     warnings(): string[] {
-        return [...this.invalid].map(([id, problem]) => `project ${id} is invalid: ${problem}`)
+        return [
+            ...[...this.invalid].map(([id, problem]) => `project ${id} is invalid: ${problem}`),
+            ...this.advisories.values(),
+        ]
     }
 
     private async problemOf(project: ProjectEntry): Promise<string | null> {

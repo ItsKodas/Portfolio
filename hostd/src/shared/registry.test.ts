@@ -55,6 +55,19 @@ function invalidReason(text: string, id = 'site'): string | undefined {
     return parseRegistry(text).invalid.get(id)
 }
 
+// Builds a one-project registry around the given body and returns why that project was rejected
+function invalidEnvironmentReason(body: string): string | null {
+    const registry = parseRegistry(`
+projects:
+  acme:
+    client: cl_1
+    name: Acme
+    services: { web: { role: site } }
+    ${body}
+`)
+    return registry.invalid.get('acme') ?? null
+}
+
 describe('parseRegistry, a valid file', () => {
     it('parses every field of the documented example', () => {
         const registry = parseRegistry(valid)
@@ -82,6 +95,13 @@ describe('parseRegistry, a valid file', () => {
         assert.deepEqual(entry.backups.maxKeep, { daily: 14, weekly: 8, monthly: 12 })
         assert.deepEqual(registry.reserved, ['horizons.gg'])
         assert.deepEqual(registry.offsite.keep, { daily: 14, weekly: 8, monthly: 6 })
+    })
+
+    it('keeps a legacy upstream host exactly, rather than rewriting it to 127.0.0.1', () => {
+        const registry = parseRegistry(project({ upstream: 'localhost:5010' }))
+        const entry = registry.projects.get('site')
+        assert.ok(entry)
+        assert.deepEqual(entry.upstream, { host: 'localhost', port: 5010 })
     })
 
     // A site whose host-specific settings live in an override is only described correctly when hostd
@@ -254,6 +274,37 @@ describe('parseRegistry, problems with one project', () => {
         assert.equal(registry.projects.size, 0)
     })
 
+    // Two entries over one port would let one client's domain proxy to another client's container; this
+    // must hold even when the two projects otherwise look completely unrelated (different dirs here).
+    it('marks both projects invalid when they share a port', () => {
+        const text = `${project()}  other:\n    client: cl_2\n    name: Other\n    dir: /var/www/other\n    upstream: 127.0.0.1:5011\n    services: { web: { role: site } }\n`
+        const registry = parseRegistry(text)
+        assert.match(registry.invalid.get('site') ?? '', /port 5011 is also used by other/)
+        assert.match(registry.invalid.get('other') ?? '', /port 5011 is also used by site/)
+        assert.equal(registry.projects.size, 0)
+    })
+
+    it('marks both projects invalid when they share a domain', () => {
+        const registry = parseRegistry(`
+projects:
+  acme:
+    client: cl_1
+    name: Acme
+    services: { web: { role: site } }
+    environments:
+      live: { dir: /var/www/acme, port: 5010, domain: shared.example.com }
+  bakery:
+    client: cl_2
+    name: Bakery
+    services: { web: { role: site } }
+    environments:
+      live: { dir: /var/www/bakery, port: 5011, domain: shared.example.com }
+`)
+        assert.match(registry.invalid.get('acme') ?? '', /domain shared\.example\.com is also used by bakery/)
+        assert.match(registry.invalid.get('bakery') ?? '', /domain shared\.example\.com is also used by acme/)
+        assert.equal(registry.projects.size, 0)
+    })
+
     it('parses a service literally named constructor, resolving to the parsed entry rather than Object.prototype.constructor', () => {
         const registry = parseRegistry(project({
             services: '{ web: { role: site }, constructor: { role: database, engine: postgres } }',
@@ -271,5 +322,148 @@ describe('parseRegistry, problems with one project', () => {
         assert.equal(isComposeService(constructorService), true)
         // A name that was never registered still falls through to nothing of ours, not a prototype method.
         assert.equal(Object.hasOwn(entry.services, 'toString'), false)
+    })
+})
+
+describe('environments', () => {
+    it('reads a single-environment entry as live only, with dir and port carried over', () => {
+        const registry = parseRegistry(`
+projects:
+  acme:
+    client: cl_1
+    name: Acme
+    dir: /var/www/acme
+    upstream: 127.0.0.1:5010
+    services: { web: { role: site } }
+`)
+        const acme = registry.projects.get('acme')!
+        assert.equal(acme.repo, null)
+        assert.equal(acme.environments.size, 1)
+        const live = acme.environments.get('live')!
+        assert.equal(live.dir, '/var/www/acme')
+        assert.equal(live.port, 5010)
+        assert.equal(live.branch, null)
+        assert.equal(live.deployed, null)
+        assert.equal(acme.dir, live.dir)
+    })
+
+    it('reads two environments, each with its own branch, domain, port and deployed commit', () => {
+        const registry = parseRegistry(`
+projects:
+  acme:
+    client: cl_1
+    name: Acme
+    repo: git@github.com:ItsKodas/acme.git
+    services: { web: { role: site } }
+    environments:
+      live:
+        dir: /var/www/acme
+        branch: main
+        domain: acme.com
+        port: 5010
+        certificate: letsencrypt
+        deployed: 3f7c1a2
+      test:
+        dir: /var/www/acme-test
+        branch: develop
+        domain: test.acme.com
+        port: 5110
+        certificate: cloudflare-origin
+`)
+        const acme = registry.projects.get('acme')!
+        assert.equal(acme.repo, 'git@github.com:ItsKodas/acme.git')
+        assert.deepEqual([...acme.environments.keys()], ['live', 'test'])
+        assert.equal(acme.environments.get('test')!.branch, 'develop')
+        assert.equal(acme.environments.get('test')!.certificate, 'cloudflare-origin')
+        assert.equal(acme.environments.get('live')!.deployed, '3f7c1a2')
+        // The live environment is what the phase 1 fields mean
+        assert.equal(acme.dir, '/var/www/acme')
+        assert.equal(acme.upstream.port, 5010)
+    })
+
+    it('refuses an entry with both dir and environments, so there is one way to say it', () => {
+        assert.equal(invalidEnvironmentReason('dir: /var/www/acme\n    environments: { live: { dir: /var/www/acme, port: 5010 } }'),
+            'dir and environments cannot both be given')
+    })
+
+    it('requires a live environment, and refuses an unknown environment name', () => {
+        assert.match(invalidEnvironmentReason('environments: { test: { dir: /var/www/acme-test, port: 5010 } }')!, /live/)
+        assert.match(invalidEnvironmentReason('environments: { live: { dir: /var/www/a, port: 5010 }, staging: { dir: /var/www/b, port: 5011 } }')!, /staging/)
+    })
+
+    it('refuses two environments sharing a folder or a port', () => {
+        assert.match(invalidEnvironmentReason('environments: { live: { dir: /var/www/a, port: 5010 }, test: { dir: /var/www/a, port: 5011 } }')!, /dir/)
+        assert.match(invalidEnvironmentReason('environments: { live: { dir: /var/www/a, port: 5010 }, test: { dir: /var/www/b, port: 5010 } }')!, /port/)
+    })
+
+    it('refuses a branch or commit that is not a plain name', () => {
+        assert.match(invalidEnvironmentReason('repo: git@github.com:x/y.git\n    environments: { live: { dir: /var/www/a, port: 5010, branch: "--upload-pack=evil" } }')!, /branch/)
+    })
+
+    it('refuses a branch containing .., which git would read as a revision range', () => {
+        assert.match(invalidEnvironmentReason('repo: git@github.com:x/y.git\n    environments: { live: { dir: /var/www/a, port: 5010, branch: "main..other-ref" } }')!, /branch/)
+    })
+
+    it('refuses a repo that is not an ssh or https git URL', () => {
+        assert.match(invalidEnvironmentReason('repo: "file:///etc/passwd"\n    environments: { live: { dir: /var/www/a, port: 5010 } }')!, /repo/)
+    })
+
+    // Each environment gets the same one-or-many compose shape as the project-level key: a test
+    // environment can run against its own base file plus override, independently of live's.
+    it('accepts a list of compose files for a non-live environment, in order', () => {
+        const registry = parseRegistry(`
+projects:
+  acme:
+    client: cl_1
+    name: Acme
+    repo: git@github.com:ItsKodas/acme.git
+    services: { web: { role: site } }
+    environments:
+      live: { dir: /var/www/acme, port: 5010 }
+      test:
+        dir: /var/www/acme-test
+        port: 5011
+        compose: [docker-compose.yml, docker-compose.override.yml]
+`)
+        const test = registry.projects.get('acme')!.environments.get('test')!
+        assert.deepEqual(test.composePaths, [
+            '/var/www/acme-test/docker-compose.yml',
+            '/var/www/acme-test/docker-compose.override.yml',
+        ])
+    })
+
+    it('refuses an environment compose list that repeats a file, naming the environment', () => {
+        assert.match(
+            invalidEnvironmentReason('environments: { live: { dir: /var/www/a, port: 5010, compose: [docker-compose.yml, docker-compose.yml] } }')!,
+            /environments\.live\.compose lists docker-compose\.yml twice/,
+        )
+    })
+
+    it('refuses a domain at or below a reserved entry', () => {
+        const registry = parseRegistry(`
+reserved: [horizons.gg]
+projects:
+  acme:
+    client: cl_1
+    name: Acme
+    services: { web: { role: site } }
+    environments:
+      live: { dir: /var/www/acme, port: 5010, domain: mail.horizons.gg }
+`)
+        assert.match(registry.invalid.get('acme') ?? '', /domain/)
+    })
+
+    it('reads limits and portEnv, with defaults', () => {
+        const registry = parseRegistry(`
+projects:
+  acme:
+    client: cl_1
+    name: Acme
+    dir: /var/www/acme
+    upstream: 127.0.0.1:5010
+    services: { web: { role: site } }
+`)
+        assert.deepEqual(registry.projects.get('acme')!.limits, { memory: '1g', cpus: '1' })
+        assert.equal(registry.projects.get('acme')!.portEnv, 'WEB_PORT')
     })
 })

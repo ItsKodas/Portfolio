@@ -5,7 +5,7 @@
 import { posix } from 'node:path'
 import { isWithin, overlaps } from '../shared/formats.ts'
 import { isComposeService, type ProjectEntry } from '../shared/registry.ts'
-import type { ResolvedCompose, ResolvedService } from './compose.ts'
+import { composeNameProblem, type ResolvedCompose, type ResolvedService } from './compose.ts'
 
 function withoutTrailingSlash(path: string): string {
     return path.length > 1 && path.endsWith('/') ? path.slice(0, -1) : path
@@ -36,9 +36,8 @@ function readsOf(service: ResolvedService): string[] {
 
 export function guardProblems(project: ProjectEntry, resolved: ResolvedCompose): string[] {
     const problems: string[] = []
-    if (resolved.name !== project.id) {
-        problems.push(`compose resolves the project name ${resolved.name}, not ${project.id}; set name: ${project.id} in the compose file, or rename the registry entry`)
-    }
+    const nameProblem = composeNameProblem(resolved.name, project.id)
+    if (nameProblem) problems.push(nameProblem)
 
     const siteSources: string[] = []
     const databaseSources: string[] = []
@@ -68,4 +67,25 @@ export function guardProblems(project: ProjectEntry, resolved: ResolvedCompose):
         }
     }
     return problems
+}
+
+// Advice for the operator, never a reason to refuse anything: unlike guardProblems, this never reaches
+// GuardTracker's invalid map, so it can never make checkStructure refuse status, logs, lifecycle or env
+// for a project that is otherwise working fine. That distinction matters here specifically: the overlap
+// rule above (`storage ... overlaps a database service's mount`) can only ever fire against a service
+// actually marked database, so a project with no service marked database at all (a fresh guess from
+// compose.ts's resolveNewProject got it wrong, or a hand enrollment simply has it wrong, or the project
+// genuinely has no database) passes that rule with nothing to compare against, not because it is safe but
+// because nothing has checked. Making that a hard invalidation instead of a warning would have taken a
+// working, already-deployed site offline the moment an unrelated registry edit put it through the guard
+// again, with no way to clear it for a project that really has no database.
+export function guardAdvisories(project: ProjectEntry): string[] {
+    const advisories: string[] = []
+    if (Object.keys(project.storage).length > 0 && !Object.values(project.services).some(entry => entry.role === 'database')) {
+        advisories.push(
+            `project ${project.id} declares storage but no service with role database; if one of its ` +
+            'services is a database, correct its role so the storage guard can protect it',
+        )
+    }
+    return advisories
 }

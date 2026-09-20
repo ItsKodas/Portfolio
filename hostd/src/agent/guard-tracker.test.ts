@@ -3,13 +3,18 @@ import assert from 'node:assert/strict'
 import { GuardTracker } from './guard-tracker.ts'
 import type { Runner } from './compose.ts'
 import { parseRegistry } from '../shared/registry.ts'
+import { checkStructure } from '../shared/protocol.ts'
 
-const text = (ids: string[]) => `projects:\n${ids.map(id => `  ${id}:
+// Each project needs its own port now that the registry itself refuses two projects sharing one.
+// appdb is SQLite: not a compose service (isComposeService says so), so it never needs a matching entry
+// in any test's resolved compose stub below, but it does count as a database role for guard.ts's own
+// storage-with-no-database-role rule, which is not what any of these tests are about.
+const text = (ids: string[]) => `projects:\n${ids.map((id, index) => `  ${id}:
     client: cl_1
     name: ${id}
     dir: /var/www/${id}
-    upstream: 127.0.0.1:5010
-    services: { web: { role: site } }
+    upstream: 127.0.0.1:${5010 + index}
+    services: { web: { role: site }, appdb: { role: database, engine: sqlite, file: data/app.db } }
     storage: { media: { path: uploads, mode: rw } }
 `).join('')}`
 
@@ -152,5 +157,50 @@ describe('GuardTracker', () => {
         )
         await tracker.checkAll(registry)
         assert.equal(tracker.current().get('alpha'), 'storage media (/var/www/alpha/uploads) is not a directory')
+    })
+})
+
+describe('advisories', () => {
+    // This is the regression net for the production incident the review caught: the storage-with-no-
+    // database rule was first implemented as a guardProblems entry, which lands in `invalid` and makes
+    // checkStructure refuse every verb for the project, including status, logs and lifecycle, and reaches
+    // any already-registered, already-working project the moment an unrelated registry edit ran it
+    // through the guard again. It must instead be advisory only: tracked, surfaced in warnings(), and
+    // never present in current() (what agent.ts wires as checkStructure's guardInvalid).
+    it('tracks storage-with-no-database as an advisory, not invalid, so status, logs and lifecycle are all still allowed', async () => {
+        const registry = parseRegistry(`
+projects:
+  gamma:
+    client: cl_1
+    name: Gamma
+    dir: /var/www/gamma
+    upstream: 127.0.0.1:5010
+    services: { web: { role: site } }
+    storage: { media: { path: uploads, mode: rw } }
+    capabilities: [lifecycle, logs]
+`)
+        const tracker = new GuardTracker(
+            composeRunner({
+                '/var/www/gamma': { name: 'gamma', services: { web: { volumes: [{ type: 'bind', source: '/var/www/gamma/uploads' }] } } },
+            }),
+            async () => true,
+            storageOk,
+        )
+        await tracker.checkAll(registry)
+
+        assert.equal(tracker.current().has('gamma'), false)
+        assert.deepEqual(tracker.warnings(), [
+            'project gamma declares storage but no service with role database; if one of its services is a database, correct its role so the storage guard can protect it',
+        ])
+
+        const guardInvalid = tracker.current()
+        assert.equal(checkStructure(registry, { verb: 'status', project: 'gamma' }, guardInvalid).ok, true, 'status')
+        assert.equal(
+            checkStructure(registry, { verb: 'logs', project: 'gamma', args: { service: 'web', tail: 10, since: null, follow: false } }, guardInvalid).ok,
+            true, 'logs',
+        )
+        for (const action of ['start', 'stop', 'restart'] as const) {
+            assert.equal(checkStructure(registry, { verb: 'lifecycle', project: 'gamma', args: { action } }, guardInvalid).ok, true, action)
+        }
     })
 })

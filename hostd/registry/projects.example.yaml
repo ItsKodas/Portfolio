@@ -1,7 +1,8 @@
 # The registry of client projects. Copy to projects.yaml beside this file on the dedi (gitignored: it
-# names clients). hostd reads it and never writes it; edits take effect within 10 seconds, and an edit
-# that breaks the file is rejected as a whole, leaving the last good version in force. Both containers
-# mount this directory rather than the file, so any editor's save is seen, however it writes.
+# names clients). Both hostd and the agent write it now, the agent only for provisioning; a hand edit
+# takes effect within 10 seconds, and one that breaks the file is rejected as a whole, leaving the last
+# good version in force. Both containers mount this directory rather than the file, so any editor's save
+# is seen, however it writes.
 
 # Hostnames at or below these are never accepted as client domains (phase 4).
 reserved: [horizons.gg]
@@ -13,6 +14,9 @@ offsite:
 projects:
   # The id is also the compose project name. It must match what `docker compose ls` shows for the site,
   # or the compose file must say `name: <id>`.
+  #
+  # An entry with dir and upstream and no environments, like this one, means live only: dir,
+  # composePaths and upstream keep meaning exactly what they mean today.
   acme-bakery:
     client: cl_8f2k1              # the portal's client id
     name: Acme Bakery
@@ -30,4 +34,36 @@ projects:
       # Each must be a bind mount of a site service, must not be mounted into a database service, and
       # must not contain the compose file, an env file, a build context or a Dockerfile.
       media: { path: uploads, mode: rw }         # rw | ro | hidden (backed up, never shown)
-    capabilities: [lifecycle, logs]              # lifecycle | logs | files | backups | domains
+    capabilities: [lifecycle, logs]              # lifecycle | logs | files | backups | domains | provision | env
+
+  # A project with a live and a test environment. Each environment has its own folder, branch, domain,
+  # port and certificate mode; repo, limits and portEnv live at the project level and apply to both.
+  # widget-shop:
+  #   client: cl_2p9qz
+  #   name: Widget Shop
+  #   repo: git@github.com:ItsKodas/widget-shop.git    # ssh or https git URL; required if any environment sets branch
+  #   portEnv: WEB_PORT                                # the env var the compose file reads its port from (default WEB_PORT)
+  #   limits:
+  #     memory: 1g                                     # <number>(b|k|m|g), default 1g
+  #     cpus: '1'                                      # <number>, default 1
+  #   services:
+  #     web: { role: site }
+  #     db: { role: database, engine: postgres }
+  #   capabilities: [lifecycle, logs]
+  #   environments:
+  #     live:
+  #       dir: /var/www/widget-shop
+  #       compose: docker-compose.yml       # relative to dir, default docker-compose.yml; a list when
+  #                                         # this environment runs with more than one file, same as the
+  #                                         # project-level compose key above
+  #       branch: main
+  #       domain: widgetshop.com
+  #       port: 5020
+  #       certificate: letsencrypt          # letsencrypt | cloudflare-origin
+  #       deployed: 3f7c1a2                 # the commit currently checked out, set by hostd itself
+  #     test:
+  #       dir: /var/www/widget-shop-test
+  #       branch: develop
+  #       domain: test.widgetshop.com
+  #       port: 5120
+  #       certificate: cloudflare-origin

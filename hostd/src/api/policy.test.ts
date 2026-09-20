@@ -12,7 +12,7 @@ projects:
     dir: /var/www/acme
     upstream: 127.0.0.1:5010
     services: { web: { role: site } }
-    capabilities: [lifecycle, logs]
+    capabilities: [lifecycle, logs, provision, env]
   quiet:
     client: cl_1
     name: Quiet
@@ -67,6 +67,30 @@ describe('authorize', () => {
         assert.equal(!forAdmin.ok && forAdmin.status, 409)
         assert.equal(!forAdmin.ok && forAdmin.code, 'invalid-project')
         assert.deepEqual(authorize(registry, owner, 'broken', 'status'), { ok: false, status: 404, code: 'not-found', message: 'no project broken' })
+    })
+})
+
+describe('authorize: provision and env are admin-only', () => {
+    it('lets only admin provision or touch env files, whatever the project says', () => {
+        assert.equal(authorize(registry, owner, 'acme', 'provision').ok, false)
+        assert.equal(authorize(registry, owner, 'acme', 'env').ok, false)
+        assert.equal(authorize(registry, admin, 'acme', 'provision').ok, true)
+    })
+
+    it('gives a client the same 404 for provision as for a project that is not theirs', () => {
+        const forStranger = authorize(registry, stranger, 'acme', 'status')
+        const forOwnerProvision = authorize(registry, owner, 'acme', 'provision')
+        assert.deepEqual(forOwnerProvision, forStranger)
+        assert.deepEqual(authorize(registry, owner, 'acme', 'env'), forStranger)
+    })
+
+    it('still requires the capability for admin', () => {
+        assert.deepEqual(authorize(registry, admin, 'quiet', 'provision'), {
+            ok: false, status: 403, code: 'capability-disabled', message: 'provision is not enabled for quiet',
+        })
+        assert.deepEqual(authorize(registry, admin, 'quiet', 'env'), {
+            ok: false, status: 403, code: 'capability-disabled', message: 'env is not enabled for quiet',
+        })
     })
 })
 

@@ -5,6 +5,7 @@ import { request as httpRequest, type ClientRequest, type IncomingMessage, type 
 import type { Readable } from 'node:stream'
 import { isComposeService, type ProjectEntry } from '../shared/registry.ts'
 import type { ServiceStatus } from '../shared/protocol.ts'
+import type { PortCheck } from '../shared/ports.ts'
 
 export const DOCKER_SOCKET = '/var/run/docker.sock'
 export const DOCKER_TIMEOUT_MS = 15_000
@@ -12,7 +13,8 @@ const CONTAINER_ID = /^[a-f0-9]{12,64}$/
 // What Docker reports as the start time of a container that has never started.
 const NEVER = '0001-01-01T00:00:00Z'
 
-export type ContainerSummary = { Id: string, State: string, Labels?: Record<string, string> }
+export type PortBinding = { IP?: string, PrivatePort: number, PublicPort?: number, Type: string }
+export type ContainerSummary = { Id: string, State: string, Labels?: Record<string, string>, Ports?: PortBinding[] }
 export type ContainerInspect = {
     Id: string
     RestartCount: number
@@ -24,6 +26,7 @@ export type LogsOptions = { tail: number, since: number | null, follow: boolean 
 export type DockerApi = {
     ping(): Promise<boolean>
     listProjectContainers(project: string): Promise<ContainerSummary[]>
+    listAllContainers(): Promise<ContainerSummary[]>
     inspect(id: string): Promise<ContainerInspect>
     logs(id: string, options: LogsOptions): Promise<Readable>
 }
@@ -34,6 +37,8 @@ export function containersPath(project: string): string {
     const filters = JSON.stringify({ label: [`com.docker.compose.project=${project}`] })
     return `/containers/json?all=1&filters=${encodeURIComponent(filters)}`
 }
+
+export const ALL_CONTAINERS_PATH = '/containers/json?all=1'
 
 // Container ids come from Docker itself, but they are still checked before going into a URL path.
 export function checkedId(id: string): string {
@@ -91,6 +96,7 @@ export function createDockerApi(socketPath = DOCKER_SOCKET, request: RequestFn =
             }
         },
         listProjectContainers: project => json<ContainerSummary[]>(containersPath(project)),
+        listAllContainers: () => json<ContainerSummary[]>(ALL_CONTAINERS_PATH),
         async inspect(id) {
             return json<ContainerInspect>(`/containers/${checkedId(id)}/json`)
         },
@@ -119,6 +125,40 @@ export function pickPerService(containers: ContainerSummary[]): Map<string, Cont
         if (!current || (current.State !== 'running' && container.State === 'running')) chosen.set(service, container)
     }
     return chosen
+}
+
+// Every port any currently running container has published to the host, regardless of which interface it
+// is bound to (127.0.0.1, a specific public address, or every interface via 0.0.0.0): a new container
+// binding 127.0.0.1:<port> would collide with a same-numbered publish on any of them, since an
+// all-interfaces bind already claims the loopback address too. A stopped container reports no Ports at
+// all (Docker only shows a bind while it is actually listening), so this cannot see a port that belongs
+// to a stopped hostd environment; takenPorts (ports.ts), reading the registry itself rather than Docker,
+// is what covers that case regardless of whether the environment happens to be running. This is the only
+// view of host ports available to the agent: it runs with network_mode: none, so it has no network
+// namespace of its own to probe the loopback interface directly (see ports.ts's header). It also cannot
+// see a port some other, non-Docker process on the host has bound, or one published by a container on a
+// different Docker host reached via DOCKER_HOST, though this deployment never sets one and binds nothing
+// outside Docker.
+export function publishedHostPorts(containers: ContainerSummary[]): Set<number> {
+    const ports = new Set<number>()
+    for (const container of containers) {
+        for (const port of container.Ports ?? []) {
+            if (typeof port.PublicPort === 'number') ports.add(port.PublicPort)
+        }
+    }
+    return ports
+}
+
+// A PortCheck (ports.ts) built from one snapshot of every container's published ports, fetched at most
+// once per instance and cached from then on: choosePort calls this once per port in the whole range it
+// scans, and this must not turn that into one Docker API call per port considered. Call this again (a
+// fresh instance) for each choosePort invocation, so a later provisioning action sees a fresh snapshot.
+export function dockerPortCheck(docker: DockerApi): PortCheck {
+    let ports: Promise<Set<number>> | null = null
+    return async port => {
+        ports ??= docker.listAllContainers().then(publishedHostPorts)
+        return (await ports).has(port)
+    }
 }
 
 export function buildServiceStatuses(project: ProjectEntry, inspected: ReadonlyMap<string, ContainerInspect>): ServiceStatus[] {
