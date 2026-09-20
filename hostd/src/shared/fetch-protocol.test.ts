@@ -34,4 +34,14 @@ describe('parseFetchRequest', () => {
     it('bounds the log limit', () => {
         assert.match(refusalOf({ verb: 'log', dir: '/var/www/b', branch: 'main', limit: 100000 })!, /limit/)
     })
+
+    it('refuses a branch containing .., which git would read as a revision range, naming the branch', () => {
+        assert.match(refusalOf({ verb: 'log', dir: '/var/www/b', branch: 'main..other', limit: 10 })!, /main\.\.other/)
+        assert.match(refusalOf({ verb: 'tip', dir: '/var/www/b', branch: 'main..other' })!, /main\.\.other/)
+    })
+
+    it('still accepts branch names with slashes and dots', () => {
+        assert.equal(refusalOf({ verb: 'log', dir: '/var/www/b', branch: 'feature/thing', limit: 10 }), null)
+        assert.equal(refusalOf({ verb: 'tip', dir: '/var/www/b', branch: 'release-1.2.3' }), null)
+    })
 })

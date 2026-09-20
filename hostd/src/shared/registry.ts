@@ -40,8 +40,10 @@ export type EnvironmentEntry = {
     deployed: string | null
 }
 
-// A git ref or branch name that cannot be read as an option or a path traversal
-export const GIT_REF = /^[A-Za-z0-9][A-Za-z0-9._\/-]{0,127}$/
+// A git ref or branch name that cannot be read as an option or a path traversal. Git itself also
+// forbids two dots anywhere (".." is range syntax, so "main..other" would resolve as a second,
+// unrelated revision rather than a single branch) and a name ending in .lock or a bare trailing dot.
+export const GIT_REF = /^(?!.*\.\.)(?!.*\.lock$)(?!.*\.$)[A-Za-z0-9][A-Za-z0-9._\/-]{0,127}$/
 export const GIT_COMMIT = /^[0-9a-f]{7,40}$/
 // ssh (git@host:owner/repo.git) or https (https://host/owner/repo.git)
 export const GIT_REPO = /^(git@[A-Za-z0-9.-]+:[A-Za-z0-9._\/-]+\.git|https:\/\/[A-Za-z0-9.-]+\/[A-Za-z0-9._\/-]+(\.git)?)$/

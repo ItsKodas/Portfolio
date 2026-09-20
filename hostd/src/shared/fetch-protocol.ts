@@ -43,6 +43,13 @@ function branchOf(raw: Record<string, unknown>): string | null {
     return typeof value === 'string' && GIT_REF.test(value) ? value : null
 }
 
+// Names the rejected value when it was at least a string, so a caller (and an audit log) can see
+// which branch was refused, not just that some branch was.
+function branchRefusal(raw: Record<string, unknown>): { ok: false, code: 'bad-request', message: string } {
+    const value = raw.branch
+    return refuse(typeof value === 'string' ? `branch ${value} is malformed` : 'branch is malformed')
+}
+
 export function parseFetchRequest(line: string): Parsed {
     let raw: unknown
     try {
@@ -59,7 +66,7 @@ export function parseFetchRequest(line: string): Parsed {
             const dir = dirOf(raw, 'dir')
             if (!dir) return refuse('dir must be a folder directly under /var/www')
             const branch = branchOf(raw)
-            if (!branch) return refuse('branch is malformed')
+            if (!branch) return branchRefusal(raw)
             return { ok: true, request: { verb: 'clone', repo: raw.repo, dir, branch } }
         }
 
@@ -85,7 +92,7 @@ export function parseFetchRequest(line: string): Parsed {
             const dir = dirOf(raw, 'dir')
             if (!dir) return refuse('dir must be a folder directly under /var/www')
             const branch = branchOf(raw)
-            if (!branch) return refuse('branch is malformed')
+            if (!branch) return branchRefusal(raw)
             const limit = raw.limit
             if (typeof limit !== 'number' || !Number.isInteger(limit) || limit < 1 || limit > MAX_LOG_LIMIT) {
                 return refuse(`limit must be a whole number from 1 to ${MAX_LOG_LIMIT}`)
@@ -98,7 +105,7 @@ export function parseFetchRequest(line: string): Parsed {
             const dir = dirOf(raw, 'dir')
             if (!dir) return refuse('dir must be a folder directly under /var/www')
             const branch = branchOf(raw)
-            if (!branch) return refuse('branch is malformed')
+            if (!branch) return branchRefusal(raw)
             return { ok: true, request: { verb: 'tip', dir, branch } }
         }
 

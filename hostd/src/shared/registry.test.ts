@@ -343,6 +343,10 @@ projects:
         assert.match(invalidEnvironmentReason('repo: git@github.com:x/y.git\n    environments: { live: { dir: /var/www/a, port: 5010, branch: "--upload-pack=evil" } }')!, /branch/)
     })
 
+    it('refuses a branch containing .., which git would read as a revision range', () => {
+        assert.match(invalidEnvironmentReason('repo: git@github.com:x/y.git\n    environments: { live: { dir: /var/www/a, port: 5010, branch: "main..other-ref" } }')!, /branch/)
+    })
+
     it('refuses a repo that is not an ssh or https git URL', () => {
         assert.match(invalidEnvironmentReason('repo: "file:///etc/passwd"\n    environments: { live: { dir: /var/www/a, port: 5010 } }')!, /repo/)
     })
