@@ -5,7 +5,7 @@ import 'server-only'
 import nodemailer from 'nodemailer'
 
 import type { SmtpConfig } from './env'
-import type { Email } from './quotes/emails'
+import type { Email } from './emails/layout'
 
 export type SendEmail = (email: Email) => Promise<void>
 

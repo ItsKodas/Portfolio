@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
+import type { Email } from '../emails/layout'
 import { emailChangedEmail, inviteEmail, passwordChangedEmail, resetEmail, twoFactorResetEmail } from './emails'
 
 const options = { from: 'Horizons <quotes@dev.horizons.gg>', replyTo: 'info@dev.horizons.gg', siteUrl: 'https://www.horizons.gg' }
@@ -55,5 +56,48 @@ describe('escaping', () => {
         const email = inviteEmail({ name: 'Ann <script>', email: 'ann@example.com' }, 'raw-token', options)
         expect(email.html).toContain('Ann &lt;script&gt;')
         expect(email.html).not.toContain('<script>')
+    })
+})
+
+describe('the styled shell', () => {
+    const all: [string, Email][] = [
+        ['invite', inviteEmail(client, 'raw-token', options)],
+        ['reset', resetEmail(client, 'raw-token', options)],
+        ['password changed', passwordChangedEmail(client, options)],
+        ['two factor reset', twoFactorResetEmail(client, options)],
+        ['email changed', emailChangedEmail(client, { ...options, to: 'old@example.com' })],
+    ]
+
+    it.each(all)('%s is a full HTML document with the logo served from the site', (unused, email) => {
+        expect(email.html).toMatch(/^<!doctype html>/)
+        expect(email.html).toContain('https://www.horizons.gg/images/logo.png')
+    })
+
+    // The inbox shows the first text in the body after the subject, which for all five would otherwise be
+    // "Hi Ann Example,". The preheader is a hidden line that gives that slot something worth reading.
+    it.each(all)('%s has a hidden preview line that says more than the greeting would', (unused, email) => {
+        const preview = email.html.match(/max-height:0[^>]*>([^<]+)</)?.[1]
+
+        expect(preview).toBeTruthy()
+        expect(preview).not.toContain('Hi ')
+        expect(email.text).not.toContain(preview)
+    })
+
+    it.each([
+        ['invite', inviteEmail(client, 'raw-token', options), 'https://www.horizons.gg/portal/invite/raw-token'],
+        ['reset', resetEmail(client, 'raw-token', options), 'https://www.horizons.gg/portal/reset/raw-token'],
+    ])('%s links to its own page and shows that same address as the link text', (unused, email, link) => {
+        const hrefs = [...email.html.matchAll(/href="([^"]*)"/g)].map(match => match[1])
+        expect(hrefs).toEqual([link, link])
+        expect(email.html).toContain(`>${link}</a>`)
+    })
+
+    it.each([
+        ['password changed', passwordChangedEmail(client, options)],
+        ['two factor reset', twoFactorResetEmail(client, options)],
+        ['email changed', emailChangedEmail(client, { ...options, to: 'old@example.com' })],
+    ])('%s is marked as a security notice rather than something to act on', (unused, email) => {
+        expect(email.html).toContain('#f19bb3')
+        expect(email.html).not.toContain('#8fd4f5')
     })
 })

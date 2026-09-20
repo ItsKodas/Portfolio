@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 
 import { deliverQuoteEmails, type DeliverDeps, type DeliverableQuote } from './deliver'
-import type { Email } from './emails'
+import type { Email } from '../emails/layout'
 
 const NOW = new Date('2026-09-20T01:00:00Z')
 
