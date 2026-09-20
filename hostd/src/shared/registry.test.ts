@@ -96,6 +96,13 @@ describe('parseRegistry, a valid file', () => {
         assert.deepEqual(registry.offsite.keep, { daily: 14, weekly: 8, monthly: 6 })
     })
 
+    it('keeps a legacy upstream host exactly, rather than rewriting it to 127.0.0.1', () => {
+        const registry = parseRegistry(project({ upstream: 'localhost:5010' }))
+        const entry = registry.projects.get('site')
+        assert.ok(entry)
+        assert.deepEqual(entry.upstream, { host: 'localhost', port: 5010 })
+    })
+
     it('reads a SQLite database as a file rather than a compose service', () => {
         const registry = parseRegistry(project({
             services: '{ web: { role: site }, appdb: { role: database, engine: sqlite, file: data/app.db } }',
@@ -338,6 +345,20 @@ projects:
 
     it('refuses a repo that is not an ssh or https git URL', () => {
         assert.match(invalidEnvironmentReason('repo: "file:///etc/passwd"\n    environments: { live: { dir: /var/www/a, port: 5010 } }')!, /repo/)
+    })
+
+    it('refuses a domain at or below a reserved entry', () => {
+        const registry = parseRegistry(`
+reserved: [horizons.gg]
+projects:
+  acme:
+    client: cl_1
+    name: Acme
+    services: { web: { role: site } }
+    environments:
+      live: { dir: /var/www/acme, port: 5010, domain: mail.horizons.gg }
+`)
+        assert.match(registry.invalid.get('acme') ?? '', /domain/)
     })
 
     it('reads limits and portEnv, with defaults', () => {

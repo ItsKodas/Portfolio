@@ -409,8 +409,13 @@ function parseProject(id: string, raw: unknown, reserved: string[]): ParsedProje
     }
 
     let environments: Map<EnvironmentName, EnvironmentEntry>
+    let upstream: { host: string, port: number } | null
     if (usesEnvironments) {
         environments = parseEnvironments(raw.environments, reserved, problems)
+        // There is no per-environment host field (yet), so the live environment is always reached
+        // through the loopback address. This is the one place upstream.host is not carried from input.
+        const liveForUpstream = environments.get('live')
+        upstream = liveForUpstream ? { host: '127.0.0.1', port: liveForUpstream.port } : null
     } else {
         const dir = typeof raw.dir === 'string' && DIR.test(raw.dir) && !raw.dir.endsWith('/..') && !raw.dir.endsWith('/.') ? raw.dir : null
         if (!dir) problems.push('dir must be /var/www/<one segment>')
@@ -422,7 +427,9 @@ function parseProject(id: string, raw: unknown, reserved: string[]): ParsedProje
             else compose = raw.compose as string
         }
 
-        const upstream = parseUpstream(raw.upstream, problems)
+        // Carried through untouched: a legacy entry's upstream host (localhost or an IPv4 address) must
+        // keep meaning exactly what it means today, not be silently rewritten to 127.0.0.1.
+        upstream = parseUpstream(raw.upstream, problems)
         environments = new Map<EnvironmentName, EnvironmentEntry>()
         if (dir && upstream) {
             environments.set('live', {
@@ -438,7 +445,6 @@ function parseProject(id: string, raw: unknown, reserved: string[]): ParsedProje
     const dir = live?.dir ?? null
     const compose = live ? posix.relative(live.dir, live.composePath) : 'docker-compose.yml'
     const composePath = live?.composePath ?? null
-    const upstream = live ? { host: '127.0.0.1', port: live.port } : null
 
     const services = parseServices(raw.services, problems)
     const storage = parseStorage(raw.storage, dir ?? '/nonexistent', services, problems)
@@ -507,14 +513,18 @@ export function parseRegistry(text: string): Registry {
     }
 
     // Two entries over one directory would let one client's settings drive another client's site.
-    // Every environment's dir counts, not just the live one.
+    // Every environment's dir counts, not just the live one, and the message names the dir that
+    // actually collided rather than always the project's live dir.
     const projects = new Map<string, ProjectEntry>()
     for (const [id, entry] of parsed) {
-        const dirs = [...entry.environments.values()].map(env => env.dir)
-        const sharing = [...parsed.values()]
-            .filter(other => other.id !== id && [...other.environments.values()].some(env => dirs.includes(env.dir)))
-            .map(other => other.id)
-        if (sharing.length > 0) invalid.set(id, `dir ${entry.dir} is also used by ${sharing.join(', ')}`)
+        const messages: string[] = []
+        for (const env of entry.environments.values()) {
+            const sharing = [...parsed.values()]
+                .filter(other => other.id !== id && [...other.environments.values()].some(otherEnv => otherEnv.dir === env.dir))
+                .map(other => other.id)
+            if (sharing.length > 0) messages.push(`dir ${env.dir} is also used by ${sharing.join(', ')}`)
+        }
+        if (messages.length > 0) invalid.set(id, messages.join('; '))
         else projects.set(id, entry)
     }
 
