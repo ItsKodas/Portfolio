@@ -48,10 +48,11 @@ describe('lifetimes', () => {
         expect(activeExpiry(now, now)).toEqual(minutes(24 * 60))
     })
 
-    // 7 days absolute wins once the session is old, however recently it was used
+    // 7 days absolute wins once the session is old, however recently it was used. now + 24h would be
+    // 2026-09-21T20:00:00Z, so this only passes if the earlier of the two limits is taken.
     it('caps at 7 days from when the session started', () => {
         const createdAt = new Date('2026-09-14T10:00:00Z')
-        expect(activeExpiry(createdAt, now)).toEqual(new Date('2026-09-21T10:00:00Z'))
+        expect(activeExpiry(createdAt, new Date('2026-09-20T20:00:00Z'))).toEqual(new Date('2026-09-21T10:00:00Z'))
     })
 
     it('writes lastUsedAt at most every five minutes, so a page view costs no write', () => {
@@ -79,5 +80,14 @@ describe('usability', () => {
         const expired = { mfaAt: minutes(-100), expiresAt: minutes(-1) }
         expect(isUsable(expired, now)).toBe(false)
         expect(isPending(expired, now)).toBe(false)
+    })
+
+    // The case the design depends on: an expired half-session must lose its claim on the second-factor
+    // step. Without this fixture, dropping the expiry check from isPending breaks nothing in the suite,
+    // because the other expired fixture has mfaAt set and is refused for a different reason.
+    it('treats an expired half-session as neither usable nor pending', () => {
+        const expiredPending = { mfaAt: null, expiresAt: minutes(-1) }
+        expect(isUsable(expiredPending, now)).toBe(false)
+        expect(isPending(expiredPending, now)).toBe(false)
     })
 })
