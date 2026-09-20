@@ -73,10 +73,12 @@ can be corrected first, and if the email already belongs to a client the form of
 existing client instead of making a second account. Deleting a client later leaves its quotes in place with no
 client attached.
 
-If a client is locked out, most often because they lost their authenticator device, reset their 2FA from their
-page in the admin area, then send them a password reset. Resetting 2FA wipes their authenticator secret, recovery
-codes and sessions in one go and emails them a notice, so they sign in with their (possibly new) password and are
-sent straight through enrolment again.
+If a client is locked out because they lost their authenticator device, reset their 2FA from their page in the
+admin area. That wipes their authenticator secret, recovery codes and sessions in one go and emails them a notice,
+so signing in with their existing password sends them straight through enrolment again: no password reset needed
+if they still remember it. Only send a password reset as well if they have also forgotten their password, and
+reset 2FA first, since the reset form demands a code from an authenticator while one is still on file and they
+no longer have it.
 
 A client's id, shown on their page in the admin area, is what goes into `hostd/projects.yaml` as `client:` for
 that project.
@@ -84,7 +86,7 @@ that project.
 `CLIENT_SECRET_KEY` encrypts every client's authenticator secret and keys their recovery codes. It is not
 `AUTH_SECRET` and must not be rotated casually: changing it means every client has to set up their authenticator
 again. Generate it with `openssl rand -base64 32` and add it, with `CLIENT_REPLY_TO`, to the server's `.env`
-alongside the variables below.
+alongside the other variables in the Deploying section above.
 
 ## Wallpaper Engine
 
