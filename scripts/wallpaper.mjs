@@ -17,9 +17,10 @@ const DIST = join('dist', 'wallpaper-engine')
 const SOURCES = ['app', 'public', 'themes', 'global.d.ts', 'next.config.ts', 'tsconfig.json', 'tailwind.config.ts',
     'postcss.config.mjs', 'eslint.config.mjs', 'package.json', 'package-lock.json']
 
-// The quote form, the admin area and the API are server-side (server actions, route handlers, sign-in), which a
-// static export can't contain, and the wallpaper uses none of them. (middleware.ts and server/ aren't in SOURCES.)
-const SERVER_SIDE = [join('app', '(quote)'), join('app', '(admin)'), join('app', 'api')]
+// The quote form, the admin area, the client portal and the API are server-side (server actions, route handlers,
+// sign-in), which a static export can't contain, and the wallpaper uses none of them. (middleware.ts and server/
+// aren't in SOURCES.)
+const SERVER_SIDE = [join('app', '(quote)'), join('app', '(admin)'), join('app', '(portal)'), join('app', 'api')]
 const isServerSide = path => SERVER_SIDE.some(dir => normalize(path) === dir || normalize(path).startsWith(dir + sep))
 
 const work = '.wallpaper-build'
