@@ -110,6 +110,32 @@ rollback, branch switching and env access are the operator's alone.
 
 ## Architecture
 
+### A third container, and changed mounts
+
+Phase 1 deliberately gives the agent the Docker socket and **no network at all**, and mounts `/var/www`
+and the registry read-only. Provisioning needs the opposite of all three, so rather than weaken the agent:
+
+**`hostd-fetcher`** is a new container that does Git and nothing else. It has a network, holds the GitHub
+token, and can write under `/var/www`. It does **not** get the Docker socket, so a compromise there writes
+site files but cannot control Docker, reach another container, or touch the registry. It listens on its own
+Unix socket in a shared volume, speaks the same one-line JSON protocol as the agent, and accepts four
+requests: `clone`, `fetch`, `checkout` (into a given tree) and `log`. The agent is the only caller: it
+derives every path from the registry and never passes one through from the portal, so the fetcher can only
+ever be asked to write where a registered project already lives.
+
+Mount changes, each the minimum the work needs:
+
+| Container | Was | Becomes |
+| --- | --- | --- |
+| agent | `/var/www:ro` | `/var/www` writable: it writes env files and swaps trees |
+| agent | `./projects.yaml:ro` (file) | `./registry:/etc/hostd` writable: a directory, because an atomic rename cannot replace a bind-mounted file from inside a container |
+| api | `./projects.yaml:ro` (file) | `./registry:/etc/hostd:ro`, same directory, still read-only |
+| fetcher | new | `/var/www` writable, a network, the registry read-only, and the token from its own env file |
+
+`projects.yaml` therefore moves from `hostd/projects.yaml` to `hostd/registry/projects.yaml`. The runbook
+gains a step for moving it, and the agent refuses to start if it finds the old path still in use, so an
+upgrade cannot silently run against a stale registry.
+
 ### New capabilities
 
 Added to the registry's capability list, which already carries `lifecycle`, `logs`, `files`, `backups` and
@@ -311,6 +337,8 @@ deliberately, roll back, switch branch, add a test environment, delete it all.
 | Risk | Why it is accepted, or what limits it |
 | --- | --- |
 | A build runs the repo's own code as root on the dedi | Inherent to `docker compose build`, and identical to what the operator does by hand. Only the operator can create a project or choose its repo. |
+| The agent can now write `/var/www` and the registry | It already held the Docker socket, which is root-equivalent, so this widens what a compromise reaches rather than changing its class. It still has no network. |
+| The fetcher has a network and the GitHub token | It has no Docker socket and no registry write access, and it only ever acts on paths the agent derived from the registry. A compromise writes site files, which a later deploy would rebuild from. |
 | One token reads every client repo | The operator's choice over per-site deploy keys. A fine-grained, read-only token limited to the client repositories bounds it. |
 | hostd can write Apache config and reload it | A fixed template, validated substitutions only, and Apache's own config test gates every reload. |
 | Env files hold secrets in plain text on disk | True of every compose deployment today. They are never logged, never returned to a client, and never committed. |
