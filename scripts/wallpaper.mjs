@@ -14,7 +14,9 @@ import { cpSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statS
 import { join, normalize, sep } from 'node:path'
 
 const DIST = join('dist', 'wallpaper-engine')
-const SOURCES = ['app', 'public', 'themes', 'global.d.ts', 'next.config.ts', 'tsconfig.json', 'tailwind.config.ts',
+// ui/ is here because app/globals.css imports ui/tokens.css, so the copy has to contain it or the stylesheet
+// can't resolve.
+const SOURCES = ['app', 'public', 'themes', 'ui', 'global.d.ts', 'next.config.ts', 'tsconfig.json', 'tailwind.config.ts',
     'postcss.config.mjs', 'eslint.config.mjs', 'package.json', 'package-lock.json']
 
 // The quote form, the admin area, the client portal and the API are server-side (server actions, route handlers,
@@ -23,11 +25,17 @@ const SOURCES = ['app', 'public', 'themes', 'global.d.ts', 'next.config.ts', 'ts
 const SERVER_SIDE = [join('app', '(quote)'), join('app', '(admin)'), join('app', '(portal)'), join('app', 'api')]
 const isServerSide = path => SERVER_SIDE.some(dir => normalize(path) === dir || normalize(path).startsWith(dir + sep))
 
+// The component tests and their setup aren't part of the export, and copying them would only put vitest and
+// Testing Library in front of the export's type check for nothing.
+const TEST_ONLY = [join('ui', 'testing')]
+const isTestOnly = path => /\.test\.tsx?$/.test(path)
+    || TEST_ONLY.some(dir => normalize(path) === dir || normalize(path).startsWith(dir + sep))
+
 const work = '.wallpaper-build'
 rmSync(work, { recursive: true, force: true })
 let status = 0
 try {
-    for (const source of SOURCES) cpSync(source, join(work, source), { recursive: true, filter: path => !isServerSide(path) })
+    for (const source of SOURCES) cpSync(source, join(work, source), { recursive: true, filter: path => !isServerSide(path) && !isTestOnly(path) })
 
     const build = spawnSync('npx next build', { cwd: work, stdio: 'inherit', shell: true, env: { ...process.env, WALLPAPER_EXPORT: '1' } })
     status = build.status ?? 1

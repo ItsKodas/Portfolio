@@ -2,6 +2,8 @@
 @tailwind components;
 @tailwind utilities;
 
+@import '../ui/tokens.css';
+
 :root {
   --background: #0b101f;
   --foreground: #ffffff;

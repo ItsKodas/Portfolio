@@ -1,0 +1,15 @@
+.wrap { display: inline-flex; align-items: center; gap: 7px; font-size: 12.5px; }
+
+.dot { width: 7px; height: 7px; border-radius: 50%; flex: none; }
+
+.up { background: var(--good); }
+.down { background: var(--crit); }
+.deploying { background: var(--lake); animation: pulse 1.3s ease-in-out infinite; }
+.stopped { background: var(--ink-3); }
+.paused { background: var(--warn); }
+
+@keyframes pulse { 50% { opacity: .25; } }
+
+@media (prefers-reduced-motion: reduce) {
+    .deploying { animation: none; }
+}
