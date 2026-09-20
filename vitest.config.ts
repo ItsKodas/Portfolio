@@ -13,6 +13,12 @@ export default defineConfig({
                 replacement: fileURLToPath(new URL('./server/testing/serverOnly.ts', import.meta.url)),
             },
             {
+                // tsconfig.json maps @/* to the repo root. Vite does not read that, so a test importing a
+                // module that uses the alias (a page under app/ does) would not resolve without this.
+                find: /^@\//,
+                replacement: fileURLToPath(new URL('./', import.meta.url)),
+            },
+            {
                 // next ships no "exports" map for ./server, so the bare specifier only resolves under CommonJS,
                 // which guesses the extension. next-auth is ESM and Node's ESM resolver does not guess, so
                 // importing middleware.ts (which builds a NextAuth instance at module scope) dies on
@@ -64,10 +70,12 @@ export default defineConfig({
                 // compile the same way the app does.
                 esbuild: { jsx: 'automatic' },
                 test: {
-                    name: 'ui',
+                    // Named for what it provides rather than for one directory: a page under app/ needs the
+                    // same DOM a component in ui/ does, and there is no second thing to call it.
+                    name: 'dom',
                     // Components need a DOM, which the other two projects deliberately do without.
                     environment: 'jsdom',
-                    include: ['ui/**/*.test.tsx'],
+                    include: ['ui/**/*.test.tsx', 'app/**/*.test.tsx'],
                     setupFiles: ['./ui/testing/setup.ts'],
                 },
             },
