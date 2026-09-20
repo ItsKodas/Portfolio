@@ -11,20 +11,35 @@ import type { HostdConfig } from './config'
 // Matches hostd's registry id rule, so a bad id is refused before it can be interpolated into a path
 const PROJECT_ID = /^[a-z0-9][a-z0-9-]{1,30}$/
 
+// Kept in step with hostd's own ServiceStatus in hostd/src/shared/protocol.ts. Every field past the
+// service name is nullable rather than optional: a container hostd cannot inspect still gets a row, with
+// nulls where the readings would be.
 export type ServiceStatus = {
     service: string
+    role: 'site' | 'database'
     state: string
-    health?: string
-    startedAt?: string
-    restarts?: number
-    image?: string
+    health: string | null
+    startedAt: string | null
+    restartCount: number | null
+    image: string | null
 }
+
+// One project's status inside a list. hostd refuses a project it could not read on its own rather than
+// failing the whole list, so a caller has to handle both arms: the dashboard still draws the other sites.
+export type ProjectStatus =
+    | { ok: true, services: ServiceStatus[] }
+    | { ok: false, code: string, message: string }
 
 export type Project = {
     id: string
-    name: string
+    // Absent for a registry entry hostd itself could not parse: those are answered with an id and a
+    // reason and nothing else, so a caller has to fall back to the id.
+    name?: string
     valid: boolean
     reason?: string
+    capabilities?: string[]
+    // Present only when hostd was asked for it, and only ever on a list. Never assume it is there.
+    status?: ProjectStatus
     services?: ServiceStatus[]
 }
 
@@ -36,7 +51,10 @@ export async function listProjects(
     caller: Caller,
     fetchImpl: typeof fetch = fetch,
 ): Promise<HostdResult<Project[]>> {
-    const result = await hostdRequest<{ projects: Project[] }>(config, caller, '/projects', {}, fetchImpl)
+    // status=1 makes hostd read every project's containers and answer them in this one request. Without
+    // it the listing is the cheap one (names, and whether an entry is valid) and the dashboard would need
+    // a further request per site on every render. hostd accepts 1 or 0 here and refuses anything else.
+    const result = await hostdRequest<{ projects: Project[] }>(config, caller, '/projects?status=1', {}, fetchImpl)
     return result.ok ? { ok: true, value: result.value.projects } : result
 }
 

@@ -20,7 +20,38 @@ describe('listProjects', () => {
         const result = await listProjects(config, admin, fetchImpl)
         expect(result.ok).toBe(true)
         if (result.ok) expect(result.value[0].id).toBe('acme-bakery')
-        expect(calls[0].url).toBe('http://hostd-api:8080/projects')
+        expect(calls[0].url).toBe('http://hostd-api:8080/projects?status=1')
+    })
+
+    // The whole point of the flag: one request for the dashboard instead of one more per site.
+    it('carries each project status back, so the dashboard needs no second request', async () => {
+        const services = [{ service: 'acme-web', role: 'site', state: 'running', health: 'healthy', startedAt: '2026-09-21T04:00:00Z', restartCount: 0, image: 'acme:latest' }]
+        const { fetchImpl } = fakeFetch({ projects: [{ id: 'acme-bakery', name: 'Acme Bakery', valid: true, capabilities: ['logs'], status: { ok: true, services } }] })
+        const result = await listProjects(config, admin, fetchImpl)
+        expect(result.ok).toBe(true)
+        if (!result.ok) return
+        expect(result.value[0].status).toEqual({ ok: true, services })
+        expect(result.value[0].capabilities).toEqual(['logs'])
+    })
+
+    // A project hostd could not read carries its refusal in place of its services rather than taking the
+    // whole list down, so a caller has to handle both arms.
+    it('keeps a project whose status hostd could not read', async () => {
+        const status = { ok: false, code: 'invalid-project', message: 'acme-bakery is invalid: compose.yml is unparseable' }
+        const { fetchImpl } = fakeFetch({ projects: [{ id: 'acme-bakery', valid: false, reason: 'compose.yml is unparseable', status }] })
+        const result = await listProjects(config, admin, fetchImpl)
+        expect(result.ok).toBe(true)
+        if (!result.ok) return
+        expect(result.value[0].status).toEqual(status)
+        // An entry the registry itself could not parse has no name, which is why name is optional
+        expect(result.value[0].name).toBeUndefined()
+    })
+
+    it('tolerates a project with no status at all', async () => {
+        const { fetchImpl } = fakeFetch({ projects: [{ id: 'acme-bakery', name: 'Acme Bakery', valid: true }] })
+        const result = await listProjects(config, admin, fetchImpl)
+        expect(result.ok).toBe(true)
+        if (result.ok) expect(result.value[0].status).toBeUndefined()
     })
 })
 
