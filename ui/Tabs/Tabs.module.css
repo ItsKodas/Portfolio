@@ -1,0 +1,32 @@
+.tablist {
+    display: flex;
+    gap: 2px;
+    flex-wrap: wrap;
+    border-bottom: 1px solid var(--rule);
+}
+
+.tab {
+    font: inherit;
+    font-size: 13px;
+    font-weight: 500;
+    color: var(--ink-3);
+    background: none;
+    border: 0;
+    border-bottom: 2px solid transparent;
+    margin-bottom: -1px;
+    padding: 9px 13px 10px;
+    cursor: pointer;
+}
+
+.tab:hover { color: var(--ink-2); }
+
+.tab:focus-visible {
+    outline: 2px solid var(--lake);
+    outline-offset: -2px;
+}
+
+.selected {
+    color: var(--ink);
+    border-bottom-color: var(--lake);
+    font-weight: 600;
+}
