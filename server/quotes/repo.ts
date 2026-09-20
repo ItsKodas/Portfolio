@@ -60,6 +60,13 @@ export function quoteRepo(db: PrismaClient) {
         markConfirmed: async (id: string, at: Date) => {
             await db.quote.update({ where: { id }, data: { confirmedAt: at } })
         },
+
+        // Quotes a client came from, for their page in the admin area. Newest first, like the inbox.
+        listForClient: (clientId: string) => db.quote.findMany({
+            where: { clientId },
+            select: { id: true, name: true, createdAt: true },
+            orderBy: { createdAt: 'desc' },
+        }),
     }
 }
 

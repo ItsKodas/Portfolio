@@ -4,8 +4,9 @@ import { notFound } from 'next/navigation'
 import { Box, Chip, Container, Divider, Paper, Stack, Typography } from '@mui/material'
 
 import { requireAdmin } from '@/server/auth'
-import { getDb } from '@/server/db'
 import { repo } from '@/server/clients/wiring'
+import { getDb } from '@/server/db'
+import { quoteRepo } from '@/server/quotes/repo'
 import { formatWhen } from '../../format'
 import AdminHeader from '../../header'
 import {
@@ -32,12 +33,11 @@ export default async function ClientPage({ params }: { params: Promise<{ id: str
     const client = await clients.byId(id)
     if (!client) notFound()
 
-    // No repo method covers this read: it is a plain lookup on the Quote side, not a client-account concern
     const [sites, sessions, unusedRecoveryCodes, quotes] = await Promise.all([
         clients.listSites(id),
         clients.listSessions(id),
         clients.countUnusedRecoveryCodes(id),
-        getDb().quote.findMany({ where: { clientId: id }, select: { id: true, name: true, createdAt: true }, orderBy: { createdAt: 'desc' } }),
+        quoteRepo(getDb()).listForClient(id),
     ])
 
     const now = new Date()
@@ -67,7 +67,7 @@ export default async function ClientPage({ params }: { params: Promise<{ id: str
                                 {sessions.map(session => (
                                     <Typography key={session.id} variant="body2">
                                         {formatWhen(session.lastUsedAt)}{session.mfaAt ? '' : ' (not yet verified)'}
-                                        {session.userAgent && ` — ${session.userAgent}`}
+                                        {session.userAgent && ` (${session.userAgent})`}
                                     </Typography>
                                 ))}
                             </Stack>
@@ -105,7 +105,7 @@ export default async function ClientPage({ params }: { params: Promise<{ id: str
                         {quotes.map(quote => (
                             <Typography key={quote.id}>
                                 <Link href={`/admin/quotes/${quote.id}`} style={{ color: 'inherit' }}>{quote.name}</Link>
-                                <Typography component="span" color="text.secondary"> — {formatWhen(quote.createdAt)}</Typography>
+                                <Typography component="span" color="text.secondary"> ({formatWhen(quote.createdAt)})</Typography>
                             </Typography>
                         ))}
                     </Stack>
