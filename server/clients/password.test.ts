@@ -58,11 +58,11 @@ describe('parseStoredPassword', () => {
     // Work ceiling prevents denial of service from values that pass the cheap sanity bounds
     it('refuses work ceiling violations', () => {
         // logN=20, r=32, p=1 is in bounds individually but exceeds MAX_WORK
-        const highWork1 = 'scrypt$20$32$1$YWJjZGVmZ2hpams=$' + Buffer.alloc(32).toString('base64')
+        const highWork1 = 'scrypt$20$32$1$' + Buffer.alloc(16).toString('base64') + '$' + Buffer.alloc(32).toString('base64')
         expect(parseStoredPassword(highWork1)).toBeNull()
 
         // logN=17, r=8, p=16 is in bounds individually but exceeds MAX_WORK (COST with p=16)
-        const highWork2 = 'scrypt$17$8$16$YWJjZGVmZ2hpams=$' + Buffer.alloc(32).toString('base64')
+        const highWork2 = 'scrypt$17$8$16$' + Buffer.alloc(16).toString('base64') + '$' + Buffer.alloc(32).toString('base64')
         expect(parseStoredPassword(highWork2)).toBeNull()
     })
 
