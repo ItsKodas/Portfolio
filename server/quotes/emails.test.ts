@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
-import { confirmationEmail, emailsMissing, escapeHtml, notificationEmail, type QuoteForEmail } from './emails'
+import { confirmationEmail, emailsMissing, notificationEmail, type QuoteForEmail } from './emails'
 
 const quote: QuoteForEmail = {
     id: 'q1',
@@ -17,13 +17,7 @@ const quote: QuoteForEmail = {
 }
 
 const notify = { from: 'Horizons <quotes@dev.horizons.gg>', to: 'koda@horizons.gg', siteUrl: 'https://www.horizons.gg' }
-const confirm = { from: 'Horizons <quotes@dev.horizons.gg>', replyTo: 'info@dev.horizons.gg' }
-
-describe('escapeHtml', () => {
-    it('escapes everything that could open a tag or an attribute', () => {
-        expect(escapeHtml(`<a href="x" onclick='y'>&</a>`)).toBe('&lt;a href=&quot;x&quot; onclick=&#39;y&#39;&gt;&amp;&lt;/a&gt;')
-    })
-})
+const confirm = { from: 'Horizons <quotes@dev.horizons.gg>', replyTo: 'info@dev.horizons.gg', siteUrl: 'https://www.horizons.gg' }
 
 describe('notificationEmail', () => {
     const email = notificationEmail(quote, notify)
@@ -101,5 +95,31 @@ describe('emailsMissing', () => {
         expect(emailsMissing({ createdAt: created, notifiedAt: created, confirmedAt: created }, later)).toBe(false)
         expect(emailsMissing({ createdAt: created, notifiedAt: created, confirmedAt: null }, later)).toBe(true)
         expect(emailsMissing({ createdAt: created, notifiedAt: null, confirmedAt: created }, later)).toBe(true)
+    })
+})
+
+describe('the styled shell', () => {
+    it.each([
+        ['notification', notificationEmail(quote, notify)],
+        ['confirmation', confirmationEmail(quote, confirm)],
+    ])('%s is a full HTML document with the logo served from the site', (unused, email) => {
+        expect(email.html).toMatch(/^<!doctype html>/)
+        expect(email.html).toContain('https://www.horizons.gg/images/logo.png')
+    })
+
+    it('links the notification to the quote, showing the same address as the link text', () => {
+        const link = 'https://www.horizons.gg/admin/quotes/q1'
+        const hrefs = [...notificationEmail(quote, notify).html.matchAll(/href="([^"]*)"/g)].map(match => match[1])
+
+        expect(hrefs).toEqual([link, link])
+    })
+
+    // There is nothing for the prospect to do, so there is nothing to click. A thank-you that never links is a
+    // thank-you that cannot be imitated usefully.
+    it('gives the confirmation no link at all', () => {
+        const email = confirmationEmail(quote, confirm)
+
+        expect(email.html).not.toContain('href')
+        expect(email.text).not.toContain('http')
     })
 })

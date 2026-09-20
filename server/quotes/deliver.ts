@@ -6,7 +6,8 @@ import 'server-only'
 
 import type { MailConfig } from '../env'
 import type { SendEmail } from '../mailer'
-import { confirmationEmail, notificationEmail, type Email, type QuoteForEmail } from './emails'
+import type { Email } from '../emails/layout'
+import { confirmationEmail, notificationEmail, type QuoteForEmail } from './emails'
 
 export type DeliverableQuote = QuoteForEmail & { notifiedAt: Date | null, confirmedAt: Date | null }
 
@@ -48,7 +49,7 @@ export async function deliverQuoteEmails(quote: DeliverableQuote, deps: DeliverD
     )
     const confirmed = quote.confirmedAt !== null || await attempt(
         'confirmation',
-        confirmationEmail(quote, { from: mail.from, replyTo: mail.replyTo }),
+        confirmationEmail(quote, { from: mail.from, replyTo: mail.replyTo, siteUrl: mail.siteUrl }),
         at => deps.markConfirmed(quote.id, at),
     )
     return { notified, confirmed }
