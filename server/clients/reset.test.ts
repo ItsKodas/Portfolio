@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from 'vitest'
 
 import { LINK_ERROR } from './setup'
-import { LOCKED_ERROR, TOO_MANY_ERROR } from './signIn'
+import { TOO_MANY_ERROR } from './signIn'
 import { RESET_SENT_MESSAGE, completeReset, requestReset } from './reset'
 
 const now = new Date('2026-09-20T10:00:00Z')
@@ -85,7 +85,6 @@ const completeDeps = (overrides: Record<string, unknown> = {}) => ({
     tokenByHash: vi.fn(async () => ({ id: 'token1', purpose: 'PASSWORD_RESET' as const, usedAt: null, expiresAt: later(1000), client: client() })),
     countAttempts: vi.fn(async () => 0),
     recordAttempt: vi.fn(async () => {}),
-    recordFailure: vi.fn(async () => {}),
     decryptSecret: vi.fn(() => Buffer.from('12345678901234567890')),
     verifyTotp: vi.fn(() => 37037036n),
     recordTotpUse: vi.fn(async () => true),
@@ -194,23 +193,27 @@ describe('completeReset', () => {
         expect(deps.setPassword).not.toHaveBeenCalled()
     })
 
-    it('counts a wrong code against the IP and against the account', async () => {
+    it('counts a wrong code against the IP', async () => {
         const deps = completeDeps({ verifyTotp: vi.fn(() => null) })
         expect(await completeReset(input, deps)).toMatchObject({ ok: false })
         expect(deps.recordAttempt).toHaveBeenCalledWith(expect.any(String))
-        expect(deps.recordFailure).toHaveBeenCalledWith('cl_ABCDEFGH', { failedSignIns: 1, lockedUntil: null })
     })
 
-    // Recording the ladder is pointless unless it is read back somewhere
-    it('refuses a locked account even with a valid code', async () => {
+    // The sign-in lock is set by wrong passwords, which any stranger who knows the address can cause, and it
+    // is cleared only by a sign-in or a reset that succeeds. Gating this path on it would let one wrong
+    // password an hour shut a client out of account recovery for good. Codes here are bounded by the IP limit
+    // instead. This test exists so nobody "fixes" the asymmetry with codeStep back the other way.
+    it('lets a locked-out client reset anyway, because this is the escape hatch from that lock', async () => {
         const deps = completeDeps({
             tokenByHash: vi.fn(async () => ({
                 id: 'token1', purpose: 'PASSWORD_RESET' as const, usedAt: null, expiresAt: later(1000),
-                client: client({ lockedUntil: later(5 * 60 * 1000) }),
+                client: client({ lockedUntil: later(60 * 60 * 1000), failedSignIns: 9 }),
             })),
         })
-        expect(await completeReset(input, deps)).toEqual({ ok: false, error: LOCKED_ERROR })
-        expect(deps.setPassword).not.toHaveBeenCalled()
+        expect(await completeReset(input, deps)).toEqual({ ok: true })
+        expect(deps.setPassword).toHaveBeenCalledWith('cl_ABCDEFGH', 'new-hash', now)
+        // And the lock itself is lifted, so the new password works straight away
+        expect(deps.clearLock).toHaveBeenCalledWith('cl_ABCDEFGH')
     })
 
     it('refuses an expired link with the same message as a missing one', async () => {

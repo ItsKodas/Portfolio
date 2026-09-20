@@ -158,7 +158,6 @@ export const completeResetDeps = (ipHash: string) => {
         tokenByHash: clients.tokenByHash,
         countAttempts: clients.countAttempts,
         recordAttempt: clients.recordAttempt,
-        recordFailure: clients.recordFailure,
         decryptSecret: (stored: string) => Buffer.from(decryptSecret(stored, key()), 'base64'),
         verifyTotp,
         recordTotpUse: clients.recordTotpUse,

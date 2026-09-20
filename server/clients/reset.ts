@@ -5,12 +5,12 @@ import 'server-only'
 
 import type { ClientTokenPurpose } from '../generated/prisma/client'
 import { normaliseRecoveryCode } from './ids'
-import { afterFailure, ipWindowStart, isLocked, overIpLimit, type LockUpdate } from './limits'
+import { ipWindowStart, overIpLimit } from './limits'
 import type { ClientRecord } from './repo'
 import { LINK_ERROR, RESET_TTL_MS, tokenProblem } from './setup'
 // Imported rather than restated, so the reset page and the sign-in page cannot drift apart on the wording a
-// throttled or locked person sees
-import { LOCKED_ERROR, TOO_MANY_ERROR } from './signIn'
+// throttled person sees
+import { TOO_MANY_ERROR } from './signIn'
 
 // Said whether or not the address matched anything
 export const RESET_SENT_MESSAGE = 'If that address has an account, a reset link is on its way. It is valid for one hour.'
@@ -69,7 +69,6 @@ export type CompleteResetDeps = {
     tokenByHash(tokenHash: string): Promise<({ id: string, purpose: ClientTokenPurpose, usedAt: Date | null, expiresAt: Date, client: ClientRecord }) | null>
     countAttempts(ipHash: string, since: Date): Promise<number>
     recordAttempt(ipHash: string): Promise<void>
-    recordFailure(id: string, update: LockUpdate): Promise<void>
     decryptSecret(stored: string): Buffer
     verifyTotp(secret: Buffer, code: string, now: Date): bigint | null
     recordTotpUse(clientId: string, step: bigint): Promise<boolean>
@@ -108,9 +107,12 @@ export async function completeReset(
 
     const client = token.client
 
-    // The ladder the failures below write is only a bound if something reads it back. Showing the lock here
-    // tells a stranger nothing: reaching this line already needs a live link out of the client's own mailbox.
-    if (isLocked(client, now)) return { ok: false, error: LOCKED_ERROR }
+    // Deliberately NOT gated on the sign-in lock, unlike codeStep, and deliberately not writing to it either.
+    // That lock is set by wrong PASSWORDS, which any stranger who knows the address can cause, and it is
+    // cleared only by a sign-in or a reset that succeeds. Gating this path on it would let one wrong password
+    // an hour, from any address, shut a client out of account recovery for good: the escape hatch would be
+    // blocked by the thing it exists to escape. Grinding at the code below is bounded by the IP limit above,
+    // and reaching it at all needs a live link out of the client's own mailbox.
 
     // A client with an authenticator must use it: an email compromise alone must not be enough. A client who
     // has never enrolled has nothing to give, and is forced through enrolment before the session is usable.
@@ -120,9 +122,9 @@ export async function completeReset(
     if (client.totpConfirmedAt) {
         const accepted = await acceptSecondFactor(client, input.code, deps, now)
         if (!accepted) {
-            // Counted the same way codeStep counts a wrong code, against the IP and against the account
+            // Against the IP only. A per-account failure here would be a counter nothing reads, per the note
+            // above, and would hand a compromised mailbox a way to lock the client out of signing in as well.
             await deps.recordAttempt(ipHash)
-            await deps.recordFailure(client.id, afterFailure(client, now))
             return { ok: false, error: CODE_REQUIRED }
         }
     }
