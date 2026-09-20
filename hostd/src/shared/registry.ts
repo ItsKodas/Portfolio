@@ -28,8 +28,8 @@ export type ProjectEntry = {
     client: string
     name: string
     dir: string
-    compose: string
-    composePath: string
+    compose: string[]
+    composePaths: string[]
     upstream: { host: string, port: number }
     services: Record<string, ServiceEntry>
     storage: Record<string, StorageEntry>
@@ -56,6 +56,11 @@ export class RegistryError extends Error {
 export function isComposeService(entry: ServiceEntry): boolean {
     return !(entry.role === 'database' && entry.engine === 'sqlite')
 }
+
+// Compose merges -f files left to right, so the registry's order is the operator's order. The cap keeps
+// the argv bounded: a base file and a handful of overrides is every real shape of this.
+export const MAX_COMPOSE_FILES = 8
+const DEFAULT_COMPOSE = ['docker-compose.yml']
 
 const DEFAULT_OFFSITE_KEEP: Keep = { daily: 14, weekly: 8, monthly: 6 }
 const DEFAULT_MAX_KEEP: Keep = { daily: 14, weekly: 8, monthly: 12 }
@@ -100,6 +105,35 @@ function parseUpstream(raw: unknown, problems: string[]): { host: string, port: 
         return null
     }
     return { host: match[1], port }
+}
+
+// One file or several. A site whose host-specific settings live in an override is only described
+// correctly when every file compose merges is named here: passing an explicit -f stops compose picking
+// up docker-compose.override.yml by itself, so an unnamed override is an override hostd cannot see.
+function parseCompose(raw: unknown, problems: string[]): string[] {
+    if (raw === undefined) return DEFAULT_COMPOSE
+    const list = Array.isArray(raw) ? raw : [raw]
+    if (list.length === 0) {
+        problems.push('compose must name at least one file')
+        return []
+    }
+    if (list.length > MAX_COMPOSE_FILES) {
+        problems.push(`compose may not name more than ${MAX_COMPOSE_FILES} files`)
+        return []
+    }
+    const files: string[] = []
+    for (const value of list) {
+        const problem = typeof value === 'string' ? relativePathProblem(value) : 'path must be a string'
+        if (problem) {
+            problems.push(`compose: ${problem}`)
+            continue
+        }
+        const file = value as string
+        // The same file twice merges it over itself, which is a mistake rather than an intention.
+        if (files.includes(file)) problems.push(`compose lists ${file} twice`)
+        else files.push(file)
+    }
+    return files
 }
 
 function parseService(name: string, raw: unknown, problems: string[]): ServiceEntry | null {
@@ -247,12 +281,7 @@ function parseProject(id: string, raw: unknown): ParsedProject {
     const dir = typeof raw.dir === 'string' && DIR.test(raw.dir) && !raw.dir.endsWith('/..') && !raw.dir.endsWith('/.') ? raw.dir : null
     if (!dir) problems.push('dir must be /var/www/<one segment>')
 
-    let compose = 'docker-compose.yml'
-    if (raw.compose !== undefined) {
-        const problem = typeof raw.compose === 'string' ? relativePathProblem(raw.compose) : 'path must be a string'
-        if (problem) problems.push(`compose: ${problem}`)
-        else compose = raw.compose as string
-    }
+    const compose = parseCompose(raw.compose, problems)
 
     const upstream = parseUpstream(raw.upstream, problems)
     const services = parseServices(raw.services, problems)
@@ -276,7 +305,7 @@ function parseProject(id: string, raw: unknown): ParsedProject {
     return {
         entry: {
             id, client, name, dir, compose,
-            composePath: posix.join(dir, compose),
+            composePaths: compose.map(file => posix.join(dir, file)),
             upstream, services, storage, capabilities, maxDomains,
             backups: { maxKeep },
         },

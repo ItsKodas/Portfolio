@@ -199,14 +199,30 @@ Then remove the `hostd-test` entry from `projects.yaml`.
    project with a message that says so. That refusal is deliberate: starting it under a different name
    would create a second copy of the site beside the running one.
 
-2. Add the entry. List every service in the compose file that you want visible, with its role, and give
-   each database its engine.
+2. Note every compose file the site runs with. The `CONFIG FILES` column of `docker compose ls` lists
+   them, and a site with host-specific settings usually has a `docker-compose.override.yml` beside its
+   base file. Put them all in `compose`, as a list, in that order:
 
-3. Only add `storage` entries for directories that are bind mounts of the site container, such as
-   uploads or media. Never add the site directory itself, and never a directory holding the compose
+   ```yaml
+    compose: [docker-compose.yml, docker-compose.override.yml]
+   ```
+
+   Naming only the base file is not a smaller version of the same entry, and the registry cannot catch
+   the mistake: hostd passes each file as `-f`, and an explicit `-f` stops compose loading an override
+   by itself, so the entry would still validate while describing a different site from the one running.
+   A `start` would then recreate the containers from the base file alone, dropping whatever the override
+   set, the published port Apache proxies to included. Sites with one compose file need no `compose` key
+   at all; it defaults to `docker-compose.yml`.
+
+3. Add the entry. List every service in the merged compose configuration that you want visible, with its
+   role, and give each database its engine. `docker compose --project-directory <dir> -f <each file>
+   config` prints what the merged configuration actually is, which is what hostd sees.
+
+4. Only add `storage` entries for directories that are bind mounts of the site container, such as
+   uploads or media. Never add the site directory itself, and never a directory holding a compose
    file, `.env`, an env file, a Dockerfile or a build context. hostd refuses those anyway, and says why.
 
-4. Wait ten seconds, then run `hc http://hostd-api:8080/projects` and confirm `"valid":true`.
+5. Wait ten seconds, then run `hc http://hostd-api:8080/projects` and confirm `"valid":true`.
 
 ## Troubleshooting
 

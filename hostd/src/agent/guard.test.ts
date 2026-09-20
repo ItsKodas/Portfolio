@@ -80,6 +80,15 @@ describe('guardProblems', () => {
             assert.deepEqual(problems, ['storage media contains /var/www/acme/uploads/docker-compose.yml, which compose reads'])
         })
 
+        // Every registered file is one compose reads, so an override is as unwritable as the base file.
+        it('refuses storage that contains any file in a compose list, not just the first', () => {
+            const problems = guardProblems(
+                entry('', '[docker-compose.yml, uploads/docker-compose.override.yml]'),
+                resolved(),
+            )
+            assert.deepEqual(problems, ['storage media contains /var/www/acme/uploads/docker-compose.override.yml, which compose reads'])
+        })
+
         it('refuses storage that contains an env_file, in either of compose\'s spellings', () => {
             for (const envFile of ['/var/www/acme/uploads/.env.web', { path: '/var/www/acme/uploads/.env.web' }]) {
                 const problems = guardProblems(entry(), resolved({

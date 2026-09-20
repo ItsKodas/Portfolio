@@ -49,6 +49,38 @@ describe('argv', () => {
     })
 })
 
+describe('argv over a compose list', () => {
+    const twoFiles = parseRegistry(`
+projects:
+  acme:
+    client: cl_1
+    name: Acme
+    dir: /var/www/acme
+    compose: [docker-compose.yml, docker-compose.override.yml]
+    upstream: 127.0.0.1:5010
+    services: { web: { role: site } }
+`).projects.get('acme')!
+
+    // An explicit -f stops compose loading docker-compose.override.yml by itself, so every file the
+    // site actually runs with has to be passed, in the order compose merges them.
+    it('passes one -f per registered file, in order', () => {
+        assert.deepEqual(lifecycleArgv(twoFiles, 'restart'), [
+            'compose', '--project-directory', '/var/www/acme',
+            '-f', '/var/www/acme/docker-compose.yml',
+            '-f', '/var/www/acme/docker-compose.override.yml',
+            'restart',
+        ])
+    })
+
+    it('resolves the merged configuration for the guard', () => {
+        assert.deepEqual(configArgv(twoFiles).slice(0, 7), [
+            'compose', '--project-directory', '/var/www/acme',
+            '-f', '/var/www/acme/docker-compose.yml',
+            '-f', '/var/www/acme/docker-compose.override.yml',
+        ])
+    })
+})
+
 describe('runLifecycle', () => {
     it('runs docker with the lifecycle argv and timeout', async () => {
         const { run, calls } = runnerReturning({ stderr: 'Container acme-web-1 Started' })
