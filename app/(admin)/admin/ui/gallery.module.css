@@ -1,0 +1,15 @@
+.gallery { display: grid; gap: 28px; padding-bottom: 40px; }
+
+.lead { color: var(--ink-3); font-size: 13px; max-width: 70ch; margin: 0; }
+
+.row { border-top: 1px solid var(--rule); padding-top: 18px; }
+
+.title { font-size: 15px; font-weight: 600; margin: 0 0 4px; }
+
+.note { color: var(--ink-3); font-size: 12.5px; margin: 0 0 14px; max-width: 70ch; }
+
+.items { display: flex; flex-wrap: wrap; gap: 14px; align-items: flex-start; }
+
+.items > * { min-width: 0; }
+
+.icon { color: var(--ink-2); display: inline-flex; }
