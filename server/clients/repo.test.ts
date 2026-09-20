@@ -49,6 +49,21 @@ describe.skipIf(!url)('clientRepo', () => {
         expect(await db.clientToken.count()).toBe(1)
     })
 
+    // The duplicate-email case above cannot prove this: the Client unique constraint fails on the first
+    // write, so the token insert is never attempted either way. Colliding on the tokenHash instead lets
+    // the client insert succeed and the token insert fail, which is the only shape that tells an atomic
+    // write apart from two separate ones.
+    it('rolls the client back when its invite token cannot be written', async () => {
+        await invited()
+        await expect(repo.createWithInvite(
+            { ...details, email: 'bo@example.com' },
+            'cl_BBBBBBBB',
+            { tokenHash: 'invite1', expiresAt: hour(1) },
+        )).rejects.toThrow()
+        expect(await db.client.findUnique({ where: { id: 'cl_BBBBBBBB' } })).toBeNull()
+        expect(await db.client.count()).toBe(1)
+    })
+
     it('finds a client by a lower-cased email', async () => {
         await invited()
         expect((await repo.byEmail('ann@example.com'))?.id).toBe('cl_ABCDEFGH')
