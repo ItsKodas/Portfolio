@@ -10,5 +10,9 @@ export default defineConfig({
     test: {
         environment: 'node',
         include: ['app/**/*.test.ts', 'server/**/*.test.ts'],
+        // The database test files share one real Postgres and TRUNCATE overlapping tables (Quote, Note) in
+        // beforeEach. Running files in parallel lets one file's TRUNCATE land mid-test in another, so files run
+        // one at a time; within a file, tests still run in the order they're written.
+        fileParallelism: false,
     },
 })
