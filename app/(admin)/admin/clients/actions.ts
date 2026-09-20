@@ -115,6 +115,12 @@ export async function resendInviteAction(clientId: string): Promise<AdminResult>
     if (!id.safeParse(clientId).success) return INVALID
     const client = await repo().byId(clientId)
     if (!client) return FAILED
+    // The detail page only offers this while there is no password, and the action has to hold the same line:
+    // an invite is redeemed with no second factor and no notification, so a fresh one for a finished account
+    // would be a way around the authenticator the client already set up.
+    if (client.passwordHash) {
+        return { ok: false, error: 'That client has already set their password. Send a reset link instead.', clientId }
+    }
 
     const now = new Date()
     const token = newSessionToken()

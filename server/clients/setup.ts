@@ -50,6 +50,9 @@ export async function completeInvite(
     const token = await deps.tokenByHash(input.tokenHash)
     const problem = tokenProblem(token, 'INVITE', now)
     if (problem || !token) return { ok: false, error: problem ?? LINK_ERROR }
+    // An invite asks for no second factor, so it may only ever reach an account that has not been set up. A
+    // client who already has a password changes it through the reset flow, which does ask for one.
+    if (token.client.passwordHash) return { ok: false, error: LINK_ERROR }
 
     await deps.setPassword(token.client.id, await deps.hashPassword(input.password), now)
     await deps.useToken(token.id, now)

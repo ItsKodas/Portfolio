@@ -82,6 +82,21 @@ describe('completeInvite', () => {
             .toEqual({ ok: false, error: LINK_ERROR })
         expect(deps.setPassword).not.toHaveBeenCalled()
     })
+
+    // An invite needs no second factor, so it must never reach an account that already has one. Changing the
+    // password of a finished account goes through the reset flow, which does ask.
+    it('refuses an invite for a client who already has a password', async () => {
+        const deps = inviteDeps({
+            tokenByHash: vi.fn(async () => ({
+                id: 'token1', purpose: 'INVITE' as const, usedAt: null, expiresAt: later(1000),
+                client: client({ passwordHash: 'stored-hash', totpConfirmedAt: now }),
+            })),
+        })
+        expect(await completeInvite({ tokenHash: 'h', password: 'correct horse battery', userAgent: null }, deps))
+            .toEqual({ ok: false, error: LINK_ERROR })
+        expect(deps.setPassword).not.toHaveBeenCalled()
+        expect(deps.createSession).not.toHaveBeenCalled()
+    })
 })
 
 describe('beginEnrolment', () => {
