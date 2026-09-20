@@ -18,7 +18,12 @@ const LIFECYCLE_ARGS: Record<LifecycleAction, string[]> = {
     restart: ['restart'],
 }
 
-export function composeBase(project: ProjectEntry): string[] {
+// What compose needs to resolve or run a project: every ProjectEntry has these, but so does a folder
+// that provisioning has just cloned and not registered yet, which is the whole reason this is its own
+// type rather than ProjectEntry itself.
+export type ComposeLocation = { dir: string, composePath: string }
+
+export function composeBase(project: ComposeLocation): string[] {
     return ['compose', '--project-directory', project.dir, '-f', project.composePath]
 }
 
@@ -26,7 +31,7 @@ export function lifecycleArgv(project: ProjectEntry, action: LifecycleAction): s
     return [...composeBase(project), ...LIFECYCLE_ARGS[action]]
 }
 
-export function configArgv(project: ProjectEntry): string[] {
+export function configArgv(project: ComposeLocation): string[] {
     // --no-env-resolution keeps env_file as the path list the guard reads, instead of compose inlining
     // every project's env values (database passwords among them) into this captured stdout. On a compose
     // too old to know the flag, the command exits non-zero and resolveCompose fails closed.
@@ -128,7 +133,7 @@ export type ResolvedService = {
 export type ResolvedCompose = { name: string, services: Record<string, ResolvedService> }
 
 export async function resolveCompose(
-    project: ProjectEntry,
+    project: ComposeLocation,
     run: Runner,
 ): Promise<{ ok: true, resolved: ResolvedCompose } | { ok: false, problem: string }> {
     const result = await run('docker', configArgv(project), CONFIG_TIMEOUT_MS)
@@ -141,4 +146,19 @@ export async function resolveCompose(
     } catch {
         return { ok: false, problem: 'docker compose config returned unreadable output' }
     }
+}
+
+// What a freshly cloned, not-yet-registered project resolves to. There is no registry entry yet to say
+// which service plays which role, so every service the compose file names is provisionally role site;
+// the project comes back needs-setup, and the operator's own edit to the registry (adding a database
+// service, correcting a role) is what happens next, exactly like enrolling a project by hand today.
+export async function resolveNewProject(
+    location: ComposeLocation,
+    run: Runner,
+): Promise<{ ok: true, services: Record<string, { role: 'site' }> } | { ok: false, problem: string }> {
+    const result = await resolveCompose(location, run)
+    if (!result.ok) return result
+    const services: Record<string, { role: 'site' }> = {}
+    for (const name of Object.keys(result.resolved.services)) services[name] = { role: 'site' }
+    return { ok: true, services }
 }

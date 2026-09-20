@@ -15,15 +15,22 @@ services:
     environment:
       HOSTD_REGISTRY_FILE: /etc/hostd/projects.yaml
       HOSTD_AGENT_SOCKET: /run/hostd/agent.sock
+      HOSTD_FETCH_SOCKET: /run/hostd/fetch.sock
       # The node user's group in the api image, so api can connect and nothing else can.
       HOSTD_SOCKET_GID: "1000"
       HOSTD_STATUS_FILE: /tmp/hostd-status.json
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
       # The same path inside as outside: compose hands bind mount sources to the daemon as host paths.
-      # Read-only in phase 1, which only reads compose files; file access in phase 3 changes this.
-      - /var/www:/var/www:ro
-      - ./projects.yaml:/etc/hostd/projects.yaml:ro
+      # Writable now: provisioning writes env files and swaps trees under here.
+      - /var/www:/var/www
+      # A directory, not a file: an atomic rename (registry-write.ts) cannot replace a bind-mounted file
+      # from inside a container. Writable only here; api and fetcher get it read-only below.
+      - ./registry:/etc/hostd
+      # Read-only, and only so the boot gate can refuse to start against a stale phase 1 registry; see
+      # RUNBOOK.md's upgrade steps. Absent (or an empty directory Docker created because the host file no
+      # longer exists) is the expected, post-upgrade state.
+      - ./projects.yaml:/etc/hostd-legacy/projects.yaml:ro
       - hostd-sock:/run/hostd
     healthcheck:
       test: ["CMD", "node", "--import", "tsx", "src/shared/healthcheck.ts", "/tmp/hostd-status.json"]
@@ -45,13 +52,34 @@ services:
       HOSTD_STATE_DIR: /state
       HOSTD_STATUS_FILE: /tmp/hostd-status.json
     volumes:
-      - ./projects.yaml:/etc/hostd/projects.yaml:ro
+      - ./registry:/etc/hostd:ro
       - hostd-state:/state
       - hostd-sock:/run/hostd
     networks:
       - hostd
     depends_on:
       - agent
+    healthcheck:
+      test: ["CMD", "node", "--import", "tsx", "src/shared/healthcheck.ts", "/tmp/hostd-status.json"]
+      interval: 60s
+      timeout: 15s
+      retries: 3
+      start_period: 120s
+    restart: unless-stopped
+
+  fetcher:
+    build:
+      context: .
+      target: fetcher
+    container_name: hostd-fetcher
+    env_file: .env.fetcher
+    volumes:
+      - /var/www:/var/www
+      - ./registry:/etc/hostd:ro
+      - hostd-sock:/run/hostd
+    networks:
+      # It clones from and fetches GitHub, unlike agent and api. It never gets the Docker socket.
+      - hostd
     healthcheck:
       test: ["CMD", "node", "--import", "tsx", "src/shared/healthcheck.ts", "/tmp/hostd-status.json"]
       interval: 60s

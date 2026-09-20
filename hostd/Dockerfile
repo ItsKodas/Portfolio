@@ -19,3 +19,7 @@ CMD ["node", "--import", "tsx", "src/api/index.ts"]
 FROM base AS agent
 RUN apk add --no-cache docker-cli docker-cli-compose
 CMD ["node", "--import", "tsx", "src/agent/index.ts"]
+
+FROM base AS fetcher
+RUN apk add --no-cache git
+CMD ["node", "--import", "tsx", "src/fetcher/index.ts"]

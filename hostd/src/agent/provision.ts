@@ -1,9 +1,10 @@
 // Creates and removes projects and environments end to end. Every step here is undoable only while the
 // steps after it have not happened yet, so the order below is load-bearing: nothing is registered before
 // it exists on disk, and a failure partway through, whether returned or thrown, removes whatever this put
-// on disk and writes nothing to the registry. Concurrent provisioning of the same id is Agent's job to
-// serialise (see provisionBusy in agent.ts); the rollback here still refuses to remove a folder a write
-// failure says is already claimed, since that folder is then someone else's, not this call's own.
+// on disk and writes nothing to the registry. Concurrent provisioning is Agent's job to serialise, with a
+// single global lock (see provisioningBusy in agent.ts, not one keyed per id); the rollback here still
+// refuses to remove a folder a write failure says is already claimed, since that folder is then someone
+// else's, not this call's own.
 // `log` never receives a repo URL, a git message or an env value; only ids, paths and fixed words, so a
 // compromised or merely careless log sink can never leak a secret.
 

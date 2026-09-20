@@ -4,7 +4,7 @@ import { EventEmitter } from 'node:events'
 import { PassThrough } from 'node:stream'
 import type { spawn as nodeSpawn } from 'node:child_process'
 import {
-    lifecycleArgv, configArgv, runLifecycle, resolveCompose, createSpawnRunner, tail,
+    lifecycleArgv, configArgv, runLifecycle, resolveCompose, resolveNewProject, createSpawnRunner, tail,
     LIFECYCLE_TIMEOUT_MS, OUTPUT_TAIL_BYTES, type Runner, type RunResult,
 } from './compose.ts'
 import { parseRegistry } from '../shared/registry.ts'
@@ -114,6 +114,30 @@ describe('resolveCompose', () => {
     it('reports a timeout', async () => {
         const { run } = runnerReturning({ exitCode: null, timedOut: true })
         assert.deepEqual(await resolveCompose(project, run), { ok: false, problem: 'docker compose config timed out' })
+    })
+})
+
+describe('resolveNewProject', () => {
+    const location = { dir: '/var/www/bakery', composePath: '/var/www/bakery/docker-compose.yml' }
+
+    it('marks every resolved service as role site, since nothing is registered yet to say otherwise', async () => {
+        const { run, calls } = runnerReturning({ stdout: JSON.stringify({ name: 'bakery', services: { web: {}, worker: {} } }) })
+        assert.deepEqual(await resolveNewProject(location, run), {
+            ok: true, services: { web: { role: 'site' }, worker: { role: 'site' } },
+        })
+        assert.deepEqual(calls[0]?.args, configArgv(location))
+    })
+
+    it('reports no services at all rather than inventing one', async () => {
+        const { run } = runnerReturning({ stdout: JSON.stringify({ name: 'bakery', services: {} }) })
+        assert.deepEqual(await resolveNewProject(location, run), { ok: true, services: {} })
+    })
+
+    it('passes a resolve failure through unchanged', async () => {
+        const { run } = runnerReturning({ exitCode: 1, stderr: 'yaml: line 3: mapping values are not allowed' })
+        assert.deepEqual(await resolveNewProject(location, run), {
+            ok: false, problem: 'docker compose config failed: yaml: line 3: mapping values are not allowed',
+        })
     })
 })
 

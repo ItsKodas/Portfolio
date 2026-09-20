@@ -165,6 +165,9 @@ function readBody(req: IncomingMessage, maxBytes: number): Promise<{ ok: true, r
             req.off('data', onData)
             req.off('end', onEnd)
             req.off('error', onError)
+            // A no-op listener stays attached for the life of the drain below: with none at all, an
+            // aborted request emitting 'error' while nothing is listening is unhandled, and Node throws.
+            req.on('error', () => {})
             resolve(result)
         }
         const onData = (chunk: Buffer) => {
