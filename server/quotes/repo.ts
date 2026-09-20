@@ -30,7 +30,10 @@ export function quoteRepo(db: PrismaClient) {
 
         countNew: () => db.quote.count({ where: { status: 'NEW', archivedAt: null } }),
 
-        get: (id: string) => db.quote.findUnique({ where: { id }, include: { notes: { orderBy: { createdAt: 'desc' } } } }),
+        get: (id: string) => db.quote.findUnique({
+            where: { id },
+            include: { notes: { orderBy: { createdAt: 'desc' } }, client: { select: { id: true, name: true, company: true } } },
+        }),
 
         setStatus: async (id: string, status: Status) => {
             await db.quote.update({ where: { id }, data: { status } })
@@ -60,6 +63,13 @@ export function quoteRepo(db: PrismaClient) {
         markConfirmed: async (id: string, at: Date) => {
             await db.quote.update({ where: { id }, data: { confirmedAt: at } })
         },
+
+        // Quotes a client came from, for their page in the admin area. Newest first, like the inbox.
+        listForClient: (clientId: string) => db.quote.findMany({
+            where: { clientId },
+            select: { id: true, name: true, createdAt: true },
+            orderBy: { createdAt: 'desc' },
+        }),
     }
 }
 

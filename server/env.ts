@@ -18,37 +18,64 @@ function required(env: Env, name: string, problems: string[]): string {
     return value ?? ''
 }
 
-export type MailConfig = {
+export type SmtpConfig = {
     host: string
     port: number
     user?: string
     pass?: string
     from: string
-    notifyTo: string
-    replyTo: string
-    // The site's own address, for the link to a quote in the notification email
+    // The site's own address, for links in emails
     siteUrl: string
 }
 
-export function mailConfig(env: Env = process.env): MailConfig {
-    const problems: string[] = []
+// Collects rather than throws, so a caller that needs more than the transport can gather its own
+// problems into the same list and report everything missing in one error. A fresh deploy should
+// have to be told once what is missing, not once per group.
+function readSmtp(env: Env, problems: string[]): SmtpConfig {
     const host = required(env, 'SMTP_HOST', problems)
     const portText = required(env, 'SMTP_PORT', problems)
     const port = Number(portText)
     if (portText && (!Number.isInteger(port) || port < 1 || port > 65535)) problems.push('SMTP_PORT must be a port number, such as 587')
     const from = required(env, 'MAIL_FROM', problems)
-    const notifyTo = required(env, 'QUOTE_NOTIFY_TO', problems)
-    const replyTo = required(env, 'QUOTE_REPLY_TO', problems)
     const siteUrl = required(env, 'AUTH_URL', problems)
-    if (problems.length) throw new EnvError(problems)
 
     return {
-        host, port, from, notifyTo, replyTo,
+        host, port, from,
         user: env.SMTP_USER?.trim() || undefined,
         // Not trimmed on purpose: a password may legitimately start or end with whitespace
         pass: env.SMTP_PASS || undefined,
         siteUrl: siteUrl.replace(/\/+$/, ''),
     }
+}
+
+// Just the transport. Split out from the quote settings so a missing QUOTE_NOTIFY_TO can't stop a client
+// invite going out: the two features fail independently.
+export function smtpConfig(env: Env = process.env): SmtpConfig {
+    const problems: string[] = []
+    const config = readSmtp(env, problems)
+    if (problems.length) throw new EnvError(problems)
+    return config
+}
+
+export type MailConfig = SmtpConfig & { notifyTo: string, replyTo: string }
+
+export function quoteMailConfig(env: Env = process.env): MailConfig {
+    const problems: string[] = []
+    const base = readSmtp(env, problems)
+    const notifyTo = required(env, 'QUOTE_NOTIFY_TO', problems)
+    const replyTo = required(env, 'QUOTE_REPLY_TO', problems)
+    if (problems.length) throw new EnvError(problems)
+    return { ...base, notifyTo, replyTo }
+}
+
+export type ClientMailConfig = SmtpConfig & { replyTo: string }
+
+export function clientMailConfig(env: Env = process.env): ClientMailConfig {
+    const problems: string[] = []
+    const base = readSmtp(env, problems)
+    const replyTo = required(env, 'CLIENT_REPLY_TO', problems)
+    if (problems.length) throw new EnvError(problems)
+    return { ...base, replyTo }
 }
 
 function single(env: Env, name: string): string {
@@ -64,3 +91,12 @@ export const turnstileSecret = (env: Env = process.env) => single(env, 'TURNSTIL
 // The IP hash is keyed with the sessions' secret, so there is one fewer secret to manage. Rotating it only resets
 // the rate-limit window.
 export const ipHashKey = (env: Env = process.env) => single(env, 'AUTH_SECRET')
+
+// Encrypts TOTP secrets and keys the recovery code HMACs. Deliberately not AUTH_SECRET: rotating that today
+// only resets rate-limit windows, and it must not also brick every client's authenticator.
+export function clientSecretKey(env: Env = process.env): Buffer {
+    const value = single(env, 'CLIENT_SECRET_KEY')
+    const key = Buffer.from(value, 'base64')
+    if (key.length !== 32) throw new EnvError(['CLIENT_SECRET_KEY must be 32 bytes, base64 encoded, from: openssl rand -base64 32'])
+    return key
+}

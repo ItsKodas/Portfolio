@@ -54,9 +54,39 @@ volume). New migrations apply when the site starts. It needs a `.env` beside `do
 - `SMTP_HOST`, `SMTP_PORT`, `SMTP_USER` and `SMTP_PASS`, from the email relay, with `dev.horizons.gg` verified there as
   a sending domain (add the relay's DNS records in Cloudflare; mailops doesn't manage them)
 - `MAIL_FROM`, `QUOTE_NOTIFY_TO` and `QUOTE_REPLY_TO` as in `.env.example`
+- `CLIENT_SECRET_KEY`, from `openssl rand -base64 32`, and `CLIENT_REPLY_TO` as in `.env.example`
 
 To restore a dump: `docker compose exec db-backup pg_restore --clean --if-exists -d horizons /backups/horizons-YYYY-MM-DD.dump`
 (this replaces what's in the database).
+
+## Client accounts
+
+Clients get their own sign-in at `/portal`, separate from the admin area. From a client's page in the admin area
+(or from a won quote, see below) "Create client" sends an invite email with a link that lets them set a password.
+The authenticator step (TOTP, with recovery codes to save) is mandatory and cannot be skipped: a client who hasn't
+finished it is sent back to setup on every request, not just signed out. The design is in
+`docs/superpowers/specs/2026-09-20-client-accounts-design.md`.
+
+Marking a quote "Won" shows a "Create client from this quote" button on it, which opens the new client form
+prefilled with the quote's name, company and email rather than creating the account outright. That way the details
+can be corrected first, and if the email already belongs to a client the form offers to link that quote to the
+existing client instead of making a second account. Deleting a client later leaves its quotes in place with no
+client attached.
+
+If a client is locked out because they lost their authenticator device, reset their 2FA from their page in the
+admin area. That wipes their authenticator secret, recovery codes and sessions in one go and emails them a notice,
+so signing in with their existing password sends them straight through enrolment again: no password reset needed
+if they still remember it. Only send a password reset as well if they have also forgotten their password, and
+reset 2FA first, since the reset form demands a code from an authenticator while one is still on file and they
+no longer have it.
+
+A client's id, shown on their page in the admin area, is what goes into `hostd/projects.yaml` as `client:` for
+that project.
+
+`CLIENT_SECRET_KEY` encrypts every client's authenticator secret and keys their recovery codes. It is not
+`AUTH_SECRET` and must not be rotated casually: changing it means every client has to set up their authenticator
+again. Generate it with `openssl rand -base64 32` and add it, with `CLIENT_REPLY_TO`, to the server's `.env`
+alongside the other variables in the Deploying section above.
 
 ## Wallpaper Engine
 

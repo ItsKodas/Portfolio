@@ -6,7 +6,7 @@ import 'server-only'
 import { after } from 'next/server'
 
 import { getDb } from '../db'
-import { ipHashKey, mailConfig, turnstileSecret } from '../env'
+import { ipHashKey, quoteMailConfig, turnstileSecret } from '../env'
 import { createMailer } from '../mailer'
 import { hashIp } from '../ratelimit'
 import { verifyTurnstile } from '../turnstile'
@@ -23,7 +23,7 @@ export async function deliverById(id: string): Promise<DeliverResult> {
     const quote = await repo.get(id)
     if (!quote) throw new Error(`Quote ${id} does not exist`)
     // Read here rather than at startup, so a missing relay setting only stops email
-    const mail = mailConfig()
+    const mail = quoteMailConfig()
     return deliverQuoteEmails(quote, {
         send: createMailer(mail),
         markNotified: repo.markNotified,

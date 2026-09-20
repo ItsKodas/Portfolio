@@ -4,12 +4,14 @@ import 'server-only'
 
 import nodemailer from 'nodemailer'
 
-import type { MailConfig } from './env'
+import type { SmtpConfig } from './env'
 import type { Email } from './quotes/emails'
 
 export type SendEmail = (email: Email) => Promise<void>
 
-export function createMailer(config: MailConfig): SendEmail {
+// Takes the plain transport settings rather than either feature's own config type, so it works for the
+// quotes' MailConfig and the clients' ClientMailConfig alike: both are SmtpConfig plus fields this never reads.
+export function createMailer(config: SmtpConfig): SendEmail {
     const transport = nodemailer.createTransport({
         host: config.host,
         port: config.port,
