@@ -201,6 +201,17 @@ describe('codeStep', () => {
         expect(deps.completeMfa).not.toHaveBeenCalled()
         expect(deps.decryptSecret).not.toHaveBeenCalled()
     })
+
+    // beginEnrolment stores the secret the moment the QR code is drawn, so a secret on its own must not be
+    // enough here. Accepting one would finish a sign-in on an account with no recovery codes, since those are
+    // only made in confirmEnrolment.
+    it('refuses a client whose enrolment was never confirmed', async () => {
+        const deps = codeDeps()
+        const pending = { id: 'session1', createdAt: now, client: client({ totpConfirmedAt: null }) } as never
+        expect(await codeStep({ session: pending, code: '123456' }, deps)).toEqual({ ok: false, error: CODE_ERROR })
+        expect(deps.completeMfa).not.toHaveBeenCalled()
+        expect(deps.decryptSecret).not.toHaveBeenCalled()
+    })
 })
 
 // The test the whole design rests on

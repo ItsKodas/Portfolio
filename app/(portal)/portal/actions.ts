@@ -56,6 +56,10 @@ export async function codeAction(code: string): Promise<PortalResult> {
     const parsed = codeSchema.safeParse(code)
     if (!parsed.success) return { ok: false, error: parsed.error.issues[0]?.message ?? INVALID.error }
     const session = await requirePendingSession()
+    // The code page redirects an unconfirmed enrolment to setup, but an action is reachable without its page.
+    // Without this, a secret stored by beginEnrolment and scanned but never confirmed would finish a sign-in
+    // on an account that has no recovery codes, exactly as acknowledgeCodesAction guards against below.
+    if (!session.client.totpConfirmedAt) return INVALID
     try {
         const result = await codeStep({ session, code: parsed.data }, codeStepDeps(await requestIpHash()))
         if (!result.ok) return result

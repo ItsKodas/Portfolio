@@ -123,6 +123,11 @@ export async function codeStep(
     // it is safe in passwordStep: reaching this step means the password was already right.
     if (isLocked(client, now)) return { ok: false, error: LOCKED_ERROR }
 
+    // A stored secret is not an enrolled one. beginEnrolment writes totpSecret the moment the QR code is
+    // drawn, so without this an unconfirmed secret scanned at /portal/setup would produce codes this step
+    // accepts, finishing a sign-in on an account with no recovery codes at all. Only confirmTotp settles it.
+    if (!client.totpConfirmedAt) return { ok: false, error: CODE_ERROR }
+
     const finish = async () => {
         await deps.completeMfa(session.id, now, activeExpiry(session.createdAt, now))
         await deps.recordSuccess(client.id, now)
