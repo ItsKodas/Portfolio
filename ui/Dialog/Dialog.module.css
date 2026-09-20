@@ -1,0 +1,40 @@
+.dialog {
+    width: min(660px, calc(100vw - 32px));
+    padding: 0;
+    border: 1px solid var(--rule-hi);
+    border-radius: var(--radius-card);
+    background: var(--panel);
+    color: var(--ink);
+}
+
+.dialog::backdrop {
+    background: rgba(4, 7, 16, .8);
+}
+
+.head {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 14px 16px;
+    border-bottom: 1px solid var(--rule);
+}
+
+.title {
+    margin: 0;
+    font-size: 14.5px;
+    font-weight: 600;
+}
+
+.close {
+    margin-left: auto;
+}
+
+.body { padding: 16px; }
+
+.footer {
+    display: flex;
+    gap: 8px;
+    justify-content: flex-end;
+    padding: 13px 16px;
+    border-top: 1px solid var(--rule);
+}
