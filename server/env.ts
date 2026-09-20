@@ -12,7 +12,7 @@ export class EnvError extends Error {
     }
 }
 
-function required(env: Env, name: string, problems: string[]): string {
+export function required(env: Env, name: string, problems: string[]): string {
     const value = env[name]?.trim()
     if (!value) problems.push(`${name} is not set`)
     return value ?? ''
