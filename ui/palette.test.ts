@@ -24,12 +24,17 @@ function stylesheets(dir: string): string[] {
 }
 
 // A literal colour: hex in any length, or an rgb/rgba whose channels are not all equal.
+//
+// Comments are stripped first. The first version of this check read them too, which meant a note saying
+// what a colour used to be was itself a failure, and the only way to explain a change was to leave the
+// explanation vague. A rule that punishes documenting it is a rule fighting its own purpose.
 function literals(css: string): string[] {
     const found: string[] = []
+    const code = css.replace(/\/\*[\s\S]*?\*\//g, '')
 
-    for (const match of css.matchAll(/#[0-9a-fA-F]{3,8}\b/g)) found.push(match[0])
+    for (const match of code.matchAll(/#[0-9a-fA-F]{3,8}\b/g)) found.push(match[0])
 
-    for (const match of css.matchAll(/rgba?\(\s*([0-9]+)\s*,\s*([0-9]+)\s*,\s*([0-9]+)/g)) {
+    for (const match of code.matchAll(/rgba?\(\s*([0-9]+)\s*,\s*([0-9]+)\s*,\s*([0-9]+)/g)) {
         const [r, g, b] = [match[1], match[2], match[3]].map(Number)
         if (r !== g || g !== b) found.push(match[0] + ')')
     }
@@ -60,5 +65,15 @@ describe('the component stylesheets', () => {
     it('catches a tinted one, which does not', () => {
         expect(literals('.a { border-color: rgba(111, 211, 155, .35); }')).toEqual(['rgba(111, 211, 155)'])
         expect(literals('.a { color: #8fd4f5; }')).toEqual(['#8fd4f5'])
+    })
+
+    it('lets a comment say what a colour used to be', () => {
+        // Otherwise the only way to record why something changed is to be vague about it
+        expect(literals('/* was rgba(111, 211, 155, .35), the old --good */ .a { color: var(--good); }')).toEqual([])
+        expect(literals('/* #0b101f was the night navy */ .a { background: var(--night); }')).toEqual([])
+    })
+
+    it('is not fooled by a colour that merely follows a comment', () => {
+        expect(literals('/* a note */ .a { color: #8fd4f5; }')).toEqual(['#8fd4f5'])
     })
 })
