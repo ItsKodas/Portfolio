@@ -44,6 +44,12 @@ describe('quoteMailConfig', () => {
         ])
     })
 
+    it('names missing quote settings when SMTP is present', () => {
+        expect(problemsOf(() => quoteMailConfig(smtp))).toEqual([
+            'QUOTE_NOTIFY_TO is not set', 'QUOTE_REPLY_TO is not set',
+        ])
+    })
+
     it('rejects a port that is not a port number', () => {
         expect(problemsOf(() => quoteMailConfig({ ...mail, SMTP_PORT: 'smtp' }))).toEqual(['SMTP_PORT must be a port number, such as 587'])
         expect(problemsOf(() => quoteMailConfig({ ...mail, SMTP_PORT: '70000' }))).toEqual(['SMTP_PORT must be a port number, such as 587'])
