@@ -1,4 +1,5 @@
 import type { Metadata } from 'next'
+import Link from 'next/link'
 import { notFound } from 'next/navigation'
 import { Alert, Box, Button, Chip, Container, Divider, Paper, Stack, Typography } from '@mui/material'
 
@@ -42,6 +43,17 @@ export default async function QuotePage({ params }: { params: Promise<{ id: stri
                 <Typography variant="h4" component="h1" sx={{ fontWeight: 700 }}>{quote.name}</Typography>
                 <Chip label={STATUS_LABELS[quote.status]} color={STATUS_COLOURS[quote.status]} />
                 {quote.archivedAt && <Chip label="Archived" variant="outlined" />}
+                {quote.client
+                    ? (
+                        <Button component={Link} href={`/admin/clients/${quote.client.id}`} variant="outlined" size="small">
+                            Client: {quote.client.company ?? quote.client.name}
+                        </Button>
+                    )
+                    : quote.status === 'WON' && (
+                        <Button component={Link} href={`/admin/clients/new?fromQuote=${quote.id}`} variant="contained" size="small">
+                            Create client from this quote
+                        </Button>
+                    )}
             </Stack>
             <Typography color="text.secondary" sx={{ mb: 3 }}>Received {formatWhen(quote.createdAt)}</Typography>
 

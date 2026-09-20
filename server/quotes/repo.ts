@@ -30,7 +30,10 @@ export function quoteRepo(db: PrismaClient) {
 
         countNew: () => db.quote.count({ where: { status: 'NEW', archivedAt: null } }),
 
-        get: (id: string) => db.quote.findUnique({ where: { id }, include: { notes: { orderBy: { createdAt: 'desc' } } } }),
+        get: (id: string) => db.quote.findUnique({
+            where: { id },
+            include: { notes: { orderBy: { createdAt: 'desc' } }, client: { select: { id: true, name: true, company: true } } },
+        }),
 
         setStatus: async (id: string, status: Status) => {
             await db.quote.update({ where: { id }, data: { status } })
