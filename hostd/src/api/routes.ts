@@ -38,6 +38,7 @@ const AGENT_STATUS: Record<RefusalCode, number> = {
     'capability-disabled': 403,
     'unknown-project': 404,
     'unknown-service': 404,
+    'unknown-environment': 404,
     'invalid-project': 409,
     busy: 409,
     failed: 502,

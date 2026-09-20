@@ -4,6 +4,8 @@ import { PassThrough } from 'node:stream'
 import { Agent, MAX_FOLLOWS_PER_PROJECT, type AgentDeps, type Outcome } from './agent.ts'
 import { lifecycleArgv, type Runner, type RunResult } from './compose.ts'
 import type { ContainerInspect, DockerApi } from './docker.ts'
+import type { EnvFs } from './env-files.ts'
+import type { ProvisionDeps } from './provision.ts'
 import { parseRegistry, type ProjectEntry } from '../shared/registry.ts'
 import type { AgentRequest, LogLine } from '../shared/protocol.ts'
 
@@ -15,7 +17,7 @@ projects:
     dir: /var/www/acme
     upstream: 127.0.0.1:5010
     services: { web: { role: site }, db: { role: database, engine: postgres } }
-    capabilities: [lifecycle, logs]
+    capabilities: [lifecycle, logs, provision, env]
   quiet:
     client: cl_1
     name: Quiet
@@ -245,5 +247,66 @@ describe('logs', () => {
             clearInterval(keepAlive)
         }
         assert.equal(agent.followCount('acme'), 0)
+    })
+})
+
+function fakeEnvFs(overrides: Partial<EnvFs> = {}): EnvFs {
+    return {
+        readdir: async () => [],
+        readFile: async () => { throw new Error('ENOENT: no such file or directory') },
+        writeFile: async () => {},
+        rename: async () => {},
+        stat: async () => ({ size: 0 }),
+        realpath: async path => path,
+        ...overrides,
+    }
+}
+
+function fakeProvisionDeps(overrides: Partial<ProvisionDeps> = {}): ProvisionDeps {
+    return {
+        registry: () => registry,
+        writer: { write: async () => ({ ok: true }) } as unknown as ProvisionDeps['writer'],
+        fetcher: { call: async () => ({ ok: true }) },
+        choosePort: async () => ({ ok: true, port: 5100 }),
+        mkdir: async () => {},
+        rmdir: async () => {},
+        exists: async () => false,
+        resolve: async () => ({ ok: true, services: { web: { role: 'site' } } }),
+        log: () => {},
+        ...overrides,
+    }
+}
+
+describe('provisioning and env', () => {
+    const envWrite = (project = 'acme'): AgentRequest => ({ verb: 'env', project, args: { action: 'write', environment: 'live', path: '.env', text: 'A=1' } })
+
+    it('refuses provision and env when the capability is off', async () => {
+        const { agent } = setup({ provision: fakeProvisionDeps() })
+        const provisionReply = replyOf(await agent.handle({ verb: 'provision', project: 'quiet', args: { action: 'remove', environment: null } }))
+        assert.equal(provisionReply?.ok === false && provisionReply.code, 'capability-disabled')
+
+        const envReply = replyOf(await agent.handle({ verb: 'env', project: 'quiet', args: { action: 'list', environment: 'live' } }))
+        assert.equal(envReply?.ok === false && envReply.code, 'capability-disabled')
+    })
+
+    it('refuses an env write whose path is not an env file', async () => {
+        const { agent } = setup({ envFs: fakeEnvFs() })
+        const reply = replyOf(await agent.handle({ verb: 'env', project: 'acme', args: { action: 'write', environment: 'live', path: 'src/index.ts', text: 'x' } }))
+        assert.equal(reply?.ok, false)
+        assert.equal(reply?.ok === false && reply.code, 'bad-request')
+        assert.match(reply?.ok === false ? reply.message : '', /env file/)
+    })
+
+    it('holds the env lock while writing, so a second write is refused as busy', async () => {
+        let release: () => void = () => {}
+        const blocked = new Promise<void>(resolve => { release = resolve })
+        const { agent } = setup({ envFs: fakeEnvFs({ writeFile: async () => { await blocked } }) })
+
+        const first = agent.handle(envWrite())
+        await new Promise(resolve => setImmediate(resolve))
+        assert.deepEqual(replyOf(await agent.handle(envWrite())), { ok: false, code: 'busy', message: 'acme already has an env write running for live' })
+        release()
+        assert.equal(replyOf(await first)?.ok, true)
+        assert.equal(replyOf(await agent.handle(envWrite()))?.ok, true)
     })
 })

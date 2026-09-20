@@ -72,6 +72,74 @@ describe('parseAgentRequest', () => {
         assert.equal(refusalOf({ verb: 'logs', project: 'acme', args: { service: 'web', since: -1 } }), 'bad-request: since must be a non-negative number of seconds')
         assert.equal(refusalOf({ verb: 'logs', project: 'acme', args: { service: 'web', follow: 'yes' } }), 'bad-request: follow must be true or false')
     })
+
+    it('parses a provision create request, which carries no project', () => {
+        const createArgs = { action: 'create', id: 'bakery', client: 'cl_2', name: 'Bakery', repo: 'git@github.com:x/bakery.git', branch: 'main', domain: 'bakery.com', certificate: 'letsencrypt' }
+        assert.deepEqual(parsed({ verb: 'provision', args: createArgs }), { ok: true, request: { verb: 'provision', args: createArgs } })
+    })
+
+    it('parses provision add-environment and remove, which carry a project', () => {
+        const addArgs = { action: 'add-environment', environment: 'test', branch: 'develop', domain: 'test.acme.com', certificate: null }
+        assert.deepEqual(
+            parsed({ verb: 'provision', project: 'acme', args: addArgs }),
+            { ok: true, request: { verb: 'provision', project: 'acme', args: addArgs } },
+        )
+        assert.deepEqual(
+            parsed({ verb: 'provision', project: 'acme', args: { action: 'remove', environment: 'test' } }),
+            { ok: true, request: { verb: 'provision', project: 'acme', args: { action: 'remove', environment: 'test' } } },
+        )
+        assert.deepEqual(
+            parsed({ verb: 'provision', project: 'acme', args: { action: 'remove', environment: null } }),
+            { ok: true, request: { verb: 'provision', project: 'acme', args: { action: 'remove', environment: null } } },
+        )
+    })
+
+    it('refuses a provision create request that carries a project, and one with a malformed or missing field', () => {
+        const createArgs = { action: 'create', id: 'bakery', client: 'cl_2', name: 'Bakery', repo: 'git@github.com:x/bakery.git', branch: 'main', domain: 'bakery.com', certificate: 'letsencrypt' }
+        assert.equal(refusalOf({ verb: 'provision', project: 'acme', args: createArgs }), 'bad-request: provision create takes only args')
+        assert.equal(refusalOf({ verb: 'provision', args: { ...createArgs, id: 5 } }), 'bad-request: id is malformed')
+        assert.equal(refusalOf({ verb: 'provision', args: { ...createArgs, certificate: 'self-signed' } }), 'bad-request: certificate is malformed')
+        assert.equal(refusalOf({ verb: 'provision', args: { ...createArgs, extra: true } }), 'bad-request: create takes only id, client, name, repo, branch, domain and certificate')
+    })
+
+    it('refuses provision add-environment for anything other than test, and remove for an unknown environment', () => {
+        assert.equal(
+            refusalOf({ verb: 'provision', project: 'acme', args: { action: 'add-environment', environment: 'live', branch: 'main', domain: null, certificate: null } }),
+            'bad-request: environment must be test',
+        )
+        assert.equal(
+            refusalOf({ verb: 'provision', project: 'acme', args: { action: 'remove', environment: 'staging' } }),
+            'bad-request: environment must be live, test or null',
+        )
+        assert.equal(refusalOf({ verb: 'provision', project: '../acme', args: { action: 'remove', environment: null } }), 'bad-request: project is malformed')
+    })
+
+    it('refuses an unknown provision action', () => {
+        assert.equal(refusalOf({ verb: 'provision', args: { action: 'destroy' } }), 'bad-request: action must be create, add-environment or remove')
+    })
+
+    it('parses every env action, defaulting nothing', () => {
+        assert.deepEqual(
+            parsed({ verb: 'env', project: 'acme', args: { action: 'list', environment: 'live' } }),
+            { ok: true, request: { verb: 'env', project: 'acme', args: { action: 'list', environment: 'live' } } },
+        )
+        assert.deepEqual(
+            parsed({ verb: 'env', project: 'acme', args: { action: 'read', environment: 'test', path: '.env' } }),
+            { ok: true, request: { verb: 'env', project: 'acme', args: { action: 'read', environment: 'test', path: '.env' } } },
+        )
+        assert.deepEqual(
+            parsed({ verb: 'env', project: 'acme', args: { action: 'write', environment: 'live', path: '.env', text: 'A=1' } }),
+            { ok: true, request: { verb: 'env', project: 'acme', args: { action: 'write', environment: 'live', path: '.env', text: 'A=1' } } },
+        )
+    })
+
+    it('refuses malformed env requests', () => {
+        assert.equal(refusalOf({ verb: 'env', project: 'acme', args: { action: 'list', environment: 'staging' } }), 'bad-request: environment must be live or test')
+        assert.equal(refusalOf({ verb: 'env', project: 'acme', args: { action: 'read', environment: 'live' } }), 'bad-request: path is malformed')
+        assert.equal(refusalOf({ verb: 'env', project: 'acme', args: { action: 'write', environment: 'live', path: '.env' } }), 'bad-request: text is malformed')
+        assert.equal(refusalOf({ verb: 'env', project: 'acme', args: { action: 'list', environment: 'live', path: '.env' } }), 'bad-request: list takes only environment')
+        assert.equal(refusalOf({ verb: 'env', project: 'acme', args: { action: 'delete', environment: 'live' } }), 'bad-request: action must be list, read or write')
+    })
 })
 
 const registry = parseRegistry(`
@@ -84,7 +152,7 @@ projects:
     services:
       web: { role: site }
       appdb: { role: database, engine: sqlite, file: data/app.db }
-    capabilities: [logs]
+    capabilities: [logs, env]
   broken:
     client: cl_1
 `)
@@ -124,5 +192,31 @@ describe('checkStructure', () => {
             const result = checkStructure(registry, { verb: 'logs', project: 'acme', args: { service, tail: 10, since: null, follow: false } }, none)
             assert.deepEqual(result, { ok: false, code: 'unknown-service', message: `${service} is not a registered service of acme` }, service)
         }
+    })
+
+    it('passes an env request for an environment the project actually has', () => {
+        const result = checkStructure(registry, { verb: 'env', project: 'acme', args: { action: 'list', environment: 'live' } }, none)
+        assert.equal(result.ok, true)
+    })
+
+    it('refuses an env request for an environment the project does not have', () => {
+        const result = checkStructure(registry, { verb: 'env', project: 'acme', args: { action: 'list', environment: 'test' } }, none)
+        assert.deepEqual(result, { ok: false, code: 'unknown-environment', message: 'acme has no test environment' })
+    })
+
+    it('refuses provision and env when the capability is off', () => {
+        const noProvisionOrEnv = parseRegistry(`
+projects:
+  quiet:
+    client: cl_1
+    name: Quiet
+    dir: /var/www/quiet
+    upstream: 127.0.0.1:5099
+    services: { web: { role: site } }
+`)
+        const provisionResult = checkStructure(noProvisionOrEnv, { verb: 'provision', project: 'quiet', args: { action: 'remove', environment: null } }, none)
+        assert.deepEqual(provisionResult, { ok: false, code: 'capability-disabled', message: 'provision is not enabled for quiet' })
+        const envResult = checkStructure(noProvisionOrEnv, { verb: 'env', project: 'quiet', args: { action: 'list', environment: 'live' } }, none)
+        assert.deepEqual(envResult, { ok: false, code: 'capability-disabled', message: 'env is not enabled for quiet' })
     })
 })

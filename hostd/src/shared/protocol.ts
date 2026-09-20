@@ -3,7 +3,13 @@
 // it does not recognise, including an extra field, is refused rather than ignored.
 
 import { PROJECT_ID, SERVICE_NAME, isRecord } from './formats.ts'
-import { isComposeService, type Capability, type ProjectEntry, type Registry } from './registry.ts'
+import {
+    isComposeService, environmentOf, ENVIRONMENTS, CERTIFICATE_MODES,
+    type Capability, type CertificateMode, type EnvironmentName, type ProjectEntry, type Registry,
+} from './registry.ts'
+// Type-only: the shape of a directory listing of env files. Owned by the agent, where the files
+// themselves are read; the wire protocol only ever names the shape, never the module that walks them.
+import type { EnvFileList } from '../agent/env-files.ts'
 
 export const MAX_REQUEST_BYTES = 64 * 1024
 export const MAX_TAIL = 5000
@@ -16,13 +22,44 @@ export type HealthRequest = { verb: 'health' }
 export type StatusRequest = { verb: 'status', project: string }
 export type LifecycleRequest = { verb: 'lifecycle', project: string, args: { action: LifecycleAction } }
 export type LogsRequest = { verb: 'logs', project: string, args: LogsArgs }
-export type ProjectRequest = StatusRequest | LifecycleRequest | LogsRequest
-export type AgentRequest = HealthRequest | ProjectRequest
+
+// Creating a project has nothing to check structurally yet, so it carries no project id: there is no
+// registry entry for checkStructure to look up. Every other provision action names the project it acts on.
+export type ProvisionCreateArgs = {
+    action: 'create'
+    id: string
+    client: string
+    name: string
+    repo: string
+    branch: string
+    domain: string | null
+    certificate: CertificateMode | null
+}
+export type ProvisionAddEnvironmentArgs = {
+    action: 'add-environment'
+    environment: 'test'
+    branch: string
+    domain: string | null
+    certificate: CertificateMode | null
+}
+export type ProvisionRemoveArgs = { action: 'remove', environment: EnvironmentName | null }
+export type ProvisionCreateRequest = { verb: 'provision', args: ProvisionCreateArgs }
+export type ProvisionOnProjectRequest = { verb: 'provision', project: string, args: ProvisionAddEnvironmentArgs | ProvisionRemoveArgs }
+export type ProvisionRequest = ProvisionCreateRequest | ProvisionOnProjectRequest
+
+export type EnvListArgs = { action: 'list', environment: EnvironmentName }
+export type EnvReadArgs = { action: 'read', environment: EnvironmentName, path: string }
+export type EnvWriteArgs = { action: 'write', environment: EnvironmentName, path: string, text: string }
+export type EnvArgs = EnvListArgs | EnvReadArgs | EnvWriteArgs
+export type EnvRequest = { verb: 'env', project: string, args: EnvArgs }
+
+export type ProjectRequest = StatusRequest | LifecycleRequest | LogsRequest | ProvisionOnProjectRequest | EnvRequest
+export type AgentRequest = HealthRequest | ProvisionCreateRequest | ProjectRequest
 export type Verb = AgentRequest['verb']
 
 export type RefusalCode =
     | 'bad-request' | 'unknown-project' | 'invalid-project' | 'capability-disabled'
-    | 'unknown-service' | 'busy' | 'failed' | 'unavailable'
+    | 'unknown-service' | 'unknown-environment' | 'busy' | 'failed' | 'unavailable'
 export type Refusal = { ok: false, code: RefusalCode, message: string, output?: string }
 
 export function refuse(code: RefusalCode, message: string, output?: string): Refusal {
@@ -41,8 +78,13 @@ export type ServiceStatus = {
 export type HealthReply = { ok: true, warnings: string[], invalid: Record<string, string> }
 export type StatusReply = { ok: true, services: ServiceStatus[] }
 export type LifecycleReply = { ok: true, output: string }
+// Provisioning never starts a site on its own: an operator still has to fill in the env files this
+// names before lifecycle start makes sense, which is what state carries across the wire.
+export type ProvisionReply = { ok: true, project: { id: string, state: 'needs-setup' }, envFiles: EnvFileList }
+export type EnvListReply = { ok: true, files: EnvFileList }
+export type EnvReadReply = { ok: true, text: string }
 export type StreamHeader = { ok: true, stream: true }
-export type AgentReply = HealthReply | StatusReply | LifecycleReply | Refusal
+export type AgentReply = HealthReply | StatusReply | LifecycleReply | ProvisionReply | EnvListReply | EnvReadReply | Refusal
 export type LogLine = { stream: 'stdout' | 'stderr', ts: string | null, text: string, truncated: boolean }
 
 // Status is visible to anyone who may see the project at all; everything else needs its capability.
@@ -51,6 +93,8 @@ export const VERB_CAPABILITY: Record<Verb, Capability | null> = {
     status: null,
     lifecycle: 'lifecycle',
     logs: 'logs',
+    provision: 'provision',
+    env: 'env',
 }
 
 type Parsed = { ok: true, request: AgentRequest } | Refusal
@@ -79,6 +123,106 @@ function parseLogsArgs(args: unknown): LogsArgs | Refusal {
     const follow = args.follow === undefined ? false : args.follow
     if (typeof follow !== 'boolean') return refuse('bad-request', 'follow must be true or false')
     return { service: args.service, tail, since: since as number | null, follow }
+}
+
+function parseProvisionCreate(raw: Record<string, unknown>): Parsed {
+    if (!onlyKeys(raw, ['verb', 'args'])) return refuse('bad-request', 'provision create takes only args')
+    const args = raw.args as Record<string, unknown>
+    if (!onlyKeys(args, ['action', 'id', 'client', 'name', 'repo', 'branch', 'domain', 'certificate'])) {
+        return refuse('bad-request', 'create takes only id, client, name, repo, branch, domain and certificate')
+    }
+    if (typeof args.id !== 'string') return refuse('bad-request', 'id is malformed')
+    if (typeof args.client !== 'string') return refuse('bad-request', 'client is malformed')
+    if (typeof args.name !== 'string') return refuse('bad-request', 'name is malformed')
+    if (typeof args.repo !== 'string') return refuse('bad-request', 'repo is malformed')
+    if (typeof args.branch !== 'string') return refuse('bad-request', 'branch is malformed')
+    const domain = args.domain
+    if (domain !== null && typeof domain !== 'string') return refuse('bad-request', 'domain is malformed')
+    const certificate = args.certificate
+    if (certificate !== null && !(CERTIFICATE_MODES as readonly string[]).includes(certificate as string)) return refuse('bad-request', 'certificate is malformed')
+    return {
+        ok: true,
+        request: {
+            verb: 'provision',
+            args: {
+                action: 'create', id: args.id, client: args.client, name: args.name, repo: args.repo, branch: args.branch,
+                domain: domain as string | null, certificate: certificate as CertificateMode | null,
+            },
+        },
+    }
+}
+
+function parseProvisionAddEnvironment(raw: Record<string, unknown>): Parsed {
+    if (!onlyKeys(raw, ['verb', 'project', 'args'])) return refuse('bad-request', 'provision takes only project and args')
+    const project = projectOf(raw)
+    if (!project) return refuse('bad-request', 'project is malformed')
+    const args = raw.args as Record<string, unknown>
+    if (!onlyKeys(args, ['action', 'environment', 'branch', 'domain', 'certificate'])) {
+        return refuse('bad-request', 'add-environment takes only environment, branch, domain and certificate')
+    }
+    if (args.environment !== 'test') return refuse('bad-request', 'environment must be test')
+    if (typeof args.branch !== 'string') return refuse('bad-request', 'branch is malformed')
+    const domain = args.domain
+    if (domain !== null && typeof domain !== 'string') return refuse('bad-request', 'domain is malformed')
+    const certificate = args.certificate
+    if (certificate !== null && !(CERTIFICATE_MODES as readonly string[]).includes(certificate as string)) return refuse('bad-request', 'certificate is malformed')
+    return {
+        ok: true,
+        request: {
+            verb: 'provision', project,
+            args: { action: 'add-environment', environment: 'test', branch: args.branch, domain: domain as string | null, certificate: certificate as CertificateMode | null },
+        },
+    }
+}
+
+function parseProvisionRemove(raw: Record<string, unknown>): Parsed {
+    if (!onlyKeys(raw, ['verb', 'project', 'args'])) return refuse('bad-request', 'provision takes only project and args')
+    const project = projectOf(raw)
+    if (!project) return refuse('bad-request', 'project is malformed')
+    const args = raw.args as Record<string, unknown>
+    if (!onlyKeys(args, ['action', 'environment'])) return refuse('bad-request', 'remove takes only environment')
+    const environment = args.environment
+    if (environment !== null && !(ENVIRONMENTS as readonly string[]).includes(environment as string)) {
+        return refuse('bad-request', 'environment must be live, test or null')
+    }
+    return {
+        ok: true,
+        request: { verb: 'provision', project, args: { action: 'remove', environment: environment as EnvironmentName | null } },
+    }
+}
+
+function parseProvisionRequest(raw: Record<string, unknown>): Parsed {
+    if (!isRecord(raw.args) || typeof raw.args.action !== 'string') return refuse('bad-request', 'provision requires args.action')
+    switch (raw.args.action) {
+        case 'create': return parseProvisionCreate(raw)
+        case 'add-environment': return parseProvisionAddEnvironment(raw)
+        case 'remove': return parseProvisionRemove(raw)
+        default: return refuse('bad-request', 'action must be create, add-environment or remove')
+    }
+}
+
+function parseEnvArgs(raw: unknown): EnvArgs | Refusal {
+    if (!isRecord(raw)) return refuse('bad-request', 'env requires args')
+    const environment = raw.environment
+    if (typeof environment !== 'string' || !(ENVIRONMENTS as readonly string[]).includes(environment)) {
+        return refuse('bad-request', 'environment must be live or test')
+    }
+    if (raw.action === 'list') {
+        if (!onlyKeys(raw, ['action', 'environment'])) return refuse('bad-request', 'list takes only environment')
+        return { action: 'list', environment: environment as EnvironmentName }
+    }
+    if (raw.action === 'read') {
+        if (!onlyKeys(raw, ['action', 'environment', 'path'])) return refuse('bad-request', 'read takes only environment and path')
+        if (typeof raw.path !== 'string') return refuse('bad-request', 'path is malformed')
+        return { action: 'read', environment: environment as EnvironmentName, path: raw.path }
+    }
+    if (raw.action === 'write') {
+        if (!onlyKeys(raw, ['action', 'environment', 'path', 'text'])) return refuse('bad-request', 'write takes only environment, path and text')
+        if (typeof raw.path !== 'string') return refuse('bad-request', 'path is malformed')
+        if (typeof raw.text !== 'string') return refuse('bad-request', 'text is malformed')
+        return { action: 'write', environment: environment as EnvironmentName, path: raw.path, text: raw.text }
+    }
+    return refuse('bad-request', 'action must be list, read or write')
 }
 
 export function parseAgentRequest(line: string): Parsed {
@@ -124,6 +268,18 @@ export function parseAgentRequest(line: string): Parsed {
             return { ok: true, request: { verb: 'logs', project, args } }
         }
 
+        case 'provision':
+            return parseProvisionRequest(raw)
+
+        case 'env': {
+            if (!onlyKeys(raw, ['verb', 'project', 'args'])) return refuse('bad-request', 'env takes only project and args')
+            const project = projectOf(raw)
+            if (!project) return refuse('bad-request', 'project is malformed')
+            const args = parseEnvArgs(raw.args)
+            if ('ok' in args) return args
+            return { ok: true, request: { verb: 'env', project, args } }
+        }
+
         default:
             return refuse('bad-request', 'unknown verb')
     }
@@ -151,6 +307,9 @@ export function checkStructure(
         const service = request.args.service
         const entry = Object.hasOwn(project.services, service) ? project.services[service] : undefined
         if (!entry || !isComposeService(entry)) return refuse('unknown-service', `${service} is not a registered service of ${id}`)
+    }
+    if (request.verb === 'env' && !environmentOf(project, request.args.environment)) {
+        return refuse('unknown-environment', `${id} has no ${request.args.environment} environment`)
     }
     return { ok: true, project }
 }
