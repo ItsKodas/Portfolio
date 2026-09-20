@@ -23,14 +23,44 @@ export type SqliteDatabase = { role: 'database', engine: 'sqlite', file: string 
 export type ServiceEntry = SiteService | DatabaseService | SqliteDatabase
 export type StorageEntry = { path: string, absolute: string, mode: StorageMode }
 
+export const ENVIRONMENTS = ['live', 'test'] as const
+export type EnvironmentName = typeof ENVIRONMENTS[number]
+
+export const CERTIFICATE_MODES = ['letsencrypt', 'cloudflare-origin'] as const
+export type CertificateMode = typeof CERTIFICATE_MODES[number]
+
+export type EnvironmentEntry = {
+    name: EnvironmentName
+    dir: string
+    composePath: string
+    branch: string | null
+    domain: string | null
+    port: number
+    certificate: CertificateMode | null
+    deployed: string | null
+}
+
+// A git ref or branch name that cannot be read as an option or a path traversal
+export const GIT_REF = /^[A-Za-z0-9][A-Za-z0-9._\/-]{0,127}$/
+export const GIT_COMMIT = /^[0-9a-f]{7,40}$/
+// ssh (git@host:owner/repo.git) or https (https://host/owner/repo.git)
+export const GIT_REPO = /^(git@[A-Za-z0-9.-]+:[A-Za-z0-9._\/-]+\.git|https:\/\/[A-Za-z0-9.-]+\/[A-Za-z0-9._\/-]+(\.git)?)$/
+
+export const DEFAULT_LIMITS = { memory: '1g', cpus: '1' }
+export const DEFAULT_PORT_ENV = 'WEB_PORT'
+
 export type ProjectEntry = {
     id: string
     client: string
     name: string
+    repo: string | null
     dir: string
     compose: string
     composePath: string
     upstream: { host: string, port: number }
+    portEnv: string
+    limits: { memory: string | null, cpus: string | null }
+    environments: Map<EnvironmentName, EnvironmentEntry>
     services: Record<string, ServiceEntry>
     storage: Record<string, StorageEntry>
     capabilities: Set<Capability>
@@ -61,9 +91,15 @@ const DEFAULT_OFFSITE_KEEP: Keep = { daily: 14, weekly: 8, monthly: 6 }
 const DEFAULT_MAX_KEEP: Keep = { daily: 14, weekly: 8, monthly: 12 }
 const DEFAULT_RESERVED = ['horizons.gg']
 const TOP_KEYS = new Set(['reserved', 'offsite', 'projects'])
-const PROJECT_KEYS = new Set(['client', 'name', 'dir', 'compose', 'upstream', 'services', 'storage', 'capabilities', 'maxDomains', 'backups'])
+const PROJECT_KEYS = new Set([
+    'client', 'name', 'dir', 'compose', 'upstream', 'services', 'storage', 'capabilities', 'maxDomains', 'backups',
+    'repo', 'portEnv', 'limits', 'environments',
+])
+const ENVIRONMENT_KEYS = new Set(['dir', 'compose', 'branch', 'domain', 'port', 'certificate', 'deployed'])
 const DIR = /^\/var\/www\/[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/
 const UPSTREAM = /^(localhost|\d{1,3}(?:\.\d{1,3}){3}):(\d{1,5})$/
+const MEMORY_LIMIT = /^[0-9]+(b|k|m|g)$/i
+const CPU_LIMIT = /^[0-9]+(\.[0-9]+)?$/
 
 function wholeNumber(value: unknown, min: number, max: number): number | null {
     return typeof value === 'number' && Number.isInteger(value) && value >= min && value <= max ? value : null
@@ -230,9 +266,127 @@ function parseCapabilities(raw: unknown, problems: string[]): Set<Capability> {
     return capabilities
 }
 
+function parseRepo(raw: unknown, problems: string[]): string | null {
+    if (raw === undefined) return null
+    if (typeof raw === 'string' && GIT_REPO.test(raw)) return raw
+    problems.push('repo must be an ssh or https git URL')
+    return null
+}
+
+function parsePortEnv(raw: unknown, problems: string[]): string {
+    if (raw === undefined) return DEFAULT_PORT_ENV
+    if (typeof raw === 'string' && ENV_NAME.test(raw)) return raw
+    problems.push('portEnv must be an environment variable name')
+    return DEFAULT_PORT_ENV
+}
+
+function parseLimits(raw: unknown, problems: string[]): { memory: string | null, cpus: string | null } {
+    const limits = { ...DEFAULT_LIMITS }
+    if (raw === undefined) return limits
+    if (!isRecord(raw) || !onlyKeys(raw, ['memory', 'cpus'])) {
+        problems.push('limits may only contain memory and cpus')
+        return limits
+    }
+    if (raw.memory !== undefined) {
+        if (typeof raw.memory === 'string' && MEMORY_LIMIT.test(raw.memory)) limits.memory = raw.memory
+        else problems.push('limits.memory must be a number followed by b, k, m or g')
+    }
+    if (raw.cpus !== undefined) {
+        if (typeof raw.cpus === 'string' && CPU_LIMIT.test(raw.cpus)) limits.cpus = raw.cpus
+        else problems.push('limits.cpus must be a number')
+    }
+    return limits
+}
+
+// Same shape as today's project dir: exactly one segment below /var/www, and not . or .. at the end.
+function parseEnvironmentDir(raw: unknown): string | null {
+    return typeof raw === 'string' && DIR.test(raw) && !raw.endsWith('/..') && !raw.endsWith('/.') ? raw : null
+}
+
+function isReserved(domain: string, reserved: string[]): boolean {
+    return reserved.some(host => domain === host || domain.endsWith(`.${host}`))
+}
+
+function parseEnvironment(name: EnvironmentName, raw: unknown, reserved: string[], problems: string[]): EnvironmentEntry | null {
+    const where = `environments.${name}`
+    if (!isRecord(raw)) {
+        problems.push(`${where} must be a mapping`)
+        return null
+    }
+    for (const key of Object.keys(raw)) if (!ENVIRONMENT_KEYS.has(key)) problems.push(`${where}.${key} is not a known key`)
+
+    const dir = parseEnvironmentDir(raw.dir)
+    if (!dir) problems.push(`${where}.dir must be /var/www/<one segment>`)
+
+    let compose = 'docker-compose.yml'
+    if (raw.compose !== undefined) {
+        const problem = typeof raw.compose === 'string' ? relativePathProblem(raw.compose) : 'path must be a string'
+        if (problem) problems.push(`${where}.compose: ${problem}`)
+        else compose = raw.compose as string
+    }
+
+    let branch: string | null = null
+    if (raw.branch !== undefined) {
+        if (typeof raw.branch === 'string' && GIT_REF.test(raw.branch)) branch = raw.branch
+        else problems.push(`${where}.branch must be a plain branch name`)
+    }
+
+    let domain: string | null = null
+    if (raw.domain !== undefined) {
+        if (typeof raw.domain !== 'string' || !HOSTNAME.test(raw.domain)) problems.push(`${where}.domain must be a lowercase hostname`)
+        else if (isReserved(raw.domain, reserved)) problems.push(`${where}.domain must not be at or below a reserved domain`)
+        else domain = raw.domain
+    }
+
+    const port = wholeNumber(raw.port, 1, 65535)
+    if (port === null) problems.push(`${where}.port must be a whole number from 1 to 65535`)
+
+    let certificate: CertificateMode | null = null
+    if (raw.certificate !== undefined) {
+        if (typeof raw.certificate === 'string' && (CERTIFICATE_MODES as readonly string[]).includes(raw.certificate)) {
+            certificate = raw.certificate as CertificateMode
+        } else problems.push(`${where}.certificate must be one of ${CERTIFICATE_MODES.join(', ')}`)
+    }
+
+    let deployed: string | null = null
+    if (raw.deployed !== undefined) {
+        if (typeof raw.deployed === 'string' && GIT_COMMIT.test(raw.deployed)) deployed = raw.deployed
+        else problems.push(`${where}.deployed must be a commit hash`)
+    }
+
+    if (!dir || port === null) return null
+    return { name, dir, composePath: posix.join(dir, compose), branch, domain, port, certificate, deployed }
+}
+
+// When environments is absent, the caller synthesises a single live entry from the project-level
+// dir, compose and upstream fields instead of calling this.
+function parseEnvironments(raw: unknown, reserved: string[], problems: string[]): Map<EnvironmentName, EnvironmentEntry> {
+    const environments = new Map<EnvironmentName, EnvironmentEntry>()
+    if (!isRecord(raw)) {
+        problems.push('environments must be a mapping')
+        return environments
+    }
+    if (raw.live === undefined) problems.push('environments must include live')
+    for (const key of Object.keys(raw)) if (!(ENVIRONMENTS as readonly string[]).includes(key)) problems.push(`environments.${key} is not a known environment`)
+
+    for (const name of ENVIRONMENTS) {
+        if (raw[name] === undefined) continue
+        const entry = parseEnvironment(name, raw[name], reserved, problems)
+        if (entry) environments.set(name, entry)
+    }
+
+    const live = environments.get('live')
+    const test = environments.get('test')
+    if (live && test) {
+        if (live.dir === test.dir) problems.push(`environments live and test share dir ${live.dir}`)
+        if (live.port === test.port) problems.push(`environments live and test share port ${live.port}`)
+    }
+    return environments
+}
+
 type ParsedProject = { entry: ProjectEntry } | { problems: string[] }
 
-function parseProject(id: string, raw: unknown): ParsedProject {
+function parseProject(id: string, raw: unknown, reserved: string[]): ParsedProject {
     if (!PROJECT_ID.test(id)) return { problems: [`id must match ${PROJECT_ID}`] }
     if (RESERVED_PROJECT_IDS.has(id)) return { problems: [`${id} is reserved for the operator's own stacks`] }
     if (!isRecord(raw)) return { problems: ['entry must be a mapping'] }
@@ -244,17 +398,48 @@ function parseProject(id: string, raw: unknown): ParsedProject {
     if (!client) problems.push(`client must match ${CLIENT_ID}`)
     const name = typeof raw.name === 'string' && raw.name.length >= 1 && raw.name.length <= 100 ? raw.name : null
     if (!name) problems.push('name must be 1 to 100 characters')
-    const dir = typeof raw.dir === 'string' && DIR.test(raw.dir) && !raw.dir.endsWith('/..') && !raw.dir.endsWith('/.') ? raw.dir : null
-    if (!dir) problems.push('dir must be /var/www/<one segment>')
 
-    let compose = 'docker-compose.yml'
-    if (raw.compose !== undefined) {
-        const problem = typeof raw.compose === 'string' ? relativePathProblem(raw.compose) : 'path must be a string'
-        if (problem) problems.push(`compose: ${problem}`)
-        else compose = raw.compose as string
+    const repo = parseRepo(raw.repo, problems)
+    const portEnv = parsePortEnv(raw.portEnv, problems)
+    const limits = parseLimits(raw.limits, problems)
+
+    const usesEnvironments = raw.environments !== undefined
+    if (usesEnvironments && (raw.dir !== undefined || raw.compose !== undefined || raw.upstream !== undefined)) {
+        problems.push('dir and environments cannot both be given')
     }
 
-    const upstream = parseUpstream(raw.upstream, problems)
+    let environments: Map<EnvironmentName, EnvironmentEntry>
+    if (usesEnvironments) {
+        environments = parseEnvironments(raw.environments, reserved, problems)
+    } else {
+        const dir = typeof raw.dir === 'string' && DIR.test(raw.dir) && !raw.dir.endsWith('/..') && !raw.dir.endsWith('/.') ? raw.dir : null
+        if (!dir) problems.push('dir must be /var/www/<one segment>')
+
+        let compose = 'docker-compose.yml'
+        if (raw.compose !== undefined) {
+            const problem = typeof raw.compose === 'string' ? relativePathProblem(raw.compose) : 'path must be a string'
+            if (problem) problems.push(`compose: ${problem}`)
+            else compose = raw.compose as string
+        }
+
+        const upstream = parseUpstream(raw.upstream, problems)
+        environments = new Map<EnvironmentName, EnvironmentEntry>()
+        if (dir && upstream) {
+            environments.set('live', {
+                name: 'live', dir, composePath: posix.join(dir, compose),
+                branch: null, domain: null, port: upstream.port, certificate: null, deployed: null,
+            })
+        }
+    }
+
+    if (!repo && [...environments.values()].some(env => env.branch !== null)) problems.push('branch needs repo')
+
+    const live = environments.get('live')
+    const dir = live?.dir ?? null
+    const compose = live ? posix.relative(live.dir, live.composePath) : 'docker-compose.yml'
+    const composePath = live?.composePath ?? null
+    const upstream = live ? { host: '127.0.0.1', port: live.port } : null
+
     const services = parseServices(raw.services, problems)
     const storage = parseStorage(raw.storage, dir ?? '/nonexistent', services, problems)
     const capabilities = parseCapabilities(raw.capabilities, problems)
@@ -272,12 +457,11 @@ function parseProject(id: string, raw: unknown): ParsedProject {
         else maxKeep = parseKeep(raw.backups.maxKeep, DEFAULT_MAX_KEEP, 'backups.maxKeep', problems)
     }
 
-    if (problems.length > 0 || !client || !name || !dir || !upstream) return { problems }
+    if (problems.length > 0 || !client || !name || !dir || !upstream || !composePath) return { problems }
     return {
         entry: {
-            id, client, name, dir, compose,
-            composePath: posix.join(dir, compose),
-            upstream, services, storage, capabilities, maxDomains,
+            id, client, name, repo, dir, compose, composePath, upstream, portEnv, limits, environments,
+            services, storage, capabilities, maxDomains,
             backups: { maxKeep },
         },
     }
@@ -317,18 +501,28 @@ export function parseRegistry(text: string): Registry {
     const parsed = new Map<string, ProjectEntry>()
     const invalid = new Map<string, string>()
     for (const [id, raw] of Object.entries(doc.projects as Record<string, unknown>)) {
-        const result = parseProject(id, raw)
+        const result = parseProject(id, raw, reserved)
         if ('problems' in result) invalid.set(id, result.problems.join('; '))
         else parsed.set(id, result.entry)
     }
 
     // Two entries over one directory would let one client's settings drive another client's site.
+    // Every environment's dir counts, not just the live one.
     const projects = new Map<string, ProjectEntry>()
     for (const [id, entry] of parsed) {
-        const sharing = [...parsed.values()].filter(other => other.id !== id && other.dir === entry.dir).map(other => other.id)
+        const dirs = [...entry.environments.values()].map(env => env.dir)
+        const sharing = [...parsed.values()]
+            .filter(other => other.id !== id && [...other.environments.values()].some(env => dirs.includes(env.dir)))
+            .map(other => other.id)
         if (sharing.length > 0) invalid.set(id, `dir ${entry.dir} is also used by ${sharing.join(', ')}`)
         else projects.set(id, entry)
     }
 
     return { reserved, offsite: { keep: offsiteKeep }, projects, invalid }
+}
+
+export function environmentOf(project: ProjectEntry, name: string): EnvironmentEntry | null {
+    return (ENVIRONMENTS as readonly string[]).includes(name)
+        ? project.environments.get(name as EnvironmentName) ?? null
+        : null
 }

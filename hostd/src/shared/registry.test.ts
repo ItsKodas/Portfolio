@@ -55,6 +55,19 @@ function invalidReason(text: string, id = 'site'): string | undefined {
     return parseRegistry(text).invalid.get(id)
 }
 
+// Builds a one-project registry around the given body and returns why that project was rejected
+function invalidEnvironmentReason(body: string): string | null {
+    const registry = parseRegistry(`
+projects:
+  acme:
+    client: cl_1
+    name: Acme
+    services: { web: { role: site } }
+    ${body}
+`)
+    return registry.invalid.get('acme') ?? null
+}
+
 describe('parseRegistry, a valid file', () => {
     it('parses every field of the documented example', () => {
         const registry = parseRegistry(valid)
@@ -245,5 +258,99 @@ describe('parseRegistry, problems with one project', () => {
         assert.equal(isComposeService(constructorService), true)
         // A name that was never registered still falls through to nothing of ours, not a prototype method.
         assert.equal(Object.hasOwn(entry.services, 'toString'), false)
+    })
+})
+
+describe('environments', () => {
+    it('reads a single-environment entry as live only, with dir and port carried over', () => {
+        const registry = parseRegistry(`
+projects:
+  acme:
+    client: cl_1
+    name: Acme
+    dir: /var/www/acme
+    upstream: 127.0.0.1:5010
+    services: { web: { role: site } }
+`)
+        const acme = registry.projects.get('acme')!
+        assert.equal(acme.repo, null)
+        assert.equal(acme.environments.size, 1)
+        const live = acme.environments.get('live')!
+        assert.equal(live.dir, '/var/www/acme')
+        assert.equal(live.port, 5010)
+        assert.equal(live.branch, null)
+        assert.equal(live.deployed, null)
+        assert.equal(acme.dir, live.dir)
+    })
+
+    it('reads two environments, each with its own branch, domain, port and deployed commit', () => {
+        const registry = parseRegistry(`
+projects:
+  acme:
+    client: cl_1
+    name: Acme
+    repo: git@github.com:ItsKodas/acme.git
+    services: { web: { role: site } }
+    environments:
+      live:
+        dir: /var/www/acme
+        branch: main
+        domain: acme.com
+        port: 5010
+        certificate: letsencrypt
+        deployed: 3f7c1a2
+      test:
+        dir: /var/www/acme-test
+        branch: develop
+        domain: test.acme.com
+        port: 5110
+        certificate: cloudflare-origin
+`)
+        const acme = registry.projects.get('acme')!
+        assert.equal(acme.repo, 'git@github.com:ItsKodas/acme.git')
+        assert.deepEqual([...acme.environments.keys()], ['live', 'test'])
+        assert.equal(acme.environments.get('test')!.branch, 'develop')
+        assert.equal(acme.environments.get('test')!.certificate, 'cloudflare-origin')
+        assert.equal(acme.environments.get('live')!.deployed, '3f7c1a2')
+        // The live environment is what the phase 1 fields mean
+        assert.equal(acme.dir, '/var/www/acme')
+        assert.equal(acme.upstream.port, 5010)
+    })
+
+    it('refuses an entry with both dir and environments, so there is one way to say it', () => {
+        assert.equal(invalidEnvironmentReason('dir: /var/www/acme\n    environments: { live: { dir: /var/www/acme, port: 5010 } }'),
+            'dir and environments cannot both be given')
+    })
+
+    it('requires a live environment, and refuses an unknown environment name', () => {
+        assert.match(invalidEnvironmentReason('environments: { test: { dir: /var/www/acme-test, port: 5010 } }')!, /live/)
+        assert.match(invalidEnvironmentReason('environments: { live: { dir: /var/www/a, port: 5010 }, staging: { dir: /var/www/b, port: 5011 } }')!, /staging/)
+    })
+
+    it('refuses two environments sharing a folder or a port', () => {
+        assert.match(invalidEnvironmentReason('environments: { live: { dir: /var/www/a, port: 5010 }, test: { dir: /var/www/a, port: 5011 } }')!, /dir/)
+        assert.match(invalidEnvironmentReason('environments: { live: { dir: /var/www/a, port: 5010 }, test: { dir: /var/www/b, port: 5010 } }')!, /port/)
+    })
+
+    it('refuses a branch or commit that is not a plain name', () => {
+        assert.match(invalidEnvironmentReason('repo: git@github.com:x/y.git\n    environments: { live: { dir: /var/www/a, port: 5010, branch: "--upload-pack=evil" } }')!, /branch/)
+    })
+
+    it('refuses a repo that is not an ssh or https git URL', () => {
+        assert.match(invalidEnvironmentReason('repo: "file:///etc/passwd"\n    environments: { live: { dir: /var/www/a, port: 5010 } }')!, /repo/)
+    })
+
+    it('reads limits and portEnv, with defaults', () => {
+        const registry = parseRegistry(`
+projects:
+  acme:
+    client: cl_1
+    name: Acme
+    dir: /var/www/acme
+    upstream: 127.0.0.1:5010
+    services: { web: { role: site } }
+`)
+        assert.deepEqual(registry.projects.get('acme')!.limits, { memory: '1g', cpus: '1' })
+        assert.equal(registry.projects.get('acme')!.portEnv, 'WEB_PORT')
     })
 })

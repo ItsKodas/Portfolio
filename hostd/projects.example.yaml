@@ -12,6 +12,9 @@ offsite:
 projects:
   # The id is also the compose project name. It must match what `docker compose ls` shows for the site,
   # or the compose file must say `name: <id>`.
+  #
+  # An entry with dir and upstream and no environments, like this one, means live only: dir,
+  # composePath and upstream keep meaning exactly what they mean today.
   acme-bakery:
     client: cl_8f2k1              # the portal's client id
     name: Acme Bakery
@@ -26,3 +29,33 @@ projects:
       # must not contain the compose file, an env file, a build context or a Dockerfile.
       media: { path: uploads, mode: rw }         # rw | ro | hidden (backed up, never shown)
     capabilities: [lifecycle, logs]              # lifecycle | logs | files | backups | domains
+
+  # A project with a live and a test environment. Each environment has its own folder, branch, domain,
+  # port and certificate mode; repo, limits and portEnv live at the project level and apply to both.
+  # widget-shop:
+  #   client: cl_2p9qz
+  #   name: Widget Shop
+  #   repo: git@github.com:ItsKodas/widget-shop.git    # ssh or https git URL; required if any environment sets branch
+  #   portEnv: WEB_PORT                                # the env var the compose file reads its port from (default WEB_PORT)
+  #   limits:
+  #     memory: 1g                                     # <number>(b|k|m|g), default 1g
+  #     cpus: '1'                                      # <number>, default 1
+  #   services:
+  #     web: { role: site }
+  #     db: { role: database, engine: postgres }
+  #   capabilities: [lifecycle, logs]
+  #   environments:
+  #     live:
+  #       dir: /var/www/widget-shop
+  #       compose: docker-compose.yml       # relative to dir, default docker-compose.yml
+  #       branch: main
+  #       domain: widgetshop.com
+  #       port: 5020
+  #       certificate: letsencrypt          # letsencrypt | cloudflare-origin
+  #       deployed: 3f7c1a2                 # the commit currently checked out, set by hostd itself
+  #     test:
+  #       dir: /var/www/widget-shop-test
+  #       branch: develop
+  #       domain: test.widgetshop.com
+  #       port: 5120
+  #       certificate: cloudflare-origin
