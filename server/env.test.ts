@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
-import { EnvError, clientSecretKey, ipHashKey, mailConfig, turnstileSecret } from './env'
+import { EnvError, clientSecretKey, clientMailConfig, ipHashKey, quoteMailConfig, smtpConfig, turnstileSecret } from './env'
 
 const mail = {
     SMTP_HOST: 'smtp.example.com',
@@ -23,9 +23,9 @@ const problemsOf = (read: () => unknown) => {
     throw new Error('expected an EnvError')
 }
 
-describe('mailConfig', () => {
+describe('quoteMailConfig', () => {
     it('reads the relay settings, without a trailing slash on the site address', () => {
-        expect(mailConfig(mail)).toEqual({
+        expect(quoteMailConfig(mail)).toEqual({
             host: 'smtp.example.com', port: 587, user: 'resend', pass: 'secret-value',
             from: 'Horizons <quotes@dev.horizons.gg>', notifyTo: 'koda@horizons.gg', replyTo: 'info@dev.horizons.gg',
             siteUrl: 'https://www.horizons.gg',
@@ -34,27 +34,58 @@ describe('mailConfig', () => {
 
     it('treats the login as optional, as Mailpit takes none', () => {
         const { SMTP_USER, SMTP_PASS, ...rest } = mail
-        expect(mailConfig(rest)).toMatchObject({ user: undefined, pass: undefined })
+        expect(quoteMailConfig(rest)).toMatchObject({ user: undefined, pass: undefined })
     })
 
     it('names every missing setting at once', () => {
-        expect(problemsOf(() => mailConfig({}))).toEqual([
-            'SMTP_HOST is not set', 'SMTP_PORT is not set', 'MAIL_FROM is not set', 'QUOTE_NOTIFY_TO is not set',
-            'QUOTE_REPLY_TO is not set', 'AUTH_URL is not set',
+        expect(problemsOf(() => quoteMailConfig({}))).toEqual([
+            'SMTP_HOST is not set', 'SMTP_PORT is not set', 'MAIL_FROM is not set', 'AUTH_URL is not set',
+        ])
+    })
+
+    it('names missing quote settings when SMTP is present', () => {
+        expect(problemsOf(() => quoteMailConfig(smtp))).toEqual([
+            'QUOTE_NOTIFY_TO is not set', 'QUOTE_REPLY_TO is not set',
         ])
     })
 
     it('rejects a port that is not a port number', () => {
-        expect(problemsOf(() => mailConfig({ ...mail, SMTP_PORT: 'smtp' }))).toEqual(['SMTP_PORT must be a port number, such as 587'])
-        expect(problemsOf(() => mailConfig({ ...mail, SMTP_PORT: '70000' }))).toEqual(['SMTP_PORT must be a port number, such as 587'])
+        expect(problemsOf(() => quoteMailConfig({ ...mail, SMTP_PORT: 'smtp' }))).toEqual(['SMTP_PORT must be a port number, such as 587'])
+        expect(problemsOf(() => quoteMailConfig({ ...mail, SMTP_PORT: '70000' }))).toEqual(['SMTP_PORT must be a port number, such as 587'])
     })
 
     it('never puts a value in its message', () => {
         try {
-            mailConfig({ ...mail, SMTP_HOST: '' })
+            quoteMailConfig({ ...mail, SMTP_HOST: '' })
         } catch (error) {
             expect(String(error)).not.toContain('secret-value')
         }
+    })
+})
+
+const smtp = {
+    SMTP_HOST: 'localhost', SMTP_PORT: '1025', MAIL_FROM: 'Horizons <quotes@dev.horizons.gg>',
+    AUTH_URL: 'https://www.horizons.gg/',
+}
+
+describe('smtpConfig', () => {
+    it('reads the transport without needing any quote setting', () => {
+        expect(smtpConfig(smtp)).toMatchObject({ host: 'localhost', port: 1025, siteUrl: 'https://www.horizons.gg' })
+    })
+})
+
+describe('clientMailConfig', () => {
+    it('adds the client reply-to', () => {
+        expect(clientMailConfig({ ...smtp, CLIENT_REPLY_TO: 'info@dev.horizons.gg' }).replyTo).toBe('info@dev.horizons.gg')
+    })
+
+    it('names the variable when it is missing', () => {
+        expect(() => clientMailConfig(smtp)).toThrow(/CLIENT_REPLY_TO/)
+    })
+
+    // The whole point of the split: a missing quote setting must not stop a client invite going out
+    it('does not need QUOTE_NOTIFY_TO or QUOTE_REPLY_TO', () => {
+        expect(() => clientMailConfig({ ...smtp, CLIENT_REPLY_TO: 'info@dev.horizons.gg' })).not.toThrow()
     })
 })
 

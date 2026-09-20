@@ -18,37 +18,52 @@ function required(env: Env, name: string, problems: string[]): string {
     return value ?? ''
 }
 
-export type MailConfig = {
+export type SmtpConfig = {
     host: string
     port: number
     user?: string
     pass?: string
     from: string
-    notifyTo: string
-    replyTo: string
-    // The site's own address, for the link to a quote in the notification email
+    // The site's own address, for links in emails
     siteUrl: string
 }
 
-export function mailConfig(env: Env = process.env): MailConfig {
+// Just the transport. Split out from the quote settings so a missing QUOTE_NOTIFY_TO can't stop a client
+// invite going out: the two features fail independently.
+export function smtpConfig(env: Env = process.env): SmtpConfig {
     const problems: string[] = []
     const host = required(env, 'SMTP_HOST', problems)
     const portText = required(env, 'SMTP_PORT', problems)
     const port = Number(portText)
     if (portText && (!Number.isInteger(port) || port < 1 || port > 65535)) problems.push('SMTP_PORT must be a port number, such as 587')
     const from = required(env, 'MAIL_FROM', problems)
-    const notifyTo = required(env, 'QUOTE_NOTIFY_TO', problems)
-    const replyTo = required(env, 'QUOTE_REPLY_TO', problems)
     const siteUrl = required(env, 'AUTH_URL', problems)
     if (problems.length) throw new EnvError(problems)
 
     return {
-        host, port, from, notifyTo, replyTo,
+        host, port, from,
         user: env.SMTP_USER?.trim() || undefined,
         // Not trimmed on purpose: a password may legitimately start or end with whitespace
         pass: env.SMTP_PASS || undefined,
         siteUrl: siteUrl.replace(/\/+$/, ''),
     }
+}
+
+export type MailConfig = SmtpConfig & { notifyTo: string, replyTo: string }
+
+export function quoteMailConfig(env: Env = process.env): MailConfig {
+    const base = smtpConfig(env)
+    const problems: string[] = []
+    const notifyTo = required(env, 'QUOTE_NOTIFY_TO', problems)
+    const replyTo = required(env, 'QUOTE_REPLY_TO', problems)
+    if (problems.length) throw new EnvError(problems)
+    return { ...base, notifyTo, replyTo }
+}
+
+export type ClientMailConfig = SmtpConfig & { replyTo: string }
+
+export function clientMailConfig(env: Env = process.env): ClientMailConfig {
+    return { ...smtpConfig(env), replyTo: single(env, 'CLIENT_REPLY_TO') }
 }
 
 function single(env: Env, name: string): string {
