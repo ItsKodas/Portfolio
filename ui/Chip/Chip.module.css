@@ -10,6 +10,10 @@
     color: var(--ink-2);
 }
 
-.good { color: var(--good); border-color: rgba(111, 211, 155, .35); }
-.warn { color: var(--warn); border-color: rgba(240, 180, 92, .4); }
-.crit { color: var(--soft-red); border-color: rgba(244, 104, 95, .45); }
+/* The border is a dilution of the token beside it, not a copy of what that token happened to be. These
+   were literal rgba() of the old palette, which the hex check could not see because it was written in
+   decimals, so they survived a retint and left every chip ringed in the previous scheme. A browser too old
+   for color-mix drops the declaration and keeps the neutral border from .chip, which is a fine fallback. */
+.good { color: var(--good); border-color: color-mix(in srgb, var(--good) 35%, transparent); }
+.warn { color: var(--warn); border-color: color-mix(in srgb, var(--warn) 40%, transparent); }
+.crit { color: var(--soft-red); border-color: color-mix(in srgb, var(--crit) 45%, transparent); }

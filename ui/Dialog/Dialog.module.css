@@ -7,8 +7,9 @@
     color: var(--ink);
 }
 
+/* Darkened from the page's own ground rather than a navy that was copied out of the old palette */
 .dialog::backdrop {
-    background: rgba(4, 7, 16, .8);
+    background: color-mix(in srgb, var(--night) 82%, transparent);
 }
 
 .head {
