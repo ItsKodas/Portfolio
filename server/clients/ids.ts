@@ -1,7 +1,7 @@
-import 'server-only'
-
 // Identifiers a person has to read, type or copy. Deliberately not cuid: a client id is typed by hand into
 // hostd's projects.yaml, so it has to survive being read off a screen.
+
+import 'server-only'
 
 import { randomBytes } from 'node:crypto'
 
