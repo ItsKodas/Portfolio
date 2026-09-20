@@ -3008,7 +3008,7 @@ MSG
 - Consumes: `./ids`, `./totp`, `./session`, `ClientRecord` and `SessionWithClient` from `./repo`.
 - Produces:
   - `INVITE_TTL_MS` (7 days), `RESET_TTL_MS` (1 hour), `RECOVERY_CODE_COUNT` (10)
-  - `tokenProblem(token: { usedAt: Date | null, expiresAt: Date, client: { suspendedAt: Date | null } } | null, now: Date): string | null`
+  - `tokenProblem(token: TokenRecord | null, expected: ClientTokenPurpose, now: Date): string | null`, where `TokenRecord = { purpose, usedAt, expiresAt, client: { suspendedAt } }`
   - `completeInvite(input: { tokenHash: string, password: string, userAgent: string | null }, deps: CompleteInviteDeps): Promise<{ ok: true, token: string, expiresAt: Date } | { ok: false, error: string }>`
   - `beginEnrolment(client: ClientRecord, deps: BeginEnrolmentDeps): Promise<{ uri: string, typed: string }>`
   - `confirmEnrolment(input: { session: SessionWithClient, code: string }, deps: ConfirmEnrolmentDeps): Promise<{ ok: true, recoveryCodes: string[] } | { ok: false, error: string }>`
@@ -3032,10 +3032,17 @@ const client = (overrides: Record<string, unknown> = {}) => ({
 })
 
 describe('tokenProblem', () => {
-    const good = { usedAt: null, expiresAt: later(1000), client: { suspendedAt: null } }
+    const good = { purpose: 'INVITE' as const, usedAt: null, expiresAt: later(1000), client: { suspendedAt: null } }
 
     it('accepts a live, unused token for an active client', () => {
-        expect(tokenProblem(good, now)).toBeNull()
+        expect(tokenProblem(good, 'INVITE', now)).toBeNull()
+    })
+
+    // Without this, a reset link (which arrives by email and needs no second factor at the invite endpoint)
+    // could be spent to change a password, which is what the spec forbids
+    it('refuses a reset token offered to the invite flow', () => {
+        expect(tokenProblem({ ...good, purpose: 'PASSWORD_RESET' as const }, 'INVITE', now)).toBe(LINK_ERROR)
+        expect(tokenProblem(good, 'PASSWORD_RESET', now)).toBe(LINK_ERROR)
     })
 
     // One message for every case, so the page can't be used to probe which tokens exist
@@ -3045,12 +3052,12 @@ describe('tokenProblem', () => {
         ['expired', { ...good, expiresAt: later(-1000) }],
         ['for a suspended client', { ...good, client: { suspendedAt: now } }],
     ])('refuses a %s token with the same message', (unused, token) => {
-        expect(tokenProblem(token as never, now)).toBe(LINK_ERROR)
+        expect(tokenProblem(token as never, 'INVITE', now)).toBe(LINK_ERROR)
     })
 })
 
 const inviteDeps = (overrides: Record<string, unknown> = {}) => ({
-    tokenByHash: vi.fn(async () => ({ id: 'token1', usedAt: null, expiresAt: later(1000), client: client() })),
+    tokenByHash: vi.fn(async () => ({ id: 'token1', purpose: 'INVITE' as const, usedAt: null, expiresAt: later(1000), client: client() })),
     hashPassword: vi.fn(async () => 'new-hash'),
     setPassword: vi.fn(async () => {}),
     useToken: vi.fn(async () => {}),
@@ -3076,7 +3083,7 @@ describe('completeInvite', () => {
 
     it('refuses a spent token and changes nothing', async () => {
         const deps = inviteDeps({
-            tokenByHash: vi.fn(async () => ({ id: 'token1', usedAt: now, expiresAt: later(1000), client: client() })),
+            tokenByHash: vi.fn(async () => ({ id: 'token1', purpose: 'INVITE' as const, usedAt: now, expiresAt: later(1000), client: client() })),
         })
         expect(await completeInvite({ tokenHash: 'h', password: 'correct horse battery', userAgent: null }, deps))
             .toEqual({ ok: false, error: LINK_ERROR })
@@ -3170,6 +3177,7 @@ Create `server/clients/setup.ts`:
 
 import 'server-only'
 
+import type { ClientTokenPurpose } from '../generated/prisma/client'
 import type { ClientRecord, SessionWithClient } from './repo'
 import { activeExpiry, pendingExpiry } from './session'
 import { formatSecretForTyping, otpauthUri } from './totp'
@@ -3182,10 +3190,14 @@ export const RECOVERY_CODE_COUNT = 10
 // probe which tokens exist.
 export const LINK_ERROR = 'That link is no longer valid. Ask Koda for a new one.'
 
-type TokenRecord = { usedAt: Date | null, expiresAt: Date, client: { suspendedAt: Date | null } }
+type TokenRecord = { purpose: ClientTokenPurpose, usedAt: Date | null, expiresAt: Date, client: { suspendedAt: Date | null } }
 
-export function tokenProblem(token: TokenRecord | null, now: Date): string | null {
+export function tokenProblem(token: TokenRecord | null, expected: ClientTokenPurpose, now: Date): string | null {
     if (!token) return LINK_ERROR
+    // Checked, because an invite is redeemed without a second factor and a reset is not. Without this, a reset
+    // link could be spent at the invite endpoint, and a compromised mailbox alone would be enough to change a
+    // client's password and lock the real one out.
+    if (token.purpose !== expected) return LINK_ERROR
     if (token.usedAt) return LINK_ERROR
     if (token.expiresAt.getTime() <= now.getTime()) return LINK_ERROR
     if (token.client.suspendedAt) return LINK_ERROR
@@ -3210,7 +3222,7 @@ export async function completeInvite(
 ): Promise<{ ok: true, token: string, expiresAt: Date } | { ok: false, error: string }> {
     const now = deps.now()
     const token = await deps.tokenByHash(input.tokenHash)
-    const problem = tokenProblem(token, now)
+    const problem = tokenProblem(token, 'INVITE', now)
     if (problem || !token) return { ok: false, error: problem ?? LINK_ERROR }
 
     await deps.setPassword(token.client.id, await deps.hashPassword(input.password), now)
@@ -3413,7 +3425,7 @@ describe('requestReset', () => {
 })
 
 const completeDeps = (overrides: Record<string, unknown> = {}) => ({
-    tokenByHash: vi.fn(async () => ({ id: 'token1', usedAt: null, expiresAt: later(1000), client: client() })),
+    tokenByHash: vi.fn(async () => ({ id: 'token1', purpose: 'PASSWORD_RESET' as const, usedAt: null, expiresAt: later(1000), client: client() })),
     decryptSecret: vi.fn(() => Buffer.from('12345678901234567890')),
     verifyTotp: vi.fn(() => 37037036n),
     recordTotpUse: vi.fn(async () => true),
@@ -3456,7 +3468,7 @@ describe('completeReset', () => {
     it('accepts the token alone when the client has no authenticator yet', async () => {
         const deps = completeDeps({
             tokenByHash: vi.fn(async () => ({
-                id: 'token1', usedAt: null, expiresAt: later(1000),
+                id: 'token1', purpose: 'PASSWORD_RESET' as const, usedAt: null, expiresAt: later(1000),
                 client: client({ totpSecret: null, totpConfirmedAt: null }),
             })),
         })
@@ -3466,7 +3478,7 @@ describe('completeReset', () => {
 
     it('refuses an expired link with the same message as a missing one', async () => {
         const deps = completeDeps({
-            tokenByHash: vi.fn(async () => ({ id: 'token1', usedAt: null, expiresAt: later(-1), client: client() })),
+            tokenByHash: vi.fn(async () => ({ id: 'token1', purpose: 'PASSWORD_RESET' as const, usedAt: null, expiresAt: later(-1), client: client() })),
         })
         expect(await completeReset(input, deps)).toEqual({ ok: false, error: LINK_ERROR })
     })
@@ -3491,6 +3503,7 @@ Create `server/clients/reset.ts`:
 
 import 'server-only'
 
+import type { ClientTokenPurpose } from '../generated/prisma/client'
 import { normaliseRecoveryCode } from './ids'
 import { ipWindowStart, overIpLimit } from './limits'
 import type { ClientRecord } from './repo'
@@ -3550,7 +3563,7 @@ export async function requestReset(input: { email: string }, deps: RequestResetD
 }
 
 export type CompleteResetDeps = {
-    tokenByHash(tokenHash: string): Promise<({ id: string, usedAt: Date | null, expiresAt: Date, client: ClientRecord }) | null>
+    tokenByHash(tokenHash: string): Promise<({ id: string, purpose: ClientTokenPurpose, usedAt: Date | null, expiresAt: Date, client: ClientRecord }) | null>
     decryptSecret(stored: string): Buffer
     verifyTotp(secret: Buffer, code: string, now: Date): bigint | null
     recordTotpUse(clientId: string, step: bigint): Promise<boolean>
@@ -3574,7 +3587,7 @@ export async function completeReset(
 ): Promise<{ ok: true } | { ok: false, error: string }> {
     const now = deps.now()
     const token = await deps.tokenByHash(input.tokenHash)
-    const problem = tokenProblem(token, now)
+    const problem = tokenProblem(token, 'PASSWORD_RESET', now)
     if (problem || !token) return { ok: false, error: problem ?? LINK_ERROR }
 
     const client = token.client
@@ -4309,7 +4322,7 @@ describe('the ids wiring allocates', () => {
 // present, because Prisma doesn't run in the edge runtime, so requireClient() is the layer that decides.
 
 import NextAuth from 'next-auth'
-import { NextResponse, type NextRequest } from 'next/server'
+import { NextResponse, type NextFetchEvent, type NextRequest } from 'next/server'
 
 import { authConfig } from './server/auth/config'
 
@@ -4321,9 +4334,14 @@ const OPEN_PORTAL_PATHS = [PORTAL_SIGN_IN, '/portal/forgot', '/portal/invite', '
 
 const cookieName = process.env.NODE_ENV === 'production' ? '__Secure-horizons-client' : 'horizons-client'
 
-export default function middleware(request: NextRequest) {
+export default function middleware(request: NextRequest, event: NextFetchEvent) {
     const { pathname } = request.nextUrl
-    if (!pathname.startsWith('/portal')) return (adminMiddleware as unknown as (request: NextRequest) => Response)(request)
+    // Branch before delegating, so a /portal request never reaches the Auth.js handler and server/auth/config.ts
+    // stays untouched. Both arguments are forwarded, because Next calls middleware with (request, event) and
+    // that is the shape Auth.js's handler expects when it is invoked rather than wrapped.
+    if (!pathname.startsWith('/portal')) {
+        return (adminMiddleware as unknown as (request: NextRequest, event: NextFetchEvent) => Response)(request, event)
+    }
     if (OPEN_PORTAL_PATHS.some(path => pathname === path || pathname.startsWith(`${path}/`))) return NextResponse.next()
     if (request.cookies.get(cookieName)) return NextResponse.next()
     return NextResponse.redirect(new URL(PORTAL_SIGN_IN, request.url))
@@ -4661,7 +4679,7 @@ export default async function InvitePage({ params }: { params: Promise<{ token: 
     const { token } = await params
     const record = await repo().tokenByHash(hashSessionToken(token))
     // Checked here as well as in the action: an expired link should never show a form at all
-    const problem = tokenProblem(record?.purpose === 'INVITE' ? record : null, new Date())
+    const problem = tokenProblem(record, 'INVITE', new Date())
     if (problem) return <Panel title="This link has expired"><Alert severity="warning">{problem}</Alert></Panel>
     return <Panel title="Set your password"><InviteForm token={token} /></Panel>
 }
