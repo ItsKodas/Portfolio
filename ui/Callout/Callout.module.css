@@ -1,0 +1,15 @@
+.callout {
+    border: 1px solid var(--rule);
+    border-left: 3px solid var(--rule-hi);
+    border-radius: var(--radius-panel);
+    background: var(--panel);
+    padding: 12px 14px;
+}
+
+.title { font-weight: 600; font-size: 13px; margin: 0 0 4px; }
+.body { color: var(--ink-2); font-size: 12.5px; }
+
+.good { border-left-color: var(--good); }
+.warn { border-left-color: var(--warn); }
+.crit { border-left-color: var(--crit); }
+.crit .title { color: var(--soft-red); }
