@@ -37,7 +37,7 @@ projects:
 function setup(tree: Record<string, string> = {}, symlinks: Record<string, string> = {}) {
     const files = new Map(Object.entries(tree))
     const links = new Map(Object.entries(symlinks))
-    const writeCalls: { path: string, text: string }[] = []
+    const writeCalls: { path: string, text: string, flag?: string }[] = []
     const renameCalls: { from: string, to: string }[] = []
 
     function resolve(path: string): string {
@@ -85,8 +85,16 @@ function setup(tree: Record<string, string> = {}, symlinks: Record<string, strin
             if (text === undefined) throw new Error(`ENOENT: no such file, open '${path}'`)
             return text
         },
-        async writeFile(path, text) {
-            writeCalls.push({ path, text })
+        async writeFile(path, text, options) {
+            writeCalls.push({ path, text, flag: options?.flag })
+            // 'wx' is O_CREAT | O_EXCL: it must fail if anything at all already occupies `path`, exactly
+            // as given, without resolving through a symlink there first. That is what lets a pre-planted
+            // symlink at the temp path be refused rather than followed.
+            if (options?.flag === 'wx' && (files.has(path) || links.has(path))) {
+                const error = new Error(`EEXIST: file already exists, open '${path}'`) as NodeJS.ErrnoException
+                error.code = 'EEXIST'
+                throw error
+            }
             files.set(resolve(path), text)
         },
         async rename(from, to) {
@@ -232,8 +240,21 @@ describe('writeEnvFile', () => {
         assert.equal(writeCalls.length, 1)
         assert.notEqual(writeCalls[0]!.path, `${DIR}/.env`)
         assert.equal(writeCalls[0]!.path.slice(0, DIR.length + 1), `${DIR}/`)
+        // O_CREAT | O_EXCL: the temp file must be opened exclusively, never just created or overwritten,
+        // so a pre-planted symlink at that path is refused rather than followed.
+        assert.equal(writeCalls[0]!.flag, 'wx')
         assert.deepEqual(renameCalls, [{ from: writeCalls[0]!.path, to: `${DIR}/.env` }])
         assert.equal(files.get(`${DIR}/.env`), 'NEW=2')
+        // The temp file itself is gone afterwards: rename moved it, it did not leave a copy behind.
+        assert.equal(files.has(writeCalls[0]!.path), false)
+    })
+
+    it('two writes to the same file never collide on the same temp name', async () => {
+        const { fs, writeCalls } = setup({ [`${DIR}/.env`]: 'OLD=1' })
+        await writeEnvFile(environment(), '.env', 'A', fs)
+        await writeEnvFile(environment(), '.env', 'B', fs)
+        assert.equal(writeCalls.length, 2)
+        assert.notEqual(writeCalls[0]!.path, writeCalls[1]!.path)
     })
 
     it('never includes file contents in a problem message', async () => {
@@ -249,6 +270,53 @@ describe('writeEnvFile', () => {
         const failed = await writeEnvFile(environment(), '.env', secret, failingFs)
         assert.equal(failed.ok, false)
         if (!failed.ok) assert.equal(failed.problem.includes(secret), false)
+    })
+
+    // The temp file's name carries a random suffix specifically so it cannot be pre-planted: something
+    // that can write into the environment folder (the same assumption as every other symlink finding)
+    // cannot predict it to plant a symlink there ahead of time. This simulates the defense that backs
+    // that up regardless: 'wx' reports EEXIST for anything already at the path, so even if a name were
+    // somehow guessed (or simply collided), the write refuses instead of opening through whatever is
+    // already there.
+    it('a pre-planted symlink at the temp path cannot capture the write: EEXIST refuses rather than following it', async () => {
+        const { fs, files, renameCalls } = setup({ '/etc/cron.d/x': 'OUTSIDE=1' })
+        const guarded: EnvFs = {
+            ...fs,
+            writeFile: async (path, text, options) => {
+                if (options?.flag === 'wx') {
+                    const error = new Error(`EEXIST: file already exists, open '${path}'`) as NodeJS.ErrnoException
+                    error.code = 'EEXIST'
+                    throw error
+                }
+                return fs.writeFile(path, text, options)
+            },
+        }
+        const result = await writeEnvFile(environment(), '.env', 'X=1', guarded)
+        assert.equal(result.ok, false)
+        assert.deepEqual(renameCalls, [])
+        assert.equal(files.get('/etc/cron.d/x'), 'OUTSIDE=1')
+    })
+
+    it('an EEXIST refusal names the path, never the contents', async () => {
+        const secret = 'DB_PASSWORD=super-secret-value'
+        const { fs } = setup({})
+        const guarded: EnvFs = {
+            ...fs,
+            writeFile: async (path, text, options) => {
+                if (options?.flag === 'wx') {
+                    const error = new Error(`EEXIST: file already exists, open '${path}'`) as NodeJS.ErrnoException
+                    error.code = 'EEXIST'
+                    throw error
+                }
+                return fs.writeFile(path, text, options)
+            },
+        }
+        const result = await writeEnvFile(environment(), '.env', secret, guarded)
+        assert.equal(result.ok, false)
+        if (!result.ok) {
+            assert.match(result.problem, /\.env/)
+            assert.equal(result.problem.includes(secret), false)
+        }
     })
 })
 

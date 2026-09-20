@@ -2,6 +2,7 @@
 // envPathProblem, the same boundary the shared module defines, so this can never touch code.
 
 import { readdir, readFile, writeFile, rename, stat, realpath } from 'node:fs/promises'
+import { randomBytes } from 'node:crypto'
 import { posix } from 'node:path'
 
 import type { EnvironmentEntry } from '../shared/registry.ts'
@@ -13,7 +14,7 @@ export type EnvFileList = { path: string, example: string | null, bytes: number 
 export type EnvFs = {
     readdir(dir: string): Promise<{ name: string, isDirectory(): boolean, isFile(): boolean }[]>
     readFile(path: string): Promise<string>
-    writeFile(path: string, text: string): Promise<void>
+    writeFile(path: string, text: string, options?: { flag: string }): Promise<void>
     rename(from: string, to: string): Promise<void>
     stat(path: string): Promise<{ size: number }>
     realpath(path: string): Promise<string>
@@ -25,7 +26,7 @@ const nodeFs: EnvFs = {
         return entries.map(entry => ({ name: entry.name, isDirectory: () => entry.isDirectory(), isFile: () => entry.isFile() }))
     },
     readFile: path => readFile(path, 'utf8'),
-    writeFile: (path, text) => writeFile(path, text, 'utf8'),
+    writeFile: (path, text, options) => writeFile(path, text, { encoding: 'utf8', flag: options?.flag }),
     rename: (from, to) => rename(from, to),
     stat: async path => {
         const info = await stat(path)
@@ -156,12 +157,20 @@ export async function writeEnvFile(
     // than following it, so the write lands on target's own name, not on whatever it pointed to. Do not
     // add a leaf check here on the assumption that write has the same hole read did; it does not.
     //
-    // Same directory, so the rename is atomic: a crash leaves either the old file or the new one, never
-    // a half-written one. EnvFs has no unlink, so a failed rename can leave the temporary file behind;
-    // that is a stray file, not a corrupted env file, and the next write overwrites it.
-    const temporary = target.replace(/([^/]+)$/, '.$1.tmp')
+    // The temp file is a different story. A predictable name (".env.tmp") could be pre-planted as a
+    // symlink by anything that can write into the environment folder (the same repo-content assumption
+    // as every symlink finding above), redirecting this write before the safe rename below ever runs.
+    // Two defenses instead of a check, because a check here would just be a second race: a random
+    // suffix, so the name cannot be guessed and pre-planted, and 'wx' (O_CREAT | O_EXCL), which fails
+    // with EEXIST if anything at all already sits at that path, symlink or not, rather than opening
+    // through it. An EEXIST is a refusal, not a retry with a new name: retrying would only turn a closed
+    // race into an open one.
+    const temporary = posix.join(posix.dirname(target), `.${posix.basename(target)}.${randomBytes(6).toString('hex')}.tmp`)
+    // Same directory, so the rename below is atomic: a crash leaves either the old file or the new one,
+    // never a half-written one. EnvFs has no unlink, so a failed rename can leave the temporary file
+    // behind; that is a stray file, not a corrupted env file, and the next write overwrites it.
     try {
-        await fs.writeFile(temporary, text)
+        await fs.writeFile(temporary, text, { flag: 'wx' })
         await fs.rename(temporary, target)
     } catch (error) {
         return { ok: false, problem: `the env file could not be written: ${describeError(error)}` }
