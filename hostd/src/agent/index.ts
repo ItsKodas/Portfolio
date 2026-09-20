@@ -110,7 +110,7 @@ async function main(): Promise<void> {
         mkdir: dir => mkdir(dir),
         rmdir: dir => rm(dir, { recursive: true, force: true }),
         exists,
-        resolve: (id, dir, composePath) => resolveNewProject({ dir, composePath }, id, runner),
+        resolve: (expectedName, dir, composePath, collidesWith) => resolveNewProject({ dir, composePath }, expectedName, runner, collidesWith),
         runner,
         log,
     }

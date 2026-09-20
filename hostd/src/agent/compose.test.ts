@@ -128,6 +128,26 @@ describe('composeNameProblem', () => {
             'compose resolves the project name acme-old, not acme; set name: acme in the compose file, or rename the registry entry',
         )
     })
+
+    it('says nothing when the resolved name matches expected, even if it also equals collidesWith', () => {
+        // Not a realistic case (expectedName and collidesWith are never equal in practice, since one is
+        // always <id>-test and the other <id>), but proves the match check runs first regardless.
+        assert.equal(composeNameProblem('acme', 'acme', 'acme'), null)
+    })
+
+    it('names the live-collision specifically when the resolved name is collidesWith rather than expected', () => {
+        assert.equal(
+            composeNameProblem('acme', 'acme-test', 'acme'),
+            "compose resolves the project name acme, the same as the live environment; a test environment cannot share live's compose project name, since starting it would take over live's already-running containers instead of starting a separate stack. Set name: acme-test in the compose file, or rename the registry entry.",
+        )
+    })
+
+    it('falls back to the ordinary message when the resolved name is neither expected nor collidesWith', () => {
+        assert.equal(
+            composeNameProblem('something-else', 'acme-test', 'acme'),
+            'compose resolves the project name something-else, not acme-test; set name: acme-test in the compose file, or rename the registry entry',
+        )
+    })
 })
 
 describe('resolveNewProject', () => {
@@ -195,6 +215,38 @@ describe('resolveNewProject', () => {
         // The check runs on the resolved config compose already produced: it never triggers a second
         // command to find this out.
         assert.equal(calls.length, 1)
+    })
+})
+
+// Regression coverage, per the whole-branch re-review: resolveNewProject's expectedName must be the
+// environment's own folder basename, not the bare registry id. The tests above only ever use a
+// live-shaped location (folder basename === id), which is exactly why this was missed the first time:
+// comparing a test environment's resolved name against the bare id refused the ordinary, unpinned case
+// for every repo, since an unpinned compose file resolves to the folder's own basename (<id>-test), not
+// the project id.
+describe('resolveNewProject for a test environment', () => {
+    const location = { dir: '/var/www/acme-test', composePath: '/var/www/acme-test/docker-compose.yml' }
+    const resolving = (name: string) => runnerReturning({ stdout: JSON.stringify({ name, services: { web: {} } }) })
+
+    it('accepts a compose name matching the test folder, whether pinned or (the ordinary case) left to the default', async () => {
+        const { run } = resolving('acme-test')
+        assert.deepEqual(await resolveNewProject(location, 'acme-test', run, 'acme'), { ok: true, services: { web: { role: 'site' } } })
+    })
+
+    it('refuses, naming the collision, when the compose file pins the live environment\'s own name', async () => {
+        const { run } = resolving('acme')
+        assert.deepEqual(await resolveNewProject(location, 'acme-test', run, 'acme'), {
+            ok: false,
+            problem: "compose resolves the project name acme, the same as the live environment; a test environment cannot share live's compose project name, since starting it would take over live's already-running containers instead of starting a separate stack. Set name: acme-test in the compose file, or rename the registry entry.",
+        })
+    })
+
+    it('refuses with the ordinary message when the compose file pins some unrelated name', async () => {
+        const { run } = resolving('something-else')
+        assert.deepEqual(await resolveNewProject(location, 'acme-test', run, 'acme'), {
+            ok: false,
+            problem: 'compose resolves the project name something-else, not acme-test; set name: acme-test in the compose file, or rename the registry entry',
+        })
     })
 })
 

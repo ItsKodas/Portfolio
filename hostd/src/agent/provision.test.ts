@@ -101,6 +101,7 @@ function setup(options: SetupOptions = {}) {
     const cloneRequests: FetchRequest[] = []
     const logs: string[] = []
     const runnerCalls: Array<{ command: string, args: string[] }> = []
+    const resolveCalls: Array<{ expectedName: string, dir: string, composePath: string, collidesWith?: string }> = []
 
     const registryFiles = new Map<string, string>([[REGISTRY_PATH, yaml]])
     const registryFs: RegistryWriteFs = {
@@ -137,8 +138,9 @@ function setup(options: SetupOptions = {}) {
         mkdir: async dir => { calls.push('mkdir'); mkdirs.push(dir) },
         rmdir: async dir => { calls.push('rmdir'); rmdirs.push(dir) },
         exists: async dir => { calls.push('exists'); return exists.has(dir) },
-        resolve: async () => {
+        resolve: async (expectedName, dir, composePath, collidesWith) => {
             calls.push('resolve')
+            resolveCalls.push({ expectedName, dir, composePath, collidesWith })
             return options.resolveResult ?? { ok: true, services: { web: { role: 'site' } } }
         },
         runner: (async (command, args) => {
@@ -148,7 +150,7 @@ function setup(options: SetupOptions = {}) {
         log: message => logs.push(message),
     }
 
-    return { deps, registry, calls, mkdirs, rmdirs, cloneRequests, logs, registryFiles, envFs, envFsFiles, runnerCalls }
+    return { deps, registry, calls, mkdirs, rmdirs, cloneRequests, logs, registryFiles, envFs, envFsFiles, runnerCalls, resolveCalls }
 }
 
 const createArgs = (overrides: Partial<ProvisionCreateArgs> = {}): ProvisionCreateArgs => ({
@@ -165,11 +167,14 @@ const createArgs = (overrides: Partial<ProvisionCreateArgs> = {}): ProvisionCrea
 
 describe('createProject', () => {
     it('creates the folder, clones, reads the compose file, writes the registry, and reports needs-setup', async () => {
-        const { deps, mkdirs, cloneRequests, registryFiles } = setup()
+        const { deps, mkdirs, cloneRequests, registryFiles, resolveCalls } = setup()
         const reply = await createProject(createArgs(), deps)
         assert.deepEqual(reply, { ok: true, project: { id: 'bakery', state: 'needs-setup' }, envFiles: [] })
         assert.deepEqual(mkdirs, ['/var/www/bakery'])
         assert.deepEqual(cloneRequests, [{ verb: 'clone', repo: 'git@github.com:ItsKodas/bakery.git', dir: '/var/www/bakery', branch: 'main' }])
+        // The expected compose name is the folder's own basename, with no collision to guard against:
+        // live has no other environment yet.
+        assert.deepEqual(resolveCalls, [{ expectedName: 'bakery', dir: '/var/www/bakery', composePath: '/var/www/bakery/docker-compose.yml', collidesWith: undefined }])
 
         const written = parseRegistry(registryFiles.get(REGISTRY_PATH)!)
         const bakery = written.projects.get('bakery')
@@ -414,6 +419,19 @@ describe('addEnvironment', () => {
         assert.equal(test?.dir, '/var/www/acme-test')
         assert.equal(test?.port, 5200)
         assert.equal(test?.domain, 'test.acme.com')
+    })
+
+    // Regression, per the whole-branch re-review: this used to pass the bare project id ('acme') as the
+    // expected compose name for the test environment's own folder ('/var/www/acme-test'), which an
+    // unpinned compose file (the ordinary case for most repos) never resolves to, since compose defaults
+    // to the folder's own basename. The expected name must be the folder basename, and collidesWith must
+    // be the project id, so a compose file pinning live's own name gets the specific collision refusal.
+    it('checks the compose name against the test folder\'s own basename, not the bare project id, and flags live\'s id as the collision to avoid', async () => {
+        const { deps, resolveCalls } = setup()
+        await addEnvironment(project(), args(), deps)
+        assert.deepEqual(resolveCalls, [{
+            expectedName: 'acme-test', dir: '/var/www/acme-test', composePath: '/var/www/acme-test/docker-compose.yml', collidesWith: 'acme',
+        }])
     })
 
     it('copies live env files into a new test environment, pointing the site URL and database at test', async () => {

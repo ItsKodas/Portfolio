@@ -50,9 +50,11 @@ export type ProvisionDeps = {
     mkdir(dir: string): Promise<void>
     rmdir(dir: string): Promise<void>
     exists(dir: string): Promise<boolean>
-    // id is the registry id the clone must resolve to: resolveNewProject checks it against the compose
-    // file's own project name, the same guard the ongoing sweep runs, but here before anything is written.
-    resolve(id: string, dir: string, composePath: string): Promise<{ ok: true, services: Record<string, GuessedService> } | { ok: false, problem: string }>
+    // expectedName is the folder's own basename (what an unpinned compose file resolves to): resolveNewProject
+    // checks it against the compose file's own project name, the same guard the ongoing sweep runs, but
+    // here before anything is written. collidesWith, only ever passed for a test environment, is the
+    // live environment's own expected name, so pinning it there gets a message about the collision.
+    resolve(expectedName: string, dir: string, composePath: string, collidesWith?: string): Promise<{ ok: true, services: Record<string, GuessedService> } | { ok: false, problem: string }>
     // Only ever used to stop the live environment before removeProject unregisters a whole project: there
     // is no per-environment lifecycle yet (see RUNBOOK.md), so this is never asked to touch test.
     runner: Runner
@@ -160,6 +162,11 @@ type ProvisionAttempt = {
     dir: string
     repo: string
     branch: string
+    // Only ever set by addEnvironment, to the project's own id: the live environment's expected compose
+    // name, which is what a test environment's compose file must never be pinned to (see
+    // composeNameProblem in compose.ts). Absent for createProject, since live has no other environment to
+    // collide with yet.
+    collidesWith?: string
     // Runs after a successful clone, before resolve. A no-op for create; addEnvironment copies and
     // rewrites env files here, using the composePath's directory as the freshly cloned test folder.
     afterClone: (composePath: string) => Promise<{ ok: true } | { ok: false, problem: string }>
@@ -216,7 +223,11 @@ async function provisionOnDisk(attempt: ProvisionAttempt, deps: ProvisionDeps): 
             return refuse('failed', after.problem)
         }
 
-        const resolved = await deps.resolve(id, dir, composePath)
+        // The expected compose project name is this environment's own folder basename, what an unpinned
+        // compose file resolves to by default, not the registry id: those coincide for live
+        // (/var/www/<id>) but not for test (/var/www/<id>-test), and comparing test's resolved name
+        // against the bare id would refuse the ordinary, unpinned case for every repo.
+        const resolved = await deps.resolve(posix.basename(dir), dir, composePath, attempt.collidesWith)
         if (!resolved.ok) {
             // Named plainly, both in the log and the refusal: this is docker compose's own error (a
             // missing env_file, a syntax error, a command that could not run), not "no site service",
@@ -327,6 +338,9 @@ export async function addEnvironment(project: ProjectEntry, args: ProvisionAddEn
         dir,
         repo: project.repo,
         branch: args.branch,
+        // The live environment's own expected compose name: a test environment pinning it would share
+        // one compose project with live, and starting test would take over live's running containers.
+        collidesWith: project.id,
         afterClone: async composePath => {
             const live = project.environments.get('live')
             if (!live) return { ok: true }

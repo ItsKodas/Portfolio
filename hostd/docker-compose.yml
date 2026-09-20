@@ -77,10 +77,12 @@ services:
       HOSTD_FETCH_SOCKET: /run/hostd-fetch/fetch.sock
     volumes:
       - /var/www:/var/www
-      - ./registry:/etc/hostd:ro
-      # Its own volume, shared only with agent: never hostd-sock, and never api. A compromise here can
-      # therefore never reach agent.sock to speak the agent's own protocol, or overwrite it to impersonate
-      # the agent to api.
+      # No registry mount: the fetcher never reads it (it only ever does what the agent tells it to, over
+      # the fetch socket below), so it does not get a copy of client data it has no use for.
+      #
+      # The socket volume is its own, shared only with agent: never hostd-sock, and never api. A
+      # compromise here can therefore never reach agent.sock to speak the agent's own protocol, or
+      # overwrite it to impersonate the agent to api.
       - hostd-fetch-sock:/run/hostd-fetch
     networks:
       # It clones from and fetches GitHub, unlike agent and api. It never gets the Docker socket.

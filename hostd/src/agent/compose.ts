@@ -155,10 +155,18 @@ export async function resolveCompose(
 // (at create time, before anything is registered), so the two can never drift into naming this two
 // different ways. A start under the wrong compose project name would create a second copy of the site
 // beside whatever is already running under the real one.
-export function composeNameProblem(resolvedName: string, expectedId: string): string | null {
-    return resolvedName === expectedId
-        ? null
-        : `compose resolves the project name ${resolvedName}, not ${expectedId}; set name: ${expectedId} in the compose file, or rename the registry entry`
+//
+// collidesWith is only ever the live environment's own expected name, passed by resolveNewProject while
+// creating a test environment: an unpinned compose file resolving to test's own folder is the ordinary
+// case and passes; one pinning live's name instead is not just "wrong", it is the specific danger the
+// runbook warns about, since starting test would then take over live's already-running containers, so it
+// gets a message that says that instead of only "not what was expected".
+export function composeNameProblem(resolvedName: string, expectedName: string, collidesWith?: string): string | null {
+    if (resolvedName === expectedName) return null
+    if (collidesWith !== undefined && resolvedName === collidesWith) {
+        return `compose resolves the project name ${resolvedName}, the same as the live environment; a test environment cannot share live's compose project name, since starting it would take over live's already-running containers instead of starting a separate stack. Set name: ${expectedName} in the compose file, or rename the registry entry.`
+    }
+    return `compose resolves the project name ${resolvedName}, not ${expectedName}; set name: ${expectedName} in the compose file, or rename the registry entry`
 }
 
 export type GuessedService = { role: 'site' } | { role: 'database', engine: Exclude<Engine, 'sqlite'> }
@@ -199,17 +207,25 @@ function guessRole(service: ResolvedService): GuessedService {
 // comes back needs-setup, and the operator's own review and edit of the registry, correcting whatever
 // this guessed wrong, is what happens next, exactly like enrolling a project by hand today.
 //
-// expectedId is checked here too, not only later by guard.ts's ongoing sweep: the spec's step 3 says the
+// expectedName is checked here too, not only later by guard.ts's ongoing sweep: the spec's step 3 says the
 // same guards run at creation, and without this a repo whose compose file pins a mismatched name: would
 // clone and register cleanly, only to go invalid at the next sweep with the folder already on disk.
+//
+// expectedName is the environment's own folder basename (what an unpinned compose file resolves to by
+// default), not the registry id: those are the same thing for live (/var/www/<id>), but not for test
+// (/var/www/<id>-test), and comparing test's resolved name against the bare id would refuse the ordinary,
+// unpinned case for every repo, which is most of them. collidesWith is passed only when creating a test
+// environment, so a compose file pinning live's own name gets the specific collision message above rather
+// than a plain "not what was expected" one.
 export async function resolveNewProject(
     location: ComposeLocation,
-    expectedId: string,
+    expectedName: string,
     run: Runner,
+    collidesWith?: string,
 ): Promise<{ ok: true, services: Record<string, GuessedService> } | { ok: false, problem: string }> {
     const result = await resolveCompose(location, run)
     if (!result.ok) return result
-    const nameProblem = composeNameProblem(result.resolved.name, expectedId)
+    const nameProblem = composeNameProblem(result.resolved.name, expectedName, collidesWith)
     if (nameProblem) return { ok: false, problem: nameProblem }
     const services: Record<string, GuessedService> = {}
     for (const [name, service] of Object.entries(result.resolved.services)) services[name] = guessRole(service)
