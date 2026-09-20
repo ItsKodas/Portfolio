@@ -248,6 +248,37 @@ describe('parseRegistry, problems with one project', () => {
         assert.equal(registry.projects.size, 0)
     })
 
+    // Two entries over one port would let one client's domain proxy to another client's container; this
+    // must hold even when the two projects otherwise look completely unrelated (different dirs here).
+    it('marks both projects invalid when they share a port', () => {
+        const text = `${project()}  other:\n    client: cl_2\n    name: Other\n    dir: /var/www/other\n    upstream: 127.0.0.1:5011\n    services: { web: { role: site } }\n`
+        const registry = parseRegistry(text)
+        assert.match(registry.invalid.get('site') ?? '', /port 5011 is also used by other/)
+        assert.match(registry.invalid.get('other') ?? '', /port 5011 is also used by site/)
+        assert.equal(registry.projects.size, 0)
+    })
+
+    it('marks both projects invalid when they share a domain', () => {
+        const registry = parseRegistry(`
+projects:
+  acme:
+    client: cl_1
+    name: Acme
+    services: { web: { role: site } }
+    environments:
+      live: { dir: /var/www/acme, port: 5010, domain: shared.example.com }
+  bakery:
+    client: cl_2
+    name: Bakery
+    services: { web: { role: site } }
+    environments:
+      live: { dir: /var/www/bakery, port: 5011, domain: shared.example.com }
+`)
+        assert.match(registry.invalid.get('acme') ?? '', /domain shared\.example\.com is also used by bakery/)
+        assert.match(registry.invalid.get('bakery') ?? '', /domain shared\.example\.com is also used by acme/)
+        assert.equal(registry.projects.size, 0)
+    })
+
     it('parses a service literally named constructor, resolving to the parsed entry rather than Object.prototype.constructor', () => {
         const registry = parseRegistry(project({
             services: '{ web: { role: site }, constructor: { role: database, engine: postgres } }',

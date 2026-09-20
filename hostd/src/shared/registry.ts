@@ -514,17 +514,33 @@ export function parseRegistry(text: string): Registry {
         else parsed.set(id, result.entry)
     }
 
-    // Two entries over one directory would let one client's settings drive another client's site.
-    // Every environment's dir counts, not just the live one, and the message names the dir that
-    // actually collided rather than always the project's live dir.
+    // Two entries over one directory would let one client's settings drive another client's site. Two
+    // entries over one port would let one client's domain proxy to another client's container. Two
+    // entries over one domain would let either one serve the other's traffic. Every environment counts,
+    // not just the live one, and each message names whichever value actually collided rather than always
+    // the project's live one. This is what makes the invariant hold even if a lock elsewhere does not:
+    // a hand-edited registry, or two provisioning writes that both raced past a lock, still cannot produce
+    // a file hostd will load with either collision in it.
     const projects = new Map<string, ProjectEntry>()
     for (const [id, entry] of parsed) {
         const messages: string[] = []
         for (const env of entry.environments.values()) {
-            const sharing = [...parsed.values()]
+            const sharingDir = [...parsed.values()]
                 .filter(other => other.id !== id && [...other.environments.values()].some(otherEnv => otherEnv.dir === env.dir))
                 .map(other => other.id)
-            if (sharing.length > 0) messages.push(`dir ${env.dir} is also used by ${sharing.join(', ')}`)
+            if (sharingDir.length > 0) messages.push(`dir ${env.dir} is also used by ${sharingDir.join(', ')}`)
+
+            const sharingPort = [...parsed.values()]
+                .filter(other => other.id !== id && [...other.environments.values()].some(otherEnv => otherEnv.port === env.port))
+                .map(other => other.id)
+            if (sharingPort.length > 0) messages.push(`port ${env.port} is also used by ${sharingPort.join(', ')}`)
+
+            if (env.domain !== null) {
+                const sharingDomain = [...parsed.values()]
+                    .filter(other => other.id !== id && [...other.environments.values()].some(otherEnv => otherEnv.domain === env.domain))
+                    .map(other => other.id)
+                if (sharingDomain.length > 0) messages.push(`domain ${env.domain} is also used by ${sharingDomain.join(', ')}`)
+            }
         }
         if (messages.length > 0) invalid.set(id, messages.join('; '))
         else projects.set(id, entry)

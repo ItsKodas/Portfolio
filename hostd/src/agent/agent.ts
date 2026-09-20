@@ -46,12 +46,12 @@ export class Agent {
     // Keyed <project>:<environment>, exactly like lifecycleBusy, so two writes to the same env file
     // never race through this process even though writeEnvFile's own temp-file dance is otherwise safe.
     private readonly envBusy = new Set<string>()
-    // Keyed by the target project id: a create by its own args.id, add-environment and remove by the
-    // existing project's id. Without this, two overlapping creates (or a create and an add-environment)
-    // for the same id both read the same registry snapshot, both see the id or port free, and both
-    // proceed; this is what makes provisioning of one id one at a time, the same guarantee lifecycleBusy
-    // gives a single project's lifecycle actions.
-    private readonly provisionBusy = new Set<string>()
+    // A single global lock, not one per id like lifecycleBusy: provisioning is a rare, operator-driven
+    // action, and choosePort/domainTaken both read a registry snapshot that two overlapping creates for
+    // DIFFERENT ids would race just as badly as two for the same one (both see the same free port, or the
+    // same free domain, before either has written). Serialising every provisioning action against every
+    // other one is the honest fix for that, not a lock keyed narrowly enough to miss it.
+    private provisioningBusy = false
 
     constructor(private readonly deps: AgentDeps) {}
 
@@ -98,25 +98,25 @@ export class Agent {
 
     private async provisionCreate(args: ProvisionCreateArgs): Promise<AgentReply> {
         if (!this.deps.provision) return refuse('unavailable', 'provisioning is not configured')
-        if (this.provisionBusy.has(args.id)) return refuse('busy', `${args.id} already has a provisioning action running`)
-        this.provisionBusy.add(args.id)
+        if (this.provisioningBusy) return refuse('busy', 'another provisioning action is in progress')
+        this.provisioningBusy = true
         try {
             return await createProject(args, this.deps.provision)
         } finally {
-            this.provisionBusy.delete(args.id)
+            this.provisioningBusy = false
         }
     }
 
     private async provisionExisting(project: ProjectEntry, args: ProvisionAddEnvironmentArgs | ProvisionRemoveArgs): Promise<AgentReply> {
         if (!this.deps.provision) return refuse('unavailable', 'provisioning is not configured')
-        if (this.provisionBusy.has(project.id)) return refuse('busy', `${project.id} already has a provisioning action running`)
-        this.provisionBusy.add(project.id)
+        if (this.provisioningBusy) return refuse('busy', 'another provisioning action is in progress')
+        this.provisioningBusy = true
         try {
             return args.action === 'add-environment'
                 ? await addEnvironment(project, args, this.deps.provision)
                 : await removeProject(project, args.environment, this.deps.provision)
         } finally {
-            this.provisionBusy.delete(project.id)
+            this.provisioningBusy = false
         }
     }
 

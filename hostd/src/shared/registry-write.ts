@@ -55,16 +55,23 @@ const environmentNode = (draft: EnvironmentDraft) => ({
     ...(draft.certificate ? { certificate: draft.certificate } : {}),
 })
 
-function edit(doc: Document, change: Change): string | null {
+// `conflict: true` marks the two cases where the id or environment turned out to already be taken, by
+// something already in the document rather than by this change's own values. A caller that made a folder
+// on disk before attempting the write can use that flag to tell "someone else already claimed this" (the
+// folder may not even be theirs any more) apart from every other failure (which is safe to roll back),
+// without depending on the exact wording of the message staying the same.
+type EditResult = { problem: string, conflict?: true } | null
+
+function edit(doc: Document, change: Change): EditResult {
     const projects = doc.getIn(['projects'])
-    if (!projects) return 'the registry has no projects section'
+    if (!projects) return { problem: 'the registry has no projects section' }
     const has = (id: string) => doc.hasIn(['projects', id])
 
     switch (change.kind) {
         case 'add-project':
-            if (!PROJECT_ID.test(change.id)) return `${change.id} is not a valid project id`
-            if (RESERVED_PROJECT_IDS.has(change.id)) return `${change.id} is reserved`
-            if (has(change.id)) return `${change.id} already exists`
+            if (!PROJECT_ID.test(change.id)) return { problem: `${change.id} is not a valid project id` }
+            if (RESERVED_PROJECT_IDS.has(change.id)) return { problem: `${change.id} is reserved` }
+            if (has(change.id)) return { problem: `${change.id} already exists`, conflict: true }
             doc.setIn(['projects', change.id], {
                 client: change.project.client,
                 name: change.project.name,
@@ -74,33 +81,35 @@ function edit(doc: Document, change: Change): string | null {
             })
             return null
         case 'add-environment':
-            if (!has(change.id)) return `${change.id} is not registered`
+            if (!has(change.id)) return { problem: `${change.id} is not registered` }
             if (doc.hasIn(['projects', change.id, 'environments', change.environment.name])) {
-                return `${change.id} already has a ${change.environment.name} environment`
+                return { problem: `${change.id} already has a ${change.environment.name} environment`, conflict: true }
             }
             doc.setIn(['projects', change.id, 'environments', change.environment.name], environmentNode(change.environment))
             return null
         case 'set-deployed':
             if (!doc.hasIn(['projects', change.id, 'environments', change.environment])) {
-                return `${change.id} has no ${change.environment} environment`
+                return { problem: `${change.id} has no ${change.environment} environment` }
             }
             doc.setIn(['projects', change.id, 'environments', change.environment, 'deployed'], change.commit)
             return null
         case 'remove-project':
-            if (!has(change.id)) return `${change.id} is not registered`
+            if (!has(change.id)) return { problem: `${change.id} is not registered` }
             doc.deleteIn(['projects', change.id])
             return null
         case 'remove-environment':
-            if (change.environment === 'live') return 'the live environment cannot be removed on its own'
+            if (change.environment === 'live') return { problem: 'the live environment cannot be removed on its own' }
             if (!doc.hasIn(['projects', change.id, 'environments', change.environment])) {
-                return `${change.id} has no ${change.environment} environment`
+                return { problem: `${change.id} has no ${change.environment} environment` }
             }
             doc.deleteIn(['projects', change.id, 'environments', change.environment])
             return null
     }
 }
 
-export function applyChange(text: string, change: Change): { ok: true, text: string } | { ok: false, problem: string } {
+export type WriteResult = { ok: true, text: string } | { ok: false, problem: string, conflict?: true }
+
+export function applyChange(text: string, change: Change): WriteResult {
     let doc: Document
     try {
         doc = parseDocument(text)
@@ -110,8 +119,8 @@ export function applyChange(text: string, change: Change): { ok: true, text: str
         return { ok: false, problem: describeError(error) }
     }
 
-    const problem = edit(doc, change)
-    if (problem) return { ok: false, problem }
+    const edited = edit(doc, change)
+    if (edited) return { ok: false, problem: edited.problem, ...(edited.conflict ? { conflict: edited.conflict } : {}) }
 
     const next = doc.toString()
     // The same validator that runs at load, so a write can never produce a file hostd would refuse
@@ -134,13 +143,13 @@ export class RegistryWriter {
 
     constructor(private readonly path: string, private readonly fs: RegistryWriteFs = nodeFs) {}
 
-    async write(change: Change): Promise<{ ok: true } | { ok: false, problem: string }> {
+    async write(change: Change): Promise<{ ok: true } | { ok: false, problem: string, conflict?: true }> {
         const run = this.queue.then(() => this.writeNow(change), () => this.writeNow(change))
         this.queue = run.catch(() => {})
         return run
     }
 
-    private async writeNow(change: Change): Promise<{ ok: true } | { ok: false, problem: string }> {
+    private async writeNow(change: Change): Promise<{ ok: true } | { ok: false, problem: string, conflict?: true }> {
         let text: string
         try {
             text = await this.fs.readFile(this.path)

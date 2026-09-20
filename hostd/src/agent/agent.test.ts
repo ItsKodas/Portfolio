@@ -315,7 +315,7 @@ describe('provisioning and env', () => {
         args: { action: 'create', id, client: 'cl_2', name: 'Bakery', repo: 'git@github.com:ItsKodas/bakery.git', branch: 'main', domain: null, certificate: null },
     })
 
-    it('serialises provisioning per id: a second create for the same id is refused busy, and never touches the first\'s folder', async () => {
+    it('serialises every provisioning action, regardless of id, and never touches the first\'s folder', async () => {
         const mkdirs: string[] = []
         const rmdirs: string[] = []
         let release: () => void = () => {}
@@ -329,7 +329,10 @@ describe('provisioning and env', () => {
 
         const first = agent.handle(create('bakery'))
         await new Promise(resolve => setImmediate(resolve))
-        assert.deepEqual(replyOf(await agent.handle(create('bakery'))), { ok: false, code: 'busy', message: 'bakery already has a provisioning action running' })
+        // A different id is refused too: choosePort and the domain check both read one registry snapshot,
+        // which two overlapping creates for different ids would race exactly as badly as two for the same
+        // id, so the lock is not keyed by id at all.
+        assert.deepEqual(replyOf(await agent.handle(create('cafe'))), { ok: false, code: 'busy', message: 'another provisioning action is in progress' })
         // The busy refusal never even reached mkdir, so there is nothing for it to have removed.
         assert.deepEqual(rmdirs, [])
 
@@ -337,28 +340,39 @@ describe('provisioning and env', () => {
         assert.equal(replyOf(await first)?.ok, true)
         assert.deepEqual(mkdirs, ['/var/www/bakery'])
         assert.deepEqual(rmdirs, [])
-        // The lock is released once the first call finishes, so a later create for the same id is not busy.
+        // The lock is released once the first call finishes, so a later create is not busy.
         assert.equal(replyOf(await agent.handle(create('bakery')))?.ok, true)
     })
 
-    it('does not serialise different ids, and neither create removes the other\'s folder', async () => {
-        const rmdirs: string[] = []
+    it('does not let a second create choose a port until the first is done, so they cannot both pick the same free one', async () => {
+        const ports: number[] = []
+        let nextPort = 5100
         let release: () => void = () => {}
         const blocked = new Promise<void>(resolve => { release = resolve })
+        let calls = 0
         const provision = fakeProvisionDeps({
-            rmdir: async dir => { rmdirs.push(dir) },
-            fetcher: { call: async () => { await blocked; return { ok: true, commit: 'abc1234' } } },
+            choosePort: async () => {
+                const port = nextPort++
+                ports.push(port)
+                return { ok: true, port }
+            },
+            // Only the first call blocks: once serialised, the second is free to run to completion.
+            fetcher: { call: async () => { calls++; if (calls === 1) await blocked; return { ok: true, commit: 'abc1234' } } },
         })
         const { agent } = setup({ provision })
 
         const first = agent.handle(create('bakery'))
-        const second = agent.handle(create('cafe'))
         await new Promise(resolve => setImmediate(resolve))
+        assert.deepEqual(replyOf(await agent.handle(create('cafe'))), { ok: false, code: 'busy', message: 'another provisioning action is in progress' })
+
         release()
-        const [firstReply, secondReply] = await Promise.all([first, second])
-        assert.equal(replyOf(firstReply)?.ok, true)
-        assert.equal(replyOf(secondReply)?.ok, true)
-        assert.deepEqual(rmdirs, [])
+        assert.equal(replyOf(await first)?.ok, true)
+
+        // Only now that the first is fully done does the second run for real, and choosePort is called
+        // again rather than reusing the first's stale answer.
+        assert.equal(replyOf(await agent.handle(create('cafe')))?.ok, true)
+        assert.equal(ports.length, 2)
+        assert.notEqual(ports[0], ports[1])
     })
 
     // The mirror of "does not re-run the guard before a stop": removal touches no files, so a project the

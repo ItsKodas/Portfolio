@@ -82,6 +82,23 @@ describe('applyChange', () => {
         assert.equal(applyChange(BASE, { ...addProject, id: 'mail' }).ok, false)
     })
 
+    // conflict: true is what a caller (provision.ts) reads to decide whether a folder it made before the
+    // write is safe to remove: only "the id, or the environment, was already there" means it is not.
+    // A reserved id is not that: nothing else claims it, so it carries no conflict flag.
+    it('marks an id or environment that already exists as a conflict, and a reserved id as an ordinary refusal', () => {
+        const idTaken = applyChange(BASE, { ...addProject, id: 'acme' })
+        assert.deepEqual(idTaken, { ok: false, problem: 'acme already exists', conflict: true })
+
+        const environmentTaken = applyChange(BASE, {
+            kind: 'add-environment', id: 'acme',
+            environment: { name: 'live', dir: '/var/www/acme-2', branch: 'main', domain: null, port: 5099, certificate: null },
+        })
+        assert.deepEqual(environmentTaken, { ok: false, problem: 'acme already has a live environment', conflict: true })
+
+        const reserved = applyChange(BASE, { ...addProject, id: 'mail' })
+        assert.deepEqual(reserved, { ok: false, problem: 'mail is reserved' })
+    })
+
     it('refuses a change to a project that is not there', () => {
         assert.equal(applyChange(BASE, { kind: 'set-deployed', id: 'ghost', environment: 'live', commit: '9a1b2c3' }).ok, false)
     })
@@ -130,7 +147,10 @@ describe('RegistryWriter', () => {
     it('serialises concurrent writes, so two additions both survive', async () => {
         const { fs, files } = fakeFs(BASE)
         const writer = new RegistryWriter('/etc/hostd/projects.yaml', fs)
-        const second: Change = { ...addProject, id: 'cafe', project: { ...addProject.project, name: 'Cafe', environment: { ...addProject.project.environment, dir: '/var/www/cafe', port: 5012 } } }
+        const second: Change = {
+            ...addProject, id: 'cafe',
+            project: { ...addProject.project, name: 'Cafe', environment: { ...addProject.project.environment, dir: '/var/www/cafe', domain: 'cafe.com', port: 5012 } },
+        }
         const [a, b] = await Promise.all([writer.write(addProject), writer.write(second)])
         assert.deepEqual([a, b], [{ ok: true }, { ok: true }])
         const registry = parseRegistry(files.get('/etc/hostd/projects.yaml')!)

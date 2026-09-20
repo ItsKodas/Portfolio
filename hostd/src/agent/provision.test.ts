@@ -275,34 +275,64 @@ describe('createProject', () => {
         assert.deepEqual(rmdirs, ['/var/www/bakery'])
     })
 
-    it('still attempts to remove the folder when mkdir itself throws', async () => {
+    // Nothing of this call's making is on disk yet when mkdir itself is what fails: in particular an
+    // EEXIST means the folder already belongs to something else, and removing it would delete contents
+    // this call never created.
+    it('does not attempt to remove the folder when mkdir itself throws', async () => {
         const { deps, rmdirs } = setup()
-        const throwingMkdir: ProvisionDeps['mkdir'] = async () => { throw new Error('EACCES: permission denied') }
+        const throwingMkdir: ProvisionDeps['mkdir'] = async () => { throw new Error('EEXIST: file already exists') }
         const reply = await createProject(createArgs(), { ...deps, mkdir: throwingMkdir })
         assert.equal(reply.ok, false)
         assert.equal(reply.ok === false && reply.code, 'failed')
-        assert.deepEqual(rmdirs, ['/var/www/bakery'])
+        assert.deepEqual(rmdirs, [])
     })
 
-    // The busy lock in agent.ts is the primary defense against two overlapping creates of the same id;
-    // this is the fallback inside provision.ts itself, for whatever reaches the write despite that lock.
-    // A write failure that says the id is already registered means someone else's entry now owns it, so
-    // the folder this call made may already be theirs (or gone, or replaced): removing it is not this
-    // call's to do.
-    it('does not remove its folder when the registry write fails because the id is already registered', async () => {
+    // The single global provisioning lock in agent.ts is the primary defense against two overlapping
+    // creates; this is the fallback inside provision.ts itself, for whatever reaches the write despite
+    // that lock. `conflict: true` is registry-write.ts's own structural signal, not a message a test (or
+    // a future reword of that message) could accidentally stop matching.
+    it('does not remove its folder when the registry write fails with a structural conflict', async () => {
         const { deps, rmdirs } = setup()
-        const conflictingWriter = { write: async () => ({ ok: false, problem: 'bakery already exists' }) } as unknown as RegistryWriter
+        const conflictingWriter = { write: async () => ({ ok: false, problem: 'bakery already exists', conflict: true as const }) } as unknown as RegistryWriter
         const reply = await createProject(createArgs(), { ...deps, writer: conflictingWriter })
         assert.deepEqual(reply, { ok: false, code: 'failed', message: 'bakery already exists' })
         assert.deepEqual(rmdirs, [])
     })
 
-    it('still removes its folder when the write fails for an unrelated reason', async () => {
+    it('still removes its folder when the write fails for an unrelated reason, conflict or not in the message text', async () => {
         const { deps, rmdirs } = setup()
-        const otherFailure = { write: async () => ({ ok: false, problem: 'the registry could not be written: disk full' }) } as unknown as RegistryWriter
-        const reply = await createProject(createArgs(), { ...deps, writer: otherFailure })
+        // The wording alone must not be enough to suppress the rollback: only the structural conflict
+        // flag does. A message that happens to contain "already exists" without the flag set still rolls
+        // back, proving the check reads the flag, not the text.
+        const lookalike = { write: async () => ({ ok: false, problem: 'a project named bakery already exists somewhere unrelated' }) } as unknown as RegistryWriter
+        const reply = await createProject(createArgs(), { ...deps, writer: lookalike })
         assert.equal(reply.ok, false)
         assert.deepEqual(rmdirs, ['/var/www/bakery'])
+    })
+
+    // The end-to-end version of the two tests above: a real RegistryWriter, backed by the in-memory fs
+    // fake, actually refusing a real conflict, rather than a fake writer asserting the shape we expect it
+    // to produce.
+    it('does not roll back when a real RegistryWriter meets a genuine conflict at write time', async () => {
+        const { deps, rmdirs, registryFiles } = setup()
+        // Simulate a winner having registered "bakery" between this call's own pre-checks (which already
+        // read the registry() snapshot, taken before this) and its own write: the file on disk now has an
+        // entry this call's snapshot never saw, exactly the race the global lock in agent.ts exists to
+        // prevent, exercised here directly against provision.ts's own fallback.
+        const withBakery = `${REGISTRY_YAML}  bakery:
+    client: cl_9
+    name: Someone Else
+    repo: git@github.com:ItsKodas/someone-else.git
+    services: { web: { role: site } }
+    environments:
+      live: { dir: /var/www/bakery, branch: main, domain: someone-else.com, port: 5099 }
+`
+        registryFiles.set(REGISTRY_PATH, withBakery)
+        const reply = await createProject(createArgs(), deps)
+        assert.equal(reply.ok, false)
+        assert.equal(reply.ok === false && reply.code, 'failed')
+        assert.match(reply.ok === false ? reply.message : '', /bakery already exists/)
+        assert.deepEqual(rmdirs, [])
     })
 })
 
@@ -394,11 +424,30 @@ describe('addEnvironment', () => {
         assert.deepEqual(rmdirs, ['/var/www/acme-test'])
     })
 
-    it('does not remove its folder when the write fails because the project already has a test environment', async () => {
+    it('does not remove its folder when the write fails with a structural conflict', async () => {
         const { deps, rmdirs } = setup()
-        const conflictingWriter = { write: async () => ({ ok: false, problem: 'acme already has a test environment' }) } as unknown as RegistryWriter
+        const conflictingWriter = { write: async () => ({ ok: false, problem: 'acme already has a test environment', conflict: true as const }) } as unknown as RegistryWriter
         const reply = await addEnvironment(project(), args(), { ...deps, writer: conflictingWriter })
         assert.deepEqual(reply, { ok: false, code: 'failed', message: 'acme already has a test environment' })
+        assert.deepEqual(rmdirs, [])
+    })
+
+    // The end-to-end version: a real RegistryWriter (backed by the in-memory fs fake) refusing a genuine
+    // conflict, rather than a fake writer asserting the shape we expect it to produce.
+    it('does not roll back when a real RegistryWriter meets a genuine conflict at write time', async () => {
+        const withTest = REGISTRY_YAML.replace(
+            '      live:\n        dir: /var/www/acme\n        branch: main\n        domain: acme.com\n        port: 5010\n        certificate: letsencrypt\n',
+            '      live:\n        dir: /var/www/acme\n        branch: main\n        domain: acme.com\n        port: 5010\n        certificate: letsencrypt\n'
+            + '      test:\n        dir: /var/www/acme-test\n        branch: develop\n        domain: someone-else.acme.com\n        port: 5099\n',
+        )
+        const { deps, rmdirs, registryFiles } = setup()
+        // Simulate a winner having added the test environment between this call's own pre-checks (which
+        // already read the registry() snapshot, taken before this) and its own write.
+        registryFiles.set(REGISTRY_PATH, withTest)
+        const reply = await addEnvironment(project(), args(), deps)
+        assert.equal(reply.ok, false)
+        assert.equal(reply.ok === false && reply.code, 'failed')
+        assert.match(reply.ok === false ? reply.message : '', /acme already has a test environment/)
         assert.deepEqual(rmdirs, [])
     })
 

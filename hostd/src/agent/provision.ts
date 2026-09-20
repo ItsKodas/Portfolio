@@ -142,13 +142,13 @@ type ProvisionAttempt = {
     // rewrites env files here, using the composePath's directory as the freshly cloned test folder.
     afterClone: (composePath: string) => Promise<{ ok: true } | { ok: false, problem: string }>
     // Given the site services resolve found, attempts the registry write. Only createProject's services
-    // are ever non-empty going in; addEnvironment's write ignores the argument.
-    write: (services: Record<string, { role: 'site' }>) => Promise<{ ok: true } | { ok: false, problem: string }>
-    // True when a write failure means someone else's entry already claims this id or environment: the
-    // folder this call made is then not this call's to remove, because it may not even be this call's
-    // folder any more (see the concurrent-create race this guards against, and provisionBusy in agent.ts,
-    // which is the primary defense; this is the fallback for whatever provisionBusy does not cover).
-    isConflict: (problem: string) => boolean
+    // are ever non-empty going in; addEnvironment's write ignores the argument. `conflict: true` on a
+    // failure (set by registry-write.ts's own edit(), not guessed from the message text) means someone
+    // else's entry already claims this id or environment: the folder this call made is then not this
+    // call's to remove, because it may not even be this call's folder any more. The single global
+    // provisioning lock in agent.ts is the primary defense against that race; this is the fallback for
+    // whatever reaches the write despite it.
+    write: (services: Record<string, { role: 'site' }>) => Promise<{ ok: true } | { ok: false, problem: string, conflict?: true }>
 }
 
 // The mkdir/clone/resolve/write sequence shared by createProject and addEnvironment: the exact ordering
@@ -172,9 +172,10 @@ async function provisionOnDisk(attempt: ProvisionAttempt, deps: ProvisionDeps): 
     try {
         await deps.mkdir(dir)
     } catch (error) {
-        // mkdir itself may have half-succeeded (the directory created, a later step inside it failing);
-        // best-effort clean it up rather than assume it is untouched.
-        await rollback(`could not create ${dir}`)
+        // Nothing of this call's is on disk yet: mkdir itself is what failed, not a step after it. In
+        // particular a failure of EEXIST means the folder is already someone or something else's, and
+        // removing it would delete contents this call never created.
+        deps.log(`provision ${id}: could not create ${dir}: ${describeError(error)}`)
         return refuse('failed', describeError(error))
     }
 
@@ -201,7 +202,7 @@ async function provisionOnDisk(attempt: ProvisionAttempt, deps: ProvisionDeps): 
 
         const written = await attempt.write(resolved.services)
         if (!written.ok) {
-            if (attempt.isConflict(written.problem)) {
+            if (written.conflict) {
                 deps.log(`provision ${id}: registry write failed, leaving ${dir} in place (already claimed)`)
                 return refuse('failed', written.problem)
             }
@@ -250,7 +251,6 @@ export async function createProject(args: ProvisionCreateArgs, deps: ProvisionDe
                 environment: { name: 'live', dir, branch: args.branch, domain: args.domain, port: port.port, certificate: args.certificate },
             },
         }),
-        isConflict: problem => problem === `${args.id} already exists`,
     }, deps)
     if (!attempt.ok) return attempt
 
@@ -295,7 +295,6 @@ export async function addEnvironment(project: ProjectEntry, args: ProvisionAddEn
             id: project.id,
             environment: { name: 'test', dir, branch: args.branch, domain: args.domain, port: port.port, certificate: args.certificate },
         }),
-        isConflict: problem => problem === `${project.id} already has a test environment`,
     }, deps)
     if (!attempt.ok) return attempt
 

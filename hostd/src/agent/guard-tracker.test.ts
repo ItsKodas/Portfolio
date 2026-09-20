@@ -4,11 +4,12 @@ import { GuardTracker } from './guard-tracker.ts'
 import type { Runner } from './compose.ts'
 import { parseRegistry } from '../shared/registry.ts'
 
-const text = (ids: string[]) => `projects:\n${ids.map(id => `  ${id}:
+// Each project needs its own port now that the registry itself refuses two projects sharing one.
+const text = (ids: string[]) => `projects:\n${ids.map((id, index) => `  ${id}:
     client: cl_1
     name: ${id}
     dir: /var/www/${id}
-    upstream: 127.0.0.1:5010
+    upstream: 127.0.0.1:${5010 + index}
     services: { web: { role: site } }
     storage: { media: { path: uploads, mode: rw } }
 `).join('')}`
