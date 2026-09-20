@@ -13,6 +13,8 @@ services:
     depends_on:
       db:
         condition: service_healthy
+    # Listing networks at all means only the listed ones are joined, so `default` has to stay for db
+    networks: [default, hostd]
     restart: unless-stopped
 
   # No published port: only the site and the backup job can reach it, over the compose network
@@ -49,6 +51,13 @@ services:
       db:
         condition: service_healthy
     restart: unless-stopped
+
+# hostd's own compose creates this network. External means the portal joins the existing one rather than
+# creating a second, and never starts hostd or depends on its lifecycle.
+networks:
+  hostd:
+    external: true
+    name: hostd
 
 volumes:
   db-data:
