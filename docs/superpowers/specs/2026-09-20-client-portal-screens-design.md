@@ -146,14 +146,14 @@ Found by reading the provisioning design against the drawings. None of it is dra
 | The screens show | hostd today |
 | --- | --- |
 | Server health: system disk, memory, CPU | Health reports backup disk free, stale offsite copies, invalid projects and failed Apache reloads. The rest is a small addition. |
-| A client downloading their source code | Not addressed anywhere. Backups exclude source, and general file access (phase 3) covers declared storage directories rather than the repo tree. Still open. |
+| A client downloading their source code | **Decided 2026-09-20: yes.** Nothing designs it yet. Backups exclude source, and general file access (phase 3) covers declared storage directories rather than the repo tree, so neither existing route reaches it. The provisioning design does keep a checked out tree per environment at a known path, which is the obvious thing to archive. |
 
 ## Open questions
 
-1. **Client downloads of the settings file. Decided 2026-09-20: no.** Two designs ruled it out independently, and
-   the mockups now match. The client's page names the gap instead of hiding it, and says the file is handed over
-   directly if they ever move to another developer. Their **source code** is a separate question and is still
-   open: nothing has designed it either way.
+1. **Client downloads. Settled 2026-09-20.** Source code, uploads and database: yes. The settings file: no, because
+   the original hostd design and the provisioning design ruled it out independently. The mockups match, and the
+   client's page names the one gap instead of hiding it, saying the file is handed over directly if they ever move
+   to another developer. Source downloads still need designing; see the table above.
 2. **Client facing update text.** Recent updates currently shows commit messages verbatim. Some read fine to a
    client ("New spring menu PDF") and some do not ("Switch to sharp for thumbnails"). A separate optional field
    for the client facing line may be worth the trouble.
