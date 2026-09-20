@@ -19,10 +19,42 @@ stop working.
    openssl rand -hex 32
    ```
 
-3. Create `hostd/projects.yaml` from `hostd/projects.example.yaml`, and delete the example project for
-   now. **This must exist before the first `docker compose up`:** if it does not, Docker creates a
-   directory with that name instead, and both containers refuse to start with a message saying so. If
-   that happens, remove the directory, create the file, and start again.
+3. Create `hostd/registry/projects.yaml` from `hostd/registry/projects.example.yaml`, and delete the
+   example project for now. `registry/` is already there, because the example lives in it, and the
+   containers mount that directory rather than the file inside it.
+
+## Editing the registry
+
+`hostd/registry/projects.yaml` is hand-edited and read every ten seconds. Any editor will do: the
+containers mount the directory, so replacing the file is seen the same as writing it in place.
+
+This was not always true. Before 2026-09-20 the file itself was the bind mount, which pinned each
+container to one inode, and an editor that saves by writing a temporary file and renaming it over the
+original (which is most of them, and `sed -i`) detached the mount silently. hostd carried on serving the
+version it read at startup, reported `healthy`, and no edit ever took effect again. If a registry edit
+appears to do nothing, check for that shape first:
+
+```bash
+docker exec hostd-agent cat /proc/self/mountinfo | grep registry
+```
+
+A `//deleted` in that line means the mount is detached, and the fix is
+`docker compose up -d --force-recreate`. On this version hostd says so itself, in both logs, as
+`registry reload rejected ... has been replaced on the host`, and goes unhealthy until it is recreated.
+
+### Moving an older deployment
+
+A dedi set up before 2026-09-20 has the registry at `hostd/projects.yaml`. After pulling this version:
+
+```bash
+cd hostd
+mkdir -p registry
+mv projects.yaml registry/projects.yaml
+docker compose up -d --force-recreate
+```
+
+`--force-recreate`, not `restart`: a restart keeps the container's existing mounts, so it would still be
+looking for the old path.
 
 ## First start
 
@@ -88,7 +120,7 @@ EOF
 cd /var/www/hostd-test && sudo docker compose up -d && cd -
 ```
 
-Add this entry under `projects:` in `hostd/projects.yaml`:
+Add this entry under `projects:` in `hostd/registry/projects.yaml`:
 
 ```yaml
   hostd-test:
@@ -173,7 +205,7 @@ Expect:
 
 ### A registry edit that breaks the file
 
-Add a stray `[` anywhere in `projects.yaml`. Within ten seconds, both logs show `WARN registry reload
+Add a stray `[` anywhere in `registry/projects.yaml`. Within ten seconds, both logs show `WARN registry reload
 rejected, still using the last good version`, and check 2 still works. Remove the `[`, and the warning
 clears.
 
@@ -184,7 +216,7 @@ cd /var/www/hostd-test && sudo docker compose down && cd -
 sudo rm -rf /var/www/hostd-test
 ```
 
-Then remove the `hostd-test` entry from `projects.yaml`.
+Then remove the `hostd-test` entry from `registry/projects.yaml`.
 
 ## Enrolling a real site
 
@@ -228,7 +260,8 @@ Then remove the `hostd-test` entry from `projects.yaml`.
 
 | Symptom | Cause |
 | --- | --- |
-| `FATAL ... is not a file (was projects.yaml created before the first docker compose up?)` | Docker created a directory at `projects.yaml`. Remove it, create the file, start again. |
+| `FATAL ... is not a file (was projects.yaml created before the first docker compose up?)` | Something other than a file sits at `registry/projects.yaml`. Remove it, create the file, start again. |
+| `registry reload rejected ... has been replaced on the host` | The registry's bind mount is detached, from an older deployment that mounted the file itself. See **Editing the registry**. |
 | `FATAL HOSTD_API_TOKEN must be at least 32 characters` | `.env` is missing, or the token is empty or too short. |
 | `FATAL the agent is not answering on /run/hostd/agent.sock` (api) | The agent is not running or failed its own gate. Read `docker compose logs agent`. |
 | `503` with `"code":"agent-unavailable"` | The same, after startup. |

@@ -10,7 +10,7 @@ import { AuditLog } from './audit.ts'
 import { createHandler } from './routes.ts'
 
 const TOKEN = process.env.HOSTD_API_TOKEN ?? ''
-const REGISTRY_FILE = process.env.HOSTD_REGISTRY_FILE ?? '/etc/hostd/projects.yaml'
+const REGISTRY_FILE = process.env.HOSTD_REGISTRY_FILE ?? '/etc/hostd/registry/projects.yaml'
 const AGENT_SOCKET = process.env.HOSTD_AGENT_SOCKET ?? '/run/hostd/agent.sock'
 const STATE_DIR = process.env.HOSTD_STATE_DIR ?? '/state'
 const STATUS_FILE = process.env.HOSTD_STATUS_FILE ?? '/tmp/hostd-status.json'

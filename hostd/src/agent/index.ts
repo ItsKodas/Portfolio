@@ -12,7 +12,7 @@ import { GuardTracker } from './guard-tracker.ts'
 import { Agent } from './agent.ts'
 import { handleConnection } from './server.ts'
 
-const REGISTRY_FILE = process.env.HOSTD_REGISTRY_FILE ?? '/etc/hostd/projects.yaml'
+const REGISTRY_FILE = process.env.HOSTD_REGISTRY_FILE ?? '/etc/hostd/registry/projects.yaml'
 const SOCKET_PATH = process.env.HOSTD_AGENT_SOCKET ?? '/run/hostd/agent.sock'
 const SOCKET_GID = Number(process.env.HOSTD_SOCKET_GID ?? '1000')
 const STATUS_FILE = process.env.HOSTD_STATUS_FILE ?? '/tmp/hostd-status.json'
