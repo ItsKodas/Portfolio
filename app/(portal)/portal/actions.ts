@@ -9,8 +9,10 @@ import { CODE_PATH, PORTAL_HOME, SETUP_PATH, SIGN_IN_PATH, clearSessionCookie, r
 import { EnvError } from '@/server/env'
 import { codeSchema, emailSchema, passwordSchema } from '@/server/clients/schema'
 import { codeStep, passwordStep } from '@/server/clients/signIn'
-import { acknowledgeRecoveryCodes, confirmEnrolment } from '@/server/clients/setup'
-import { acknowledgeDeps, codeStepDeps, confirmEnrolmentDeps, log, passwordStepDeps, repo, requestIpHash, requestUserAgent } from '@/server/clients/wiring'
+import { acknowledgeRecoveryCodes, completeInvite, confirmEnrolment } from '@/server/clients/setup'
+import { hashSessionToken } from '@/server/clients/session'
+import { RESET_SENT_MESSAGE, completeReset, requestReset } from '@/server/clients/reset'
+import { acknowledgeDeps, codeStepDeps, completeInviteDeps, completeResetDeps, confirmEnrolmentDeps, log, passwordStepDeps, repo, requestIpHash, requestResetDeps, requestUserAgent } from '@/server/clients/wiring'
 
 export type PortalResult = { ok: true } | { ok: false, error: string }
 export type CodesResult = { ok: true, recoveryCodes: string[] } | { ok: false, error: string }
@@ -89,4 +91,49 @@ export async function signOutAction(): Promise<void> {
     if (session) await repo().deleteSession(session.id)
     await clearSessionCookie()
     redirect(SIGN_IN_PATH)
+}
+
+export async function completeInviteAction(token: string, password: string): Promise<PortalResult> {
+    const parsed = passwordSchema.safeParse(password)
+    if (!parsed.success) return { ok: false, error: parsed.error.issues[0]?.message ?? INVALID.error }
+    if (typeof token !== 'string' || !token) return INVALID
+    try {
+        const result = await completeInvite(
+            { tokenHash: hashSessionToken(token), password: parsed.data, userAgent: await requestUserAgent() },
+            completeInviteDeps(),
+        )
+        if (!result.ok) return result
+        await setSessionCookie(result.token, result.expiresAt)
+        // Straight into enrolment: the account does nothing until an authenticator is set up
+        redirect(SETUP_PATH)
+    } catch (error) {
+        if (error && typeof error === 'object' && 'digest' in error) throw error
+        return failure('Completing an invite', error)
+    }
+}
+
+export async function requestResetAction(email: string): Promise<{ message: string }> {
+    const parsed = emailSchema.safeParse(email)
+    // The same answer for an invalid address as for a valid one that matches nothing
+    if (!parsed.success) return { message: RESET_SENT_MESSAGE }
+    try {
+        return await requestReset({ email: parsed.data }, requestResetDeps(await requestIpHash()))
+    } catch (error) {
+        log('Requesting a password reset failed', error)
+        return { message: RESET_SENT_MESSAGE }
+    }
+}
+
+export async function completeResetAction(token: string, password: string, code: string): Promise<PortalResult> {
+    const parsed = passwordSchema.safeParse(password)
+    if (!parsed.success) return { ok: false, error: parsed.error.issues[0]?.message ?? INVALID.error }
+    if (typeof token !== 'string' || !token || typeof code !== 'string') return INVALID
+    try {
+        const result = await completeReset({ tokenHash: hashSessionToken(token), password: parsed.data, code }, completeResetDeps())
+        if (!result.ok) return result
+        redirect(`${SIGN_IN_PATH}?reset=1`)
+    } catch (error) {
+        if (error && typeof error === 'object' && 'digest' in error) throw error
+        return failure('Completing a password reset', error)
+    }
 }

@@ -10,7 +10,10 @@ import Link from 'next/link'
 import { Alert, Box, Button, Paper, Stack, TextField, Typography } from '@mui/material'
 
 import { codeSchema, emailSchema, passwordSchema } from '@/server/clients/schema'
-import { acknowledgeCodesAction, codeAction, confirmEnrolmentAction, signInAction, type PortalResult } from './actions'
+import {
+    acknowledgeCodesAction, codeAction, completeInviteAction, completeResetAction,
+    confirmEnrolmentAction, requestResetAction, signInAction, type PortalResult,
+} from './actions'
 
 function useAction() {
     const [pending, setPending] = useState(false)
@@ -182,6 +185,84 @@ export function EnrolmentForm({ qr, typed }: { qr: string, typed: string }) {
                 onChange={event => setCode(event.target.value)} sx={{ mb: 2 }} />
             <Button type="submit" variant="contained" fullWidth size="large" disabled={pending || !code || !!codeProblem}>
                 Confirm and continue
+            </Button>
+            <Problem error={error} />
+        </form>
+    )
+}
+
+export function InviteForm({ token }: { token: string }) {
+    const { pending, error, run } = useAction()
+    const [password, setPassword] = useState('')
+    const passwordProblem = fieldProblem(password, passwordSchema)
+    return (
+        <form onSubmit={event => { event.preventDefault(); run(() => completeInviteAction(token, password)) }}>
+            <TextField label="Choose a password" type="password" fullWidth autoComplete="new-password" value={password}
+                error={!!passwordProblem} helperText={passwordProblem}
+                onChange={event => setPassword(event.target.value)} sx={{ mb: 2 }} />
+            <Button type="submit" variant="contained" fullWidth size="large"
+                disabled={pending || !password || !!passwordProblem}>Set password</Button>
+            <Problem error={error} />
+        </form>
+    )
+}
+
+export function ForgotForm() {
+    const [pending, setPending] = useState(false)
+    const [message, setMessage] = useState<string | null>(null)
+    const [email, setEmail] = useState('')
+    const emailProblem = fieldProblem(email, emailSchema)
+
+    async function submit(event: React.FormEvent) {
+        event.preventDefault()
+        setPending(true)
+        try {
+            // The one message covers every case, matching or not, valid or not: rendering anything else here
+            // would turn this page into a way to find out which addresses have accounts.
+            const result = await requestResetAction(email)
+            setMessage(result.message)
+        } finally {
+            setPending(false)
+        }
+    }
+
+    if (message) return <Typography variant="body2">{message}</Typography>
+
+    return (
+        <form onSubmit={submit}>
+            <Typography variant="body2" sx={{ mb: 2 }}>
+                Enter your email address and, if it has an account, we will send a link to reset your password.
+            </Typography>
+            <TextField label="Email" type="email" fullWidth autoComplete="username" value={email}
+                error={!!emailProblem} helperText={emailProblem}
+                onChange={event => setEmail(event.target.value)} sx={{ mb: 2 }} />
+            <Button type="submit" variant="contained" fullWidth size="large"
+                disabled={pending || !email || !!emailProblem}>Send reset link</Button>
+        </form>
+    )
+}
+
+export function ResetForm({ token, needsCode }: { token: string, needsCode: boolean }) {
+    const { pending, error, run } = useAction()
+    const [password, setPassword] = useState('')
+    const [code, setCode] = useState('')
+    const passwordProblem = fieldProblem(password, passwordSchema)
+    const codeProblem = needsCode ? fieldProblem(code, codeSchema) : undefined
+    // A client who never enrolled has no code to give, so the field is left out rather than disabled: the
+    // request still carries an empty string, which completeResetAction accepts for that case.
+    const canSubmit = !!password && !passwordProblem && (!needsCode || (!!code && !codeProblem))
+    return (
+        <form onSubmit={event => { event.preventDefault(); run(() => completeResetAction(token, password, needsCode ? code : '')) }}>
+            <TextField label="Choose a new password" type="password" fullWidth autoComplete="new-password" value={password}
+                error={!!passwordProblem} helperText={passwordProblem}
+                onChange={event => setPassword(event.target.value)} sx={{ mb: 2 }} />
+            {needsCode && (
+                <TextField label="Code from your authenticator app" fullWidth autoComplete="one-time-code" inputMode="numeric"
+                    value={code} error={!!codeProblem} helperText={codeProblem ?? 'A recovery code works here too.'}
+                    onChange={event => setCode(event.target.value)} sx={{ mb: 2 }} />
+            )}
+            <Button type="submit" variant="contained" fullWidth size="large" disabled={pending || !canSubmit}>
+                Reset password
             </Button>
             <Problem error={error} />
         </form>
