@@ -52,7 +52,7 @@ export function guardProblems(project: ProjectEntry, resolved: ResolvedCompose):
         else databaseSources.push(...bindSources(service))
     }
 
-    const reads = [project.composePath, posix.join(project.dir, '.env')]
+    const reads = [...project.composePaths, posix.join(project.dir, '.env')]
     for (const service of Object.values(resolved.services)) reads.push(...readsOf(service))
 
     for (const [name, storage] of Object.entries(project.storage)) {

@@ -33,7 +33,7 @@ export type CertificateMode = typeof CERTIFICATE_MODES[number]
 export type EnvironmentEntry = {
     name: EnvironmentName
     dir: string
-    composePath: string
+    composePaths: string[]
     branch: string | null
     domain: string | null
     port: number
@@ -58,8 +58,8 @@ export type ProjectEntry = {
     name: string
     repo: string | null
     dir: string
-    compose: string
-    composePath: string
+    compose: string[]
+    composePaths: string[]
     upstream: { host: string, port: number }
     portEnv: string
     limits: { memory: string | null, cpus: string | null }
@@ -89,6 +89,11 @@ export class RegistryError extends Error {
 export function isComposeService(entry: ServiceEntry): boolean {
     return !(entry.role === 'database' && entry.engine === 'sqlite')
 }
+
+// Compose merges -f files left to right, so the registry's order is the operator's order. The cap keeps
+// the argv bounded: a base file and a handful of overrides is every real shape of this.
+export const MAX_COMPOSE_FILES = 8
+const DEFAULT_COMPOSE = ['docker-compose.yml']
 
 const DEFAULT_OFFSITE_KEEP: Keep = { daily: 14, weekly: 8, monthly: 6 }
 const DEFAULT_MAX_KEEP: Keep = { daily: 14, weekly: 8, monthly: 12 }
@@ -139,6 +144,36 @@ function parseUpstream(raw: unknown, problems: string[]): { host: string, port: 
         return null
     }
     return { host: match[1], port }
+}
+
+// One file or several. A site whose host-specific settings live in an override is only described
+// correctly when every file compose merges is named here: passing an explicit -f stops compose picking
+// up docker-compose.override.yml by itself, so an unnamed override is an override hostd cannot see.
+// Shared by the project-level compose key and each environment's own compose key (prefix says which).
+function parseCompose(raw: unknown, problems: string[], prefix = 'compose'): string[] {
+    if (raw === undefined) return DEFAULT_COMPOSE
+    const list = Array.isArray(raw) ? raw : [raw]
+    if (list.length === 0) {
+        problems.push(`${prefix} must name at least one file`)
+        return []
+    }
+    if (list.length > MAX_COMPOSE_FILES) {
+        problems.push(`${prefix} may not name more than ${MAX_COMPOSE_FILES} files`)
+        return []
+    }
+    const files: string[] = []
+    for (const value of list) {
+        const problem = typeof value === 'string' ? relativePathProblem(value) : 'path must be a string'
+        if (problem) {
+            problems.push(`${prefix}: ${problem}`)
+            continue
+        }
+        const file = value as string
+        // The same file twice merges it over itself, which is a mistake rather than an intention.
+        if (files.includes(file)) problems.push(`${prefix} lists ${file} twice`)
+        else files.push(file)
+    }
+    return files
 }
 
 function parseService(name: string, raw: unknown, problems: string[]): ServiceEntry | null {
@@ -321,12 +356,7 @@ function parseEnvironment(name: EnvironmentName, raw: unknown, reserved: string[
     const dir = parseEnvironmentDir(raw.dir)
     if (!dir) problems.push(`${where}.dir must be /var/www/<one segment>`)
 
-    let compose = 'docker-compose.yml'
-    if (raw.compose !== undefined) {
-        const problem = typeof raw.compose === 'string' ? relativePathProblem(raw.compose) : 'path must be a string'
-        if (problem) problems.push(`${where}.compose: ${problem}`)
-        else compose = raw.compose as string
-    }
+    const compose = parseCompose(raw.compose, problems, `${where}.compose`)
 
     let branch: string | null = null
     if (raw.branch !== undefined) {
@@ -358,7 +388,7 @@ function parseEnvironment(name: EnvironmentName, raw: unknown, reserved: string[
     }
 
     if (!dir || port === null) return null
-    return { name, dir, composePath: posix.join(dir, compose), branch, domain, port, certificate, deployed }
+    return { name, dir, composePaths: compose.map(file => posix.join(dir, file)), branch, domain, port, certificate, deployed }
 }
 
 // When environments is absent, the caller synthesises a single live entry from the project-level
@@ -423,12 +453,7 @@ function parseProject(id: string, raw: unknown, reserved: string[]): ParsedProje
         const dir = typeof raw.dir === 'string' && DIR.test(raw.dir) && !raw.dir.endsWith('/..') && !raw.dir.endsWith('/.') ? raw.dir : null
         if (!dir) problems.push('dir must be /var/www/<one segment>')
 
-        let compose = 'docker-compose.yml'
-        if (raw.compose !== undefined) {
-            const problem = typeof raw.compose === 'string' ? relativePathProblem(raw.compose) : 'path must be a string'
-            if (problem) problems.push(`compose: ${problem}`)
-            else compose = raw.compose as string
-        }
+        const compose = parseCompose(raw.compose, problems)
 
         // Carried through untouched: a legacy entry's upstream host (localhost or an IPv4 address) must
         // keep meaning exactly what it means today, not be silently rewritten to 127.0.0.1.
@@ -436,7 +461,7 @@ function parseProject(id: string, raw: unknown, reserved: string[]): ParsedProje
         environments = new Map<EnvironmentName, EnvironmentEntry>()
         if (dir && upstream) {
             environments.set('live', {
-                name: 'live', dir, composePath: posix.join(dir, compose),
+                name: 'live', dir, composePaths: compose.map(file => posix.join(dir, file)),
                 branch: null, domain: null, port: upstream.port, certificate: null, deployed: null,
             })
         }
@@ -446,8 +471,10 @@ function parseProject(id: string, raw: unknown, reserved: string[]): ParsedProje
 
     const live = environments.get('live')
     const dir = live?.dir ?? null
-    const compose = live ? posix.relative(live.dir, live.composePath) : 'docker-compose.yml'
-    const composePath = live?.composePath ?? null
+    // The project-level compose key mirrors the live environment's, the same way dir and upstream already
+    // do, so a single-environment (live only) entry keeps meaning what it always meant.
+    const compose = live ? live.composePaths.map(path => posix.relative(live.dir, path)) : DEFAULT_COMPOSE
+    const composePaths = live?.composePaths ?? null
 
     const services = parseServices(raw.services, problems)
     const storage = parseStorage(raw.storage, dir ?? '/nonexistent', services, problems)
@@ -466,10 +493,10 @@ function parseProject(id: string, raw: unknown, reserved: string[]): ParsedProje
         else maxKeep = parseKeep(raw.backups.maxKeep, DEFAULT_MAX_KEEP, 'backups.maxKeep', problems)
     }
 
-    if (problems.length > 0 || !client || !name || !dir || !upstream || !composePath) return { problems }
+    if (problems.length > 0 || !client || !name || !dir || !upstream || !composePaths) return { problems }
     return {
         entry: {
-            id, client, name, repo, dir, compose, composePath, upstream, portEnv, limits, environments,
+            id, client, name, repo, dir, compose, composePaths, upstream, portEnv, limits, environments,
             services, storage, capabilities, maxDomains,
             backups: { maxKeep },
         },

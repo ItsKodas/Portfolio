@@ -118,10 +118,10 @@ keeps a last-good copy and restores it whenever a config test fails.
 hostd/
   docker-compose.yml
   RUNBOOK.md
-  .gitignore            projects.yaml, .env, .env.agent
+  .gitignore            registry/projects.yaml, .env, .env.agent
   example.env
   example.env.agent
-  projects.example.yaml
+  registry/             projects.yaml and projects.example.yaml, mounted into both containers
   shared/               registry schema and validation, agent protocol types
   api/                  unprivileged HTTP service
   agent/                privileged executor
@@ -224,8 +224,8 @@ The ownership check still earns its place as a second line of defence against po
 
 ### The registry
 
-`hostd/projects.yaml` on the dedi, gitignored, with `projects.example.yaml` committed. Mounted read-only into
-both containers.
+`hostd/registry/projects.yaml` on the dedi, gitignored, with `registry/projects.example.yaml` committed.
+The directory, not the file, is mounted read-only into both containers.
 
 ```yaml
 reserved: [horizons.gg]         # hostnames at or below these are never accepted as client domains
@@ -738,6 +738,65 @@ followed to whatever it points at. This narrows the gap but does not close it: t
 phase 3's later open of the same path are still two separate moments, so **phase 3's descriptor walk must
 still open the storage root itself with `O_NOFOLLOW`**, the same as every component below it, rather than
 assume the root the guard last saw on a poll is the root it is opening now.
+
+### One compose file per project was never true of the dedi
+
+**The spec said:** the registry holds `compose: docker-compose.yml # relative to dir`, a single file,
+and the agent "runs `docker compose --project-directory <dir> -f <compose> config --format json` and
+checks the resolved project against the entry".
+
+**What is actually true:** two of the five client sites on the dedi, `1stcanzuk` and `spotondrones`,
+run with a base file plus a `docker-compose.override.yml` holding the settings that adapt them to this
+machine: which port the site publishes for Apache to proxy to, and which services are parked behind a
+profile. Compose loads `docker-compose.override.yml` by itself only when no `-f` is given, and
+`composeBase` always gives one, so the agent resolved and would have acted on the base file alone.
+
+**Why it matters:** the entry would still have been `"valid":true`. Everything the guard checks holds
+of the base file on its own: the project name resolves, the registered services exist, no storage
+directory is near anything compose reads. The divergence only surfaces on a `lifecycle` verb, where
+compose recreates the containers from the file set it was given: `1stcanzuk` would lose the
+`127.0.0.1:3000` publish its vhost proxies to and try to start a Caddy the override parks, and
+`spotondrones` would move from 5007 to a port another process on the host already holds. A start
+offered to a client through the portal would have taken their site down.
+
+**What was done:** `compose` now takes either a file or a list of files, parsed by `parseCompose` in
+`hostd/src/shared/registry.ts`, capped at `MAX_COMPOSE_FILES` and rejecting an empty list or a repeated
+file. `ProjectEntry.composePath` became `composePaths`, `composeBase` in `hostd/src/agent/compose.ts`
+emits one `-f` per file in the registry's order, and the storage guard in `hostd/src/agent/guard.ts`
+counts every one of them among the paths compose reads, so an override is as unwritable as a base file.
+This removes the trap but does not detect it: a registry that names too few files still validates.
+Enrolment therefore has to start from `docker compose ls`, whose `CONFIG FILES` column is the record of
+what the site is actually running with, and the runbook now says so.
+
+### Bind-mounting the registry as a single file froze it
+
+**The spec said:** the registry is "Mounted read-only into both containers", and "The file is re-read when
+its modification time changes, polled every 10 seconds", with the operator hand-editing it.
+
+**What is actually true:** the compose file mounted the file itself, `./projects.yaml:/etc/hostd/projects.yaml:ro`.
+A single-file bind mount resolves once, to an inode. Editors, and `sed -i`, save by writing a temporary
+file and renaming it over the original, which makes a new inode: the container keeps resolving to the old
+one. Its contents freeze, and its modification time never moves again, so the ten-second poll compares
+equal for ever and reads nothing. Confirmed on the dedi with a throwaway container: after a rename the
+container's `stat` reports the same inode with `nlink=0` and the old contents, while the host has the new
+file. `/proc/self/mountinfo` marks it `//deleted`.
+
+**Why it matters:** every failure mode the registry was given ("rejected as a whole", "the last good
+registry stays in force", a warning raised) assumes hostd can still see the file. This one is silent.
+hostd goes on serving the version it read at startup and reports `healthy`, while the operator believes
+an edit landed ten seconds ago. It was found by making exactly that mistake during enrolment, and the
+`registry reloaded` line simply never appeared.
+
+**What was done:** the registry moved into `hostd/registry/`, and both containers mount that directory
+instead. A directory mount resolves names at open time, so a rename is seen like any other write. A
+subdirectory rather than `hostd/` itself, because mounting `hostd/` would put `.env` inside the agent and
+`.env.agent`, which phase 2 fills with `RESTIC_PASSWORD` and the R2 credentials, inside `api`, undoing the
+separation the two containers exist for. `registry/` holds the registry and its example and nothing else.
+
+`RegistryStore` also now reads `nlink` and refuses to start, or warns on every poll and goes unhealthy,
+when it is reading a file with no links left. With the directory mount that should never fire. It is
+there because the failure it names is invisible by construction, so if any later change puts a file mount
+back, the next person gets a message instead of a mystery.
 
 ### The agent hands docker its whole environment
 

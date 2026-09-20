@@ -28,23 +28,56 @@ site depends on) keep working, and only provisioning and env editing are unavail
 3. Create `hostd/.env.fetcher` from `hostd/example.env.fetcher`, and fill in `GITHUB_TOKEN` with a
    fine-grained personal access token, read-only, limited to the client repositories.
 
-4. Create `hostd/registry/projects.yaml` from `hostd/projects.example.yaml` (`mkdir -p registry` first),
-   and delete the example project for now. **This must exist before the first `docker compose up`:** if
-   it does not, Docker creates the missing pieces as directories instead, and the agent and api (the two
-   containers that actually read the registry) refuse to start with a message saying so; the fetcher never
-   reads it, so it starts regardless. If that happens, remove the directory it created in place of the
-   file, create the file, and start again.
+4. Create `hostd/registry/projects.yaml` from `hostd/registry/projects.example.yaml`, and delete the
+   example project for now. `registry/` is already there, because the example lives in it, and the
+   containers mount that directory rather than the file inside it. **This must exist before the first
+   `docker compose up`:** if it does not, Docker creates the missing pieces as directories instead, and
+   the agent and api (the two containers that actually read the registry) refuse to start with a message
+   saying so; the fetcher never reads it, so it starts regardless. If that happens, remove the directory
+   it created in place of the file, create the file, and start again.
 
-## Upgrading from phase 1
+## Editing the registry
 
-An existing phase 1 install has `hostd/projects.yaml` and no `hostd/.env.fetcher`.
+`hostd/registry/projects.yaml` is hand-edited and read every ten seconds. Any editor will do: the
+containers mount the directory, so replacing the file is seen the same as writing it in place.
+
+This was not always true. Before 2026-09-20 the file itself was the bind mount, which pinned each
+container to one inode, and an editor that saves by writing a temporary file and renaming it over the
+original (which is most of them, and `sed -i`) detached the mount silently. hostd carried on serving the
+version it read at startup, reported `healthy`, and no edit ever took effect again. If a registry edit
+appears to do nothing, check for that shape first:
+
+```bash
+docker exec hostd-agent cat /proc/self/mountinfo | grep registry
+```
+
+A `//deleted` in that line means the mount is detached, and the fix is
+`docker compose up -d --force-recreate`. On this version hostd says so itself, in both logs, as
+`registry reload rejected ... has been replaced on the host`, and goes unhealthy until it is recreated.
+
+## Upgrading from an older install
+
+An existing install may be missing `hostd/.env.fetcher` (added along with provisioning, phase 2), or have
+its registry at the old, pre-2026-09-20 location `hostd/projects.yaml`, mounted into each container as a
+single file rather than a directory. Bring it up to date:
 
 1. Stop the stack: `docker compose down`.
-2. Move the registry into its own folder: `mkdir -p registry && mv projects.yaml registry/projects.yaml`.
+2. If `hostd/.env.fetcher` does not exist yet, create it from `hostd/example.env.fetcher` (see step 3
+   above).
+3. If the registry is still at `hostd/projects.yaml`, move it into the folder the containers now mount:
+
+   ```bash
+   cd hostd
+   mkdir -p registry
+   mv projects.yaml registry/projects.yaml
+   ```
+
    (`-p` matters here: if a previous, incomplete `docker compose up` already created `registry` as an
-   empty directory, a plain `mkdir` fails and the `&&` never runs the `mv`.)
-3. Create `hostd/.env.fetcher` from `hostd/example.env.fetcher` (see step 3 above).
-4. `docker compose up -d --build`.
+   empty directory, a plain `mkdir` fails and the `mv` never runs.)
+4. `docker compose up -d --build --force-recreate`.
+
+`--force-recreate`, not `restart`: a restart keeps a container's existing mounts, so one already running
+against the old single-file mount would still be looking at the old, now-detached, path.
 
 The old `hostd/projects.yaml` is not read from its old location any more once the registry mount points at
 the `registry/` folder; nothing in phase 2 looks at it. It is safe to delete once `registry/projects.yaml`
@@ -234,14 +267,30 @@ Then remove the `hostd-test` entry from `registry/projects.yaml`.
    project with a message that says so. That refusal is deliberate: starting it under a different name
    would create a second copy of the site beside the running one.
 
-2. Add the entry. List every service in the compose file that you want visible, with its role, and give
-   each database its engine.
+2. Note every compose file the site runs with. The `CONFIG FILES` column of `docker compose ls` lists
+   them, and a site with host-specific settings usually has a `docker-compose.override.yml` beside its
+   base file. Put them all in `compose`, as a list, in that order:
 
-3. Only add `storage` entries for directories that are bind mounts of the site container, such as
-   uploads or media. Never add the site directory itself, and never a directory holding the compose
+   ```yaml
+    compose: [docker-compose.yml, docker-compose.override.yml]
+   ```
+
+   Naming only the base file is not a smaller version of the same entry, and the registry cannot catch
+   the mistake: hostd passes each file as `-f`, and an explicit `-f` stops compose loading an override
+   by itself, so the entry would still validate while describing a different site from the one running.
+   A `start` would then recreate the containers from the base file alone, dropping whatever the override
+   set, the published port Apache proxies to included. Sites with one compose file need no `compose` key
+   at all; it defaults to `docker-compose.yml`.
+
+3. Add the entry. List every service in the merged compose configuration that you want visible, with its
+   role, and give each database its engine. `docker compose --project-directory <dir> -f <each file>
+   config` prints what the merged configuration actually is, which is what hostd sees.
+
+4. Only add `storage` entries for directories that are bind mounts of the site container, such as
+   uploads or media. Never add the site directory itself, and never a directory holding a compose
    file, `.env`, an env file, a Dockerfile or a build context. hostd refuses those anyway, and says why.
 
-4. Wait ten seconds, then run `hc http://hostd-api:8080/projects` and confirm `"valid":true`.
+5. Wait ten seconds, then run `hc http://hostd-api:8080/projects` and confirm `"valid":true`.
 
 ## Creating a site
 
@@ -319,7 +368,8 @@ instead of starting a separate test stack.
 
 | Symptom | Cause |
 | --- | --- |
-| `FATAL ... is not a file (was projects.yaml created before the first docker compose up?)` | Docker created a directory at `hostd/registry/projects.yaml` because `registry/projects.yaml` did not exist before the first `docker compose up`. Remove the directory, create the file, start again. |
+| `FATAL ... is not a file (was projects.yaml created before the first docker compose up?)` | Something other than a file sits at `registry/projects.yaml`, most likely a directory Docker created because the file did not exist before the first `docker compose up`. Remove it, create the file, start again. |
+| `registry reload rejected ... has been replaced on the host` | The registry's bind mount is detached, from an older deployment that mounted the file itself. See **Editing the registry**. |
 | `FATAL HOSTD_API_TOKEN must be at least 32 characters` | `.env` is missing, or the token is empty or too short. |
 | `FATAL the agent is not answering on /run/hostd/agent.sock` (api) | The agent is not running or failed its own gate. Read `docker compose logs agent`. |
 | `503` with `"code":"agent-unavailable"` | The same, after startup. |

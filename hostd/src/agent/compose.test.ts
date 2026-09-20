@@ -49,6 +49,59 @@ describe('argv', () => {
     })
 })
 
+describe('argv over a compose list', () => {
+    const twoFiles = parseRegistry(`
+projects:
+  acme:
+    client: cl_1
+    name: Acme
+    dir: /var/www/acme
+    compose: [docker-compose.yml, docker-compose.override.yml]
+    upstream: 127.0.0.1:5010
+    services: { web: { role: site } }
+`).projects.get('acme')!
+
+    // An explicit -f stops compose loading docker-compose.override.yml by itself, so every file the
+    // site actually runs with has to be passed, in the order compose merges them.
+    it('passes one -f per registered file, in order', () => {
+        assert.deepEqual(lifecycleArgv(twoFiles, 'restart'), [
+            'compose', '--project-directory', '/var/www/acme',
+            '-f', '/var/www/acme/docker-compose.yml',
+            '-f', '/var/www/acme/docker-compose.override.yml',
+            'restart',
+        ])
+    })
+
+    it('resolves the merged configuration for the guard', () => {
+        assert.deepEqual(configArgv(twoFiles).slice(0, 7), [
+            'compose', '--project-directory', '/var/www/acme',
+            '-f', '/var/www/acme/docker-compose.yml',
+            '-f', '/var/www/acme/docker-compose.override.yml',
+        ])
+    })
+
+    // The same, but through the environments shape rather than the legacy flat one: ProjectEntry.composePaths
+    // must still mirror the live environment's own list, in order, all the way to the argv.
+    it('passes one -f per file for a project defined through environments, in order', () => {
+        const viaEnvironments = parseRegistry(`
+projects:
+  acme:
+    client: cl_1
+    name: Acme
+    repo: git@github.com:ItsKodas/acme.git
+    services: { web: { role: site } }
+    environments:
+      live: { dir: /var/www/acme, port: 5010, compose: [docker-compose.yml, docker-compose.override.yml] }
+`).projects.get('acme')!
+        assert.deepEqual(lifecycleArgv(viaEnvironments, 'restart'), [
+            'compose', '--project-directory', '/var/www/acme',
+            '-f', '/var/www/acme/docker-compose.yml',
+            '-f', '/var/www/acme/docker-compose.override.yml',
+            'restart',
+        ])
+    })
+})
+
 describe('runLifecycle', () => {
     it('runs docker with the lifecycle argv and timeout', async () => {
         const { run, calls } = runnerReturning({ stderr: 'Container acme-web-1 Started' })
@@ -151,7 +204,7 @@ describe('composeNameProblem', () => {
 })
 
 describe('resolveNewProject', () => {
-    const location = { dir: '/var/www/bakery', composePath: '/var/www/bakery/docker-compose.yml' }
+    const location = { dir: '/var/www/bakery', composePaths: ['/var/www/bakery/docker-compose.yml'] }
     const resolving = (services: Record<string, { image?: string }>, name = 'bakery') => runnerReturning({ stdout: JSON.stringify({ name, services }) })
 
     it('marks a service with no recognisable database image as role site', async () => {
@@ -225,7 +278,7 @@ describe('resolveNewProject', () => {
 // for every repo, since an unpinned compose file resolves to the folder's own basename (<id>-test), not
 // the project id.
 describe('resolveNewProject for a test environment', () => {
-    const location = { dir: '/var/www/acme-test', composePath: '/var/www/acme-test/docker-compose.yml' }
+    const location = { dir: '/var/www/acme-test', composePaths: ['/var/www/acme-test/docker-compose.yml'] }
     const resolving = (name: string) => runnerReturning({ stdout: JSON.stringify({ name, services: { web: {} } }) })
 
     it('accepts a compose name matching the test folder, whether pinned or (the ordinary case) left to the default', async () => {

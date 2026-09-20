@@ -16,7 +16,7 @@ import { Agent } from './agent.ts'
 import type { ProvisionDeps } from './provision.ts'
 import { handleConnection } from './server.ts'
 
-const REGISTRY_FILE = process.env.HOSTD_REGISTRY_FILE ?? '/etc/hostd/projects.yaml'
+const REGISTRY_FILE = process.env.HOSTD_REGISTRY_FILE ?? '/etc/hostd/registry/projects.yaml'
 const SOCKET_PATH = process.env.HOSTD_AGENT_SOCKET ?? '/run/hostd/agent.sock'
 const SOCKET_GID = Number(process.env.HOSTD_SOCKET_GID ?? '1000')
 const STATUS_FILE = process.env.HOSTD_STATUS_FILE ?? '/tmp/hostd-status.json'
@@ -110,7 +110,7 @@ async function main(): Promise<void> {
         mkdir: dir => mkdir(dir),
         rmdir: dir => rm(dir, { recursive: true, force: true }),
         exists,
-        resolve: (expectedName, dir, composePath, collidesWith) => resolveNewProject({ dir, composePath }, expectedName, runner, collidesWith),
+        resolve: (expectedName, dir, composePath, collidesWith) => resolveNewProject({ dir, composePaths: [composePath] }, expectedName, runner, collidesWith),
         runner,
         log,
     }

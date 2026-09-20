@@ -1,6 +1,8 @@
-# The registry of client projects. Copy to hostd/registry/projects.yaml on the dedi (gitignored: it names
-# clients). Only the agent writes it, and only for provisioning; a hand edit takes effect within 10
-# seconds, and one that breaks the file is rejected as a whole, leaving the last good version in force.
+# The registry of client projects. Copy to projects.yaml beside this file on the dedi (gitignored: it
+# names clients). Both hostd and the agent write it now, the agent only for provisioning; a hand edit
+# takes effect within 10 seconds, and one that breaks the file is rejected as a whole, leaving the last
+# good version in force. Both containers mount this directory rather than the file, so any editor's save
+# is seen, however it writes.
 
 # Hostnames at or below these are never accepted as client domains (phase 4).
 reserved: [horizons.gg]
@@ -14,12 +16,16 @@ projects:
   # or the compose file must say `name: <id>`.
   #
   # An entry with dir and upstream and no environments, like this one, means live only: dir,
-  # composePath and upstream keep meaning exactly what they mean today.
+  # composePaths and upstream keep meaning exactly what they mean today.
   acme-bakery:
     client: cl_8f2k1              # the portal's client id
     name: Acme Bakery
     dir: /var/www/acme-bakery     # exactly one segment below /var/www
-    compose: docker-compose.yml   # relative to dir
+    compose: docker-compose.yml   # relative to dir; a list when the site runs with more than one,
+                                  # e.g. [docker-compose.yml, docker-compose.override.yml], in the
+                                  # order compose merges them. Name every file the site runs with:
+                                  # hostd passes each as -f, which stops compose picking up an
+                                  # override by itself.
     upstream: 127.0.0.1:5010      # what the vhost will proxy to (phase 4)
     services:
       web: { role: site }
@@ -47,7 +53,9 @@ projects:
   #   environments:
   #     live:
   #       dir: /var/www/widget-shop
-  #       compose: docker-compose.yml       # relative to dir, default docker-compose.yml
+  #       compose: docker-compose.yml       # relative to dir, default docker-compose.yml; a list when
+  #                                         # this environment runs with more than one file, same as the
+  #                                         # project-level compose key above
   #       branch: main
   #       domain: widgetshop.com
   #       port: 5020

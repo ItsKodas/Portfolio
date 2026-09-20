@@ -13,7 +13,7 @@ services:
     # Root, because it holds the Docker socket. It listens only on the Unix socket in hostd-sock.
     network_mode: none
     environment:
-      HOSTD_REGISTRY_FILE: /etc/hostd/projects.yaml
+      HOSTD_REGISTRY_FILE: /etc/hostd/registry/projects.yaml
       HOSTD_AGENT_SOCKET: /run/hostd/agent.sock
       HOSTD_FETCH_SOCKET: /run/hostd-fetch/fetch.sock
       # The node user's group in the api image, so api can connect and nothing else can.
@@ -24,9 +24,12 @@ services:
       # The same path inside as outside: compose hands bind mount sources to the daemon as host paths.
       # Writable now: provisioning writes env files and swaps trees under here.
       - /var/www:/var/www
-      # A directory, not a file: an atomic rename (registry-write.ts) cannot replace a bind-mounted file
-      # from inside a container. Writable only here; api and fetcher get it read-only below.
-      - ./registry:/etc/hostd
+      # The registry's directory, not the file: a single-file bind mount pins the container to one
+      # inode, so an editor, sed -i, or registry-write.ts's own atomic rename replacing the file detaches
+      # the mount silently and every later edit (or write) is invisible. registry/ holds nothing but the
+      # registry, so neither container gains sight of .env or .env.agent. Writable only here, because
+      # provisioning writes it; api gets it read-only below.
+      - ./registry:/etc/hostd/registry
       - hostd-sock:/run/hostd
       # Shared only with fetcher, never with api: api must never be able to reach the fetch protocol
       # directly, and fetcher must never be able to touch agent.sock (in hostd-sock) to impersonate the
@@ -47,12 +50,14 @@ services:
     container_name: hostd-api
     env_file: .env
     environment:
-      HOSTD_REGISTRY_FILE: /etc/hostd/projects.yaml
+      HOSTD_REGISTRY_FILE: /etc/hostd/registry/projects.yaml
       HOSTD_AGENT_SOCKET: /run/hostd/agent.sock
       HOSTD_STATE_DIR: /state
       HOSTD_STATUS_FILE: /tmp/hostd-status.json
     volumes:
-      - ./registry:/etc/hostd:ro
+      # The directory, for the reason given on the agent's mount above. Read-only: api never writes the
+      # registry itself, even for provisioning, which goes through the agent.
+      - ./registry:/etc/hostd/registry:ro
       - hostd-state:/state
       - hostd-sock:/run/hostd
     networks:

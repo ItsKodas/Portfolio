@@ -1,4 +1,7 @@
 node_modules
 .env
 .env.*
+# Nothing here is copied by the Dockerfile anyway; these say so twice, because the registry names
+# clients and the env files hold the only secrets hostd has.
+registry
 projects.yaml
