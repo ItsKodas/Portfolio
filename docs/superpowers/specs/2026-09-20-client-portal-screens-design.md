@@ -98,6 +98,10 @@ none of them happened. Only a deploy that reached live and stayed there is an up
 chose does appear, reading as "Put back to an earlier version" rather than disguising itself as an ordinary
 change, because that one did change what their visitors see.
 
+**They read the operator's words, not the operator's commits.** Each update shows a line written for them, and
+the ones nobody wrote a line for are grouped rather than shown raw or hidden. See **What the client reads** below
+for where the line comes from and why.
+
 **When their site is down, the page tells them to do nothing.** It leads with the fact that Koda already knows and
 is looking, and the primary action is to message him. Restart is offered, because clients can restart, but it is
 third, because the honest answer is that it is already being handled.
@@ -114,6 +118,43 @@ them to read.
 uploads and database, taken whenever they like and without asking. For a freelancer that is a differentiator worth
 the room. The settings file is the one thing deliberately missing, and the page says so plainly rather than
 staying quiet about it, because a gap a client finds for themselves reads worse than one they were told about.
+
+## What the client reads
+
+Recent updates used to show commit messages verbatim. Some read fine to a client ("New spring menu PDF") and some
+do not ("Switch to sharp for thumbnails"), which quietly undermined the rest of a page written in their language.
+
+**The line is written in the commit, not in the portal.** A `Client:` trailer in the commit body, read at deploy
+time:
+
+```
+Switch to sharp for thumbnails
+
+Client: Photos now load faster on phones
+```
+
+This follows from deploys being automatic. A line that can only be written in the portal is a second trip, and a
+second trip that nothing forces gets skipped, so most deploys would have no line and the list would fall back to
+commit messages: exactly the problem. The commit is the one moment the operator is guaranteed to be thinking about
+the change.
+
+**The portal is the fix-up path.** Every row in the deploy history carries the line underneath the commit
+message, with an edit. The sheet says the line came from the trailer, and that editing there wins, including for a
+deploy the client has already seen.
+
+**One field does two jobs.** Leaving it blank is how a deploy is hidden, so there is no separate "show this to the
+client" switch to get out of step with the text. Deploys that failed, are still running, or were put back read
+"never reached the client" and offer no nudge, because there is nothing to write about.
+
+**Deploys with no line group together.** They collapse into one row between the named ones, counted and dated
+("3 smaller updates, 6 to 11 September"), expanding to dates only and never to the commit messages. The
+alternative defaults are both worse: hiding them makes a quiet fortnight look like nothing happened, and showing
+the commit message is the original problem. Grouping keeps the list honest, keeps jargon out, and leaves a visible
+nudge to name the ones that matter.
+
+**A rollback never groups.** If a site is rolled back its visitors see a different site, so it always gets its own
+row, using the operator's line if there is one and "Put back to an earlier version" if not. It is the one case
+where grouping would tell a client something untrue.
 
 ## Where the mockups meet hostd
 
@@ -181,9 +222,9 @@ and the paused branch, is drawn from the spec rather than from anything running.
    the original hostd design and the provisioning design ruled it out independently. The mockups match, and the
    client's page names the one gap instead of hiding it, saying the file is handed over directly if they ever move
    to another developer. Source downloads still need designing; see the table above.
-2. **Client facing update text.** Recent updates currently shows commit messages verbatim. Some read fine to a
-   client ("New spring menu PDF") and some do not ("Switch to sharp for thumbnails"). A separate optional field
-   for the client facing line may be worth the trouble.
+2. **Client facing update text. Settled 2026-09-20**, and drawn. See the section below. It needs a habit to go
+   with it: a `Client:` trailer written at commit time. The design degrades gracefully when the habit lapses, but
+   it is still a habit.
 3. **Five tabs on the site page.** Still possibly one too many, and the deploy history table is carrying a lot of
    columns. The alert half of this question has been answered: the band folds everything past the fourth row when
    none of it is critical, which held at six alerts without the sites being pushed off the screen.
