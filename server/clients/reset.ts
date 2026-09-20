@@ -96,7 +96,10 @@ export async function completeReset(
 
     // A client with an authenticator must use it: an email compromise alone must not be enough. A client who
     // has never enrolled has nothing to give, and is forced through enrolment before the session is usable.
-    if (client.totpConfirmedAt && client.totpSecret) {
+    // totpConfirmedAt alone, not totpSecret as well: a row with the flag set and no secret is corrupted,
+    // and the safe reading of a corrupted second factor is "refuse", not "there isn't one". The exemption
+    // below is only for a client who genuinely never enrolled.
+    if (client.totpConfirmedAt) {
         const accepted = await acceptSecondFactor(client, input.code, deps, now)
         if (!accepted) return { ok: false, error: CODE_REQUIRED }
     }
@@ -119,14 +122,15 @@ export async function completeReset(
 }
 
 async function acceptSecondFactor(client: ClientRecord, code: string, deps: CompleteResetDeps, now: Date): Promise<boolean> {
-    if (client.totpSecret) {
-        try {
-            const step = deps.verifyTotp(deps.decryptSecret(client.totpSecret), code, now)
-            if (step !== null) return deps.recordTotpUse(client.id, step)
-        } catch (error) {
-            deps.log(`The stored TOTP secret for ${client.id} could not be read`, error)
-            return false
-        }
+    // Reached only when totpConfirmedAt is set, so a missing secret here means the row is corrupted, not that
+    // the client never enrolled. Refuse rather than falling through to the recovery-code branch.
+    if (!client.totpSecret) return false
+    try {
+        const step = deps.verifyTotp(deps.decryptSecret(client.totpSecret), code, now)
+        if (step !== null) return deps.recordTotpUse(client.id, step)
+    } catch (error) {
+        deps.log(`The stored TOTP secret for ${client.id} could not be read`, error)
+        return false
     }
     const normalised = normaliseRecoveryCode(code)
     if (!normalised) return false

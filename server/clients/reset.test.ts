@@ -131,6 +131,30 @@ describe('completeReset', () => {
         expect(deps.deleteSessionsFor).not.toHaveBeenCalled()
     })
 
+    // A secret that will not decrypt means the key is wrong or the row was tampered with. The answer is
+    // "no", never a fall-through to the recovery-code branch. Nothing currently exercises this catch.
+    it('refuses when the stored secret cannot be read, and changes nothing', async () => {
+        const deps = completeDeps({ decryptSecret: vi.fn(() => { throw new Error('bad key') }) })
+        expect(await completeReset(input, deps)).toMatchObject({ ok: false })
+        // The fixture's empty recovery-code list would make a silent fall-through read as "refused" too, so
+        // the call itself, not just the outcome, is what proves the catch never reaches that branch
+        expect(deps.unusedRecoveryCodes).not.toHaveBeenCalled()
+        expect(deps.useRecoveryCode).not.toHaveBeenCalled()
+        expect(deps.setPassword).not.toHaveBeenCalled()
+    })
+
+    // Fails closed: an enrolled client whose secret has gone missing is refused, not exempted
+    it('refuses an enrolled client whose secret is missing, rather than exempting them', async () => {
+        const deps = completeDeps({
+            tokenByHash: vi.fn(async () => ({
+                id: 'token1', purpose: 'PASSWORD_RESET' as const, usedAt: null, expiresAt: later(1000),
+                client: client({ totpSecret: null }),
+            })),
+        })
+        expect(await completeReset(input, deps)).toMatchObject({ ok: false })
+        expect(deps.setPassword).not.toHaveBeenCalled()
+    })
+
     // A client who never enrolled has no second factor to give, and is forced through enrolment afterwards anyway
     it('accepts the token alone when the client has no authenticator yet', async () => {
         const deps = completeDeps({
