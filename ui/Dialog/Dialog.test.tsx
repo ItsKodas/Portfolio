@@ -7,9 +7,21 @@
 
 import { fireEvent, render, screen } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
+import { useState } from 'react'
 import { describe, expect, it, vi } from 'vitest'
 
 import { Dialog } from './Dialog'
+
+// An opener and a dialog, the way a real screen wires them, so closing can be followed back to the button.
+function Harness() {
+    const [open, setOpen] = useState(false)
+    return (
+        <>
+            <button type="button" onClick={() => setOpen(true)}>Open</button>
+            <Dialog open={open} onClose={() => setOpen(false)} title="Roll back">Body</Dialog>
+        </>
+    )
+}
 
 describe('Dialog', () => {
     it('is named by its heading', () => {
@@ -38,5 +50,17 @@ describe('Dialog', () => {
         render(<Dialog open title="Roll back" onClose={onClose}>Body</Dialog>)
         await userEvent.click(screen.getByRole('button', { name: /close/i }))
         expect(onClose).toHaveBeenCalled()
+    })
+
+    // Focus return is ours here, not the platform's. A dialog that is close()d and left in the page gets
+    // this for free, but this one unmounts when it closes, and a browser drops focus to the body when an
+    // open dialog is removed from the DOM. Since we put the focus back by hand, it is wiring, and testable.
+    // Focus trapping while the dialog is open is still the browser's, and still only checked in the gallery.
+    it('puts focus back on whatever opened it', async () => {
+        render(<Harness />)
+        const opener = screen.getByRole('button', { name: 'Open' })
+        await userEvent.click(opener)
+        await userEvent.click(screen.getByRole('button', { name: /close/i }))
+        expect(opener).toHaveFocus()
     })
 })

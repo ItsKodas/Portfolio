@@ -1,10 +1,15 @@
 'use client'
 
-import { useId, type InputHTMLAttributes } from 'react'
+import { useId, type InputHTMLAttributes, type TextareaHTMLAttributes } from 'react'
 
 import styles from './Field.module.css'
 
-type Props = Omit<InputHTMLAttributes<HTMLInputElement>, 'id'> & {
+// Everything an input takes, plus the three attributes only a textarea has, so `as="textarea"` can be given
+// a height. Picking those three rather than intersecting the two attribute sets keeps value and onChange
+// typed for an input, which is what almost every Field is. id is ours: the label has to point at it.
+type TextareaOnly = Pick<TextareaHTMLAttributes<HTMLTextAreaElement>, 'rows' | 'cols' | 'wrap'>
+
+type Props = Omit<InputHTMLAttributes<HTMLInputElement>, 'id'> & TextareaOnly & {
     label: string
     hint?: string
     error?: string

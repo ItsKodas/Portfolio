@@ -43,4 +43,11 @@ describe('Field', () => {
         render(<Field as="textarea" label="Message" name="message" />)
         expect(screen.getByLabelText('Message').tagName).toBe('TEXTAREA')
     })
+
+    // rows is a textarea attribute an input does not have, so the props have to admit it or a multi-line
+    // field cannot be given a height. This failed as a type error before the props were widened.
+    it('lets a textarea be given a height', () => {
+        render(<Field as="textarea" label="Message" name="message" rows={4} />)
+        expect(screen.getByLabelText('Message')).toHaveAttribute('rows', '4')
+    })
 })

@@ -18,12 +18,24 @@ export function Dialog({ open, onClose, title, children, footer }: Props) {
     const titleId = useId()
 
     useEffect(() => {
+        if (!open) return
         const dialog = ref.current
         if (!dialog) return
+
+        // Whoever opened it, captured before showModal moves focus into the dialog. The platform returns
+        // focus by itself when a dialog is close()d and left in the page, but this one unmounts instead
+        // (see the `return null` below), and a dialog removed from the DOM while open drops focus to the
+        // body. Checked in a browser, both ways round, because jsdom cannot show it either way.
+        const opener = document.activeElement as HTMLElement | null
+
         // showModal is what gives focus trapping, the top layer and inertness of the rest of the page.
         // Opening with the open attribute instead gets none of those.
-        if (open && !dialog.open) dialog.showModal()
-        if (!open && dialog.open) dialog.close()
+        if (!dialog.open) dialog.showModal()
+
+        return () => {
+            if (dialog.open) dialog.close()
+            opener?.focus()
+        }
     }, [open])
 
     if (!open) return null
