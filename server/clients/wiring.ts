@@ -12,7 +12,7 @@ import { createMailer } from '../mailer'
 import type { Email } from '../quotes/emails'
 import { clientIp, hashIp } from '../ratelimit'
 import { changePassword as runChangePassword, regenerateRecoveryCodes as runRegenerate } from './account'
-import { CLIENT_ID_PATTERN, newClientId, newRecoveryCode } from './ids'
+import { CLIENT_ID_PATTERN, newClientId, newRecoveryCode, normaliseRecoveryCode } from './ids'
 import { hashPassword, verifyPassword, burnPasswordTime } from './password'
 import { clientRepo, type ClientRecord } from './repo'
 import { decryptSecret, encryptSecret, hashRecoveryCode, recoveryCodeMatches } from './secrets'
@@ -121,7 +121,9 @@ export const confirmEnrolmentDeps = () => {
         recordTotpUse: clients.recordTotpUse,
         confirmTotp: clients.confirmTotp,
         newRecoveryCode: () => newRecoveryCode(),
-        hashRecoveryCode: (code: string) => hashRecoveryCode(code.replace(/-/g, ''), key()),
+        // The same normalisation the verifying side uses, rather than a second one that only happens to agree
+        // with it: they sit on the two halves of one comparison, so there must only be one of them.
+        hashRecoveryCode: (code: string) => hashRecoveryCode(normaliseRecoveryCode(code), key()),
         replaceRecoveryCodes: clients.replaceRecoveryCodes,
         now, log,
     }
@@ -196,7 +198,8 @@ export const regenerateDeps = () => {
     return {
         verifyPassword,
         newRecoveryCode: () => newRecoveryCode(),
-        hashRecoveryCode: (code: string) => hashRecoveryCode(code.replace(/-/g, ''), key()),
+        // As in confirmEnrolmentDeps: one normalisation, shared with the side that checks what is typed in
+        hashRecoveryCode: (code: string) => hashRecoveryCode(normaliseRecoveryCode(code), key()),
         replaceRecoveryCodes: clients.replaceRecoveryCodes,
     }
 }

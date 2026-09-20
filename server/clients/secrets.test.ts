@@ -2,6 +2,7 @@ import { randomBytes } from 'node:crypto'
 
 import { describe, expect, it } from 'vitest'
 
+import { newRecoveryCode, normaliseRecoveryCode } from './ids'
 import { SecretError, decryptSecret, encryptSecret, hashRecoveryCode, recoveryCodeMatches } from './secrets'
 
 const key = randomBytes(32)
@@ -65,5 +66,33 @@ describe('recovery code hashing', () => {
 
     it('does not throw on a stored value of the wrong shape', () => {
         expect(recoveryCodeMatches('ABCDE12345', 'not hex', key)).toBe(false)
+    })
+})
+
+// Everywhere else the storing and the checking are stubbed apart from each other, and the tests above use
+// literals that are already normalised. A real generated code, hashed the way wiring.ts hashes it and checked
+// the way the sign-in and reset flows check it, is the only thing that holds the two sides together.
+describe('a generated recovery code, end to end', () => {
+    // Exactly what confirmEnrolmentDeps and regenerateDeps store
+    const store = (code: string) => hashRecoveryCode(normaliseRecoveryCode(code), key)
+    // Exactly what codeStep and completeReset compare against it
+    const check = (typed: string, stored: string) => recoveryCodeMatches(normaliseRecoveryCode(typed), stored, key)
+
+    it('matches as printed, and as a person would actually type it', () => {
+        for (let attempt = 0; attempt < 500; attempt += 1) {
+            const code = newRecoveryCode()
+            const stored = store(code)
+            expect(check(code, stored)).toBe(true)
+            // Lower case and no hyphen: the form takes whatever is typed, and this is what people type
+            expect(check(code.toLowerCase().replace('-', ''), stored)).toBe(true)
+            expect(check(` ${code.toLowerCase()} `, stored)).toBe(true)
+        }
+    })
+
+    it('does not match a different generated code', () => {
+        const stored = store(newRecoveryCode())
+        for (let attempt = 0; attempt < 100; attempt += 1) {
+            expect(check(newRecoveryCode(), stored)).toBe(false)
+        }
     })
 })

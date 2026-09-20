@@ -159,6 +159,20 @@ describe('completeReset', () => {
         expect(deps.setPassword).not.toHaveBeenCalled()
     })
 
+    // The branch a client hits when their phone is lost. Every refusal here is covered; without this the whole
+    // recovery-code loop could be deleted and the suite would stay green.
+    it('accepts a recovery code when the authenticator code does not match, and spends it', async () => {
+        const deps = completeDeps({
+            verifyTotp: vi.fn(() => null),
+            unusedRecoveryCodes: vi.fn(async () => [{ id: 'code1', codeHash: 'hash1' }]),
+            recoveryCodeMatches: vi.fn(() => true),
+        })
+        expect(await completeReset({ ...input, code: 'ABCDE-FGHJK' }, deps)).toEqual({ ok: true })
+        expect(deps.useRecoveryCode).toHaveBeenCalledTimes(1)
+        expect(deps.useRecoveryCode).toHaveBeenCalledWith('code1', now)
+        expect(deps.setPassword).toHaveBeenCalledWith('cl_ABCDEFGH', 'new-hash', now)
+    })
+
     // A client who never enrolled has no second factor to give, and is forced through enrolment afterwards anyway
     it('accepts the token alone when the client has no authenticator yet', async () => {
         const deps = completeDeps({
