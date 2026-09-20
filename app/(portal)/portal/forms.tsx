@@ -9,7 +9,7 @@ import type { ZodType } from 'zod'
 import Link from 'next/link'
 import { Alert, Box, Button, Paper, Stack, TextField, Typography } from '@mui/material'
 
-import { codeSchema, emailSchema, passwordSchema } from '@/server/clients/schema'
+import { MIN_PASSWORD_LENGTH, codeSchema, emailSchema, passwordSchema } from '@/server/clients/schema'
 import {
     acknowledgeCodesAction, codeAction, completeInviteAction, completeResetAction,
     confirmEnrolmentAction, requestResetAction, signInAction, type PortalResult,
@@ -43,6 +43,16 @@ function fieldProblem(value: string, schema: ZodType<string>): string | undefine
     const parsed = schema.safeParse(value)
     return parsed.success ? undefined : parsed.error.issues[0]?.message
 }
+
+// Length only, because the rule is length only. A meter implying we score the password would be
+// telling the client something the server does not actually check.
+function passwordHint(password: string): string {
+    if (password.length === 0) return `Use at least ${MIN_PASSWORD_LENGTH} characters.`
+    if (password.length < MIN_PASSWORD_LENGTH) return `${MIN_PASSWORD_LENGTH - password.length} more to go.`
+    return 'That will do nicely. Longer is better.'
+}
+
+const CONFIRM_MISMATCH = 'Those two passwords are not the same.'
 
 export function Panel({ title, children }: { title: string, children: React.ReactNode }) {
     return (
@@ -194,21 +204,33 @@ export function EnrolmentForm({ qr, typed }: { qr: string, typed: string }) {
 export function InviteForm({ token }: { token: string }) {
     const { pending, error, run } = useAction()
     const [password, setPassword] = useState('')
+    const [confirm, setConfirm] = useState('')
     const passwordProblem = fieldProblem(password, passwordSchema)
+    // Set once, from an emailed link, by someone who cannot try again without looping back through the
+    // single-field "Forgotten your password?" form: a typo here is expensive, so it is caught before submit
+    const mismatch = confirm.length > 0 && confirm !== password
+    const canSubmit = !!password && !passwordProblem && !!confirm && !mismatch
     return (
         <form onSubmit={event => { event.preventDefault(); run(() => completeInviteAction(token, password)) }}>
             <TextField label="Choose a password" type="password" fullWidth autoComplete="new-password" value={password}
-                error={!!passwordProblem} helperText={passwordProblem}
+                error={!!passwordProblem} helperText={passwordHint(password)}
                 onChange={event => setPassword(event.target.value)} sx={{ mb: 2 }} />
+            <TextField label="Confirm password" type="password" fullWidth autoComplete="new-password" value={confirm}
+                error={mismatch} helperText={mismatch ? CONFIRM_MISMATCH : undefined}
+                onChange={event => setConfirm(event.target.value)} sx={{ mb: 2 }} />
             <Button type="submit" variant="contained" fullWidth size="large"
-                disabled={pending || !password || !!passwordProblem}>Set password</Button>
+                disabled={pending || !canSubmit}>Set password</Button>
             <Problem error={error} />
         </form>
     )
 }
 
 export function ForgotForm() {
+    // Not useAction: requestResetAction resolves to { message }, not a PortalResult, so it has nothing for
+    // useAction's `result.ok` branch to read. The catch below is the same fallback useAction gives every
+    // other form, added by hand because the return shape does not fit the shared hook.
     const [pending, setPending] = useState(false)
+    const [error, setError] = useState<string | null>(null)
     const [message, setMessage] = useState<string | null>(null)
     const [email, setEmail] = useState('')
     const emailProblem = fieldProblem(email, emailSchema)
@@ -216,11 +238,14 @@ export function ForgotForm() {
     async function submit(event: React.FormEvent) {
         event.preventDefault()
         setPending(true)
+        setError(null)
         try {
             // The one message covers every case, matching or not, valid or not: rendering anything else here
             // would turn this page into a way to find out which addresses have accounts.
             const result = await requestResetAction(email)
             setMessage(result.message)
+        } catch {
+            setError('That did not work. Try reloading the page.')
         } finally {
             setPending(false)
         }
@@ -238,6 +263,7 @@ export function ForgotForm() {
                 onChange={event => setEmail(event.target.value)} sx={{ mb: 2 }} />
             <Button type="submit" variant="contained" fullWidth size="large"
                 disabled={pending || !email || !!emailProblem}>Send reset link</Button>
+            <Problem error={error} />
         </form>
     )
 }
@@ -245,17 +271,24 @@ export function ForgotForm() {
 export function ResetForm({ token, needsCode }: { token: string, needsCode: boolean }) {
     const { pending, error, run } = useAction()
     const [password, setPassword] = useState('')
+    const [confirm, setConfirm] = useState('')
     const [code, setCode] = useState('')
     const passwordProblem = fieldProblem(password, passwordSchema)
     const codeProblem = needsCode ? fieldProblem(code, codeSchema) : undefined
+    // Same reasoning as the invite form: this is the one other place a client sets a password by typing it
+    // once into a page they can only reach from a link, so a typo is caught before submit rather than after.
+    const mismatch = confirm.length > 0 && confirm !== password
     // A client who never enrolled has no code to give, so the field is left out rather than disabled: the
     // request still carries an empty string, which completeResetAction accepts for that case.
-    const canSubmit = !!password && !passwordProblem && (!needsCode || (!!code && !codeProblem))
+    const canSubmit = !!password && !passwordProblem && !!confirm && !mismatch && (!needsCode || (!!code && !codeProblem))
     return (
         <form onSubmit={event => { event.preventDefault(); run(() => completeResetAction(token, password, needsCode ? code : '')) }}>
             <TextField label="Choose a new password" type="password" fullWidth autoComplete="new-password" value={password}
-                error={!!passwordProblem} helperText={passwordProblem}
+                error={!!passwordProblem} helperText={passwordHint(password)}
                 onChange={event => setPassword(event.target.value)} sx={{ mb: 2 }} />
+            <TextField label="Confirm password" type="password" fullWidth autoComplete="new-password" value={confirm}
+                error={mismatch} helperText={mismatch ? CONFIRM_MISMATCH : undefined}
+                onChange={event => setConfirm(event.target.value)} sx={{ mb: 2 }} />
             {needsCode && (
                 <TextField label="Code from your authenticator app" fullWidth autoComplete="one-time-code" inputMode="numeric"
                     value={code} error={!!codeProblem} helperText={codeProblem ?? 'A recovery code works here too.'}
