@@ -43,6 +43,47 @@ describe('handleFetchConnection', () => {
         assert.deepEqual(stub.requests, [])
     })
 
+    it('stays quiet, with no reply and no log line, when a peer connects and closes without sending anything', async () => {
+        const stub = stubRun(async () => { throw new Error('must not be called') })
+        const logged: string[] = []
+        const [client, server] = duplexPair()
+        const done = handleFetchConnection(server, stub.run, message => logged.push(message))
+        client.end()
+        client.setEncoding('utf8')
+        let text = ''
+        for await (const chunk of client) text += chunk
+        await done
+        assert.equal(text, '')
+        assert.deepEqual(logged, [])
+        assert.deepEqual(stub.requests, [])
+    })
+
+    it('still refuses and logs an incomplete line (bytes sent, no newline, then closed)', async () => {
+        const stub = stubRun(async () => { throw new Error('must not be called') })
+        const logged: string[] = []
+        // exchange() only writes, it never ends the client, which is right for the other cases here (they
+        // resolve on a newline or on the byte cap) but wrong for this one, which only resolves on 'end'.
+        const [client, server] = duplexPair()
+        const done = handleFetchConnection(server, stub.run, message => logged.push(message))
+        client.end('{"verb":"tip"')
+        client.setEncoding('utf8')
+        let text = ''
+        for await (const chunk of client) text += chunk
+        await done
+        assert.deepEqual(JSON.parse(text.split('\n').filter(part => part !== '')[0] ?? ''), { ok: false, code: 'bad-request', message: 'expected one request line of at most 64 KB' })
+        assert.deepEqual(logged, ['refused bad-request: no request line'])
+        assert.deepEqual(stub.requests, [])
+    })
+
+    it('still refuses and logs an oversized line', async () => {
+        const stub = stubRun(async () => { throw new Error('must not be called') })
+        const logged: string[] = []
+        const [reply] = await exchange(stub.run, 'x'.repeat(MAX_REQUEST_BYTES + 10), logged.push.bind(logged))
+        assert.deepEqual(JSON.parse(reply ?? ''), { ok: false, code: 'bad-request', message: 'expected one request line of at most 64 KB' })
+        assert.deepEqual(logged, ['refused bad-request: no request line'])
+        assert.deepEqual(stub.requests, [])
+    })
+
     it('refuses a malformed request with bad-request, and never calls git', async () => {
         const stub = stubRun(async () => { throw new Error('must not be called') })
         const [reply] = await exchange(stub.run, '{"verb":"exec"}\n')

@@ -1,7 +1,7 @@
 import { describe, it } from 'node:test'
 import assert from 'node:assert/strict'
 import { duplexPair } from 'node:stream'
-import { handleConnection, type AgentHandler } from './server.ts'
+import { handleConnection, readRequestLine, type AgentHandler } from './server.ts'
 import type { AgentRequest, LogLine } from '../shared/protocol.ts'
 import { MAX_REQUEST_BYTES } from '../shared/protocol.ts'
 
@@ -30,6 +30,36 @@ async function exchange(agent: AgentHandler, raw: string): Promise<string[]> {
     await done
     return text.split('\n').filter(part => part !== '')
 }
+
+describe('readRequestLine', () => {
+    it('resolves the line', async () => {
+        const [client, server] = duplexPair()
+        const result = readRequestLine(server)
+        client.end('{"verb":"health"}\n')
+        assert.deepEqual(await result, { line: '{"verb":"health"}' })
+    })
+
+    it('reports empty when the peer closes without sending a byte', async () => {
+        const [client, server] = duplexPair()
+        const result = readRequestLine(server)
+        client.end()
+        assert.deepEqual(await result, { line: null, reason: 'empty' })
+    })
+
+    it('reports incomplete when the peer sends bytes then closes without a newline', async () => {
+        const [client, server] = duplexPair()
+        const result = readRequestLine(server)
+        client.end('{"verb":"hea')
+        assert.deepEqual(await result, { line: null, reason: 'incomplete' })
+    })
+
+    it('reports oversize when the line exceeds the byte cap', async () => {
+        const [client, server] = duplexPair()
+        const result = readRequestLine(server, 10)
+        client.end('x'.repeat(20))
+        assert.deepEqual(await result, { line: null, reason: 'oversize' })
+    })
+})
 
 describe('handleConnection', () => {
     it('answers a request with one JSON line and closes', async () => {
