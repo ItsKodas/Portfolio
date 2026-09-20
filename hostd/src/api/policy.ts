@@ -5,7 +5,7 @@ import type { ProjectEntry, Registry } from '../shared/registry.ts'
 import { VERB_CAPABILITY } from '../shared/protocol.ts'
 import type { Actor } from './auth.ts'
 
-export type PolicyVerb = 'status' | 'lifecycle' | 'logs' | 'audit'
+export type PolicyVerb = 'status' | 'lifecycle' | 'logs' | 'audit' | 'provision' | 'env'
 export type Decision =
     | { ok: true, project: ProjectEntry }
     | { ok: false, status: 403 | 404 | 409, code: 'not-found' | 'capability-disabled' | 'invalid-project', message: string }
@@ -15,6 +15,13 @@ export function authorize(registry: Registry, actor: Actor, projectId: string, v
     // An invalid entry has no owner that can be trusted, so only the operator learns it exists.
     if (invalid !== undefined && actor.kind === 'admin') {
         return { ok: false, status: 409, code: 'invalid-project', message: `${projectId} is invalid: ${invalid}` }
+    }
+    // Provisioning and env editing are admin-only, full stop. This has to be its own check ahead of
+    // ownership: a client who owns the project, even one where the registry happens to list the
+    // provision or env capability, must see exactly the same 404 as for a project that is not theirs,
+    // so neither ownership nor a stray capability entry can ever grant either one.
+    if ((verb === 'provision' || verb === 'env') && actor.kind !== 'admin') {
+        return { ok: false, status: 404, code: 'not-found', message: `no project ${projectId}` }
     }
     const project = registry.projects.get(projectId)
     // Someone else's project and a missing one get the same answer, so a client cannot probe for ids.
