@@ -143,6 +143,16 @@ describe('confirmEnrolment', () => {
         const deps = confirmDeps()
         expect(await confirmEnrolment({ session: noSecret, code: '123456' }, deps)).toMatchObject({ ok: false })
     })
+
+    // The enrolling code is spent like any other, so it cannot be replayed at the sign-in page moments
+    // later. signIn.test.ts covers the same property for codeStep; without this, confirmEnrolment's half
+    // of it has no regression protection.
+    it('refuses a code whose step was already recorded, and confirms nothing', async () => {
+        const deps = confirmDeps({ recordTotpUse: vi.fn(async () => false) })
+        expect(await confirmEnrolment({ session, code: '123456' }, deps)).toMatchObject({ ok: false })
+        expect(deps.confirmTotp).not.toHaveBeenCalled()
+        expect(deps.replaceRecoveryCodes).not.toHaveBeenCalled()
+    })
 })
 
 describe('acknowledgeRecoveryCodes', () => {
