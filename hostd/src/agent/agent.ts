@@ -55,6 +55,10 @@ export type AgentDeps = {
 export type Outcome =
     | { kind: 'reply', reply: AgentReply }
     | { kind: 'stream', lines: AsyncIterable<LogLine>, close: () => void }
+    // A backup download: the same header line as a stream, then raw bytes until the socket ends. Its own
+    // kind rather than a stream of lines because a tar.gz through NDJSON would need base64, which inflates
+    // a multi-gigabyte download by a third for nothing.
+    | { kind: 'bytes', body: AsyncIterable<Buffer>, close: () => void }
 
 const reply = (value: AgentReply): Outcome => ({ kind: 'reply', reply: value })
 

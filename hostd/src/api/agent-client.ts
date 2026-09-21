@@ -17,9 +17,11 @@ export class AgentUnavailableError extends Error {
 
 export type Connect = () => Duplex
 export type LogStream = { ok: true, lines: AsyncIterable<LogLine>, close(): void }
+export type Download = { ok: true, body: AsyncIterable<Buffer>, close(): void }
 export type AgentClient = {
     call(request: AgentRequest): Promise<AgentReply>
     stream(request: ProjectRequest): Promise<LogStream | Refusal>
+    download(request: ProjectRequest): Promise<Download | Refusal>
 }
 
 // Longer than the agent's own 120 second lifecycle timeout, so the agent's answer always arrives first.
@@ -89,6 +91,88 @@ function open(connect: Connect, request: AgentRequest) {
     return { first, next, close }
 }
 
+// A download's own connection path, apart from open()'s readline one: readline consumes the socket, splits
+// it on newlines and decodes every chunk as UTF-8, any one of which would corrupt a tar.gz. This reads raw
+// Buffer chunks straight off the socket with plain 'data'/'end'/'error' listeners (no readline, no
+// encoding, and no reliance on the socket's own async iterator, whose close() does not reliably unblock a
+// pending read), buffers only until the header's own newline is found, and yields everything after it, in
+// the same chunk, as the first body bytes.
+function openBytes(connect: Connect, request: AgentRequest) {
+    const socket = connect()
+    let failure: Error | null = null
+    let ended = false
+    const queue: Buffer[] = []
+    let waiting: ((chunk: Buffer | null) => void) | null = null
+
+    const deliver = (chunk: Buffer | null) => {
+        if (waiting) {
+            const resolve = waiting
+            waiting = null
+            resolve(chunk)
+        } else if (chunk !== null) {
+            queue.push(chunk)
+        }
+    }
+    const onData = (chunk: Buffer) => deliver(chunk)
+    const onEnd = () => { ended = true; deliver(null) }
+    const onError = (error: Error) => { failure = error; ended = true; deliver(null) }
+    socket.on('data', onData)
+    socket.on('end', onEnd)
+    socket.on('error', onError)
+    // The write side stays open: the agent reads the peer leaving as "stop streaming".
+    socket.write(`${JSON.stringify(request)}\n`)
+
+    function nextChunk(): Promise<Buffer | null> {
+        if (queue.length > 0) return Promise.resolve(queue.shift()!)
+        if (ended) {
+            if (failure) return Promise.reject(new AgentUnavailableError(`the agent connection failed: ${describeError(failure)}`))
+            return Promise.resolve(null)
+        }
+        return new Promise(resolve => { waiting = resolve })
+    }
+
+    let leftover: Buffer | null = null
+
+    async function readHeader(): Promise<unknown> {
+        let buffered = Buffer.alloc(0)
+        for (;;) {
+            const newline = buffered.indexOf(0x0a)
+            if (newline !== -1) {
+                const rest = buffered.subarray(newline + 1)
+                leftover = rest.length > 0 ? rest : null
+                return parseLine(buffered.subarray(0, newline).toString('utf8'))
+            }
+            const chunk = await nextChunk()
+            if (chunk === null) throw new AgentUnavailableError('the agent closed the connection without answering')
+            buffered = Buffer.concat([buffered, chunk])
+        }
+    }
+
+    async function* body(): AsyncGenerator<Buffer> {
+        if (leftover !== null) yield leftover
+        for (;;) {
+            const chunk = await nextChunk()
+            if (chunk === null) return
+            yield chunk
+        }
+    }
+
+    function close(): void {
+        socket.off('data', onData)
+        socket.off('end', onEnd)
+        socket.off('error', onError)
+        // Unblocks a read that is waiting on this connection, exactly as reader.close() does for open():
+        // ending locally does not depend on the peer ever acknowledging.
+        ended = true
+        deliver(null)
+        socket.end()
+        // A real socket that never acknowledges the end is torn down anyway.
+        setTimeout(() => socket.destroy(), 5_000).unref()
+    }
+
+    return { readHeader, body, close }
+}
+
 export function createAgentClient(
     connect: Connect,
     options: { callTimeoutMs?: number, headerTimeoutMs?: number } = {},
@@ -138,6 +222,34 @@ export function createAgentClient(
                 }
             }
             return { ok: true, lines: lines(), close: connection.close }
+        },
+
+        async download(request) {
+            const connection = openBytes(connect, request)
+            let header: unknown
+            try {
+                header = await withTimeout(connection.readHeader(), headerTimeoutMs, connection.close)
+            } catch (error) {
+                connection.close()
+                throw error
+            }
+            if (isRecord(header) && header.ok === false) {
+                connection.close()
+                return header as Refusal
+            }
+            if (!isRecord(header) || header.ok !== true || header.stream !== true) {
+                connection.close()
+                throw new AgentUnavailableError('the agent answered a download request without a stream')
+            }
+
+            async function* bytes(): AsyncGenerator<Buffer> {
+                try {
+                    yield* connection.body()
+                } finally {
+                    connection.close()
+                }
+            }
+            return { ok: true, body: bytes(), close: connection.close }
         },
     }
 }

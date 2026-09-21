@@ -139,6 +139,39 @@ export async function handleConnection(socket: Duplex, agent: AgentHandler, log:
         return
     }
 
+    if (outcome.kind === 'bytes') {
+        const bytes = outcome
+        if (gone) {
+            stopWatching()
+            log(`${what} download abandoned before it started`)
+            bytes.close()
+            return
+        }
+        log(`${what} downloading`)
+        let closed = false
+        const abort = () => { closed = true; bytes.close() }
+        stopWatching()
+        socket.once('end', abort)
+        socket.once('close', abort)
+        try {
+            if (!socket.write(lineOf({ ok: true, stream: true }))) await waitForDrain(socket)
+            for await (const chunk of bytes.body) {
+                if (closed) break
+                if (!socket.write(chunk)) await waitForDrain(socket)
+            }
+            if (!closed) socket.end()
+        } catch (error) {
+            log(`${what} download failed: ${describeError(error)}`)
+            socket.destroy()
+        } finally {
+            socket.off('end', abort)
+            socket.off('close', abort)
+            bytes.close()
+            log(`${what} download ended`)
+        }
+        return
+    }
+
     const stream = outcome
     if (gone) {
         // The peer left while the handler was still working; there is no one to write the stream to.

@@ -177,3 +177,93 @@ describe('stream', () => {
         })
     })
 })
+
+describe('download', () => {
+    const backup = { verb: 'backup' as const, project: 'acme', args: { action: 'download' as const, snapshot: 'deadbeef' } }
+
+    it('yields body bytes that arrive in the same chunk as the header line', async () => {
+        // The case that catches a swallowed remainder: nothing must be lost between the header's
+        // newline and the rest of a chunk that arrived alongside it.
+        const body = Buffer.from('tar bytes')
+        const client = createAgentClient(connectRaw(server => {
+            server.once('data', () => {
+                server.end(Buffer.concat([Buffer.from('{"ok":true,"stream":true}\n'), body]))
+            })
+        }))
+        const result = await client.download(backup)
+        assert.ok(result.ok)
+        const chunks: Buffer[] = []
+        if (result.ok) for await (const chunk of result.body) chunks.push(chunk)
+        assert.deepEqual(Buffer.concat(chunks), body)
+    })
+
+    it('parses the header even when a chunk boundary falls inside the header line', async () => {
+        const body = Buffer.from('tar bytes')
+        const client = createAgentClient(connectRaw(server => {
+            server.once('data', () => {
+                server.write('{"ok":true,"str')
+                server.write('eam":true}\n')
+                server.end(body)
+            })
+        }))
+        const result = await client.download(backup)
+        assert.ok(result.ok)
+        const chunks: Buffer[] = []
+        if (result.ok) for await (const chunk of result.body) chunks.push(chunk)
+        assert.deepEqual(Buffer.concat(chunks), body)
+    })
+
+    it('passes through body bytes that are not valid UTF-8, byte for byte', async () => {
+        // A gzip magic number followed by bytes no UTF-8 decoder round-trips. This is the case that
+        // catches string decoding: a readline-based path would corrupt these into replacement characters.
+        const body = Buffer.from([0x1f, 0x8b, 0x08, 0x00, 0xff, 0xfe, 0x00, 0x80])
+        const client = createAgentClient(connectRaw(server => {
+            server.once('data', () => {
+                server.write('{"ok":true,"stream":true}\n')
+                server.end(body)
+            })
+        }))
+        const result = await client.download(backup)
+        assert.ok(result.ok)
+        const chunks: Buffer[] = []
+        if (result.ok) for await (const chunk of result.body) chunks.push(chunk)
+        assert.deepEqual(Buffer.concat(chunks), body)
+    })
+
+    it('returns the refusal when the agent refuses a download, with no body', async () => {
+        const client = createAgentClient(connectRaw(server => {
+            server.once('data', () => {
+                server.end('{"ok":false,"code":"unknown-project","message":"no project acme"}\n')
+            })
+        }))
+        const result = await client.download(backup)
+        assert.deepEqual(result, { ok: false, code: 'unknown-project', message: 'no project acme' })
+    })
+
+    it('closing the download makes the agent close its end', async () => {
+        let agentClosed: () => void = () => {}
+        const closedOnAgent = new Promise<void>(resolve => { agentClosed = resolve })
+        let wake: () => void = () => {}
+        const client = createAgentClient(connectTo({
+            handle: async () => ({
+                kind: 'bytes',
+                body: (async function* () {
+                    yield Buffer.from('first')
+                    await new Promise<void>(resolve => { wake = resolve })
+                })(),
+                close: () => {
+                    agentClosed()
+                    wake()
+                },
+            }),
+        }))
+        const result = await client.download(backup)
+        assert.ok(result.ok)
+        if (!result.ok) return
+        const iterator = result.body[Symbol.asyncIterator]()
+        assert.deepEqual((await iterator.next()).value, Buffer.from('first'))
+        result.close()
+        await closedOnAgent
+        assert.equal((await iterator.next()).done, true)
+    })
+})

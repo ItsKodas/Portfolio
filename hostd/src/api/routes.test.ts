@@ -79,6 +79,10 @@ function fakeAgent() {
             calls.push(request)
             return { ok: true, lines: (async function* () { yield logLine })(), close() {} }
         },
+        async download(request) {
+            calls.push(request)
+            return { ok: true, body: (async function* () { yield Buffer.from('bytes') })(), close() {} }
+        },
     }
     return agent
 }

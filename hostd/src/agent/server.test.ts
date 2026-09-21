@@ -63,6 +63,18 @@ describe('readRequestLine', () => {
     })
 })
 
+// Like exchange, but keeps the raw Buffer chunks the server wrote rather than decoding them as UTF-8:
+// a download's body must survive byte for byte, which exchange's setEncoding('utf8') would corrupt.
+async function exchangeBytes(agent: AgentHandler, raw: string): Promise<Buffer> {
+    const [client, server] = duplexPair()
+    const done = handleConnection(server, agent, () => {})
+    client.write(raw)
+    const chunks: Buffer[] = []
+    for await (const chunk of client) chunks.push(chunk as Buffer)
+    await done
+    return Buffer.concat(chunks)
+}
+
 describe('handleConnection', () => {
     it('answers a request with one JSON line and closes', async () => {
         const agent = stubAgent(async () => ({ kind: 'reply', reply: health }))
@@ -122,6 +134,61 @@ describe('handleConnection', () => {
             client.on('data', (chunk: string) => {
                 text += chunk
                 if (text.split('\n').length > 2) resolve()
+            })
+        })
+        client.end()
+        await done
+        assert.equal(closed, true)
+    })
+
+    it('writes a bytes outcome as a header line then raw bytes', async () => {
+        const agent = stubAgent(async () => ({
+            kind: 'bytes',
+            body: (async function* () { yield Buffer.from('tar'); yield Buffer.from(' bytes') })(),
+            close: () => {},
+        }))
+        const output = await exchangeBytes(agent, '{"verb":"backup","project":"acme","args":{"action":"download","snapshot":"deadbeef"}}\n')
+        const newline = output.indexOf(0x0a)
+        assert.deepEqual(JSON.parse(output.subarray(0, newline).toString()), { ok: true, stream: true })
+        assert.equal(output.subarray(newline + 1).toString(), 'tar bytes')
+    })
+
+    it('passes non-UTF-8 body bytes through a bytes outcome unchanged', async () => {
+        // The case that catches string-based transport: a gzip magic number followed by bytes no UTF-8
+        // decoder round-trips.
+        const body = Buffer.from([0x1f, 0x8b, 0x08, 0x00, 0xff, 0xfe, 0x00, 0x80])
+        const agent = stubAgent(async () => ({
+            kind: 'bytes',
+            body: (async function* () { yield body })(),
+            close: () => {},
+        }))
+        const output = await exchangeBytes(agent, '{"verb":"backup","project":"acme","args":{"action":"download","snapshot":"deadbeef"}}\n')
+        const newline = output.indexOf(0x0a)
+        assert.deepEqual(output.subarray(newline + 1), body)
+    })
+
+    it('closes a bytes outcome when the client goes away', async () => {
+        let closed = false
+        let wake: () => void = () => {}
+        const agent = stubAgent(async () => ({
+            kind: 'bytes',
+            body: (async function* () {
+                yield Buffer.from('first')
+                await new Promise<void>(resolve => { wake = resolve })
+            })(),
+            close: () => {
+                closed = true
+                wake()
+            },
+        }))
+        const [client, server] = duplexPair()
+        const done = handleConnection(server, agent, () => {})
+        client.write('{"verb":"backup","project":"acme","args":{"action":"download","snapshot":"deadbeef"}}\n')
+        // Wait for at least the header and the first body bytes before the peer leaves.
+        await new Promise<void>(resolve => {
+            client.on('data', function onData() {
+                client.off('data', onData)
+                resolve()
             })
         })
         client.end()
