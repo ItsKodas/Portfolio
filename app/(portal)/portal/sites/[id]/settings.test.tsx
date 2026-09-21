@@ -159,3 +159,48 @@ describe('the settings form', () => {
         expect(screen.getByText(/git repository/i)).toBeInTheDocument()
     })
 })
+
+describe('the branch datalist', () => {
+    // A <select> would need an "other" escape hatch beside it; an <input list> degrades to exactly the
+    // plain text field that was there before this, which is what a repo hostd could not read branches
+    // for, or a project with no branches list at all, should look like.
+    it('offers no datalist, and the field still takes any text, when there is no list', async () => {
+        render(<SiteSettingsForm {...props} branches={null} />)
+        // A `list` attribute pointing at nothing is exactly the degrade this is for: no datalist exists,
+        // so the browser treats the field as a plain input, which is the same field that was there before.
+        expect(document.querySelector('datalist')).toBeNull()
+        const branch = screen.getByLabelText(/branch/i)
+        await userEvent.type(branch, 'whatever-was-just-pushed')
+        expect(branch).toHaveValue('whatever-was-just-pushed')
+    })
+
+    it('wires the branch field to a datalist of the repository\'s branches', () => {
+        render(<SiteSettingsForm {...props} branches={['main', 'develop']} />)
+        const branch = screen.getByLabelText(/branch/i)
+        const listId = branch.getAttribute('list')
+        expect(listId).toBeTruthy()
+        const datalist = document.getElementById(listId!)
+        expect(datalist?.tagName).toBe('DATALIST')
+        expect(Array.from(datalist!.querySelectorAll('option')).map(option => option.getAttribute('value'))).toEqual(['main', 'develop'])
+    })
+
+    it('offers the same list to every environment\'s branch field, since they share one repo', () => {
+        const twoEnvironments = [
+            { name: 'live', branch: 'main', dir: '/var/www/arbysauto', port: 5011 },
+            { name: 'test', branch: 'develop', dir: '/var/www/arbysauto-test', port: 5012 },
+        ]
+        render(<SiteSettingsForm {...props} environments={twoEnvironments} branches={['main', 'develop']} />)
+        const liveList = screen.getByLabelText(/live branch/i).getAttribute('list')
+        const testList = screen.getByLabelText(/test branch/i).getAttribute('list')
+        expect(liveList).toBe(testList)
+    })
+
+    // Never blocks the field, and never a validation-style error: hostd could not read the list, not the
+    // operator did something wrong.
+    it('says the list could not be read, in hostd\'s own words, without disabling anything', () => {
+        render(<SiteSettingsForm {...props} branches={null} branchesError="the fetcher is not configured" />)
+        expect(screen.getByText(/the fetcher is not configured/)).toBeInTheDocument()
+        expect(screen.getByLabelText(/branch/i)).not.toBeDisabled()
+        expect(screen.queryByRole('alert')).toBeNull()
+    })
+})

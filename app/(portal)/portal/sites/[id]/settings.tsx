@@ -6,7 +6,7 @@
 // the same gate saveEnvAction uses).
 
 import { useRouter } from 'next/navigation'
-import { useState } from 'react'
+import { useId, useState } from 'react'
 
 import { Button } from '@/ui/Button/Button'
 import { Callout } from '@/ui/Callout/Callout'
@@ -39,13 +39,21 @@ const NOT_BUILT = 'files, backups, domains and provision are designed but not bu
 const CANNOT_CHECK = 'A deploy needs a git repository already at the environment\'s dir (dir/.git). hostd '
     + 'only finds that out when it runs. This form cannot check that ahead of it.'
 
-export function SiteSettingsForm({ id, capabilities, repo, environments }: {
+export function SiteSettingsForm({ id, capabilities, repo, environments, branches = null, branchesError = null }: {
     id: string
     capabilities: string[]
     repo: string | null
     environments: Array<{ name: string, branch: string | null, dir?: string, port?: number }>
+    // The repository's branches, fetched for the repo as it stands saved, not for whatever is currently
+    // typed into the Repo field above: editing that field without saving leaves this offering the old
+    // repo's branches, which is the one thing left as it is rather than fixed, because re-fetching on
+    // every keystroke would be worse. null when there is no list to offer, whether that is no repo, an
+    // unreachable one, or hostd itself being unreachable; branchesError says which in hostd's own words.
+    branches?: string[] | null
+    branchesError?: string | null
 }) {
     const router = useRouter()
+    const branchListId = useId()
     const [checked, setChecked] = useState(() => new Set(capabilities))
     const [repoValue, setRepoValue] = useState(repo ?? '')
     const [branchValues, setBranchValues] = useState<Record<string, string>>(() =>
@@ -134,6 +142,17 @@ export function SiteSettingsForm({ id, capabilities, repo, environments }: {
             <Field label="Repo" value={repoValue} onChange={event => setRepoValue(event.target.value)} />
             <p className={styles.note}>{CANNOT_CHECK}</p>
 
+            {/* An <input list> rather than a <select>: it still offers a dropdown, but a branch pushed a
+                minute ago can still be typed, and with no list to offer (branches is null) the `list`
+                attribute below points at nothing, which degrades to exactly the plain text field this was
+                before. A <select> would need an "other" escape hatch beside it to avoid being a trap,
+                which is two controls where one does. */}
+            {branches && (
+                <datalist id={branchListId}>
+                    {branches.map(name => <option key={name} value={name} />)}
+                </datalist>
+            )}
+
             {environments.map(env => (
                 <div key={env.name} className={styles.envSettings}>
                     <p className={styles.envName}>{env.name}</p>
@@ -143,9 +162,14 @@ export function SiteSettingsForm({ id, capabilities, repo, environments }: {
                         label={`${env.name} branch`}
                         value={branchValues[env.name] ?? ''}
                         onChange={event => setBranchValues(prev => ({ ...prev, [env.name]: event.target.value }))}
+                        list={branchListId}
                     />
                 </div>
             ))}
+            {/* Never blocks the field and never reads as a validation error: hostd could not read the
+                list, not the operator did anything wrong. One line for both environments' fields, since
+                they share the one list. */}
+            {branchesError && <p className={styles.note}>{`The repository's branches could not be read: ${branchesError}`}</p>}
 
             <div className={styles.save}>
                 <Button variant="primary" disabled={pending} onClick={save}>

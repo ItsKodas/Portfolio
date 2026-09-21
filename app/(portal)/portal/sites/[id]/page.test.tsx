@@ -33,6 +33,8 @@ vi.mock('./actions', () => ({
     setBranchAction: async () => ({ ok: true, message: 'ok' }),
 }))
 vi.mock('@/server/hostd/deploys', () => ({ listDeploys: (...args: unknown[]) => listDeploys(...args) }))
+const listBranches = vi.fn()
+vi.mock('@/server/hostd/branches', () => ({ listBranches: (...args: unknown[]) => listBranches(...args) }))
 
 const { default: SitePage } = await import('./page')
 
@@ -63,6 +65,7 @@ beforeEach(() => {
     listProjects.mockResolvedValue({ ok: true, value: [{ id: 'asot', name: 'ASOT', valid: true, capabilities: ['lifecycle', 'logs'] }] })
     getProject.mockResolvedValue({ ok: true, value: [service('running')] })
     assertOwned.mockResolvedValue(true)
+    listBranches.mockResolvedValue({ ok: true, value: [] })
 })
 
 describe('the site page', () => {
@@ -255,6 +258,33 @@ describe('the settings tab', () => {
         expect(panel.getByText(/HOSTD_URL/)).toBeInTheDocument()
         expect(screen.queryByRole('button', { name: /save/i })).toBeNull()
         expect(screen.queryByLabelText(/repo/i)).toBeNull()
+    })
+
+    it('reads the branch list for this project when the Settings tab renders', async () => {
+        listProjects.mockResolvedValue({ ok: true, value: [
+            { id: 'asot', name: 'ASOT', valid: true, capabilities: ['lifecycle'], environments: [{ name: 'live', branch: null }] },
+        ] })
+        listBranches.mockResolvedValue({ ok: true, value: ['main', 'develop'] })
+        render(await page({ tab: 'settings' }))
+        expect(listBranches.mock.calls[0]?.[2]).toBe('asot')
+        const branch = screen.getByLabelText(/branch/i)
+        const datalist = document.getElementById(branch.getAttribute('list') ?? '')
+        expect(Array.from(datalist?.querySelectorAll('option') ?? []).map(o => o.getAttribute('value'))).toEqual(['main', 'develop'])
+    })
+
+    it('never asks for the branch list on a tab other than Settings', async () => {
+        render(await page())
+        expect(listBranches).not.toHaveBeenCalled()
+    })
+
+    // Failure is not an error: the field stays a plain input and a line underneath says why, in hostd's
+    // own words. A save must never be blocked by a list that did not load, so the form still renders.
+    it('still renders the form, with the field degraded to plain text, when the branch list could not be read', async () => {
+        listBranches.mockResolvedValue({ ok: false, code: 'unavailable', message: 'hostd is not answering' })
+        render(await page({ tab: 'settings' }))
+        expect(screen.getByText(/hostd is not answering/)).toBeInTheDocument()
+        expect(screen.getByRole('button', { name: /save/i })).toBeInTheDocument()
+        expect(document.querySelector('datalist')).toBeNull()
     })
 })
 
