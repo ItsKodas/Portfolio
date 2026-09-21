@@ -26,19 +26,40 @@ const NOT_AVAILABLE = 'not available'
 // (hostd/src/api/routes.ts builds it, hostd/src/shared/protocol.ts types it) and puts its refusal inside
 // that object rather than failing the whole list, so both arms have to be handled. The bare `services`
 // field is what a single project read answers with, kept here as a fallback so this reads either shape.
-function servicesOf(site: Project): ServiceStatus[] | null {
-    if (site.status) return site.status.ok ? site.status.services : null
-    return site.services ?? null
+// A refusal, an absence and a real empty list are three different answers. Collapsing the first two into
+// null and then reading null as "stopped" is how a site hostd could not read looks exactly like a site
+// that is switched off.
+function servicesOf(site: Project): ServiceStatus[] | 'unknown' {
+    if (site.status) return site.status.ok ? site.status.services : 'unknown'
+    return site.services ?? 'unknown'
 }
 
 // One project's worst service decides how the whole site reads: a site whose web container is down is
 // down, whatever its database is doing.
-function stateOf(site: Project): 'up' | 'down' | 'stopped' {
+function stateOf(site: Project): 'up' | 'down' | 'stopped' | 'unknown' {
     const services = servicesOf(site)
-    if (!services || !services.length) return 'stopped'
+    if (services === 'unknown') return 'unknown'
+    // No containers at all is a project hostd knows about whose compose has never been up
+    if (!services.length) return 'stopped'
     if (services.some(service => service.state === 'exited' || service.state === 'dead')) return 'down'
     if (services.some(service => service.state !== 'running')) return 'stopped'
     return 'up'
+}
+
+// What the line under the heading says. It counted only the sites that were down, so five stopped sites
+// gave nought and it printed "Everything is up." over a dashboard where nothing was running.
+function summarise(states: Array<'up' | 'down' | 'stopped' | 'unknown'>): string {
+    if (!states.length) return 'No sites yet.'
+    const count = (want: string) => states.filter(state => state === want).length
+    const parts: string[] = []
+    const down = count('down')
+    const stopped = count('stopped')
+    const unknown = count('unknown')
+    if (down) parts.push(`${down} ${down === 1 ? 'site is' : 'sites are'} down`)
+    if (stopped) parts.push(`${stopped} ${stopped === 1 ? 'is' : 'are'} stopped`)
+    if (unknown) parts.push(`${unknown} could not be read`)
+    if (!parts.length) return 'Everything is up.'
+    return `${parts.join(', ')}.`
 }
 
 // Why a row cannot be taken at face value: an entry hostd could not parse, or one whose containers it
@@ -216,7 +237,8 @@ export default async function PortalHome() {
     if (view.kind === 'anonymous') redirect('/portal/sign-in')
 
     const isAdmin = view.kind === 'admin'
-    const down = view.sites.filter(site => stateOf(site) === 'down')
+    const states = view.sites.map(stateOf)
+    const down = states.filter(state => state === 'down')
 
     const nav = (
         <>
@@ -238,9 +260,7 @@ export default async function PortalHome() {
             <div className={styles.hello}>
                 <h1>{isAdmin ? 'Your sites' : 'Your site'}</h1>
                 <p>
-                    {down.length
-                        ? `${down.length} ${down.length === 1 ? 'site is' : 'sites are'} down.`
-                        : 'Everything is up.'}
+                    {summarise(states)}
                 </p>
             </div>
 
