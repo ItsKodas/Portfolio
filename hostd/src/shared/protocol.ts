@@ -155,9 +155,9 @@ export type ConfigureArgs = {
     capabilities?: Capability[]
     repo?: string | null
     branches?: Partial<Record<EnvironmentName, string | null>>
-    // No null member, unlike branches: this can give an environment its first address, never clear one.
-    // The agent refuses an environment that already has a domain as well, so this only ever sets a first
-    // one; changing an address rewrites the vhost and is a hand-edit of projects.yaml.
+    // No null member, unlike branches: this gives an environment an address or moves it to another one,
+    // and never takes one away. Moving it rewrites the vhost hostd owns (see the agent's configure), so
+    // the caller is expected to have confirmed it with whoever asked for it.
     domains?: Partial<Record<EnvironmentName, string>>
 }
 export type ConfigureRequest = { verb: 'configure', project: string, args: ConfigureArgs }
@@ -226,10 +226,19 @@ export type DeployHistoryReply = {
 }
 export type DeployCommitsReply = { ok: true, commits: Commit[] }
 export type BranchesReply = { ok: true, branches: string[] }
+// What configure put on the host, one entry per environment whose address moved onto a vhost hostd
+// already owned. Deliberately the same hostnames-and-path shape DomainsWritten carries, with the
+// environment added because configure takes several at once: api turns both into the same records, so a
+// second spelling of the same fact would only give the two paths a way to drift.
+//
+// An empty list is the answer that matters most. It means hostd serves no vhost for that environment, so
+// nothing about what Apache is serving has changed and no hostname has anything new to prove.
+export type ConfigureWritten = { environment: EnvironmentName, hostnames: string[], path: string }
+export type ConfigureReply = { ok: true, output: string, written: ConfigureWritten[] }
 export type StreamHeader = { ok: true, stream: true }
 export type AgentReply =
     | HealthReply | StatusReply | StatusesReply | LifecycleReply | ProvisionReply | EnvListReply | EnvReadReply
-    | DeployStartedReply | DeployHistoryReply | DeployCommitsReply | BranchesReply
+    | DeployStartedReply | DeployHistoryReply | DeployCommitsReply | BranchesReply | ConfigureReply
     | BackupStartedReply | BackupListReply | BackupRunReply
     | DomainsWritten | AdoptPreview | Refusal
 export type LogLine = { stream: 'stdout' | 'stderr', ts: string | null, text: string, truncated: boolean }
@@ -580,7 +589,8 @@ export function parseConfigureArgs(raw: unknown): ConfigureArgs | Refusal {
         const parsed: Partial<Record<EnvironmentName, string>> = {}
         for (const [name, domain] of Object.entries(raw.domains)) {
             if (!(ENVIRONMENTS as readonly string[]).includes(name)) return refuse('bad-request', `${name} is not an environment`)
-            // Unlike branches, null is not a value here: an address can be given, never taken away.
+            // Unlike branches, null is not a value here: an address can be given or moved, never taken
+            // away.
             // normaliseHostname is the one place that decides what a hostname is, and it answers the
             // single spelling the registry should hold whichever way the operator typed it.
             const host = normaliseHostname(domain)

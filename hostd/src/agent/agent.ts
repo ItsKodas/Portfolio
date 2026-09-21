@@ -3,8 +3,9 @@
 
 import {
     checkStructure, refuse,
-    type AdoptPreview, type AgentReply, type AgentRequest, type BackupArgs, type ConfigureArgs, type DeployArgs,
-    type DomainsRequest, type DomainsWritten, type EnvArgs, type HealthReply, type LifecycleAction,
+    type AdoptPreview, type AgentReply, type AgentRequest, type BackupArgs, type ConfigureArgs,
+    type ConfigureWritten, type DeployArgs, type DomainsRequest, type DomainsWritten, type EnvArgs,
+    type HealthReply, type LifecycleAction,
     type LifecycleReply, type LogLine, type LogsArgs, type ProjectStatus, type ProvisionAddEnvironmentArgs,
     type ProvisionCreateArgs, type ProvisionRemoveArgs, type Refusal, type ServiceStatus, type StatusesReply,
 } from '../shared/protocol.ts'
@@ -28,6 +29,7 @@ import { createProject, addEnvironment, removeProject, type ProvisionDeps } from
 import type { BackupRunner } from './backup-runner.ts'
 import type { BackupStore } from './backup-state.ts'
 import { repoPath, type Restic } from './restic.ts'
+import { tokenFromVhost, vhostPath } from './vhost.ts'
 
 export const MAX_FOLLOWS_PER_PROJECT = 4
 export const FOLLOW_MAX_MS = 60 * 60_000
@@ -365,21 +367,21 @@ export class Agent {
     // widens to include it and stops compiling). { ok: true, output } is the shape the codebase already
     // uses for "nothing else to carry" (see env()'s write case and provision.ts's removeProject above).
     private async configure(project: ProjectEntry, args: ConfigureArgs): Promise<AgentReply> {
-        // Setting a first address is safe; changing one is not, so this refuses it outright rather than
-        // doing it badly. A change rewrites the environment's vhost, which invalidates the verification
-        // of every hostname on it and leaves the old address answering nothing, and none of that is
-        // recoverable from this form. The refusal names the current value so the operator can see what
-        // they are actually asking to replace. An environment that does not exist is not checked here:
-        // the writer answers that in its own words below, the same way set-branch leaves it to do.
+        // Which environments are having an address REPLACED rather than given one for the first time.
+        // Read before the writes below, because they are what makes the old value unreadable, and it is
+        // the old value that decides whether Apache has a file to rewrite afterwards.
+        //
+        // A change used to be refused here outright. It is allowed now: the portal puts the four things
+        // it does (the old name stops resolving, every hostname is unverified again, aliases redirect
+        // somewhere new, the vhost is rewritten) in front of the operator behind a typed confirmation,
+        // so the decision is made where it can be explained rather than in a refusal nobody can act on
+        // without an SSH session. Setting the same address twice changes nothing and is not counted.
+        // An environment that does not exist is not checked here: the writer answers that in its own
+        // words below, the same way set-branch leaves it to do.
+        const replacing: EnvironmentName[] = []
         for (const [name, domain] of Object.entries(args.domains ?? {})) {
             const existing = environmentOf(project, name)?.domain
-            if (!existing) continue
-            return refuse(
-                'bad-request',
-                `${project.id} ${name} is already at ${existing}, so ${domain} cannot be set from here.`
-                + ' Changing the address rewrites the vhost and invalidates verification for every hostname'
-                + ' on it, so it is changed by editing projects.yaml on the server.',
-            )
+            if (existing && existing !== domain) replacing.push(name as EnvironmentName)
         }
 
         const written = await this.deps.writer.write({
@@ -395,14 +397,13 @@ export class Agent {
         // having failed, for a repo URL the validator simply would not take.
         if (!written.ok) return refuse('bad-request', written.problem)
 
-        // A write of its own per domain, rather than a field on the configure change: a domain is set
-        // once in an environment's life and the refusal above has already had the last word on whether
-        // it may be, so folding it into the change that carries capabilities, repo and branches would
-        // put a once-ever write on the path of every routine capability save.
+        // A write of its own per domain, rather than a field on the configure change: an address is set
+        // rarely and rewrites Apache when it moves, so folding it into the change that carries
+        // capabilities, repo and branches would put it on the path of every routine capability save.
         //
-        // Nothing else happens here. Recording the address only makes the environment eligible for a
-        // vhost; the hand-written file still serving the site is displaced by adopting it, which is one
-        // reload rather than two files claiming the same name.
+        // Giving an environment its FIRST address does nothing beyond recording it. The hand-written
+        // file still serving the site is displaced by adopting it, which is one reload rather than two
+        // files claiming the same name.
         for (const [name, domain] of Object.entries(args.domains ?? {})) {
             const set = await this.deps.writer.write({
                 kind: 'set-domain', id: project.id, environment: name as EnvironmentName, domain,
@@ -413,10 +414,103 @@ export class Agent {
         // answers from the entry this write has already replaced: the capability just granted would still
         // look absent. set-branch and both provisioning paths refresh for the same reason.
         await this.deps.refreshRegistry()
+
+        // Replacing an address, on the other hand, has to reach Apache: the old hostname is still in the
+        // file hostd wrote, and a vhost naming a hostname the registry no longer claims is the one state
+        // nothing else in hostd knows how to correct. After the registry write, never before, for the
+        // reason setAliases writes the registry first.
+        const problems: string[] = []
+        const rewritten: ConfigureWritten[] = []
+        for (const name of replacing) {
+            const result = await this.rewriteMovedVhost(project.id, name)
+            if (result.problem !== null) problems.push(result.problem)
+            else if (result.written !== null) rewritten.push(result.written)
+        }
+        // The registry has already changed by the time any of this ran, so a failed rewrite is not
+        // "nothing happened": the two are now out of step and the operator has to be told which way.
+        if (problems.length > 0) {
+            return refuse(
+                'failed',
+                `${project.id}'s registry entry was updated, but the Apache configuration behind it was not:`
+                + ` ${problems.join(' ')} The two no longer agree until this is put right.`,
+            )
+        }
         // No log call here: the Agent class never logs its own verbs (lifecycle, env and deploy above do
         // not either). server.ts's handleConnection logs every reply generically, including this one, via
         // its own describe()/log() after handle() returns.
-        return { ok: true, output: `${project.id}'s registry entry was updated` }
+        //
+        // written carries what Apache is now serving, because api keeps the verification state and has no
+        // other way to learn it: without this, the moved hostname would reach the store through
+        // reconcile, as an unmanaged record with no token, which says hostd serves that name by hand. It
+        // does not, and the operator would be left with a row they cannot even re-check.
+        return {
+            ok: true,
+            written: rewritten,
+            output: rewritten.length === 0
+                ? `${project.id}'s registry entry was updated`
+                : `${project.id}'s registry entry was updated and its Apache configuration was rewritten`,
+        }
+    }
+
+    // The vhost behind an address that has just moved. hostd only owns a file it wrote itself, so the
+    // absence of one means this environment is still served by hand and there is nothing here to rewrite:
+    // the operator displaces that file by adopting the site, which is a separate, previewed decision. The
+    // absence is read exactly as domains.ts reads it, off readFile answering null.
+    //
+    // Answers a problem rather than throwing one: the caller has already written the registry, and a rail
+    // that never answers (which throws, after 30 seconds) must be reported as a disagreement rather than
+    // crash the reply.
+    private async rewriteMovedVhost(id: string, name: EnvironmentName): Promise<{ written: ConfigureWritten | null, problem: string | null }> {
+        // Nothing wired the rail up, so hostd has never written a vhost for anything and there is no file
+        // of its own to bring level. removeVhosts reads an absent domains dep the same way.
+        if (!this.deps.domains) return { written: null, problem: null }
+        const domains = this.deps.domains
+
+        const path = vhostPath(domains.config.includeDir, id, name)
+        let previous: string | null
+        try {
+            previous = await domains.readFile(path)
+        } catch (error) {
+            return { written: null, problem: `${path} could not be read: ${describeError(error)}.` }
+        }
+        if (previous === null) return { written: null, problem: null }
+
+        // The token the file already carries, not a new one. Every hostname of the environment proves
+        // itself against the one value in this file, so minting another would fail the aliases that were
+        // answering perfectly well a moment ago, which reads as a DNS fault and gets debugged in the
+        // wrong place. api mints tokens; nothing in the agent can, so a file this cannot read one out of
+        // is left exactly as it is rather than rewritten with a value invented here.
+        const token = tokenFromVhost(previous)
+        if (token === null) {
+            return { written: null, problem: `no verification token could be read out of ${path}, so it was left alone.` }
+        }
+
+        // Re-read rather than trusting the write, exactly as setAliases does: parseRegistry is what
+        // enforces reserved names, the allowed carve-out and cross-project uniqueness, and a hostname the
+        // wire grammar took can still fail those. The vhost is rendered from what came back, never from
+        // the request.
+        let registry: Registry
+        try {
+            registry = await domains.reloadRegistry()
+        } catch (error) {
+            return { written: null, problem: `the registry could not be re-read: ${describeError(error)}.` }
+        }
+        const entry = registry.projects.get(id)
+        const environment = entry === undefined ? null : environmentOf(entry, name)
+        if (!entry || !environment) {
+            return { written: null, problem: `${id} ${name} did not survive the change, so its configuration was left alone.` }
+        }
+
+        try {
+            const result = await writeVhost(domains, entry, environment, token)
+            // The environment is carried alongside the hostnames and the path writeVhost answers with,
+            // because one configure can move several and api records them per environment.
+            return result.ok
+                ? { written: { environment: name, ...result.written }, problem: null }
+                : { written: null, problem: result.message }
+        } catch (error) {
+            return { written: null, problem: `${path} could not be rewritten: ${describeError(error)}.` }
+        }
     }
 
     private async health(): Promise<HealthReply> {

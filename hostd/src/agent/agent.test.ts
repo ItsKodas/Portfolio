@@ -1263,35 +1263,122 @@ describe('configure', () => {
         ])
     })
 
-    // Changing an address rewrites the vhost, invalidates the verification of every hostname on it and
-    // leaves the old address answering nothing, so it is refused here and stays a hand-edit of the file.
-    it('refuses a domain on an environment that already has one, naming the current address, without writing', async () => {
-        const withDomain = parseRegistry(`
+    // Moving an address that already exists. Allowed since the portal grew a confirmation for it, and
+    // the registry write is only half the job: hostd's own vhost still names the old hostname, and a
+    // vhost claiming a name the registry no longer does is the one state nothing else here can correct.
+    const moved = (domain: string) => parseRegistry(`
 projects:
   acme:
     client: cl_1
     name: Acme
     services: { web: { role: site } }
+    capabilities: [domains]
     environments:
       live:
         dir: /var/www/acme
-        domain: acme.com
         port: 5010
+        domain: ${domain}
+        aliases: [www.acme.com]
 `)
+
+    // What hostd wrote for this environment the last time round, cut down to the line the rewrite reads
+    // out of it. The token is the whole reason the old file is read at all.
+    const EXISTING_VHOST = `<VirtualHost *:443>
+    ServerName acme.com
+    <Location "/.well-known/hostd/abc123def456">
+        Header always set X-Hostd-Token "abc123def456"
+        Redirect 204
+    </Location>
+</VirtualHost>
+`
+
+    const movingSetup = (over: Partial<NonNullable<AgentDeps['domains']>> = {}) => {
+        const context = fakeDomains(moved('shop.acme.com'))
         const written: Change[] = []
-        const { agent, refreshes } = setup({
-            registry: () => withDomain,
+        const base = setup({
+            registry: () => moved('acme.com'),
+            domains: { ...context.domains, ...over },
             writer: { write: async (change: Change) => { written.push(change); return { ok: true as const } } },
+        })
+        return { ...base, written, sent: context.sent, reload: context.reload }
+    }
+
+    const outputOf = (reply: ReturnType<typeof replyOf>) =>
+        reply !== null && reply.ok && 'output' in reply ? reply.output : ''
+
+    it('rewrites the vhost behind an address that moved, keeping the token the file already carries', async () => {
+        const { agent, written, sent, reload } = movingSetup({ readFile: async () => EXISTING_VHOST })
+
+        const reply = replyOf(await agent.handle(configure({ domains: { live: 'shop.acme.com' } })))
+
+        assert.equal(reply?.ok, true)
+        assert.deepEqual(written, [
+            { kind: 'configure', id: 'acme' },
+            { kind: 'set-domain', id: 'acme', environment: 'live', domain: 'shop.acme.com' },
+        ])
+        assert.equal(sent.length, 1)
+        assert.equal(sent[0]?.write?.path, '/etc/apache2/hostd/acme-live.conf')
+        assert.match(sent[0]?.write?.text ?? '', /ServerName shop\.acme\.com/)
+        // The token out of the file that was there, never a new one: every alias proves itself against
+        // that one value and not one of them changed.
+        assert.match(sent[0]?.write?.text ?? '', /\/\.well-known\/hostd\/abc123def456/)
+        // Rendered from the reloaded entry rather than from the request, which is what keeps
+        // parseRegistry's reserved names, allowed carve-out and uniqueness in front of Apache.
+        assert.equal(reload.calls, 1)
+        assert.match(outputOf(reply), /rewritten/)
+        // What api has no other way to learn: these names are served from a file hostd wrote a moment
+        // ago, so their records belong in pending with the environment's token rather than in unmanaged,
+        // which is what reconcile alone would leave behind.
+        assert.deepEqual(reply?.ok === true && 'written' in reply ? reply.written : null, [{
+            environment: 'live',
+            hostnames: ['shop.acme.com', 'www.acme.com'],
+            path: '/etc/apache2/hostd/acme-live.conf',
+        }])
+    })
+
+    // Every site enrolled by hand is in this state: the registry knows its address, but the file serving
+    // it is somebody's hand-written vhost in sites-enabled. Rewriting nothing is the right answer, and
+    // the operator displaces that file by adopting the site, which is its own previewed decision.
+    it('moves an address on an environment hostd serves no vhost for, and asks Apache for nothing', async () => {
+        const { agent, written, sent } = movingSetup()
+
+        const reply = replyOf(await agent.handle(configure({ domains: { live: 'shop.acme.com' } })))
+
+        assert.equal(reply?.ok, true)
+        assert.equal(sent.length, 0)
+        assert.equal(written.length, 2)
+        assert.doesNotMatch(outputOf(reply), /rewritten/)
+        // An empty list rather than a missing field, and the emptiness is the message: hostd serves no
+        // vhost here, so api leaves the new hostname unmanaged, which is the truth about it.
+        assert.deepEqual(reply?.ok === true && 'written' in reply ? reply.written : null, [])
+    })
+
+    // The registry has already changed by then, so "it worked" would be a lie in the one direction that
+    // matters: Apache is still serving the old address and nothing on the tab would say so.
+    it('reports a vhost rewrite Apache refused instead of answering as though it worked', async () => {
+        const { agent, written } = movingSetup({
+            readFile: async () => EXISTING_VHOST,
+            rail: { send: async () => ({ seq: 0, ok: false as const, output: 'AH00526: Syntax error' }) },
         })
 
         const reply = replyOf(await agent.handle(configure({ domains: { live: 'shop.acme.com' } })))
 
         assert.equal(reply?.ok, false)
-        assert.equal(reply?.ok === false && reply.code, 'bad-request')
-        assert.match(reply?.ok === false ? reply.message : '', /already at acme\.com/)
-        assert.match(reply?.ok === false ? reply.message : '', /projects\.yaml/)
-        assert.deepEqual(written, [])
-        assert.equal(refreshes(), 0)
+        assert.equal(reply?.ok === false && reply.code, 'failed')
+        // The registry write happened and is named as having happened, before the part that did not.
+        assert.match(reply?.ok === false ? reply.message : '', /registry entry was updated, but/)
+        assert.match(reply?.ok === false ? reply.message : '', /no longer agree/)
+        assert.equal(written.length, 2)
+    })
+
+    // Saving the address the environment already has is not a move, so nothing is rewritten for it.
+    it('asks Apache for nothing when the address given is the one already set', async () => {
+        const { agent, sent } = movingSetup({ readFile: async () => EXISTING_VHOST })
+
+        const reply = replyOf(await agent.handle(configure({ domains: { live: 'acme.com' } })))
+
+        assert.equal(reply?.ok, true)
+        assert.equal(sent.length, 0)
     })
 
     // checkStructure runs first, exactly as it does for every other verb: a project the guard has marked

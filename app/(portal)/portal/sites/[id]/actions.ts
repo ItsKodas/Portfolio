@@ -233,9 +233,12 @@ export async function addDomainAction(id: string, environment: string, hostname:
 
 // The site's own address, which until now could only be given at provision time: every site enrolled by
 // hand has none, so this is the first thing the tab needs to be able to do. It goes through configure
-// rather than the domains verb, because it edits the registry entry rather than writing a vhost, and
-// hostd refuses it for an environment that already has an address: changing one rewrites the vhost and
-// invalidates verification for every hostname on it, so that stays a hand-edit on the server.
+// rather than the domains verb, because it edits the registry entry, and hostd is the one that decides
+// whether that edit also has to reach Apache.
+//
+// This one is for an environment with NO address. Moving an existing one is changePrimaryDomainAction
+// below, which is the same request behind a confirmation, because the two are nothing like as dangerous
+// as each other.
 export async function setPrimaryDomainAction(id: string, environment: string, hostname: string): Promise<SiteActionResult> {
     const name = environmentOf(environment)
     if (!name || typeof hostname !== 'string') return { ok: false, error: 'That is not something this page can do.' }
@@ -253,6 +256,40 @@ export async function setPrimaryDomainAction(id: string, environment: string, ho
     return {
         ok: true,
         message: `${wanted} is this site's address now. Nothing is served from it until this environment is adopted.`,
+    }
+}
+
+// Moving an address that already exists. The same configure request as above, and deliberately not the
+// same action: the old name stops being served, the new one starts from unverified and hostd rewrites
+// the Apache configuration behind it, so the operator names the new hostname back before any of it
+// happens. That ceremony is the whole reason this is separate.
+//
+// The confirmation is checked here and not only in the dialog. A server action is a request like any
+// other: a disabled button proves nothing about what actually arrived, and this is the one action on
+// the tab that takes a live site off its own address.
+export async function changePrimaryDomainAction(
+    id: string, environment: string, hostname: string, confirm: string,
+): Promise<SiteActionResult> {
+    const name = environmentOf(environment)
+    if (!name || typeof hostname !== 'string' || typeof confirm !== 'string') {
+        return { ok: false, error: 'That is not something this page can do.' }
+    }
+
+    const allowed = await allow(id, true)
+    if (!allowed.ok) return allowed
+
+    const wanted = hostname.trim().toLowerCase()
+    if (confirm.trim().toLowerCase() !== wanted) {
+        return { ok: false, error: 'Type the new address back exactly to confirm the change.' }
+    }
+
+    const result = await writeSettings(allowed.config, allowed.caller, id, { domains: { [name]: wanted } })
+    if (!result.ok) return refused(`change primary domain to ${wanted} on ${id}`, allowed.isAdmin, result)
+
+    revalidatePath(`/portal/sites/${id}`)
+    return {
+        ok: true,
+        message: `${wanted} is this site's address now. If hostd serves this site, its configuration has been rewritten.`,
     }
 }
 

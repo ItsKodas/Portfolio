@@ -5,7 +5,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { fireEvent, render, screen } from '@testing-library/react'
 
-const { adoptPreview } = vi.hoisted(() => ({ adoptPreview: vi.fn() }))
+const { adoptPreview, changePrimary } = vi.hoisted(() => ({ adoptPreview: vi.fn(), changePrimary: vi.fn() }))
 
 // The panel is a server component, but its controls are the client half, and importing those for real
 // drags Prisma and next/cache into a jsdom test for nothing. useRouter needs a mounted app router, which
@@ -17,6 +17,7 @@ vi.mock('./actions', () => ({
     adoptAction: async () => ({ ok: true, message: 'ok' }),
     adoptPreviewAction: (...args: unknown[]) => adoptPreview(...args),
     setPrimaryDomainAction: async () => ({ ok: true, message: 'ok' }),
+    changePrimaryDomainAction: (...args: unknown[]) => changePrimary(...args),
 }))
 vi.mock('next/navigation', () => ({ useRouter: () => ({ push: () => {}, refresh: () => {} }) }))
 
@@ -64,6 +65,7 @@ const preview = (over: Partial<AdoptPreview> = {}): AdoptPreview => ({
 beforeEach(() => {
     vi.clearAllMocks()
     adoptPreview.mockResolvedValue({ ok: true, preview: preview() })
+    changePrimary.mockResolvedValue({ ok: true, message: 'ok' })
 })
 
 describe('DomainsPanel, for the operator', () => {
@@ -130,13 +132,18 @@ describe('DomainsPanel, for the operator', () => {
     })
 
     // Every site on the dedi was enrolled by hand and has no address at all, so this is the tab's first
-    // interaction for all of them. The alias box could only ever answer "it has no domain, so it cannot
-    // have aliases", which is the dead end this replaces.
-    it('offers the address form, and not the alias form, when the environment has no primary', () => {
+    // interaction for all of them. The alias box stays on the page and is switched off: hiding it is
+    // what made the tab look as though it could do one of the two jobs and not the other.
+    it('offers the address form, and an alias form that is present but switched off, with no primary', () => {
         render(<DomainsPanel {...props} domains={[]} />)
         expect(screen.getByRole('button', { name: /set the address/i })).toBeInTheDocument()
-        expect(screen.queryByRole('button', { name: /^add$/i })).toBeNull()
-        expect(screen.queryByLabelText(/hostname/i)).toBeNull()
+        expect(screen.getByRole('button', { name: /^add$/i })).toBeDisabled()
+        expect(screen.getByLabelText(/hostname/i)).toBeDisabled()
+    })
+
+    it('says why the alias form is switched off, rather than leaving it unexplained', () => {
+        render(<DomainsPanel {...props} domains={[]} />)
+        expect(screen.getByText(/nothing to redirect to yet/i)).toBeInTheDocument()
     })
 
     it('says what setting the address does, since nothing is served from it until the site is adopted', () => {
@@ -144,12 +151,49 @@ describe('DomainsPanel, for the operator', () => {
         expect(screen.getByText(/adopted/i)).toBeInTheDocument()
     })
 
-    // Changing an address is out of scope on purpose: it rewrites the vhost and invalidates verification
-    // for every name on it, so hostd refuses it and the form is not offered a second time.
-    it('offers the alias form, and no address form, once a primary exists', () => {
+    // The operator asked for both, and one replacing the other is the whole complaint: with an address
+    // set, the tab could add names to it but never move it.
+    it('offers both the address form and the alias form once a primary exists', () => {
         render(<DomainsPanel {...props} />)
-        expect(screen.getByRole('button', { name: /^add$/i })).toBeInTheDocument()
-        expect(screen.queryByRole('button', { name: /set the address/i })).toBeNull()
+        // The alias box takes a hostname again, rather than only explaining why it cannot
+        expect(screen.getByLabelText(/hostname/i)).toBeEnabled()
+        expect(screen.getByRole('button', { name: /change the address/i })).toBeInTheDocument()
+        expect(screen.getByLabelText(/new address/i)).toBeInTheDocument()
+    })
+
+    // Moving a live site off the address it answers on. The dialog has to name what follows and take the
+    // new hostname back, the same ceremony adoption uses for the other change a live site notices.
+    it('will not change the address until the new hostname is typed back', async () => {
+        render(<DomainsPanel {...props} />)
+
+        fireEvent.change(screen.getByLabelText(/new address/i), { target: { value: 'shop.acme.com' } })
+        fireEvent.click(screen.getByRole('button', { name: /change the address/i }))
+
+        const confirm = await screen.findByLabelText(/type shop\.acme\.com to confirm/i)
+        const go = screen.getByRole('button', { name: /^change it$/i })
+        expect(go).toBeDisabled()
+
+        fireEvent.change(confirm, { target: { value: 'shop.acme.co' } })
+        expect(go).toBeDisabled()
+
+        fireEvent.change(confirm, { target: { value: 'shop.acme.com' } })
+        expect(go).toBeEnabled()
+        fireEvent.click(go)
+        expect(changePrimary).toHaveBeenCalledWith('acme', 'live', 'shop.acme.com', 'shop.acme.com')
+    })
+
+    // The four things that follow, in the operator's own words. Without them the dialog is a speed bump
+    // rather than a decision.
+    it('names what a change does before it happens', async () => {
+        render(<DomainsPanel {...props} />)
+        fireEvent.change(screen.getByLabelText(/new address/i), { target: { value: 'shop.acme.com' } })
+        fireEvent.click(screen.getByRole('button', { name: /change the address/i }))
+
+        await screen.findByLabelText(/to confirm/i)
+        expect(screen.getByText(/stops being served here/i)).toBeInTheDocument()
+        expect(screen.getByText(/starts unverified/i)).toBeInTheDocument()
+        expect(screen.getByText(/redirecting to the new address/i)).toBeInTheDocument()
+        expect(screen.getByText(/rewritten and reloaded/i)).toBeInTheDocument()
     })
 
     it('keeps the environment selector, because a domain belongs to an environment', () => {
