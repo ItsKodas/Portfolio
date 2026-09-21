@@ -343,6 +343,9 @@ describe('createSpawnRunner', () => {
     it('passes docker only a minimal environment, never process.env wholesale', async () => {
         const original = { ...process.env }
         try {
+            // GIT_TERMINAL_PROMPT is an allowlisted key the surrounding shell may legitimately set,
+            // so a test asserting the exact child environment has to control it.
+            delete process.env.GIT_TERMINAL_PROMPT
             process.env.PATH = '/usr/bin'
             process.env.HOME = '/root'
             process.env.DOCKER_HOST = 'unix:///var/run/docker.sock'
@@ -365,9 +368,12 @@ describe('createSpawnRunner', () => {
     it('omits an allowed key entirely when process.env does not set it', async () => {
         const original = { ...process.env }
         try {
+            // GIT_TERMINAL_PROMPT is an allowlisted key the surrounding shell may legitimately set,
+            // so a test asserting the exact child environment has to control it.
             delete process.env.DOCKER_HOST
             delete process.env.DOCKER_CONFIG
             delete process.env.TZ
+            delete process.env.GIT_TERMINAL_PROMPT
             process.env.PATH = '/usr/bin'
             process.env.HOME = '/root'
 
