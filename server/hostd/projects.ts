@@ -7,6 +7,8 @@ import 'server-only'
 import type { Caller } from './actor'
 import { hostdRequest, type HostdResult } from './client'
 import type { HostdConfig } from './config'
+// EnvironmentName lives beside the env file calls, which were the first thing to need it
+import type { EnvironmentName } from './env'
 
 // Matches hostd's registry id rule, so a bad id is refused before it can be interpolated into a path
 const PROJECT_ID = /^[a-z0-9][a-z0-9-]{1,30}$/
@@ -30,6 +32,22 @@ export type ProjectStatus =
     | { ok: true, services: ServiceStatus[] }
     | { ok: false, code: string, message: string }
 
+// One environment of a project, as hostd's registry holds it. The last four fields go to anyone who may
+// see the project; the first three are the operator's alone, and hostd leaves them out of a client's
+// answer entirely rather than sending them as null (hostd/src/api/routes.ts, environmentsFor), which is
+// why they are optional here rather than nullable.
+export type Environment = {
+    name: EnvironmentName
+    branch: string | null
+    domain: string | null
+    certificate: 'letsencrypt' | 'cloudflare-origin' | null
+    // The commit serving right now, null before the first deploy
+    deployed: string | null
+    dir?: string
+    composePaths?: string[]
+    port?: number
+}
+
 export type Project = {
     id: string
     // Absent for a registry entry hostd itself could not parse: those are answered with an id and a
@@ -38,6 +56,10 @@ export type Project = {
     valid: boolean
     reason?: string
     capabilities?: string[]
+    // Live first, then test. Absent only from an entry the registry itself could not parse, which is
+    // answered with an id and a reason and nothing else: there is no such thing as a valid project with
+    // no environments.
+    environments?: Environment[]
     // Present only when hostd was asked for it, and only ever on a list. Never assume it is there.
     status?: ProjectStatus
     services?: ServiceStatus[]

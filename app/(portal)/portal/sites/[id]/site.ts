@@ -7,7 +7,7 @@
 // so neither step can be used to learn that somebody else's project exists.
 
 import { forClient } from '@/server/hostd/errors'
-import type { Project, ServiceStatus } from '@/server/hostd/projects'
+import type { Environment, Project, ServiceStatus } from '@/server/hostd/projects'
 
 type Ok<T> = { ok: true, value: T }
 type Bad = { ok: false, code?: string, message?: string, problems?: string[] }
@@ -35,6 +35,10 @@ export type SiteView =
         name: string
         isAdmin: boolean
         capabilities: string[]
+        // What this project has: live alone, or live and test. hostd answers them from its registry on
+        // every listing (hostd/src/api/routes.ts, environmentsFor), so the page no longer has to assume
+        // there is exactly one and call it live.
+        environments: Environment[]
         services: ServiceStatus[]
         // Every site this caller may see, for the nav the dashboard draws. It is hostd's own listing,
         // which is already scoped to the caller, so this is never wider than what they could see there.
@@ -74,6 +78,7 @@ export async function gatherSite(deps: SiteDeps, id: string): Promise<SiteView> 
             name: id,
             isAdmin,
             capabilities: [],
+            environments: [],
             services: [],
             sites: [],
             trouble: troubleFor(isAdmin, config),
@@ -90,6 +95,7 @@ export async function gatherSite(deps: SiteDeps, id: string): Promise<SiteView> 
             name: id,
             isAdmin,
             capabilities: [],
+            environments: [],
             services: [],
             sites: [],
             trouble: troubleFor(isAdmin, projects),
@@ -111,6 +117,7 @@ export async function gatherSite(deps: SiteDeps, id: string): Promise<SiteView> 
         name: project.name ?? project.id,
         isAdmin,
         capabilities: project.capabilities ?? [],
+        environments: project.environments ?? [],
         services: status.ok ? status.value : [],
         sites: projects.value,
         trouble: status.ok ? null : troubleFor(isAdmin, status),

@@ -9,6 +9,7 @@ import { Callout } from '@/ui/Callout/Callout'
 import { Shell } from '@/ui/Shell/Shell'
 import { StatStrip } from '@/ui/StatStrip/StatStrip'
 import { StatusDot } from '@/ui/StatusDot/StatusDot'
+import { DeployPanel } from './deployPanel'
 import { EnvPanel } from './env'
 import { Lifecycle } from './lifecycle'
 import { SiteLogs } from './logs'
@@ -21,21 +22,22 @@ import styles from './site.module.css'
 export const metadata: Metadata = { title: 'Site' }
 export const dynamic = 'force-dynamic'
 
-// hostd exposes no list of a project's environments. The registry holds them (hostd/src/shared/registry.ts
-// keeps an environments map per project) but the list handler answers id, name, capabilities, valid and a
-// flat status, and a single project read answers services and nothing else. So there is exactly one
-// environment a page can name today, and this is it. When hostd starts answering them, the Overview grows
-// a second Environment panel beside the first rather than being rebuilt.
+// hostd now answers a project's environments on every listing (hostd/src/api/routes.ts, environmentsFor),
+// and the Deploys tab below uses them. The Overview's Environment panel still says live and only live: a
+// status read answers the project's containers, not one environment's, so there is nothing yet to put in
+// a second panel. That one waits for hostd to report services per environment.
 const LIVE = 'live'
 
 // Designed, and hostd implements none of them. They are shown and marked rather than left out: a missing
 // tab reads as a product that cannot do the thing, and a marked one reads as a product that will. In the
 // client's language rather than the stack's, and with no date promised, because there is not one.
 const WAITING: Record<string, { title: string, body: string }> = {
+    // Shown only when this project has no deploy capability: the tab itself works, and hostd refusing
+    // the whole thing for this site is a different sentence from the two below.
     deploys: {
-        title: 'Not here yet',
-        body: 'Deploys are designed and being built. When they arrive this is where you will see what '
-            + 'changed, and roll back if it needs it.',
+        title: 'Not set up for this site',
+        body: 'Deploys are not switched on for this site yet. When they are, this is where you will see '
+            + 'what changed, and be able to put the last version back.',
     },
     backups: {
         title: 'Not here yet',
@@ -135,13 +137,19 @@ export default async function SitePage({ params, searchParams }: Props) {
     // Neither answer is ours to give, so they are the same answer.
     if (view.kind === 'forbidden' || view.kind === 'missing') notFound()
 
+    // hostd needs the project to carry the deploy capability for any of it, reading the history included
+    const canDeploy = view.capabilities.includes('deploy')
+
     const tabs: Tab[] = [
         { id: 'overview', label: 'Overview' },
         { id: 'logs', label: 'Logs' },
         // Editing env files is the operator's alone: hostd refuses a client outright, ahead of ownership,
         // so for a client the tab is absent rather than shown and refused.
         ...(view.isAdmin ? [{ id: 'env' as const, label: 'Environment' }] : []),
-        { id: 'deploys', label: 'Deploys', disabled: true },
+        // A client may read their own site's deploys: hostd's 'deploy-read' is not among its admin-only
+        // verbs, so this tab is theirs too, showing what reached their site rather than every build.
+        // Both roles need the project to have the capability at all, which is what disables it.
+        { id: 'deploys', label: 'Deploys', disabled: !canDeploy },
         { id: 'backups', label: 'Backups', disabled: true },
         // Absent for a client rather than disabled, for the same reason Environment is: domains will be
         // the operator's to set, so promising a client a tab they will never be given is a worse lie than
@@ -153,6 +161,14 @@ export default async function SitePage({ params, searchParams }: Props) {
     // in a client's address bar lands on Overview rather than on a panel they may not have.
     const wanted = one(search.tab)
     const selected = tabs.some(tab => tab.id === wanted) ? wanted as TabId : 'overview'
+
+    // Which environment the Deploys tab is about. Checked against the ones this project actually has,
+    // so ?env=test on a project that has only live lands on live rather than asking hostd about an
+    // environment that is not there. Falls back to live when the listing could not be read at all: the
+    // panel then asks and reports hostd's own refusal, which is better than not asking.
+    const names = view.environments.map(environment => environment.name)
+    const askedFor = one(search.env)
+    const environment = names.find(name => name === askedFor) ?? names[0] ?? LIVE
 
     // What this one site is doing, taken from the single project read rather than from the listing. The
     // listing is one call for every site and can come back with nothing to say about any of them; this
@@ -232,7 +248,18 @@ export default async function SitePage({ params, searchParams }: Props) {
 
                 {selected === 'env' && <EnvPanel id={view.id} file={one(search.file)} />}
 
-                {WAITING[selected] && (
+                {selected === 'deploys' && canDeploy && (
+                    <DeployPanel
+                        id={view.id}
+                        environments={view.environments}
+                        environment={environment}
+                        enabled={canDeploy}
+                    />
+                )}
+
+                {/* Only when the tab is disabled: deploys has a panel now, and this is what stands in
+                    for a project hostd would refuse it for. */}
+                {WAITING[selected] && !(selected === 'deploys' && canDeploy) && (
                     <Callout title={WAITING[selected].title}>{WAITING[selected].body}</Callout>
                 )}
             </div>
