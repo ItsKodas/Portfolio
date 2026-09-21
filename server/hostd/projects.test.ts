@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
-import { assertOwned, lifecycle, listProjects } from './projects'
+import { assertOwned, getProject, lifecycle, listProjects } from './projects'
 
 const config = { url: 'http://hostd-api:8080', token: 'a'.repeat(32) }
 const admin = { actor: 'admin', user: 'koda@horizons.gg' }
@@ -52,6 +52,24 @@ describe('listProjects', () => {
         const result = await listProjects(config, admin, fetchImpl)
         expect(result.ok).toBe(true)
         if (result.ok) expect(result.value[0].status).toBeUndefined()
+    })
+})
+
+describe('getProject', () => {
+    it('returns the services hostd actually answers with', async () => {
+        // GET /projects/:id answers StatusReply, which is services and nothing else. It was typed as a
+        // whole Project, so name and valid could never have been read from it.
+        const services = [{ service: 'asot-web', role: 'site', state: 'running', health: null, startedAt: null, restartCount: null, image: null }]
+        const { fetchImpl, calls } = fakeFetch({ ok: true, services })
+        const result = await getProject(config, admin, 'asot', fetchImpl)
+        expect(result).toEqual({ ok: true, value: services })
+        expect(calls[0].url).toBe('http://hostd-api:8080/projects/asot')
+    })
+
+    it('refuses a project id hostd would not recognise, before asking', async () => {
+        const { fetchImpl, calls } = fakeFetch({ ok: true, services: [] })
+        expect(await getProject(config, admin, 'nope!', fetchImpl)).toEqual({ ok: false, code: 'not-found', message: 'no such project' })
+        expect(calls).toHaveLength(0)
     })
 })
 
