@@ -43,6 +43,16 @@ describe('verifyHostname', () => {
         assert.equal(result.ok, false)
     })
 
+    it('does not verify a matching token carried on a 500, since the header is not proof by itself', async () => {
+        const result = await verifyHostname(answering(500, 'abc123'), 'acme.com', 'abc123', 'https', true)
+        assert.equal(result.ok, false)
+    })
+
+    it('does not verify a matching token carried on a 302, since the header is not proof by itself', async () => {
+        const result = await verifyHostname(answering(302, 'abc123'), 'acme.com', 'abc123', 'https', true)
+        assert.equal(result.ok, false)
+    })
+
     it('asks for the token path on the scheme it was given', async () => {
         const seen: string[] = []
         const recording = (async (url: string) => {

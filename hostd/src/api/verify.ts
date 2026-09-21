@@ -75,5 +75,11 @@ export async function verifyHostname(
     const seen = response.headers.get(TOKEN_HEADER)
     if (seen === null) return { ok: false, reason: 'no token header in response', client: UNREACHABLE }
     if (seen !== token) return { ok: false, reason: `token mismatch: expected ${token}, saw ${seen}`, client: ELSEWHERE }
+    // The header is scoped to the vhost's <Location> in agent/vhost.ts, which answers a match with 204.
+    // That guarantee lives in a different process this function never reads, so it is checked again here:
+    // a matching token on a non-2xx status (an error page carrying a stale header, say) is not proof.
+    if (response.status < 200 || response.status >= 300) {
+        return { ok: false, reason: `matching token but status ${response.status}`, client: UNREACHABLE }
+    }
     return { ok: true }
 }
