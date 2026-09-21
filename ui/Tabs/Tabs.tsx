@@ -4,7 +4,10 @@ import type { KeyboardEvent } from 'react'
 
 import styles from './Tabs.module.css'
 
-type Tab = { id: string, label: string }
+// disabled means "designed, not built yet": the tab is shown, marked, and still works as a tab, because
+// its panel is where the explanation lives. It is never the `disabled` attribute, which would take the
+// button out of the focus order and put that explanation out of a keyboard's reach.
+type Tab = { id: string, label: string, disabled?: boolean }
 
 type Props = {
     tabs: Tab[]
@@ -34,9 +37,12 @@ export function Tabs({ tabs, selected, onSelect, label }: Props) {
                     role="tab"
                     id={`tab-${tab.id}`}
                     aria-selected={tab.id === selected}
+                    aria-disabled={tab.disabled ? true : undefined}
                     aria-controls={`panel-${tab.id}`}
                     tabIndex={tab.id === selected ? 0 : -1}
-                    className={[styles.tab, tab.id === selected && styles.selected].filter(Boolean).join(' ')}
+                    className={[styles.tab, tab.id === selected && styles.selected, tab.disabled && styles.waiting]
+                        .filter(Boolean)
+                        .join(' ')}
                     onClick={() => onSelect(tab.id)}
                 >
                     {tab.label}

@@ -125,6 +125,23 @@ describe('the site page', () => {
         expect(screen.getByRole('tab', { name: 'Overview' })).toHaveAttribute('aria-selected', 'true')
     })
 
+    it('shows the tabs hostd cannot serve yet, marked but still reachable', async () => {
+        render(await page())
+
+        for (const name of ['Deploys', 'Backups', 'Domains']) {
+            const tab = screen.getByRole('tab', { name })
+            expect(tab).toHaveAttribute('aria-disabled', 'true')
+            expect(tab).not.toHaveAttribute('disabled')
+        }
+    })
+
+    it('explains one of them rather than showing an empty panel', async () => {
+        render(await page({ tab: 'deploys' }))
+
+        expect(screen.getByRole('tab', { name: 'Deploys' })).toHaveAttribute('aria-selected', 'true')
+        expect(screen.getByText(/roll back if it needs it/)).toBeInTheDocument()
+    })
+
     it('says a restart count it could not read is not available, rather than zero', async () => {
         render(await page())
 

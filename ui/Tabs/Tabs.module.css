@@ -30,3 +30,13 @@
     border-bottom-color: var(--lake);
     font-weight: 600;
 }
+
+/* A tab whose thing is designed and not built yet. Dimmer, and its underline stays muted even while it is
+   the selected one, so the strip still reads as one working tab among several waiting ones. It keeps its
+   pointer and its focus ring, because it is still a tab and its panel is worth reaching. */
+.waiting { color: var(--ink-3); }
+.waiting:hover { color: var(--ink-2); }
+.waiting.selected {
+    color: var(--ink-2);
+    border-bottom-color: var(--rule-hi);
+}

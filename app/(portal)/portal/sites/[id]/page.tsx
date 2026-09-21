@@ -28,6 +28,27 @@ export const dynamic = 'force-dynamic'
 // a second Environment panel beside the first rather than being rebuilt.
 const LIVE = 'live'
 
+// Designed, and hostd implements none of them. They are shown and marked rather than left out: a missing
+// tab reads as a product that cannot do the thing, and a marked one reads as a product that will. In the
+// client's language rather than the stack's, and with no date promised, because there is not one.
+const WAITING: Record<string, { title: string, body: string }> = {
+    deploys: {
+        title: 'Not here yet',
+        body: 'Deploys are designed and being built. When they arrive this is where you will see what '
+            + 'changed, and roll back if it needs it.',
+    },
+    backups: {
+        title: 'Not here yet',
+        body: 'Your site is backed up, and this is where you will be able to see when it last happened '
+            + 'and ask for a copy. The page comes after the deploys work.',
+    },
+    domains: {
+        title: 'Not here yet',
+        body: 'Domains and certificates are set up by hand today. This is where they will be listed, with '
+            + 'what each one points at and when its certificate runs out.',
+    },
+}
+
 // A reading hostd could not take is said to be missing, never shown as zero, for the same reason the
 // dashboard says so: an unread figure and a figure that is genuinely nothing look identical once both are
 // printed as 0, and only one of them is true.
@@ -132,6 +153,12 @@ export default async function SitePage({ params, searchParams }: Props) {
         // Editing env files is the operator's alone: hostd refuses a client outright, ahead of ownership,
         // so for a client the tab is absent rather than shown and refused.
         ...(view.isAdmin ? [{ id: 'env' as const, label: 'Environment' }] : []),
+        { id: 'deploys', label: 'Deploys', disabled: true },
+        { id: 'backups', label: 'Backups', disabled: true },
+        // Absent for a client rather than disabled, for the same reason Environment is: domains will be
+        // the operator's to set, so promising a client a tab they will never be given is a worse lie than
+        // not showing it.
+        ...(view.isAdmin ? [{ id: 'domains' as const, label: 'Domains', disabled: true }] : []),
     ]
 
     // Checked against the tabs this viewer actually has, not merely against the list of names, so ?tab=env
@@ -201,6 +228,10 @@ export default async function SitePage({ params, searchParams }: Props) {
                 {selected === 'logs' && <SiteLogs id={view.id} services={view.services.map(service => service.service)} />}
 
                 {selected === 'env' && <EnvPanel id={view.id} file={one(search.file)} />}
+
+                {WAITING[selected] && (
+                    <Callout title={WAITING[selected].title}>{WAITING[selected].body}</Callout>
+                )}
             </div>
         </Shell>
     )
