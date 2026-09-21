@@ -14,6 +14,7 @@ import type { Caller } from '@/server/hostd/actor'
 import { forAdmin, forClient } from '@/server/hostd/errors'
 import { assertOwned, lifecycle } from '@/server/hostd/projects'
 import { callerFromSession } from '@/server/hostd/session'
+import { writeSettings, type SiteSettings } from '@/server/hostd/settings'
 
 export type SiteActionResult = { ok: true, message: string } | { ok: false, error: string }
 
@@ -143,6 +144,43 @@ export async function rollbackAction(id: string, environment: string): Promise<S
 
     revalidatePath(`/portal/sites/${id}`)
     return { ok: true, message: 'Rolling back. The last version that worked is going up, which takes a minute or two.' }
+}
+
+// A server action's arguments arrive off the wire like any other request body, so the SiteSettings type on
+// the one below is a claim the compiler checks and nothing else checks. This is the shape check every
+// other action here makes of its own arguments, mirroring hostd's parseConfigureArgs (which checks it
+// again, and has the last word on what a capability, a repo and a branch may actually be).
+function isSettings(value: unknown): value is SiteSettings {
+    if (typeof value !== 'object' || value === null) return false
+    const { capabilities, repo, branches, ...rest } = value as Record<string, unknown>
+    if (Object.keys(rest).length > 0) return false
+    if (capabilities !== undefined && !(Array.isArray(capabilities) && capabilities.every(one => typeof one === 'string'))) return false
+    if (repo !== undefined && repo !== null && typeof repo !== 'string') return false
+    if (branches === undefined) return true
+    if (typeof branches !== 'object' || branches === null || Array.isArray(branches)) return false
+    return Object.values(branches).every(branch => branch === null || typeof branch === 'string')
+}
+
+// Editing the registry entry is the operator's alone. hostd refuses a client outright (configure is in
+// its ADMIN_ONLY list, ahead of ownership), and this is the same rule applied a step earlier.
+export async function saveSettingsAction(id: string, settings: SiteSettings): Promise<SiteActionResult> {
+    if (!isSettings(settings)) return { ok: false, error: 'That is not something this page can do.' }
+
+    const allowed = await allow(id, true)
+    if (!allowed.ok) return allowed
+
+    const result = await writeSettings(allowed.config, allowed.caller, id, settings)
+    if (!result.ok) return refused(`settings on ${id}`, allowed.isAdmin, result)
+
+    revalidatePath(`/portal/sites/${id}`)
+    // The last sentence is about where the page reads capabilities from: api's own store, polled from
+    // hostd every ten seconds, so a tab this save has just enabled can stay disabled for a moment after
+    // the page re-reads. Said plainly here rather than left to be discovered as the tab still refusing.
+    return {
+        ok: true,
+        message: 'Saved. Nothing was started or stopped: this only changes what the site is allowed to do. '
+            + 'It takes a few seconds for the change to show on this page.',
+    }
 }
 
 export async function setBranchAction(id: string, environment: string, branch: string): Promise<SiteActionResult> {

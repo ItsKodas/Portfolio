@@ -3,13 +3,15 @@
 
 import {
     checkStructure, refuse,
-    type AgentReply, type AgentRequest, type DeployArgs, type EnvArgs, type HealthReply, type LifecycleAction,
-    type LifecycleReply, type LogLine, type LogsArgs, type ProjectStatus, type ProvisionAddEnvironmentArgs,
-    type ProvisionCreateArgs, type ProvisionRemoveArgs, type Refusal, type ServiceStatus, type StatusesReply,
+    type AgentReply, type AgentRequest, type ConfigureArgs, type DeployArgs, type EnvArgs, type HealthReply,
+    type LifecycleAction, type LifecycleReply, type LogLine, type LogsArgs, type ProjectStatus,
+    type ProvisionAddEnvironmentArgs, type ProvisionCreateArgs, type ProvisionRemoveArgs, type Refusal,
+    type ServiceStatus, type StatusesReply,
 } from '../shared/protocol.ts'
 import { environmentOf, type ProjectEntry, type Registry } from '../shared/registry.ts'
 import { describeError } from '../shared/formats.ts'
 import { deployKey, lastHealthyCommit } from '../shared/deploys.ts'
+import type { RegistryWriter } from '../shared/registry-write.ts'
 import type { SystemUsage } from '../shared/system.ts'
 import { runLifecycle, type Runner } from './compose.ts'
 import { deployTrees } from './deploy-compose.ts'
@@ -35,6 +37,15 @@ export type AgentDeps = {
     system: () => Promise<SystemUsage>
     // Re-runs the storage guard for one project: its problem, or null when it passes.
     recheck: (project: ProjectEntry) => Promise<string | null>
+    // The one writer that edits the registry, shared with provision and deploy below. Unlike those two,
+    // configure needs nothing from the fetcher socket, so it is never gated behind 'unavailable': whatever
+    // wires this agent up always has a registry path to write to. Pick<..., 'write'>, not the class itself,
+    // so a test can stand in for it with a plain object instead of a real RegistryWriter.
+    writer: Pick<RegistryWriter, 'write'>
+    // Reloads the registry from disk after a write, so the next request answers from the entry that was
+    // just written rather than one up to a poll old. Every other writer-using path does this already
+    // (set-branch below, both provisioning paths in provision.ts), through deps of its own.
+    refreshRegistry: () => Promise<void>
     followMaxMs?: number
     // Absent until the production entrypoint wires a fetcher socket and a registry path to write:
     // provision and env then refuse unavailable instead of crashing.
@@ -102,6 +113,8 @@ export class Agent {
                 return reply(await this.env(checked.project, request.args))
             case 'deploy':
                 return reply(await this.deploy(checked.project, request.args))
+            case 'configure':
+                return reply(await this.configure(checked.project, request.args))
         }
     }
 
@@ -150,6 +163,37 @@ export class Agent {
         }
 
         return runner.start(project, environment, { trigger: 'manual', actor: 'admin' })
+    }
+
+    // No capability gate, no per-field validation beyond what parseAgentRequest already did on the way
+    // in: the registry writer (via applyChange's re-parse with parseRegistry) is the one place that
+    // decides what a capability, a repo and a branch may be, so nothing here duplicates that.
+    //
+    // Reply shape: AgentReply has no bare { ok: true } member, and adding one is a trap (it has no field
+    // of its own to distinguish it, so every existing `'x' in reply` narrowing elsewhere in the test suite
+    // widens to include it and stops compiling). { ok: true, output } is the shape the codebase already
+    // uses for "nothing else to carry" (see env()'s write case and provision.ts's removeProject above).
+    private async configure(project: ProjectEntry, args: ConfigureArgs): Promise<AgentReply> {
+        const written = await this.deps.writer.write({
+            kind: 'configure',
+            id: project.id,
+            ...(args.capabilities === undefined ? {} : { capabilities: args.capabilities }),
+            ...(args.repo === undefined ? {} : { repo: args.repo }),
+            ...(args.branches === undefined ? {} : { branches: args.branches }),
+        })
+        // The writer's problem is the registry validator's own words about what the operator asked for, so
+        // it is bad-request rather than failed, exactly as the set-branch case above answers the same
+        // refusal from the same writer. failed would reach the portal as a 502 and be audited as hostd
+        // having failed, for a repo URL the validator simply would not take.
+        if (!written.ok) return refuse('bad-request', written.problem)
+        // The registry store only reloads on its own ten second timer, so without this the next request
+        // answers from the entry this write has already replaced: the capability just granted would still
+        // look absent. set-branch and both provisioning paths refresh for the same reason.
+        await this.deps.refreshRegistry()
+        // No log call here: the Agent class never logs its own verbs (lifecycle, env and deploy above do
+        // not either). server.ts's handleConnection logs every reply generically, including this one, via
+        // its own describe()/log() after handle() returns.
+        return { ok: true, output: `${project.id}'s registry entry was updated` }
     }
 
     private async health(): Promise<HealthReply> {

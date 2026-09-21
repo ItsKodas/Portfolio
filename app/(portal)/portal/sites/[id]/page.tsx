@@ -13,6 +13,7 @@ import { EnvPanel } from './env'
 import { Lifecycle } from './lifecycle'
 import { SiteLogs } from './logs'
 import { SiteDot, SiteStats } from './reading'
+import { SiteSettingsForm } from './settings'
 import { SettlingProvider } from './settling'
 import { gatherSite } from './site'
 import { SiteTabs } from './tabs'
@@ -40,6 +41,13 @@ const WAITING: Record<string, { title: string, body: string }> = {
         body: 'Deploys are not switched on for this site yet. When they are, this is where you will see '
             + 'what changed, and be able to put the last version back.',
     },
+    // Shown only when this project has no env capability: without it hostd refuses env outright, which
+    // read as broken rather than as off before this tab was disabled for it.
+    env: {
+        title: 'Not switched on for this site',
+        body: 'Environment files are not switched on for this site yet. Turn it on from this site\'s '
+            + 'Settings tab.',
+    },
     backups: {
         title: 'Not here yet',
         body: 'Your site is backed up, and this is where you will be able to see when it last happened '
@@ -57,7 +65,7 @@ const WAITING: Record<string, { title: string, body: string }> = {
 // printed as 0, and only one of them is true.
 const NOT_AVAILABLE = 'not available'
 
-type TabId = 'overview' | 'logs' | 'env' | 'deploys' | 'backups' | 'domains'
+type TabId = 'overview' | 'logs' | 'env' | 'deploys' | 'backups' | 'domains' | 'settings'
 type Tab = { id: TabId, label: string, disabled?: boolean }
 
 // A search parameter arrives as a string, a list of them, or not at all. Only the first spelling is read:
@@ -140,13 +148,17 @@ export default async function SitePage({ params, searchParams }: Props) {
 
     // hostd needs the project to carry the deploy capability for any of it, reading the history included
     const canDeploy = view.capabilities.includes('deploy')
+    // hostd refuses env outright without this capability, which is why the tab is disabled rather than
+    // simply hidden: it is the operator's own doing to switch on, from the Settings tab below.
+    const canEnv = view.capabilities.includes('env')
 
     const tabs: Tab[] = [
         { id: 'overview', label: 'Overview' },
         { id: 'logs', label: 'Logs' },
         // Editing env files is the operator's alone: hostd refuses a client outright, ahead of ownership,
-        // so for a client the tab is absent rather than shown and refused.
-        ...(view.isAdmin ? [{ id: 'env' as const, label: 'Environment' }] : []),
+        // so for a client the tab is absent rather than shown and refused. Disabled rather than absent for
+        // the operator until the project has the capability, the same as Deploys below.
+        ...(view.isAdmin ? [{ id: 'env' as const, label: 'Environment', disabled: !canEnv }] : []),
         // A client may read their own site's deploys: hostd's 'deploy-read' is not among its admin-only
         // verbs, so this tab is theirs too, showing what reached their site rather than every build.
         // Both roles need the project to have the capability at all, which is what disables it.
@@ -156,6 +168,9 @@ export default async function SitePage({ params, searchParams }: Props) {
         // the operator's to set, so promising a client a tab they will never be given is a worse lie than
         // not showing it.
         ...(view.isAdmin ? [{ id: 'domains' as const, label: 'Domains', disabled: true }] : []),
+        // What a site is allowed to do is the operator's alone to see or change, the same as Environment
+        // and Domains: absent for a client rather than disabled.
+        ...(view.isAdmin ? [{ id: 'settings' as const, label: 'Settings' }] : []),
     ]
 
     // Checked against the tabs this viewer actually has, not merely against the list of names, so ?tab=env
@@ -254,7 +269,7 @@ export default async function SitePage({ params, searchParams }: Props) {
 
                     {selected === 'logs' && <SiteLogs id={view.id} services={view.services.map(service => service.service)} />}
 
-                    {selected === 'env' && <EnvPanel id={view.id} file={one(search.file)} />}
+                    {selected === 'env' && canEnv && <EnvPanel id={view.id} file={one(search.file)} />}
 
                     {selected === 'deploys' && canDeploy && (
                         <DeployPanel
@@ -265,9 +280,31 @@ export default async function SitePage({ params, searchParams }: Props) {
                         />
                     )}
 
-                    {/* Only when the tab is disabled: deploys has a panel now, and this is what stands in
-                        for a project hostd would refuse it for. */}
-                    {WAITING[selected] && !(selected === 'deploys' && canDeploy) && (
+                    {/* Never drawn over capabilities that were not actually read: an 'unread' or 'invalid'
+                        registry entry says why instead, with no form and no Save, rather than showing eight
+                        unticked boxes over a site that may have every one of them on. */}
+                    {selected === 'settings' && (
+                        view.registryEntry === 'valid'
+                            ? (
+                                <SiteSettingsForm
+                                    id={view.id}
+                                    capabilities={view.capabilities}
+                                    repo={view.repo}
+                                    environments={view.environments}
+                                />
+                            )
+                            : (
+                                <Callout tone="warn" title="Settings are not available">
+                                    {view.registryEntry === 'invalid'
+                                        ? view.reason ?? 'hostd could not parse this site\'s registry entry.'
+                                        : view.trouble ?? 'hostd could not be reached.'}
+                                </Callout>
+                            )
+                    )}
+
+                    {/* Only when the tab is disabled: deploys and env have panels now, and this is what
+                        stands in for a project hostd would refuse either verb for. */}
+                    {WAITING[selected] && !(selected === 'deploys' && canDeploy) && !(selected === 'env' && canEnv) && (
                         <Callout title={WAITING[selected].title}>{WAITING[selected].body}</Callout>
                     )}
                     </div>
