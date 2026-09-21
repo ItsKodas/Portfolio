@@ -5,7 +5,7 @@ import type { IncomingMessage, ServerResponse } from 'node:http'
 import { PROJECT_ID, CLIENT_ID, SERVICE_NAME, isRecord, describeError } from '../shared/formats.ts'
 import {
     LIFECYCLE_ACTIONS, MAX_TAIL, DEFAULT_TAIL, MAX_REQUEST_BYTES, MAX_COMMITS, DEFAULT_COMMITS,
-    parseConfigureArgs,
+    SNAPSHOT_ID, RUN_ID, parseConfigureArgs,
     type AgentReply, type AgentRequest, type LifecycleAction, type LogsArgs, type ProjectStatus, type Refusal,
     type RefusalCode, type ProvisionCreateArgs, type ProvisionAddEnvironmentArgs,
 } from '../shared/protocol.ts'
@@ -14,6 +14,7 @@ import {
     type CertificateMode, type EnvironmentEntry, type EnvironmentName, type ProjectEntry, type Registry,
 } from '../shared/registry.ts'
 import { envPathProblem } from '../shared/envfiles.ts'
+import { parseSchedule } from '../shared/backups.ts'
 import { normaliseHostname } from '../shared/hostnames.ts'
 import { authenticate, actorLabel, type Actor, type Caller } from './auth.ts'
 import { authorize, visibleProjects, type PolicyVerb } from './policy.ts'
@@ -22,6 +23,7 @@ import { MAX_AUDIT_READ, type AuditLog, type AuditOutcome } from './audit.ts'
 import { domainKey, newRecord, type DomainRecord } from './domain-state.ts'
 import { newToken } from './verify.ts'
 import { sseEvent, SSE_KEEPALIVE } from './sse.ts'
+import type { ScheduleStore } from './schedule.ts'
 
 // The slice of DomainStore the routes use, and the one method they want off the Verifier. Structural
 // rather than the classes themselves, for the same reason verifier.ts's RecordStore is: a test hands
@@ -50,6 +52,7 @@ export type ApiDeps = {
     verifier: DomainVerifier
     now?: () => number
     keepaliveMs?: number
+    schedules?: ScheduleStore
 }
 
 export type Route =
@@ -73,6 +76,12 @@ export type Route =
     | { verb: 'branch', project: string, environment: EnvironmentName }
     | { verb: 'deploys', project: string, environment: EnvironmentName }
     | { verb: 'commits', project: string, environment: EnvironmentName }
+    | { verb: 'backups', project: string }
+    | { verb: 'backup-run', project: string }
+    | { verb: 'backup-run-status', project: string, run: string }
+    | { verb: 'backup-delete', project: string, snapshot: string }
+    | { verb: 'backup-download', project: string, snapshot: string }
+    | { verb: 'backup-schedule', project: string, write: boolean }
     | { verb: 'domains-list', project: string, environment: EnvironmentName }
     | { verb: 'domain-add', project: string, environment: EnvironmentName }
     | { verb: 'domain-remove', project: string, environment: EnvironmentName, hostname: string }
@@ -126,6 +135,11 @@ export function matchRoute(method: string, pathname: string): Route {
         if (segment === 'logs') return only('GET', { verb: 'logs', project })
         if (segment === 'audit') return only('GET', { verb: 'audit', project })
         if (segment === 'environments') return only('POST', { verb: 'add-environment', project })
+        if (segment === 'backups') {
+            if (method === 'GET') return { verb: 'backups', project }
+            if (method === 'POST') return { verb: 'backup-run', project }
+            return { verb: 'method-not-allowed' }
+        }
         if (segment === 'settings') return only('PUT', { verb: 'settings', project })
         // Project level, not under an environment: repo is a project-level field and both environments
         // draw from the one list.
@@ -138,6 +152,30 @@ export function matchRoute(method: string, pathname: string): Route {
         const environment = parts[3] ?? ''
         if (!(ENVIRONMENTS as readonly string[]).includes(environment)) return { verb: 'not-found' }
         return only('DELETE', { verb: 'remove-environment', project, environment: environment as EnvironmentName })
+    }
+
+    if (segment === 'backups') {
+        const next = parts[3] ?? ''
+        if (parts.length === 4) {
+            // Named before the hex check below, so a snapshot can never be called 'schedule'.
+            if (next === 'schedule') {
+                if (method === 'GET') return { verb: 'backup-schedule', project, write: false }
+                if (method === 'PUT') return { verb: 'backup-schedule', project, write: true }
+                return { verb: 'method-not-allowed' }
+            }
+            if (!SNAPSHOT_ID.test(next)) return { verb: 'not-found' }
+            return only('DELETE', { verb: 'backup-delete', project, snapshot: next })
+        }
+        if (parts.length === 5) {
+            if (next === 'runs') {
+                const run = parts[4] ?? ''
+                if (!RUN_ID.test(run)) return { verb: 'not-found' }
+                return only('GET', { verb: 'backup-run-status', project, run })
+            }
+            if (!SNAPSHOT_ID.test(next) || parts[4] !== 'download') return { verb: 'not-found' }
+            return only('GET', { verb: 'backup-download', project, snapshot: next })
+        }
+        return { verb: 'not-found' }
     }
 
     // Everything under one environment: the deploy actions, and /env with a path inside it.
@@ -511,7 +549,9 @@ export function createHandler(deps: ApiDeps): (req: IncomingMessage, res: Server
         // Only runs on the ok path, and only after the audit: a refusal must never refresh (nothing
         // changed), and the write already happened, so a refresh failure is logged and swallowed rather
         // than turned into an error response for a save that in fact succeeded.
-        const respondAgentAction = async (verb: 'provision' | 'env' | 'deploy' | 'configure', reply: AgentReply, project: string, target: string, refreshRegistry: boolean) => {
+        // backup is false for the same reason env is: a backup run or delete changes the repository on
+        // the backup disk, never the registry file.
+        const respondAgentAction = async (verb: 'provision' | 'env' | 'deploy' | 'backup' | 'configure', reply: AgentReply, project: string, target: string, refreshRegistry: boolean) => {
             if (reply.ok) {
                 await audit(who, { project, verb, target, outcome: 'ok' })
                 if (refreshRegistry) {
@@ -1236,6 +1276,142 @@ export function createHandler(deps: ApiDeps): (req: IncomingMessage, res: Server
                     res.end()
                 }
                 return
+            }
+
+            case 'backups': {
+                if (!(await decide(route.project, 'backup-read', null))) return
+                const reply = await callAgent({ verb: 'backup', project: route.project, args: { action: 'list' } })
+                if (!reply) return
+                if (!reply.ok) return refuseRoute(AGENT_STATUS[reply.code], reply.code, reply.message, route.project, 'backup')
+                return sendJson(res, 200, reply)
+            }
+
+            case 'backup-run': {
+                const target = 'run'
+                const entry = await authorizeProject(route.project, 'backup', target)
+                if (!entry) return
+                const reply = await callAgentAudited(
+                    // The actor's kind, never the user: it labels the run in the history the portal draws
+                    // for the client, so their own backups are not all recorded as the operator's. The
+                    // agent makes no decision on it (see BackupRunArgs), and which user it was stays in
+                    // the audit entry this route writes.
+                    { verb: 'backup', project: route.project, args: { action: 'run', tag: 'manual', actor: caller.actor.kind } },
+                    route.project, 'backup', target,
+                )
+                if (!reply) return
+                if (reply.ok) {
+                    await audit(who, { project: route.project, verb: 'backup', target, outcome: 'ok' })
+                    // Answered as soon as the run has started, not once it finishes: a backup takes
+                    // minutes and api's own call timeout is 150 seconds. The outcome lands in the history
+                    // the portal polls through GET .../backups/runs/:run.
+                    return sendJson(res, 202, { ok: true, run: 'started' in reply && 'run' in reply.started ? reply.started.run : '' })
+                }
+                const outcome: AuditOutcome = reply.code === 'failed' ? 'failed' : 'refused'
+                await audit(who, { project: route.project, verb: 'backup', target, outcome, reason: outcome === 'failed' ? reply.message : reply.code })
+                return sendJson(res, AGENT_STATUS[reply.code], reply)
+            }
+
+            case 'backup-run-status': {
+                if (!(await decide(route.project, 'backup-read', route.run))) return
+                const reply = await callAgent({ verb: 'backup', project: route.project, args: { action: 'get-run', run: route.run } })
+                if (!reply) return
+                if (!reply.ok) return refuseRoute(AGENT_STATUS[reply.code], reply.code, reply.message, route.project, 'backup', route.run)
+                return sendJson(res, 200, reply)
+            }
+
+            case 'backup-delete': {
+                const target = route.snapshot
+                const entry = await authorizeProject(route.project, 'backup', target)
+                if (!entry) return
+                const reply = await callAgentAudited(
+                    { verb: 'backup', project: route.project, args: { action: 'delete', snapshot: route.snapshot } },
+                    route.project, 'backup', target,
+                )
+                if (!reply) return
+                return respondAgentAction('backup', reply, route.project, target, false)
+            }
+
+            case 'backup-download': {
+                const target = route.snapshot
+                // `backup`, not `backup-read`, as the design's Endpoints section puts it: downloading is
+                // the one operation that moves an entire database off the dedi, and it is already audited
+                // as a mutation. Both verbs map to the same capability today, so this changes nothing
+                // until a read-only role exists, which is exactly when getting it wrong would bite.
+                if (!(await decide(route.project, 'backup', target))) return
+
+                let stream: Awaited<ReturnType<AgentClient['download']>>
+                try {
+                    stream = await deps.agent.download({ verb: 'backup', project: route.project, args: { action: 'download', snapshot: route.snapshot } })
+                } catch (error) {
+                    if (!(error instanceof AgentUnavailableError)) throw error
+                    await audit(who, { project: route.project, verb: 'backup', target, outcome: 'failed', reason: error.message })
+                    return sendJson(res, 503, { ok: false, code: 'agent-unavailable', message: error.message })
+                }
+                if (!stream.ok) return refuseRoute(AGENT_STATUS[stream.code], stream.code, stream.message, route.project, 'backup', target)
+                // A download is a read of the client's own data, but it is audited like a mutation: it is
+                // the one read in this file that moves the client's actual backup bytes off the dedi.
+                await audit(who, { project: route.project, verb: 'backup', target, outcome: 'ok' })
+
+                res.writeHead(200, {
+                    'content-type': 'application/gzip',
+                    // The client sees a file named for their site and the day they took it, never a
+                    // snapshot id or a path on the dedi.
+                    'content-disposition': `attachment; filename="${route.project}-${new Date().toISOString().slice(0, 10)}.tar.gz"`,
+                    'cache-control': 'no-store',
+                })
+                const downloadStream = stream
+                const stop = () => downloadStream.close()
+                res.on('close', stop)
+                let failure: string | null = null
+                try {
+                    for await (const chunk of downloadStream.body) {
+                        if (!res.write(chunk)) await waitForDrain(res)
+                        if (res.destroyed) break
+                    }
+                } catch (error) {
+                    failure = describeError(error)
+                    // The client already left (res.destroyed) is not a failure worth a log line; a dead
+                    // agent connection or socket reset mid-transfer is.
+                    if (!res.destroyed) console.error(`[api] ${new Date().toISOString()} backup download for ${route.project} failed: ${failure}`)
+                } finally {
+                    res.off('close', stop)
+                    downloadStream.close()
+                    // A truncated archive must never look like a complete one. Ending the response
+                    // cleanly here would tell the client the download succeeded, and they would only
+                    // find out at restore time. Destroying it instead leaves the chunked encoding
+                    // incomplete, which every HTTP client reports as a failed transfer rather than a
+                    // short but valid file. Destroying an already-destroyed response is harmless.
+                    if (failure !== null) res.destroy()
+                    else res.end()
+                }
+                // The entry above records the authorization decision, which was made before a byte moved;
+                // without this one a download that broke mid-transfer would read back as a clean success,
+                // so the operator's own record would agree with the truncated archive rather than expose
+                // it. The reason is the transport's own message: the client's bytes never appear in it.
+                if (failure !== null) await audit(who, { project: route.project, verb: 'backup', target, outcome: 'failed', reason: failure })
+                return
+            }
+
+            case 'backup-schedule': {
+                if (!deps.schedules) {
+                    return refuseRoute(503, 'unavailable', 'backup schedules are not configured', route.project, 'backup', 'schedule')
+                }
+                const target = 'schedule'
+                const entry = await authorizeProject(route.project, route.write ? 'backup' : 'backup-read', target)
+                if (!entry) return
+                if (!route.write) return sendJson(res, 200, { ok: true, schedule: deps.schedules.get(route.project) })
+
+                const body = await readJsonBody(req, MAX_REQUEST_BYTES)
+                if (!body.ok) return refuseRoute(400, 'bad-request', body.message, route.project, 'backup', target)
+                // The ceiling is the operator's, from the registry, so a client can ask for less than it
+                // and never more. Clamped rather than refused, and the reply says what it settled on, so
+                // the portal can show the clamped values rather than pretending the request was honoured.
+                const parsed = parseSchedule(body.value, entry.backups.maxKeep)
+                if (!parsed.ok) return refuseRoute(400, 'bad-request', parsed.problem, route.project, 'backup', target)
+
+                await deps.schedules.set(route.project, parsed.schedule)
+                await audit(who, { project: route.project, verb: 'backup', target, outcome: 'ok' })
+                return sendJson(res, 200, { ok: true, schedule: parsed.schedule })
             }
         }
     }

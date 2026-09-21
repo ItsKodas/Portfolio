@@ -9,6 +9,7 @@ import { buildStatus, writeStatus } from '../shared/status.ts'
 import { describeError } from '../shared/formats.ts'
 import { createAgentClient, socketConnect } from './agent-client.ts'
 import { AuditLog } from './audit.ts'
+import { ScheduleStore } from './schedule.ts'
 import { DomainStore, type DomainRecord } from './domain-state.ts'
 import { Verifier, type VerifyTarget } from './verifier.ts'
 import { createHandler } from './routes.ts'
@@ -22,6 +23,9 @@ const PORT = 8080
 const POLL_MS = 10_000
 const AGENT_CHECK_MS = 60_000
 const PRUNE_MS = 24 * 60 * 60_000
+// One minute, as the design says: often enough that a due schedule starts promptly, cheap enough to poll
+// forever.
+const SCHEDULE_TICK_MS = 60_000
 const MIN_TOKEN_LENGTH = 32
 const BOOT_BACKOFF_MS = [5_000, 10_000, 20_000, 40_000]
 
@@ -62,10 +66,10 @@ async function main(): Promise<void> {
     if (failures.length > 0) fail(failures)
 
     // A short timeout for health checks, so a wedged agent is reported promptly.
-    const agent = createAgentClient(socketConnect(AGENT_SOCKET), { callTimeoutMs: 15_000 })
+    const healthAgent = createAgentClient(socketConnect(AGENT_SOCKET), { callTimeoutMs: 15_000 })
     const agentAnswers = async () => {
         try {
-            await agent.call({ verb: 'health' })
+            await healthAgent.call({ verb: 'health' })
             return true
         } catch {
             return false
@@ -88,6 +92,9 @@ async function main(): Promise<void> {
         log(`WARN audit prune failed at boot: ${describeError(error)}`)
     }
 
+    const schedules = new ScheduleStore(join(STATE_DIR, 'schedules.json'), undefined, log)
+    await schedules.load()
+
     // Domain state is api's own, and it is reconciled against the registry before the first request:
     // every hostname the registry names has a record from here on, whether or not this process has ever
     // written a vhost for it.
@@ -102,14 +109,18 @@ async function main(): Promise<void> {
     verifier.start()
 
     // Lifecycle calls get the full timeout; only the health probe above uses the short one.
+    const agent = createAgentClient(socketConnect(AGENT_SOCKET))
     const handler = createHandler({
         token: TOKEN,
         registry: () => store.current(),
         // Lets a route that just carried out a write catch the store up before it answers, instead of
         // waiting for this same refresh to come round on the poll below, up to POLL_MS later.
         refreshRegistry: () => store.refresh(),
-        agent: createAgentClient(socketConnect(AGENT_SOCKET)),
+        // The hoisted client above, not a second one: the backup schedule tick at the foot of this file
+        // calls the agent too, and both must share one connection path.
+        agent,
         audit,
+        schedules,
         domains,
         verifier,
     })
@@ -132,9 +143,10 @@ async function main(): Promise<void> {
     let agentWarning: string | null = null
     let lastAgentCheck = Date.now()
     let lastPrune = Date.now()
+    let lastTick = Date.now()
     let lastWarnings = ''
     for (;;) {
-        const warnings = [...store.warnings(), ...audit.warnings(), ...(agentWarning ? [agentWarning] : [])]
+        const warnings = [...store.warnings(), ...audit.warnings(), ...schedules.warnings(), ...(agentWarning ? [agentWarning] : [])]
         if (warnings.join('\n') !== lastWarnings) {
             for (const warning of warnings) log(`WARN ${warning}`)
             if (warnings.length === 0 && lastWarnings !== '') log('all warnings cleared')
@@ -173,6 +185,55 @@ async function main(): Promise<void> {
                 log(`WARN audit prune failed: ${describeError(error)}`)
             }
             lastPrune = Date.now()
+        }
+        // One minute, as the design says. A slot that fell due while api was down is caught by isDue
+        // comparing against the last run rather than against the tick, so this also covers startup.
+        if (Date.now() - lastTick >= SCHEDULE_TICK_MS) {
+            lastTick = Date.now()
+            try {
+                const registry = store.current()
+                // due() only ever considers a project in the schedules map with a mode other than off, so
+                // asking about the rest cannot change the outcome and would only spawn a restic snapshots
+                // subprocess a minute for nothing.
+                const candidates = [...registry.projects.values()]
+                    .filter(project => project.capabilities.has('backups') && schedules.get(project.id).mode !== 'off')
+                const lastRuns = new Map<string, number | null>()
+                const unreadable = new Set<string>()
+                for (const project of candidates) {
+                    // Isolated per project: a stuck restic lock or a slow snapshots listing on one large
+                    // repository must not abandon every other project's schedule for the rest of the tick.
+                    try {
+                        const reply = await agent.call({ verb: 'backup', project: project.id, args: { action: 'list' } })
+                        const newest = reply.ok && 'runs' in reply ? reply.runs[0] : undefined
+                        lastRuns.set(project.id, newest ? Date.parse(newest.startedAt) : null)
+                    } catch (error) {
+                        // One project the agent cannot describe must not stop the others being considered, and
+                        // must not be treated as never-run: the grace window would then start a run on
+                        // unknown history, duplicating a backup that had in fact just succeeded.
+                        unreadable.add(project.id)
+                        log(`WARN could not read ${project.id}'s backup history: ${describeError(error)}`)
+                    }
+                }
+                for (const { id, schedule } of schedules.due(registry, projectId => lastRuns.get(projectId) ?? null, Date.now())) {
+                    if (unreadable.has(id)) continue
+                    // Isolated per project, like the list loop above: starting one project's backup calls
+                    // restic.snapshots(repo) again inside the agent, the same slow call this can time out
+                    // on, and that must not cost every project ordered behind it its slot for this tick.
+                    try {
+                        const started = await agent.call({ verb: 'backup', project: id, args: { action: 'run', tag: 'scheduled', keep: schedule.keep } })
+                        // A refusal here is ordinary: another backup may hold the dedi-wide lock, and the next
+                        // tick tries again because the slot is still unsatisfied.
+                        if (!started.ok) log(`scheduled backup for ${id} was not started: ${started.message}`)
+                        else log(`scheduled backup for ${id} started`)
+                    } catch (error) {
+                        log(`WARN scheduled backup for ${id} could not be started: ${describeError(error)}`)
+                    }
+                }
+            } catch (error) {
+                // Last resort: the loop above now isolates every per-project failure itself, so this guards
+                // only the tick's own bookkeeping, such as store.current() throwing.
+                log(`WARN the backup schedule tick failed: ${describeError(error)}`)
+            }
         }
     }
 }

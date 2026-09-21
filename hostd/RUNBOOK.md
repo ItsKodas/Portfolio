@@ -431,6 +431,300 @@ environment's own folder name, so a repo whose compose file pins `name:` still g
 rather than taking over live's containers. Lifecycle (`start`, `stop`, `restart`) still only ever reaches
 `live`.
 
+## Backups
+
+Only `hostd-agent` ever touches a backup: it holds the Docker socket, restic and sqlite3, and the bind
+mount at `/backups`. Only a project's `live` environment is backed up, the same rule deploys and lifecycle
+follow, because there is no per-environment lifecycle yet.
+
+### Setting backups up
+
+1. Create the backup directory on the host, or point `HOSTD_BACKUP_DIR` at whichever disk you actually
+   want backups written to before the first `docker compose up`:
+
+   ```bash
+   sudo mkdir -p /srv/backups/hostd
+   ```
+
+2. Create `hostd/.env.agent` from `hostd/example.env.agent`, and generate the password on the dedi:
+
+   ```bash
+   openssl rand -hex 32
+   ```
+
+   Paste it in as `RESTIC_PASSWORD`. **Before you do anything else, copy that value somewhere that is not
+   the dedi:** a password manager, a note kept on another machine, anything off this box. Every backup
+   repository is encrypted with this one value and nothing else. Without your copy, every repository is
+   unreadable, and a lost dedi is exactly the situation backups exist for: you would have kept the backups
+   and lost the only key to them.
+
+3. Install `restic` on the dedi itself too, not only in the agent image, while things are calm. An
+   ordinary restore never needs this (see **Restoring** below: `docker exec hostd-agent restic` already
+   works, because the agent image carries its own copy), but the day `hostd` itself is down, or the dedi
+   is being rebuilt, there is no agent container to exec into, and the bind mount at `/backups` exists
+   for exactly that day: it lets restic on the bare host reach the repository files directly off
+   `/srv/backups/hostd`, with no Docker involved at all. Install it now so it is already there when it is
+   needed (`apt-get install restic` on Debian/Ubuntu, or a static binary from restic's own releases).
+
+4. Bring the agent up (or recreate it) so it picks up the new mount and env file:
+
+   ```bash
+   cd hostd
+   docker compose up -d --build agent
+   ```
+
+5. Check that the image actually has both tools the agent needs, rather than assuming the Alpine packages
+   provide what the code shells out to:
+
+   ```bash
+   docker compose exec agent restic version
+   docker compose exec agent sqlite3 --version
+   ```
+
+   Both should print a version. If either command is missing, the image needs rebuilding
+   (`docker compose build agent`) before any backup, or any sqlite-backed project's backup, can run.
+
+6. Turn backups on for a project by adding `backups` to its `capabilities:` in `registry/projects.yaml`,
+   then wait ten seconds for the reload:
+
+   ```yaml
+   capabilities: [lifecycle, logs, backups]
+   ```
+
+   That alone is enough for manual backups. To schedule them too, `PUT` a schedule: `mode` is `daily` or
+   `weekly`, `hour`/`minute`/`weekday` are read in Brisbane time, and `keep` is how many scheduled
+   snapshots to hold at each level (the operator's own ceiling in the registry clamps whatever a client
+   asks for; a manual snapshot is never touched by retention, only the client deleting it removes one):
+
+   ```bash
+   hc -X PUT http://hostd-api:8080/projects/acme-bakery/backups/schedule \
+     -H 'Content-Type: application/json' \
+     -d '{"mode":"daily","hour":2,"minute":0,"weekday":0,"keep":{"daily":7,"weekly":4,"monthly":3}}'
+   ```
+
+   A manual backup, any time, capability allowing:
+
+   ```bash
+   hc -X POST http://hostd-api:8080/projects/acme-bakery/backups
+   ```
+
+   That call answers as soon as the run has started, the same as a deploy. Read the run back with the
+   `run` id it returns:
+
+   ```bash
+   hc http://hostd-api:8080/projects/acme-bakery/backups/runs/<run>
+   ```
+
+### What is and is not backed up
+
+Every run of a `backups`-capable project captures, from its `live` environment only:
+
+- Each database service's own dump (see the restore table below for exactly how each engine's is taken).
+- Every `storage` directory the project declares, whatever its `mode`. A `hidden` directory is backed up
+  exactly like a `rw` one; `hidden` only ever means the file API never shows it.
+
+It does **not** capture the `test` environment, the compose file or its overrides, `.env`, `.env.agent`,
+`.env.fetcher`, the site's source tree, or any directory the project has not declared under `storage`.
+
+**Backups are local to this dedi until the offsite phase lands.** They live on this machine's own disk,
+under `/srv/backups/hostd` (or wherever `HOSTD_BACKUP_DIR` points). A dedi that is lost, destroyed or has
+its disk fail loses every backup on it, exactly the way it loses everything else under `/var/www`. Nothing
+built so far protects against that. Only the offsite copy, not built in this phase, will.
+
+### Restoring
+
+This is deliberately a runbook procedure, not a portal button. A restore overwrites a live database with
+an old one; a control that can do that from one click in a tired 3am moment is a worse design than a
+procedure that costs ten minutes and forces you to look at what you are about to overwrite before you do
+it.
+
+There are two ways to run the restic commands below, and which one applies depends on whether `hostd`
+itself is up:
+
+- **Ordinary case, `hostd` is healthy and only a client's site is broken.** Use `docker exec hostd-agent
+  restic ...`. The agent image already carries restic and `RESTIC_PASSWORD`, and the repository is already
+  mounted inside it at `/backups`. Nothing extra to install; this is what you will do almost every time.
+- **The case the bind mount exists for: `hostd` itself is down, or the dedi is being rebuilt, so there is
+  no agent container to exec into.** Use `restic` on the bare host instead, pointed at
+  `/srv/backups/hostd/<id>` directly, with no Docker involved. This only works if you installed `restic`
+  on the dedi ahead of time (see **Setting backups up**, step 3) and can get `RESTIC_PASSWORD` from
+  somewhere: `hostd/.env.agent` on the dedi if it survived, or your own off-dedi copy if it did not.
+
+Both reach the same repository and produce the same result; only how you reach it differs. The steps below
+show both, in the order you would try them: `docker exec` first, the host fallback under it.
+
+1. **Find the snapshot.** Each project has its own repository, named by its id.
+
+   Ordinary case:
+
+   ```bash
+   docker exec hostd-agent restic -r /backups/acme-bakery snapshots
+   ```
+
+   Fallback, `hostd` is down: the repository is root-owned (the agent container writes it as root), so
+   read and restore commands need `sudo`, and `sudo` does not carry your own shell's exported variables
+   into the command it runs unless you pass them through explicitly:
+
+   ```bash
+   export RESTIC_PASSWORD=$(grep ^RESTIC_PASSWORD= hostd/.env.agent | cut -d= -f2)
+   sudo env RESTIC_PASSWORD="$RESTIC_PASSWORD" restic -r /srv/backups/hostd/acme-bakery snapshots
+   ```
+
+   Either way, note the short id of the snapshot you want. `tags` says `manual` or `scheduled`; `time` is
+   when it was taken.
+
+2. **Restore it to a staging path, never straight over the live tree.**
+
+   Ordinary case, restoring inside the agent container (its `/backups` is the same bind mount as the
+   host's `/srv/backups/hostd`, so the result appears at the same place on the host either way):
+
+   ```bash
+   docker exec hostd-agent restic -r /backups/acme-bakery restore \
+     <snapshot-id> --target /backups/restore/acme-bakery
+   ```
+
+   Fallback, `hostd` is down:
+
+   ```bash
+   sudo env RESTIC_PASSWORD="$RESTIC_PASSWORD" restic -r /srv/backups/hostd/acme-bakery restore \
+     <snapshot-id> --target /srv/backups/hostd/restore/acme-bakery
+   ```
+
+   Either way, the restored copy lands on the host at `/srv/backups/hostd/restore/acme-bakery/...`. restic
+   recreates the absolute paths it captured, and it captured them from the agent container's own point of
+   view. A database dump lands under
+   `/srv/backups/hostd/restore/acme-bakery/backups/.staging/acme-bakery/<run>/db/<service>/<file>`
+   (`<run>` is whichever run produced that snapshot; the snapshot's own `paths` field, or just `ls` the
+   restored `db/` directory, will show it). Each `storage` directory lands at its real host path, for
+   example `/srv/backups/hostd/restore/acme-bakery/var/www/acme-bakery/live/uploads/`, because `/var/www`
+   is the same bind mount on the host and in every container.
+
+   The rest of this procedure is the same either way, and runs on the host regardless of which route you
+   used above.
+
+3. **Stop the site:**
+
+   ```bash
+   cd /var/www/acme-bakery/live
+   sudo docker compose stop
+   ```
+
+4. **Put the storage directories back**, from the restored copy over the live one, for every directory the
+   project declares under `storage`, not only the one you think changed:
+
+   ```bash
+   sudo rsync -a --delete \
+     /srv/backups/hostd/restore/acme-bakery/var/www/acme-bakery/live/uploads/ \
+     /var/www/acme-bakery/live/uploads/
+   ```
+
+5. **Load the database dump, with that engine's own tool.** What restic captured, and how to put it back,
+   depend on the engine. Verified against `src/agent/backup-dumps.ts`:
+
+   | engine | file in the snapshot | produced by | restore with |
+   | --- | --- | --- | --- |
+   | postgres | `dump.sql` | `pg_dumpall` | `psql` reading that file |
+   | mysql / mariadb | `dump.sql` | `mysqldump` / `mariadb-dump --all-databases` | `mysql` / `mariadb` reading that file |
+   | mongodb | `dump.archive.gz` | `mongodump --archive --gzip` | `mongorestore --archive --gzip` |
+   | sqlite | `dump.db` | `sqlite3 .backup` | copy the file back into place |
+   | redis | `dump.rdb` | `redis-cli --rdb` | stop the service, put the rdb where the image expects it, start |
+   | generic | a copied data directory | stop, copy, start | stop the service, copy it back, start |
+
+   `SERVICE` below is that database's own name, exactly as it appears under the project's `services:` in
+   the registry (`db` in every worked example elsewhere in this runbook, but genuinely the operator's own
+   to substitute: `backup-run.ts` writes each dump to `db/<service>/`, not to a fixed name, so the path is
+   only right once `SERVICE` names the real service). The dump files under `$DUMP` are root-owned too, so
+   reading one is `sudo cat` first, same reason `RESTIC_PASSWORD` above needed `sudo env`: a plain
+   `< file` redirection, or a bare `$VAR`, runs in your own shell before `sudo` (or `docker compose exec`)
+   ever starts, so it either hits the same permission error the raw `restic` call would, or, for a
+   variable the *container* sets (`$POSTGRES_USER` and the like), expands to nothing because your shell
+   has never heard of it. Every variable below that belongs to the database's own container is kept inside
+   the single-quoted `sh -c '...'` for exactly that reason; only `SERVICE` and `DUMP`, which belong to you,
+   are expanded outside it.
+
+   ```bash
+   SERVICE=<service>   # replace with this project's own database service name
+   DUMP=/srv/backups/hostd/restore/acme-bakery/backups/.staging/acme-bakery/<run>/db/$SERVICE
+   ```
+
+   `psql`, `mysql`/`mariadb` and `mongorestore` all talk to a running server, so bring just that one
+   database service back up first (the site's other services can stay down; nothing else needs to be
+   writing to it yet). Each command below reads its credentials from the same variable names
+   `backup-dumps.ts` used to take the dump; if this project's registry entry overrides any of them with
+   `dump.userEnv` or `dump.passwordEnv`, replace the name shown with the one the registry gives instead,
+   in that same command, or the restore reads a variable the container never set:
+
+   ```bash
+   sudo docker compose start "$SERVICE"
+
+   # postgres: reads the user from $POSTGRES_USER by default. If this project's registry entry sets
+   # dump.userEnv, replace POSTGRES_USER below with that name. $POSTGRES_USER is the container's own, so
+   # it stays inside sh -c:
+   sudo cat "$DUMP/dump.sql" | sudo docker compose exec -T "$SERVICE" sh -c 'psql -U "$POSTGRES_USER"'
+
+   # mysql (mariadb: swap mysql for mariadb, and MYSQL_ROOT_PASSWORD for MARIADB_ROOT_PASSWORD): reads
+   # the password from that variable and connects as root by default. If this project's registry entry
+   # sets dump.passwordEnv, replace MYSQL_ROOT_PASSWORD below with that name; if it sets dump.userEnv,
+   # replace "-u root" with -u "$<that name>" the same way:
+   sudo cat "$DUMP/dump.sql" | sudo docker compose exec -T "$SERVICE" sh -c 'MYSQL_PWD="$MYSQL_ROOT_PASSWORD" mysql -u root'
+
+   # mongodb (the ${VAR:+...} expands only when the image actually sets credentials, same as the dump
+   # did): reads MONGO_INITDB_ROOT_USERNAME and MONGO_INITDB_ROOT_PASSWORD by default. If this project's
+   # registry entry sets dump.userEnv or dump.passwordEnv, replace those two names below with the ones it
+   # gives instead:
+   sudo cat "$DUMP/dump.archive.gz" | sudo docker compose exec -T "$SERVICE" sh -c \
+     'mongorestore --archive --gzip ${MONGO_INITDB_ROOT_USERNAME:+-u "$MONGO_INITDB_ROOT_USERNAME" -p "$MONGO_INITDB_ROOT_PASSWORD" --authenticationDatabase admin}'
+   ```
+
+   sqlite, redis and generic are filesystem copies instead, and never need their service started first;
+   `docker cp` and a plain file copy both work against a stopped container. They still read `$SERVICE` and
+   `$DUMP` from just above, so set those first even if you skip the block above. Neither redis nor generic
+   reads a `dump.userEnv` or `dump.passwordEnv` at all (redis's own dump needs no login, and generic just
+   stops, copies and starts), so nothing in either command below is registry-configurable, and sqlite has
+   no credential to begin with:
+
+   ```bash
+   # sqlite: copy the file to the path named by that service's file: in the registry, under the live
+   # environment's directory.
+   sudo cp "$DUMP/dump.db" /var/www/acme-bakery/live/<the service's file: path>
+
+   # redis: the official image reads /data/dump.rdb by default; check the site's own redis command or
+   # config if it sets `dir` or `dbfilename` to something else. Compose names the container
+   # <project>-<service>-<index>, so this follows $SERVICE too, not a fixed name:
+   sudo docker cp "$DUMP/dump.rdb" "acme-bakery-$SERVICE-1:/data/dump.rdb"
+
+   # generic: db/<service>/data/ holds one directory per bind mount the service had, named for that
+   # mount's own directory name; copy each one back to where it was mounted from.
+   sudo rsync -a --delete "$DUMP/data/<mount-name>/" <the original bind mount source>/
+   ```
+
+6. **Start the site:**
+
+   ```bash
+   sudo docker compose start
+   ```
+
+### The generic engine
+
+An engine with no real dump method falls back to `generic`: the agent stops that one database service,
+copies its bind-mounted data directory, and starts it again, every single time it is backed up, whether
+manual or scheduled. The record says `disruptive: true` so the portal can show that this backup briefly
+took the database down. Writing a real dump method for a new engine (a command that reads a live database
+without stopping it, the way postgres, mysql, mariadb, mongodb and redis already do) is worth doing before
+a project on that engine gets much traffic, since a project with `generic` and a schedule stops its own
+database on a timer.
+
+### When a backup is refused
+
+| Refusal | What to do |
+| --- | --- |
+| `the backup disk has less than 10% free` | Free space on `/srv/backups/hostd` (or wherever `HOSTD_BACKUP_DIR` points): delete manual snapshots you no longer need (below), and know that deleting a scheduled one only reclaims space once the weekly prune runs. |
+| `there are already five manual backups; delete one before taking another` | `hc -X DELETE http://hostd-api:8080/projects/<id>/backups/<snapshot>` on one you no longer need, then try again. |
+| `a manual backup was taken less than 10 minutes ago; wait before taking another` | Wait; it clears itself ten minutes after the last manual run started. |
+| `another backup is running; only one runs on the dedi at a time` | Wait for it to finish. Only one backup runs across the whole dedi at once, on purpose, so a scheduled sweep across many projects can never saturate the disk together. |
+| `<id> already has a backup running` | The same project's own backup is still running; read its run status instead of starting another. |
+| `<id> is deploying; a backup waits until that has finished` | A deploy renames the directory storage lives under, so a backup started mid-swap would walk a tree that is moving. Wait for the deploy to finish (or fail) and try again. |
+
 ## What is deliberately not automatic
 
 - **The first start waits for the operator.** `create` registers a project with no capabilities at all and
@@ -787,6 +1081,7 @@ shows them.
 | `FATAL ... is not a file (was projects.yaml created before the first docker compose up?)` | Something other than a file sits at `registry/projects.yaml`, most likely a directory Docker created because the file did not exist before the first `docker compose up`. Remove it, create the file, start again. |
 | `registry reload rejected ... has been replaced on the host` | The registry's bind mount is detached, from an older deployment that mounted the file itself. See **Editing the registry**. |
 | `FATAL HOSTD_API_TOKEN must be at least 32 characters` | `.env` is missing, or the token is empty or too short. |
+| `FATAL RESTIC_PASSWORD is not set` (agent) | `.env.agent` is missing, or it is the unfilled copy of `example.env.agent`. Fill it in (and keep a copy off the dedi), then start again. Without it every backup would fail at `restic init`. |
 | `FATAL the agent is not answering on /run/hostd/agent.sock` (api) | The agent is not running or failed its own gate. Read `docker compose logs agent`. |
 | `503` with `"code":"agent-unavailable"` | The same, after startup. |
 | A project is `"valid":false` with `compose resolves the project name ...` | See step 1 of Enrolling a real site. |

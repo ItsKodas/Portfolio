@@ -8,12 +8,17 @@ import type { Actor } from './auth.ts'
 // is the deploy history and the commit list, which a client may read for their own site: both need the
 // project's deploy capability, and the split lives here because only api knows who is asking.
 //
+// 'backup' and 'backup-read' both let the owning client act on and read their own backups. Unlike deploy,
+// which is admin-only, a client's backups belong to them: they keep them until they delete them, and choose
+// the schedule. The split exists so the audit log distinguishes reading from acting, not to gate one behind admin.
+//
 // 'domains' and 'domains-read' split the same way and for the same reason. Adding, removing, adopting
 // and re-checking a hostname all change what Apache serves, so they are the operator's; reading the
 // list is how a client watches their own DNS land, so that half is theirs. Re-checking is in the admin
 // half rather than the read one because it writes the record it checks.
 export type PolicyVerb =
     | 'status' | 'lifecycle' | 'logs' | 'audit' | 'provision' | 'env' | 'deploy' | 'deploy-read'
+    | 'backup' | 'backup-read'
     | 'domains' | 'domains-read' | 'configure'
 
 // Deliberately its own table rather than protocol.ts's VERB_CAPABILITY: that one is keyed by the agent's
@@ -27,6 +32,8 @@ const POLICY_CAPABILITY: Record<PolicyVerb, Capability | null> = {
     env: 'env',
     deploy: 'deploy',
     'deploy-read': 'deploy',
+    backup: 'backups',
+    'backup-read': 'backups',
     domains: 'domains',
     'domains-read': 'domains',
     // Null on purpose: gating the verb that edits capabilities on a capability would mean a project with

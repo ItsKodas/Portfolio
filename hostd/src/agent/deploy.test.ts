@@ -148,6 +148,7 @@ function setup(options: SetupOptions = {}) {
             }
         },
         logs: async () => { throw new Error('logs are not used by a deploy') },
+        exec: async () => ({ exitCode: 0, stderr: '' }),
     }
 
     const runner: Runner = async (_command, args) => {

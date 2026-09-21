@@ -175,7 +175,13 @@ One request per connection. The request is a single JSON line:
 ```
 
 The reply is either one JSON line (`{ "ok": true, ... }` or `{ "ok": false, "code": "...", "message": "..." }`)
-or, for streaming verbs, one JSON header line followed by raw bytes until the connection closes.
+or, for streaming verbs, one JSON header line (`{ "ok": true, "stream": true }`) followed by the stream
+itself. A log stream is one JSON line per log line, ended by the connection closing. A download body is
+framed: each frame is a decimal byte count, a newline, then exactly that many bytes, and the body ends with
+a `0\n` terminator the agent writes only once its source has exited cleanly. The terminator, not the close,
+is what says a download is whole: a Unix stream socket closing carries no failure information, so without
+it a truncated archive would arrive looking exactly like a complete one. EOF before the terminator is an
+error. A refusal header (`{ "ok": false, ... }`) is still the whole reply, with no body after it.
 
 Verbs: `status`, `lifecycle`, `logs`, `fs.list`, `fs.read`, `fs.write`, `fs.mkdir`, `fs.move`, `fs.delete`,
 `backup.run`, `backup.list`, `backup.delete`, `backup.download`, `vhost.write`, `vhost.status`, `health`.

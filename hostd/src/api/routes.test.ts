@@ -12,6 +12,7 @@ import { createHandler, matchRoute, parseLogsQuery, RAIL_STALE_MS } from './rout
 import { ApacheRail, type RailFs } from '../agent/apache-rail.ts'
 import { AuditLog } from './audit.ts'
 import { AgentUnavailableError, type AgentClient } from './agent-client.ts'
+import { ScheduleStore, type ScheduleFs } from './schedule.ts'
 import { DomainStore, domainKey, newRecord, type DomainRecord } from './domain-state.ts'
 import { parseRegistry } from '../shared/registry.ts'
 import { DOMAIN_TOKEN, type AgentReply, type AgentRequest, type LogLine } from '../shared/protocol.ts'
@@ -25,7 +26,7 @@ projects:
     name: Acme
     repo: git@github.com:acme/site.git
     services: { web: { role: site } }
-    capabilities: [lifecycle, logs, provision, env, deploy, domains]
+    capabilities: [lifecycle, logs, provision, env, deploy, backups, domains]
     environments:
       live: { dir: /var/www/acme, port: 5010, branch: main, domain: acme.example, aliases: [www.acme.example], certificate: letsencrypt, deployed: abc1234 }
       test: { dir: /var/www/acme-test, port: 5013, branch: develop, domain: test.acme.example }
@@ -86,8 +87,28 @@ function fakeAgent() {
             calls.push(request)
             return { ok: true, lines: (async function* () { yield logLine })(), close() {} }
         },
+        async download(request) {
+            calls.push(request)
+            return { ok: true, body: (async function* () { yield Buffer.from('bytes') })(), close() {} }
+        },
     }
     return agent
+}
+
+// An in-memory ScheduleFs, the same shape schedule.test.ts builds, so the schedule store here never
+// touches a real disk.
+function scheduleFs(): ScheduleFs {
+    const store = new Map<string, string>()
+    return {
+        readFile: async path => {
+            const text = store.get(path)
+            if (text === undefined) throw new Error('ENOENT')
+            return text
+        },
+        writeFile: async (path, text) => { store.set(path, text) },
+        rename: async (from, to) => { store.set(to, store.get(from)!); store.delete(from) },
+        mkdir: async () => {},
+    }
 }
 
 // The real DomainStore over a file that only ever exists in memory: the class is what the routes are
@@ -133,6 +154,7 @@ let base = ''
 let dir = ''
 let audit: AuditLog
 let agent: ReturnType<typeof fakeAgent>
+let schedules: ScheduleStore
 let domains: DomainStore
 let verifier: ReturnType<typeof fakeVerifier>
 
@@ -153,11 +175,13 @@ let handler: ReturnType<typeof createHandler>
 beforeEach(async () => {
     audit = new AuditLog(join(dir, `audit-${Math.random().toString(36).slice(2)}`))
     agent = fakeAgent()
+    schedules = new ScheduleStore('/state/schedules.json', scheduleFs())
+    await schedules.load()
     domains = memoryDomains()
     verifier = fakeVerifier(() => domains)
     handler = createHandler({
         token: TOKEN, registry: () => registry, refreshRegistry: async () => false,
-        agent, audit, domains, verifier, keepaliveMs: 60_000,
+        agent, audit, schedules, domains, verifier, keepaliveMs: 60_000,
     })
 })
 
@@ -290,7 +314,7 @@ describe('GET /projects', () => {
             ok: true,
             projects: [
                 {
-                    id: 'acme', name: 'Acme', capabilities: ['lifecycle', 'logs', 'provision', 'env', 'deploy', 'domains'],
+                    id: 'acme', name: 'Acme', capabilities: ['lifecycle', 'logs', 'provision', 'env', 'deploy', 'backups', 'domains'],
                     valid: false, reason: 'guard says no', environments: acmeEnvironmentsForClient,
                 },
                 { id: 'quiet', name: 'Quiet', capabilities: [], valid: true, environments: quietEnvironmentsForClient },
@@ -313,7 +337,7 @@ describe('GET /projects', () => {
         assert.deepEqual(agent.calls, [{ verb: 'health' }, { verb: 'statuses', projects: ['acme', 'quiet'] }])
         assert.deepEqual(body.projects, [
             {
-                id: 'acme', name: 'Acme', capabilities: ['lifecycle', 'logs', 'provision', 'env', 'deploy', 'domains'],
+                id: 'acme', name: 'Acme', capabilities: ['lifecycle', 'logs', 'provision', 'env', 'deploy', 'backups', 'domains'],
                 valid: false, reason: 'guard says no', environments: acmeEnvironmentsForClient, status: { ok: true, services: [] },
             },
             { id: 'quiet', name: 'Quiet', capabilities: [], valid: true, environments: quietEnvironmentsForClient, status: { ok: true, services: [] } },
@@ -1485,5 +1509,233 @@ describe('provisioning and env routes refuse a client actor', () => {
         const events = await audit.read({ limit: attempts.length })
         assert.equal(events.length, attempts.length)
         assert.ok(events.every(event => event.outcome === 'refused' && event.reason === 'not-found'))
+    })
+})
+
+describe('matchRoute for backups', () => {
+    it('matches every backup path', () => {
+        assert.deepEqual(matchRoute('GET', '/projects/acme/backups'), { verb: 'backups', project: 'acme' })
+        assert.deepEqual(matchRoute('POST', '/projects/acme/backups'), { verb: 'backup-run', project: 'acme' })
+        assert.deepEqual(matchRoute('GET', '/projects/acme/backups/runs/a1b2c3d4'), { verb: 'backup-run-status', project: 'acme', run: 'a1b2c3d4' })
+        assert.deepEqual(matchRoute('DELETE', '/projects/acme/backups/deadbeef'), { verb: 'backup-delete', project: 'acme', snapshot: 'deadbeef' })
+        assert.deepEqual(matchRoute('GET', '/projects/acme/backups/deadbeef/download'), { verb: 'backup-download', project: 'acme', snapshot: 'deadbeef' })
+        assert.deepEqual(matchRoute('GET', '/projects/acme/backups/schedule'), { verb: 'backup-schedule', project: 'acme', write: false })
+        assert.deepEqual(matchRoute('PUT', '/projects/acme/backups/schedule'), { verb: 'backup-schedule', project: 'acme', write: true })
+    })
+
+    it('does not mistake schedule or runs for a snapshot id', () => {
+        assert.deepEqual(matchRoute('DELETE', '/projects/acme/backups/schedule'), { verb: 'method-not-allowed' })
+        assert.deepEqual(matchRoute('DELETE', '/projects/acme/backups/not-hex'), { verb: 'not-found' })
+        assert.deepEqual(matchRoute('GET', '/projects/acme/backups/runs/not-hex'), { verb: 'not-found' })
+        assert.deepEqual(matchRoute('GET', '/projects/acme/backups/deadbeef/nope'), { verb: 'not-found' })
+        assert.deepEqual(matchRoute('POST', '/projects/acme/backups/schedule'), { verb: 'method-not-allowed' })
+    })
+})
+
+describe('the backup endpoints', () => {
+    it('answers 202 with the run id when a run starts, and audits it', async () => {
+        agent.reply = () => ({ ok: true, started: { run: 'a1b2c3d4', tag: 'manual' } })
+        const response = await request('/projects/acme/backups', { method: 'POST' })
+        assert.equal(response.status, 202)
+        assert.deepEqual(await response.json(), { ok: true, run: 'a1b2c3d4' })
+        // The actor's kind travels with the run, so the client's own backup is recorded as theirs in the
+        // history the portal draws for them rather than as the operator's. Which user it was stays here,
+        // in the audit entry, and never reaches the agent.
+        assert.deepEqual(agent.calls, [{ verb: 'backup', project: 'acme', args: { action: 'run', tag: 'manual', actor: 'client' } }])
+        const [entry] = await audit.read({ limit: 1 })
+        assert.deepEqual([entry?.verb, entry?.target, entry?.outcome], ['backup', 'run', 'ok'])
+    })
+
+    it('sends admin as the actor when the operator starts the run', async () => {
+        agent.reply = () => ({ ok: true, started: { run: 'a1b2c3d4', tag: 'manual' } })
+        await request('/projects/acme/backups', { method: 'POST', actor: 'admin' })
+        assert.deepEqual(agent.calls, [{ verb: 'backup', project: 'acme', args: { action: 'run', tag: 'manual', actor: 'admin' } }])
+    })
+
+    it('passes a refused run through with its status, audited as refused', async () => {
+        agent.reply = () => ({ ok: false, code: 'busy', message: 'acme already has a backup running' })
+        const response = await request('/projects/acme/backups', { method: 'POST' })
+        assert.equal(response.status, 409)
+        const [entry] = await audit.read({ limit: 1 })
+        assert.deepEqual([entry?.verb, entry?.outcome, entry?.reason], ['backup', 'refused', 'busy'])
+    })
+
+    it('lists a project\'s backups without auditing a plain read', async () => {
+        agent.reply = () => ({ ok: true, snapshots: [], runs: [], running: false })
+        const response = await request('/projects/acme/backups')
+        assert.equal(response.status, 200)
+        assert.deepEqual(await response.json(), { ok: true, snapshots: [], runs: [], running: false })
+        assert.deepEqual(agent.calls, [{ verb: 'backup', project: 'acme', args: { action: 'list' } }])
+        assert.deepEqual(await audit.read({ limit: 10 }), [])
+    })
+
+    it('answers a run\'s status without auditing a plain read', async () => {
+        agent.reply = () => ({ ok: true, run: null, running: false })
+        const response = await request('/projects/acme/backups/runs/a1b2c3d4')
+        assert.equal(response.status, 200)
+        assert.deepEqual(await response.json(), { ok: true, run: null, running: false })
+        assert.deepEqual(agent.calls, [{ verb: 'backup', project: 'acme', args: { action: 'get-run', run: 'a1b2c3d4' } }])
+        assert.deepEqual(await audit.read({ limit: 10 }), [])
+    })
+
+    it('deletes a snapshot through the agent and audits it', async () => {
+        agent.reply = () => ({ ok: true, output: 'backup deadbeef deleted' })
+        const response = await request('/projects/acme/backups/deadbeef', { method: 'DELETE' })
+        assert.equal(response.status, 200)
+        assert.deepEqual(agent.calls, [{ verb: 'backup', project: 'acme', args: { action: 'delete', snapshot: 'deadbeef' } }])
+        const [entry] = await audit.read({ limit: 1 })
+        assert.deepEqual([entry?.verb, entry?.target, entry?.outcome], ['backup', 'deadbeef', 'ok'])
+    })
+
+    it('streams a download with a filename naming the project and the date, and audits it', async () => {
+        const response = await request('/projects/acme/backups/deadbeef/download')
+        assert.equal(response.status, 200)
+        assert.equal(response.headers.get('content-type'), 'application/gzip')
+        assert.match(response.headers.get('content-disposition') ?? '', /attachment; filename="acme-\d{4}-\d{2}-\d{2}\.tar\.gz"/)
+        assert.equal(await response.text(), 'bytes')
+        assert.deepEqual(agent.calls, [{ verb: 'backup', project: 'acme', args: { action: 'download', snapshot: 'deadbeef' } }])
+        // A download is a read of the client's own data, but it is audited exactly like a mutation: it
+        // is the one read here that moves the client's actual backup bytes off the dedi.
+        const [entry] = await audit.read({ limit: 1 })
+        assert.deepEqual([entry?.verb, entry?.target, entry?.outcome], ['backup', 'deadbeef', 'ok'])
+    })
+
+    it('passes a download refusal through as JSON without streaming', async () => {
+        agent.download = async agentRequest => {
+            agent.calls.push(agentRequest)
+            return { ok: false, code: 'bad-request', message: 'no backup deadbeef for acme' }
+        }
+        const response = await request('/projects/acme/backups/deadbeef/download')
+        assert.equal(response.status, 400)
+        assert.deepEqual(await response.json(), { ok: false, code: 'bad-request', message: 'no backup deadbeef for acme' })
+    })
+
+    // The headers are already on the wire by the time a mid-stream failure happens, so the only way to
+    // tell the client anything is real broke is to leave the chunked response incomplete rather than
+    // end it cleanly: a clean end reads as a short but valid file, which is only caught at restore time.
+    it('destroys the response rather than ending it when the download fails mid-stream, so a truncated archive is never reported as complete', async () => {
+        agent.download = async agentRequest => {
+            agent.calls.push(agentRequest)
+            return {
+                ok: true,
+                body: (async function* () {
+                    yield Buffer.from('partial bytes')
+                    throw new Error('the agent connection failed: socket reset')
+                })(),
+                close() {},
+            }
+        }
+        // The status line and headers were already sent before the failure, so status alone would pass
+        // whether the transfer completed or not; what actually distinguishes a truncated transfer is
+        // that the client never gets to read a complete body. undici's fetch tears the whole request
+        // promise down for this one (a destroyed socket before the response is framed as complete), but
+        // either that or a Response whose .text() rejects would prove the same thing, so both are
+        // covered here.
+        await assert.rejects(async () => {
+            const response = await request('/projects/acme/backups/deadbeef/download')
+            await response.text()
+        })
+
+        // And the operator's own record must not say otherwise. The entry written before the transfer
+        // records the authorization decision, which really was ok; without a second entry the audit log
+        // would agree with the truncated archive that the download succeeded, and the one place the
+        // failure could still be seen after the fact would be gone.
+        const entries = await audit.read({ limit: 10 })
+        const [failure] = entries
+        assert.deepEqual([failure?.verb, failure?.target, failure?.outcome], ['backup', 'deadbeef', 'failed'])
+        assert.match(failure?.reason ?? '', /socket reset/)
+        assert.deepEqual(entries.map(entry => entry.outcome), ['failed', 'ok'])
+    })
+
+    it('leaves no failure entry and delivers every byte when the download completes', async () => {
+        // The other side of the same audit: a download that finishes must not gain a failure entry, or
+        // the log stops meaning anything.
+        const response = await request('/projects/acme/backups/deadbeef/download')
+        assert.equal(response.status, 200)
+        assert.equal(await response.text(), 'bytes')
+        assert.deepEqual((await audit.read({ limit: 10 })).map(entry => entry.outcome), ['ok'])
+    })
+
+    it('reads the default schedule without asking the agent or auditing a plain read', async () => {
+        const response = await request('/projects/acme/backups/schedule')
+        assert.equal(response.status, 200)
+        assert.equal((await response.json() as { schedule: { mode: string } }).schedule.mode, 'off')
+        assert.deepEqual(agent.calls, [])
+        assert.deepEqual(await audit.read({ limit: 10 }), [])
+    })
+
+    it('clamps a written schedule to the project ceiling and gives it back, and audits the write', async () => {
+        const response = await request('/projects/acme/backups/schedule', {
+            method: 'PUT',
+            body: { mode: 'daily', hour: 2, minute: 0, weekday: 0, keep: { daily: 999, weekly: 1, monthly: 1 } },
+        })
+        assert.equal(response.status, 200)
+        const body = await response.json() as { schedule: { keep: { daily: number } } }
+        assert.equal(body.schedule.keep.daily, 14)
+        assert.equal(schedules.get('acme').keep.daily, 14)
+        assert.deepEqual(agent.calls, [])
+        const [entry] = await audit.read({ limit: 1 })
+        assert.deepEqual([entry?.verb, entry?.target, entry?.outcome], ['backup', 'schedule', 'ok'])
+    })
+
+    it('refuses a schedule that is not one, without touching the store', async () => {
+        const response = await request('/projects/acme/backups/schedule', { method: 'PUT', body: { mode: 'hourly' } })
+        assert.equal(response.status, 400)
+        assert.equal(schedules.get('acme').mode, 'off')
+    })
+
+    it('refuses backups for a project without the capability', async () => {
+        const response = await request('/projects/quiet/backups')
+        assert.equal(response.status, 403)
+        assert.deepEqual(agent.calls, [])
+    })
+
+    it('refuses another client\'s backups with a 404, same as any other project route', async () => {
+        const response = await request('/projects/other/backups')
+        assert.equal(response.status, 404)
+        assert.deepEqual(agent.calls, [])
+    })
+
+    // One representative test per distinct shape among the six endpoints besides the plain list above:
+    // a write that reaches the agent, the streaming/audited-read download, and the one write that never
+    // reaches the agent at all. Each checks that the refusal happened before anything downstream did.
+    it('refuses starting a run for another client\'s project, without ever reaching the agent', async () => {
+        const response = await request('/projects/other/backups', { method: 'POST' })
+        assert.equal(response.status, 404)
+        assert.deepEqual(agent.calls, [])
+    })
+
+    it('refuses a download for a project without the capability, before streaming anything', async () => {
+        const response = await request('/projects/quiet/backups/deadbeef/download')
+        assert.equal(response.status, 403)
+        assert.deepEqual(agent.calls, [])
+        assert.doesNotMatch(response.headers.get('content-type') ?? '', /gzip/)
+    })
+
+    it('refuses a schedule write for another client\'s project, without touching the store', async () => {
+        const response = await request('/projects/other/backups/schedule', {
+            method: 'PUT',
+            body: { mode: 'daily', hour: 2, minute: 0, weekday: 0, keep: { daily: 1, weekly: 1, monthly: 1 } },
+        })
+        assert.equal(response.status, 404)
+        assert.equal(schedules.get('other').mode, 'off')
+    })
+
+    it('answers 503 for a schedule request when no schedule store is configured', async () => {
+        // Swaps the shared server's handler for one built without schedules, rather than standing up a
+        // second server just for this one case.
+        const original = handler
+        // schedules is the one dep deliberately left out, which is what this case is about; the rest are
+        // required by ApiDeps and are passed exactly as beforeEach passes them.
+        handler = createHandler({
+            token: TOKEN, registry: () => registry, refreshRegistry: async () => false,
+            agent, audit, domains, verifier,
+        })
+        try {
+            const response = await request('/projects/acme/backups/schedule')
+            assert.equal(response.status, 503)
+        } finally {
+            handler = original
+        }
     })
 })

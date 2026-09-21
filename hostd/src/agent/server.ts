@@ -1,9 +1,12 @@
 // One request per connection on the agent's Unix socket: read a single JSON line, dispatch it, and write
-// either one JSON line or a header line followed by one JSON line per log line. Every verb the agent
-// executes is logged to stdout, a record api cannot reach or rewrite.
+// either one JSON line, or a header line followed by one JSON line per log line, or a header line followed
+// by a framed body. Every verb the agent executes is logged to stdout, a record api cannot reach or
+// rewrite.
 
 import type { Duplex, Readable } from 'node:stream'
-import { parseAgentRequest, refuse, MAX_REQUEST_BYTES, type AgentRequest } from '../shared/protocol.ts'
+import {
+    parseAgentRequest, refuse, BODY_TERMINATOR, MAX_BODY_FRAME_BYTES, MAX_REQUEST_BYTES, type AgentRequest,
+} from '../shared/protocol.ts'
 import { describeError } from '../shared/formats.ts'
 import type { Outcome } from './agent.ts'
 
@@ -64,6 +67,7 @@ function describe(request: AgentRequest): string {
         // The branch is safe to name (it is a plain branch name, already validated) and is the one thing
         // that makes a set-branch line worth reading.
         case 'deploy': return `deploy ${request.args.action} ${request.project} ${request.args.environment}${request.args.action === 'set-branch' ? ` ${request.args.branch}` : ''}`
+        case 'backup': return `backup ${request.args.action} ${request.project}`
         // Never the token or the alias list here, for the same reason env write never logs text.
         case 'domains': return `domains ${request.args.action} ${request.project} ${request.args.environment}`
         // Never the values themselves: a capability list, a repo URL or a branch name changing is exactly
@@ -142,6 +146,56 @@ export async function handleConnection(socket: Duplex, agent: AgentHandler, log:
         stopWatching()
         log(`${what} ${outcome.reply.ok ? 'ok' : outcome.reply.code}`)
         socket.end(lineOf(outcome.reply))
+        return
+    }
+
+    if (outcome.kind === 'bytes') {
+        const bytes = outcome
+        if (gone) {
+            stopWatching()
+            log(`${what} download abandoned before it started`)
+            bytes.close()
+            return
+        }
+        log(`${what} downloading`)
+        let closed = false
+        const abort = () => { closed = true; bytes.close() }
+        stopWatching()
+        socket.once('end', abort)
+        socket.once('close', abort)
+        try {
+            if (!socket.write(lineOf({ ok: true, stream: true }))) await waitForDrain(socket)
+            for await (const chunk of bytes.body) {
+                if (closed) break
+                // Each frame is a decimal byte count on its own line, then exactly that many bytes. A
+                // zero-length chunk is skipped rather than framed: `0\n` is the terminator, and an empty
+                // chunk carries nothing anyway. Oversize chunks are split so no frame can exceed the cap
+                // the reader enforces.
+                for (let offset = 0; offset < chunk.length; offset += MAX_BODY_FRAME_BYTES) {
+                    if (closed) break
+                    const frame = chunk.subarray(offset, offset + MAX_BODY_FRAME_BYTES)
+                    if (!socket.write(`${frame.length}\n`)) await waitForDrain(socket)
+                    if (closed) break
+                    if (!socket.write(frame)) await waitForDrain(socket)
+                }
+            }
+            // The one positive statement that the body is whole. It is written here and nowhere else, so
+            // it can only reach the wire after the body iterator returned normally, which for a download
+            // means restic dump exited zero. A throw skips it, and the reader treats EOF without it as a
+            // truncated download rather than a short archive it would hand the client as complete.
+            if (!closed) {
+                if (!socket.write(BODY_TERMINATOR)) await waitForDrain(socket)
+                socket.end()
+            }
+        } catch (error) {
+            log(`${what} download failed: ${describeError(error)}`)
+            socket.destroy()
+        } finally {
+            socket.off('end', abort)
+            socket.off('close', abort)
+            bytes.close()
+            log(`${what} download ended`)
+        }
         return
     }
 

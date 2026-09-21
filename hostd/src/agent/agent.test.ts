@@ -11,8 +11,11 @@ import { parseRegistry, type ProjectEntry, type Registry } from '../shared/regis
 import { emptyDeploys, type DeployRecord, type EnvironmentDeploys } from '../shared/deploys.ts'
 import type { Change } from '../shared/registry-write.ts'
 import type { FetchReply, FetchRequest } from '../shared/fetch-protocol.ts'
-import type { AgentRequest, ConfigureArgs, DeployArgs, LogLine } from '../shared/protocol.ts'
+import type { AgentRequest, BackupArgs, ConfigureArgs, DeployArgs, LogLine } from '../shared/protocol.ts'
 import type { SystemUsage } from '../shared/system.ts'
+import { emptyBackups, type BackupRecord, type Snapshot } from '../shared/backups.ts'
+import type { BackupRequest } from './backup-run.ts'
+import type { Restic } from './restic.ts'
 
 const registry = parseRegistry(`
 projects:
@@ -23,7 +26,7 @@ projects:
     dir: /var/www/acme
     upstream: 127.0.0.1:5010
     services: { web: { role: site }, db: { role: database, engine: postgres } }
-    capabilities: [lifecycle, logs, provision, env]
+    capabilities: [lifecycle, logs, provision, env, backups]
   quiet:
     client: cl_1
     name: Quiet
@@ -97,6 +100,7 @@ function setup(options: SetupOptions = {}) {
             logStreams.push(stream)
             return stream
         },
+        exec: async () => ({ exitCode: 0, stderr: '' }),
     }
     const deps: AgentDeps = {
         registry: () => registry,
@@ -246,6 +250,51 @@ describe('status and health', () => {
         // The whole point of change 2: a machine at 97% memory, a load of 19 and a full disk is still
         // healthy as far as hostd is concerned. These are figures to draw, not checks.
         assert.deepEqual(reply.warnings, [])
+    })
+
+    it('warns when the backup disk is nearly full', async () => {
+        const { backups } = backupsWiring({ snapshots: [], disk: { path: '/backups', totalBytes: 1000, usedBytes: 950, freeBytes: 50 } })
+        const { agent } = setup({ backups })
+        const outcome = await agent.handle({ verb: 'health' })
+        const reply = replyOf(outcome)
+        const warnings = reply && reply.ok && 'warnings' in reply ? reply.warnings : []
+        assert.ok(warnings.some((warning: string) => /backup disk has less than 10% free/.test(warning)))
+    })
+
+    it('warns once per project whose newest scheduled backup failed', async () => {
+        const { backups } = backupsWiring({ snapshots: [], failures: ['acme: the newest scheduled backup failed: the dump failed'] })
+        const { agent } = setup({ backups })
+        const outcome = await agent.handle({ verb: 'health' })
+        const reply = replyOf(outcome)
+        const warnings = reply && reply.ok && 'warnings' in reply ? reply.warnings : []
+        assert.ok(warnings.includes('acme: the newest scheduled backup failed: the dump failed'))
+    })
+
+    it('says nothing about backups when they are not configured', async () => {
+        const { agent } = setup()
+        const outcome = await agent.handle({ verb: 'health' })
+        const reply = replyOf(outcome)
+        const warnings = reply && reply.ok && 'warnings' in reply ? reply.warnings : []
+        assert.equal(warnings.some((warning: string) => /backup/.test(warning)), false)
+    })
+
+    it('stays healthy when backupDisk throws, and warns with the error', async () => {
+        const { backups } = backupsWiring({ snapshots: [], diskError: new Error('the statfs syscall failed') })
+        const { agent } = setup({ backups })
+        const outcome = await agent.handle({ verb: 'health' })
+        const reply = replyOf(outcome)
+        assert.ok(reply && reply.ok, 'health should still be ok: true')
+        const warnings = reply && reply.ok && 'warnings' in reply ? reply.warnings : []
+        assert.ok(warnings.some((warning: string) => /the backup disk could not be read/.test(warning)))
+    })
+
+    it('warns when backupDisk returns null', async () => {
+        const { backups } = backupsWiring({ snapshots: [], disk: null })
+        const { agent } = setup({ backups })
+        const outcome = await agent.handle({ verb: 'health' })
+        const reply = replyOf(outcome)
+        const warnings = reply && reply.ok && 'warnings' in reply ? reply.warnings : []
+        assert.ok(warnings.some((warning: string) => /the backup disk could not be read/.test(warning)))
     })
 })
 
@@ -754,6 +803,202 @@ describe('the deploy verb', () => {
         const reply = replyOf(await agent.handle(deploy({ action: 'set-branch', environment: 'live', branch: 'develop' })))
         assert.equal(reply?.ok === false && reply.code, 'bad-request')
         assert.deepEqual(context.started, [])
+    })
+})
+
+// Only what the backup verb itself touches: the runner is a recorder, the store answers a fixed history,
+// and restic's snapshots list is what stands in for the project's own repository. dump returns a
+// PassThrough carrying whatever `dump.chunks` says, then the exit code `dump.exitCode` says: the real
+// StreamHandle's two halves, and the only way to drive a dump that dies partway.
+function backupsWiring(options: {
+    snapshots?: Snapshot[], runs?: BackupRecord[], running?: boolean, disk?: any, diskError?: Error, failures?: string[],
+    dump?: { chunks?: string[], exitCode?: number, stderr?: string },
+} = {}) {
+    const started: Array<{ id: string, request: BackupRequest }> = []
+    const restic: Restic = {
+        init: async () => ({ ok: true }),
+        backup: async () => ({ ok: true, snapshot: 'deadbeef', sizeBytes: null }),
+        snapshots: async () => ({ ok: true, snapshots: options.snapshots ?? [] }),
+        forget: async () => ({ ok: true }),
+        retention: async () => ({ ok: true }),
+        prune: async () => ({ ok: true }),
+        dump: () => {
+            const stdout = new PassThrough()
+            for (const chunk of options.dump?.chunks ?? []) stdout.write(chunk)
+            stdout.end()
+            return { stdout, exit: Promise.resolve({ exitCode: options.dump?.exitCode ?? 0, stderr: options.dump?.stderr ?? '' }) }
+        },
+    }
+    const backups = {
+        runner: {
+            start: (project: ProjectEntry, request: BackupRequest) => {
+                started.push({ id: project.id, request })
+                return { ok: true as const, started: { run: 'run1', tag: 'manual' as const } }
+            },
+            isRunning: () => options.running ?? false,
+        },
+        store: {
+            get: () => ({ ...emptyBackups(), runs: options.runs ?? [] }),
+            failures: () => options.failures ?? [],
+        },
+        restic,
+        backupDir: '/var/backups',
+        newRunId: () => 'run1',
+        backupDisk: async () => {
+            if (options.diskError) throw options.diskError
+            // Plenty free unless a test says otherwise: a disk that cannot be read now refuses a run, so a
+            // null default would refuse every run test for a reason it was not written to exercise.
+            return options.disk === undefined ? { path: '/backups', totalBytes: 1000, usedBytes: 100, freeBytes: 900 } : options.disk
+        },
+    }
+    return { backups, started }
+}
+
+describe('backup', () => {
+    const backup = (action: BackupArgs, project = 'acme'): AgentRequest => ({ verb: 'backup', project, args: action })
+
+    it('refuses when backups are not configured', async () => {
+        const { agent } = setup()
+        const outcome = await agent.handle(backup({ action: 'list' }))
+        assert.equal(outcome.kind === 'reply' && outcome.reply.ok, false)
+        assert.equal(outcome.kind === 'reply' && !outcome.reply.ok && outcome.reply.code, 'unavailable')
+    })
+
+    it('lists the snapshots and the run history together', async () => {
+        const { backups } = backupsWiring({ snapshots: [{ id: 'deadbeef', at: '2026-09-21T02:00:00.000Z', tag: 'manual' }] })
+        const { agent } = setup({ backups })
+        const outcome = await agent.handle(backup({ action: 'list' }))
+        assert.equal(outcome.kind === 'reply' && outcome.reply.ok && 'snapshots' in outcome.reply && outcome.reply.snapshots.length, 1)
+    })
+
+    it('refuses a run on a nearly full backup disk instead of starting one', async () => {
+        // The design's run order refuses on the disk before it refuses a sixth manual run, and the runbook
+        // lists this under "When a backup is refused". Checked inside backup-run.ts too, but a check only
+        // there answers 202 with a run id and puts the reason in a record minutes later.
+        const full = { path: '/backups', totalBytes: 1000, usedBytes: 950, freeBytes: 50 }
+        for (const tag of ['manual', 'scheduled'] as const) {
+            const { backups, started } = backupsWiring({ snapshots: [], disk: full })
+            const { agent } = setup({ backups })
+            const outcome = await agent.handle(backup({ action: 'run', tag }))
+            assert.ok(outcome.kind === 'reply' && !outcome.reply.ok)
+            assert.equal(outcome.reply.code, 'unavailable')
+            assert.equal(outcome.reply.message, 'the backup disk has less than 10% free')
+            assert.deepEqual(started, [])
+        }
+    })
+
+    it('refuses a run when the backup disk cannot be read at all', async () => {
+        const { backups, started } = backupsWiring({ snapshots: [], diskError: new Error('the statfs syscall failed') })
+        const { agent } = setup({ backups })
+        const outcome = await agent.handle(backup({ action: 'run', tag: 'manual' }))
+        assert.ok(outcome.kind === 'reply' && !outcome.reply.ok)
+        assert.match(outcome.reply.message, /the backup disk could not be read/)
+        assert.deepEqual(started, [])
+    })
+
+    it('refuses a sixth manual run itself, whatever api decided', async () => {
+        const snapshots = ['a1', 'a2', 'a3', 'a4', 'a5'].map(id => ({ id: id.padEnd(8, '0'), at: '2026-09-21T02:00:00.000Z', tag: 'manual' as const }))
+        const { backups } = backupsWiring({ snapshots })
+        const { agent } = setup({ backups })
+        const outcome = await agent.handle(backup({ action: 'run', tag: 'manual' }))
+        assert.equal(outcome.kind === 'reply' && !outcome.reply.ok && outcome.reply.code, 'bad-request')
+    })
+
+    it('refuses to delete a snapshot that is not in this project\'s repository', async () => {
+        const { backups } = backupsWiring({ snapshots: [] })
+        const { agent } = setup({ backups })
+        const outcome = await agent.handle(backup({ action: 'delete', snapshot: 'deadbeef' }))
+        assert.equal(outcome.kind === 'reply' && !outcome.reply.ok && outcome.reply.code, 'bad-request')
+    })
+
+    it('refuses to download a snapshot that is not in this project\'s repository', async () => {
+        // The mirror of the delete refusal above: a regression that reordered or special-cased download
+        // ahead of the shared lookup would be caught here, not just inferred from the delete test.
+        const { backups } = backupsWiring({ snapshots: [] })
+        const { agent } = setup({ backups })
+        const outcome = await agent.handle(backup({ action: 'download', snapshot: 'deadbeef' }))
+        assert.equal(outcome.kind === 'reply' && !outcome.reply.ok && outcome.reply.code, 'bad-request')
+    })
+
+    it('answers a download with bytes', async () => {
+        const { backups } = backupsWiring({
+            snapshots: [{ id: 'deadbeef', at: '2026-09-21T02:00:00.000Z', tag: 'manual' }],
+            dump: { chunks: ['a whole tar'] },
+        })
+        const { agent } = setup({ backups })
+        const outcome = await agent.handle(backup({ action: 'download', snapshot: 'deadbeef' }))
+        assert.equal(outcome.kind, 'bytes')
+        assert.ok(outcome.kind === 'bytes')
+        const chunks: Buffer[] = []
+        for await (const chunk of outcome.body) chunks.push(chunk)
+        assert.equal(Buffer.concat(chunks).toString(), 'a whole tar')
+    })
+
+    it('throws rather than ending cleanly when restic dump exits non-zero', async () => {
+        // The failure this exists for: restic dies partway, its stdout simply reaches EOF, and without
+        // the exit code every layer below reads that as a complete archive and answers 200 with a
+        // truncated tar.gz the client only finds out about at restore time.
+        const { backups } = backupsWiring({
+            snapshots: [{ id: 'deadbeef', at: '2026-09-21T02:00:00.000Z', tag: 'manual' }],
+            dump: { chunks: ['half a tar'], exitCode: 1, stderr: 'pack 1a2b3c4d not found in repository' },
+        })
+        const { agent } = setup({ backups })
+        const outcome = await agent.handle(backup({ action: 'download', snapshot: 'deadbeef' }))
+        assert.ok(outcome.kind === 'bytes')
+        const chunks: Buffer[] = []
+        await assert.rejects(
+            async () => { for await (const chunk of outcome.body) chunks.push(chunk) },
+            /restic dump exited with code 1: pack 1a2b3c4d not found in repository/,
+        )
+        // The bytes that did arrive are exactly the truncated archive nobody may be handed as a whole one.
+        assert.equal(Buffer.concat(chunks).toString(), 'half a tar')
+    })
+
+    it('answers get-run with the matching record, null for an unknown run, and whether a run is in progress', async () => {
+        const record: BackupRecord = {
+            run: 'run1', tag: 'manual', actor: 'client', startedAt: '2026-09-21T02:00:00.000Z',
+            durationMs: 5000, outcome: 'ok', snapshot: 'deadbeef', reason: null, disruptive: false,
+        }
+        const { backups } = backupsWiring({ runs: [record], running: true })
+        const { agent } = setup({ backups })
+
+        const found = await agent.handle(backup({ action: 'get-run', run: 'run1' }))
+        assert.deepEqual(found, { kind: 'reply', reply: { ok: true, run: record, running: true } })
+
+        const missing = await agent.handle(backup({ action: 'get-run', run: 'deadbeef1' }))
+        assert.deepEqual(missing, { kind: 'reply', reply: { ok: true, run: null, running: true } })
+    })
+
+    it('starts a run and passes the tag, actor, generated run id and keep through to the runner', async () => {
+        const { backups, started } = backupsWiring({ snapshots: [] })
+        const { agent } = setup({ backups })
+        const keep = { daily: 7, weekly: 4, monthly: 3 }
+        const outcome = await agent.handle(backup({ action: 'run', tag: 'manual', keep }))
+        assert.equal(outcome.kind === 'reply' && outcome.reply.ok, true)
+        // The single assertion below is deliberately exhaustive: a wrong actor, a dropped keep or a run id
+        // that never reached newRunId() would each slip past a looser check.
+        assert.deepEqual(started, [{ id: 'acme', request: { tag: 'manual', actor: 'admin', run: 'run1', keep } }])
+    })
+
+    it('records the actor api sent, and hostd for a scheduled run whatever was sent', async () => {
+        // A client's own manual backup must not be recorded as the operator's: the portal draws this
+        // history for the client. The actor is a label only, so the one thing that is not taken on trust
+        // is 'hostd', which only a scheduled run may ever be.
+        const client = backupsWiring({ snapshots: [] })
+        const { agent } = setup({ backups: client.backups })
+        await agent.handle(backup({ action: 'run', tag: 'manual', actor: 'client' }))
+        assert.equal(client.started[0]?.request.actor, 'client')
+
+        const scheduled = backupsWiring({ snapshots: [] })
+        const scheduledAgent = setup({ backups: scheduled.backups }).agent
+        await scheduledAgent.handle(backup({ action: 'run', tag: 'scheduled', actor: 'client' }))
+        assert.equal(scheduled.started[0]?.request.actor, 'hostd')
+
+        // Nothing sent: the operator, as before, since only api's own routes carry an actor.
+        const bare = backupsWiring({ snapshots: [] })
+        const bareAgent = setup({ backups: bare.backups }).agent
+        await bareAgent.handle(backup({ action: 'run', tag: 'manual' }))
+        assert.equal(bare.started[0]?.request.actor, 'admin')
     })
 })
 

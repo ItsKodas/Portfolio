@@ -1,11 +1,13 @@
-// A minimal Docker Engine API client over the Unix socket: ping, list, inspect and logs, and nothing
-// else. Lifecycle goes through the compose CLI, so this client never creates, starts or execs anything.
+// A minimal Docker Engine API client over the Unix socket: ping, list, inspect, logs and exec.
+// Lifecycle otherwise goes through the compose CLI: this client never creates, starts or stops a
+// container, and exec is used only to run a fixed command inside an already-running one (a database dump).
 
 import { request as httpRequest, type ClientRequest, type IncomingMessage, type RequestOptions } from 'node:http'
 import type { Readable } from 'node:stream'
 import { isComposeService, type ProjectEntry } from '../shared/registry.ts'
 import type { ServiceStatus } from '../shared/protocol.ts'
 import type { PortCheck } from '../shared/ports.ts'
+import { FrameDecoder } from './logframes.ts'
 
 export const DOCKER_SOCKET = '/var/run/docker.sock'
 export const DOCKER_TIMEOUT_MS = 15_000
@@ -23,12 +25,20 @@ export type ContainerInspect = {
 }
 export type LogsOptions = { tail: number, since: number | null, follow: boolean }
 
+// How much stderr is kept from a failed exec. Enough to explain a failure, small enough that a command
+// screaming into stderr cannot exhaust memory.
+const MAX_EXEC_STDERR = 4096
+export type ExecResult = { exitCode: number | null, stderr: string }
+
 export type DockerApi = {
     ping(): Promise<boolean>
     listProjectContainers(project: string): Promise<ContainerSummary[]>
     listAllContainers(): Promise<ContainerSummary[]>
     inspect(id: string): Promise<ContainerInspect>
     logs(id: string, options: LogsOptions): Promise<Readable>
+    // Runs argv in an already-running container and hands stdout to the caller chunk by chunk. stdout is
+    // never buffered here: it becomes a database dump, which can be larger than this process's memory.
+    exec(id: string, argv: string[], onStdout: (chunk: Buffer) => Promise<void> | void): Promise<ExecResult>
 }
 
 type RequestFn = (options: RequestOptions, callback: (response: IncomingMessage) => void) => ClientRequest
@@ -85,6 +95,36 @@ export function createDockerApi(socketPath = DOCKER_SOCKET, request: RequestFn =
         return JSON.parse(body) as T
     }
 
+    // Same header-wait-only timeout as open(): see the comment above open() for why. Exec's start call in
+    // particular must not be killed mid-stream, since a dump of a large database is legitimately slow.
+    function openPost(path: string, body: unknown, timeoutMs: number | null, clearTimeoutOnHeaders = false): Promise<IncomingMessage> {
+        const payload = Buffer.from(JSON.stringify(body))
+        return new Promise((resolve, reject) => {
+            const options: RequestOptions = {
+                socketPath, path, method: 'POST',
+                headers: { 'content-type': 'application/json', 'content-length': String(payload.length) },
+            }
+            const req = request(options, response => {
+                if (clearTimeoutOnHeaders) req.setTimeout(0)
+                resolve(response)
+            })
+            req.on('error', reject)
+            if (timeoutMs !== null) req.setTimeout(timeoutMs, () => req.destroy(new Error(`Docker API timed out on ${endpoint(path)}`)))
+            req.end(payload)
+        })
+    }
+
+    async function postJson<T>(path: string, body: unknown): Promise<T> {
+        const response = await openPost(path, body, DOCKER_TIMEOUT_MS)
+        response.setEncoding('utf8')
+        let text = ''
+        for await (const chunk of response) text += chunk
+        if (response.statusCode !== 200 && response.statusCode !== 201) {
+            throw new Error(`Docker API ${endpoint(path)} answered ${response.statusCode}: ${text.slice(0, 200)}`)
+        }
+        return JSON.parse(text) as T
+    }
+
     return {
         async ping() {
             try {
@@ -110,6 +150,31 @@ export function createDockerApi(socketPath = DOCKER_SOCKET, request: RequestFn =
                 throw new Error(`Docker API logs answered ${response.statusCode}`)
             }
             return response
+        },
+        async exec(id, argv, onStdout) {
+            const checked = checkedId(id)
+            const created = await postJson<{ Id: string }>(`/containers/${checked}/exec`, {
+                AttachStdout: true, AttachStderr: true, AttachStdin: false, Tty: false, Cmd: argv,
+            })
+            const execId = checkedId(created.Id)
+            // Tty is false above, so the output is multiplexed and the frame decoder that reads logs reads
+            // this too. The header wait is bounded; the body is not, because a dump of a large database is
+            // legitimately slow and must not be killed for taking its time.
+            const stream = await openPost(`/exec/${execId}/start`, { Detach: false, Tty: false }, DOCKER_TIMEOUT_MS, true)
+            if (stream.statusCode !== 200) {
+                stream.resume()
+                throw new Error(`Docker API exec start answered ${stream.statusCode}`)
+            }
+            const decoder = new FrameDecoder()
+            let stderr = ''
+            for await (const chunk of stream) {
+                for (const frame of decoder.push(chunk as Buffer)) {
+                    if (frame.stream === 'stdout') await onStdout(frame.data)
+                    else if (stderr.length < MAX_EXEC_STDERR) stderr += frame.data.toString('utf8')
+                }
+            }
+            const inspected = await json<{ ExitCode: number | null }>(`/exec/${execId}/json`)
+            return { exitCode: inspected.ExitCode, stderr: stderr.slice(0, MAX_EXEC_STDERR).trim() }
         },
     }
 }

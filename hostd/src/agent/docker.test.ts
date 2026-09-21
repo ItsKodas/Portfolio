@@ -213,6 +213,84 @@ describe('dockerPortCheck', () => {
     })
 })
 
+// One multiplexed frame, exactly as Docker writes them: type, three zero bytes, a big-endian length.
+function frame(type: 1 | 2, text: string): Buffer {
+    const payload = Buffer.from(text)
+    const header = Buffer.alloc(8)
+    header[0] = type
+    header.writeUInt32BE(payload.length, 4)
+    return Buffer.concat([header, payload])
+}
+
+// A container id shape, standing in for the id Docker actually assigns an exec instance.
+const EXEC_ID = 'e'.repeat(64)
+
+function execSetup(options: { exitCode: number, frames: Buffer[], execId?: string }) {
+    const execId = options.execId ?? EXEC_ID
+    const calls: Array<{ path: string, method: string, body: string }> = []
+    const request = (opts: any, callback: (response: any) => void) => {
+        let body = ''
+        const response = new PassThrough() as any
+        response.statusCode = 200
+        const req: any = {
+            on: () => req,
+            setTimeout: () => req,
+            write: (chunk: string) => { body += chunk },
+            end: (chunk?: string) => {
+                if (chunk) body += chunk
+                calls.push({ path: opts.path, method: opts.method, body })
+                queueMicrotask(() => {
+                    if (opts.path === '/containers/' + ID + '/exec') {
+                        response.end(JSON.stringify({ Id: execId }))
+                    } else if (opts.path === '/exec/' + execId + '/start') {
+                        for (const chunk of options.frames) response.write(chunk)
+                        response.end()
+                    } else {
+                        response.end(JSON.stringify({ ExitCode: options.exitCode, Running: false }))
+                    }
+                })
+                callback(response)
+            },
+        }
+        return req
+    }
+    return { request, calls }
+}
+
+describe('exec', () => {
+    it('sends the argv, streams stdout to the caller and returns the exit code', async () => {
+        const { request, calls } = execSetup({ exitCode: 0, frames: [frame(1, 'CREATE TABLE'), frame(1, ' one;')] })
+        const docker = createDockerApi('/var/run/docker.sock', request as any)
+        const chunks: Buffer[] = []
+        const result = await docker.exec(ID, ['sh', '-c', 'pg_dumpall'], chunk => { chunks.push(chunk) })
+        assert.equal(Buffer.concat(chunks).toString(), 'CREATE TABLE one;')
+        assert.deepEqual(result, { exitCode: 0, stderr: '' })
+        assert.deepEqual(JSON.parse(calls[0]!.body), {
+            AttachStdout: true, AttachStderr: true, AttachStdin: false, Tty: false, Cmd: ['sh', '-c', 'pg_dumpall'],
+        })
+        assert.equal(calls[0]!.method, 'POST')
+    })
+
+    it('collects stderr and reports a non-zero exit', async () => {
+        const { request } = execSetup({ exitCode: 1, frames: [frame(2, 'could not connect')] })
+        const docker = createDockerApi('/var/run/docker.sock', request as any)
+        const result = await docker.exec(ID, ['sh', '-c', 'pg_dumpall'], () => {})
+        assert.deepEqual(result, { exitCode: 1, stderr: 'could not connect' })
+    })
+
+    it('refuses a malformed container id before it reaches a URL', async () => {
+        const { request } = execSetup({ exitCode: 0, frames: [] })
+        const docker = createDockerApi('/var/run/docker.sock', request as any)
+        await assert.rejects(() => docker.exec('../../etc', ['sh'], () => {}), /refusing malformed container id/)
+    })
+
+    it('refuses a malformed exec id from Docker before it reaches a URL', async () => {
+        const { request } = execSetup({ exitCode: 0, frames: [], execId: 'exec123' })
+        const docker = createDockerApi('/var/run/docker.sock', request as any)
+        await assert.rejects(() => docker.exec(ID, ['sh', '-c', 'true'], () => {}), /refusing malformed container id/)
+    })
+})
+
 describe('buildServiceStatuses', () => {
     const project = parseRegistry(`
 projects:

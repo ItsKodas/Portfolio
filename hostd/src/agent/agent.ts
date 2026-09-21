@@ -3,7 +3,7 @@
 
 import {
     checkStructure, refuse,
-    type AdoptPreview, type AgentReply, type AgentRequest, type ConfigureArgs, type DeployArgs,
+    type AdoptPreview, type AgentReply, type AgentRequest, type BackupArgs, type ConfigureArgs, type DeployArgs,
     type DomainsRequest, type DomainsWritten, type EnvArgs, type HealthReply, type LifecycleAction,
     type LifecycleReply, type LogLine, type LogsArgs, type ProjectStatus, type ProvisionAddEnvironmentArgs,
     type ProvisionCreateArgs, type ProvisionRemoveArgs, type Refusal, type ServiceStatus, type StatusesReply,
@@ -11,8 +11,9 @@ import {
 import { environmentOf, type EnvironmentName, type ProjectEntry, type Registry } from '../shared/registry.ts'
 import { describeError } from '../shared/formats.ts'
 import { deployKey, lastHealthyCommit } from '../shared/deploys.ts'
+import { diskProblem, manualProblem } from '../shared/backups.ts'
 import type { RegistryWriter } from '../shared/registry-write.ts'
-import type { SystemUsage } from '../shared/system.ts'
+import type { DiskUsage, SystemUsage } from '../shared/system.ts'
 import { runLifecycle, type Runner } from './compose.ts'
 import { deployTrees } from './deploy-compose.ts'
 import type { DeployDeps } from './deploy.ts'
@@ -24,6 +25,9 @@ import { buildServiceStatuses, groupByProject, pickPerService, type ContainerIns
 import { createLogDecoder } from './logframes.ts'
 import { listEnvFiles, readEnvFile, writeEnvFile, type EnvFs } from './env-files.ts'
 import { createProject, addEnvironment, removeProject, type ProvisionDeps } from './provision.ts'
+import type { BackupRunner } from './backup-runner.ts'
+import type { BackupStore } from './backup-state.ts'
+import { repoPath, type Restic } from './restic.ts'
 
 export const MAX_FOLLOWS_PER_PROJECT = 4
 export const FOLLOW_MAX_MS = 60 * 60_000
@@ -63,6 +67,16 @@ export type AgentDeps = {
         store: Pick<DeployStore, 'get' | 'resume'>
         deps: DeployDeps
     }
+    // Absent until the production entrypoint wires the backup directory, the store and the runner: the
+    // backup verb then refuses unavailable instead of crashing, exactly like deploys and provision do.
+    backups?: {
+        runner: Pick<BackupRunner, 'start' | 'isRunning'>
+        store: Pick<BackupStore, 'get' | 'failures'>
+        restic: Restic
+        backupDir: string
+        newRunId: () => string
+        backupDisk: () => Promise<DiskUsage | null>
+    }
     // Absent until the production entrypoint wires the Apache rail, the registry writer and the vhost
     // configuration: the domains verb then refuses unavailable instead of crashing, exactly like
     // provision and deploy do.
@@ -82,6 +96,11 @@ export type AgentDeps = {
 export type Outcome =
     | { kind: 'reply', reply: AgentReply }
     | { kind: 'stream', lines: AsyncIterable<LogLine>, close: () => void }
+    // A backup download: the same header line as a stream, then the body in length-prefixed frames ending
+    // in a terminator server.ts writes only once this iterator has returned normally. Its own kind rather
+    // than a stream of lines because a tar.gz through NDJSON would need base64, which inflates a
+    // multi-gigabyte download by a third for nothing.
+    | { kind: 'bytes', body: AsyncIterable<Buffer>, close: () => void }
 
 const reply = (value: AgentReply): Outcome => ({ kind: 'reply', reply: value })
 
@@ -129,6 +148,8 @@ export class Agent {
                 return reply(await this.env(checked.project, request.args))
             case 'deploy':
                 return reply(await this.deploy(checked.project, request.args))
+            case 'backup':
+                return this.backup(checked.project, request.args)
             // domains re-checks the registry, the guard and the capability itself, from a freshly
             // reloaded registry rather than the checked snapshot above: see domains() for why.
             case 'domains':
@@ -137,6 +158,109 @@ export class Agent {
                 return reply(await this.configure(checked.project, request.args))
             case 'branches':
                 return reply(await this.branches(checked.project))
+        }
+    }
+
+    private async backup(project: ProjectEntry, args: BackupArgs): Promise<Outcome> {
+        if (!this.deps.backups) return reply(refuse('unavailable', 'backups are not configured'))
+        const { runner, store, restic, backupDir, newRunId } = this.deps.backups
+        const repo = repoPath(backupDir, project.id)
+        const state = store.get(project.id)
+
+        if (args.action === 'list') {
+            const listed = await restic.snapshots(repo)
+            // A repository that does not exist yet is not an error: it is a project that has never been
+            // backed up, and the portal draws an empty list for it.
+            const snapshots = listed.ok ? listed.snapshots : []
+            return reply({ ok: true, snapshots, runs: state.runs, running: runner.isRunning(project.id) })
+        }
+
+        if (args.action === 'get-run') {
+            return reply({ ok: true, run: state.runs.find(run => run.run === args.run) ?? null, running: runner.isRunning(project.id) })
+        }
+
+        if (args.action === 'run') {
+            // The design's run order refuses on a full disk before it refuses a sixth manual run, and the
+            // runbook lists this under "When a backup is refused", so it is a synchronous refusal like the
+            // manual cap and the cooldown beside it, not a run that starts and records a reason minutes
+            // later. backup-run.ts still checks the same thing: the agent never lets its own caller stand
+            // in for its own check, and a scheduled run reaches that one by a different path.
+            const diskFull = await this.backupDiskProblem()
+            if (diskFull) return reply(refuse('unavailable', diskFull))
+
+            const listed = await restic.snapshots(repo)
+            if (args.tag === 'manual') {
+                // Checked here as well as in api: the agent never lets api's decision stand in for its own.
+                const problem = manualProblem(listed.ok ? listed.snapshots : [], state.runs, Date.now())
+                if (problem) return reply(refuse('bad-request', problem))
+            }
+            // The actor comes from api because the agent cannot tell a client's own backup from the
+            // operator's, and the design's central decision for this phase is that owners act on their
+            // own backups: without it every run a client takes is recorded as 'admin' in a history the
+            // portal draws for them. It is a label for that history and NOTHING else. No decision above
+            // or below this line reads it: the capability, the locks, the manual cap, the cooldown and
+            // the disk are all enforced by the agent for itself, whatever api says the actor was, so a
+            // compromised api can mislabel a record and change nothing else. A scheduled run is 'hostd'
+            // regardless of what arrived, since only api's own tick starts one. deploys.ts records the
+            // same limitation on its own actor field.
+            return reply(runner.start(project, {
+                tag: args.tag, actor: args.tag === 'scheduled' ? 'hostd' : (args.actor ?? 'admin'),
+                run: newRunId(), keep: args.keep ?? null,
+            }))
+        }
+
+        // delete and download both name a snapshot, and both look it up in this project's own repository
+        // first: a hex id is not proof that it belongs to this client.
+        const listed = await restic.snapshots(repo)
+        if (!listed.ok) return reply(refuse('failed', listed.reason, listed.output))
+        const snapshot = listed.snapshots.find(entry => entry.id === args.snapshot || entry.id.startsWith(args.snapshot))
+        if (!snapshot) return reply(refuse('bad-request', `no backup ${args.snapshot} for ${project.id}`))
+
+        if (args.action === 'delete') {
+            const forgotten = await restic.forget(repo, snapshot.id)
+            return reply(forgotten.ok ? { ok: true, output: `backup ${snapshot.id} deleted` } : refuse('failed', forgotten.reason, forgotten.output))
+        }
+
+        const handle = restic.dump(repo, snapshot.id)
+        // restic's stdout reaching EOF is not proof the dump worked. A corrupt repository, a missing pack,
+        // a wrong password or a snapshot forgotten while the dump was running all end the stream early and
+        // exit non-zero, and every layer below here (server.ts, api's relay, the HTTP response) reads a
+        // clean EOF as a complete archive. So the exit code is the last thing the body yields to, and a
+        // non-zero one throws. Returning normally is what lets server.ts write the body terminator, and
+        // that terminator is what api accepts as proof the archive is whole; a throw means no terminator,
+        // api fails the download, and routes.ts destroys the response. That chain is what makes a
+        // truncated dump arrive as a failed transfer rather than a short but perfectly valid tar.gz the
+        // client keeps as their backup.
+        async function* body(): AsyncGenerator<Buffer> {
+            for await (const chunk of handle.stdout) yield chunk as Buffer
+            const exit = await handle.exit
+            if (exit.exitCode !== 0) {
+                // The stderr tail names the repository path and restic's own complaint, never the password.
+                throw new Error(`restic dump exited with code ${exit.exitCode}${exit.stderr ? `: ${exit.stderr}` : ''}`)
+            }
+        }
+        return {
+            kind: 'bytes',
+            body: body(),
+            close: () => {
+                handle.stdout.destroy()
+                // Consumed even when nobody read the body: an abandoned download would otherwise leave the
+                // exit promise with no settler attached and the restic child unreaped.
+                void handle.exit.then(() => {}, () => {})
+            },
+        }
+    }
+
+    // Why the backup disk will not take another run, or null when it will. Shared by health, which reports
+    // it as a warning, and by the run branch, which refuses on it: a reading that throws degrades to a
+    // problem rather than taking its caller down, and a disk that cannot be read at all is not a disk a
+    // run may be started against.
+    private async backupDiskProblem(): Promise<string | null> {
+        if (!this.deps.backups) return null
+        try {
+            return diskProblem(await this.deps.backups.backupDisk())
+        } catch (error) {
+            return `the backup disk could not be read: ${describeError(error)}`
         }
     }
 
@@ -266,7 +390,18 @@ export class Agent {
         // system is figures for the portal to draw, kept apart from warnings on purpose: nothing it
         // reports, however alarming the number, may make this process unhealthy. railAge is the same
         // idea: a stale rail is worth surfacing (Task 14 does), but it is not this process's own health.
-        return { ok: true, warnings: this.deps.warnings(), invalid, system: await this.deps.system(), railAge: this.deps.railAge() }
+        const warnings = this.deps.warnings()
+        if (this.deps.backups) {
+            // Two signals the design defers to the backups phase. Warnings, not failures: a full backup
+            // disk and a failed scheduled run are the operator's to act on, and neither means hostd itself
+            // is unhealthy.
+            // health is what the operator reads when something is already wrong, so a disk reading that
+            // cannot be taken must degrade to a warning rather than take the whole reply down with it.
+            const problem = await this.backupDiskProblem()
+            if (problem) warnings.push(problem)
+            warnings.push(...this.deps.backups.store.failures())
+        }
+        return { ok: true, warnings, invalid, system: await this.deps.system(), railAge: this.deps.railAge() }
     }
 
     private async status(project: ProjectEntry): Promise<ServiceStatus[]> {

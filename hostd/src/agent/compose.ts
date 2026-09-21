@@ -72,20 +72,22 @@ class Capture {
 // environment into a project's own compose file. This allowlist is shared by the fetcher's git runs too,
 // since createSpawnRunner is the only spawn path either process has: GIT_TERMINAL_PROMPT (see
 // ../fetcher/git.ts) is here for that reason, and is simply never set in the agent's own environment.
+// restic gets its own allowlist in restic.ts that includes RESTIC_PASSWORD, safe because restic never
+// runs compose and has no interpolation risk.
 const DOCKER_ENV_KEYS = ['PATH', 'HOME', 'DOCKER_HOST', 'DOCKER_CONFIG', 'TZ', 'GIT_TERMINAL_PROMPT'] as const
 
-function dockerEnv(): Record<string, string> {
+export function childEnv(keys: readonly string[]): Record<string, string> {
     const env: Record<string, string> = {}
-    for (const key of DOCKER_ENV_KEYS) {
+    for (const key of keys) {
         const value = process.env[key]
         if (value !== undefined) env[key] = value
     }
     return env
 }
 
-export function createSpawnRunner(spawn: typeof nodeSpawn = nodeSpawn): Runner {
+export function createSpawnRunner(spawn: typeof nodeSpawn = nodeSpawn, envKeys: readonly string[] = DOCKER_ENV_KEYS): Runner {
     return (command, args, timeoutMs) => new Promise(resolve => {
-        const child = spawn(command, args, { shell: false, stdio: ['ignore', 'pipe', 'pipe'], env: dockerEnv() })
+        const child = spawn(command, args, { shell: false, stdio: ['ignore', 'pipe', 'pipe'], env: childEnv(envKeys) })
         const stdout = new Capture()
         const stderr = new Capture()
         child.stdout?.on('data', (chunk: Buffer) => stdout.add(chunk))
