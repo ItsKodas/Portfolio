@@ -27,6 +27,10 @@ export const createResticRunner = (spawn: typeof nodeSpawn = nodeSpawn): Runner 
 // on a request's critical path: the run was started, not awaited.
 export const RESTIC_TIMEOUT_MS = 60 * 60_000
 export const OUTPUT_TAIL = 500
+// How much of a streamed command's stderr is kept. A dump that fails carries this tail in the error the
+// download body throws, so it has to be enough to name the repository and restic's own complaint, and
+// bounded because a repository that is broken on every pack writes a line per pack.
+export const STREAM_STDERR_CAP = 4096
 
 export const repoPath = (backupDir: string, id: string): string => posix.join(backupDir, id)
 export const stagingPath = (backupDir: string, id: string, run: string): string => posix.join(backupDir, '.staging', id, run)
@@ -53,7 +57,7 @@ export function nodeSpawnStream(spawn: typeof nodeSpawn = nodeSpawn): SpawnStrea
     return (command, args) => {
         const child = spawn(command, args, { stdio: ['ignore', 'pipe', 'pipe'], env: childEnv(RESTIC_ENV_KEYS) })
         let stderr = ''
-        child.stderr?.on('data', (chunk: Buffer) => { if (stderr.length < 4096) stderr += chunk.toString('utf8') })
+        child.stderr?.on('data', (chunk: Buffer) => { if (stderr.length < STREAM_STDERR_CAP) stderr += chunk.toString('utf8') })
         const exit = new Promise<{ exitCode: number | null, stderr: string }>(resolve => {
             child.on('close', code => resolve({ exitCode: code, stderr: stderr.trim() }))
             child.on('error', error => resolve({ exitCode: null, stderr: error.message }))

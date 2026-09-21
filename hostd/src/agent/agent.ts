@@ -170,7 +170,31 @@ export class Agent {
         }
 
         const handle = restic.dump(repo, snapshot.id)
-        return { kind: 'bytes', body: handle.stdout, close: () => handle.stdout.destroy() }
+        // restic's stdout reaching EOF is not proof the dump worked. A corrupt repository, a missing pack,
+        // a wrong password or a snapshot forgotten while the dump was running all end the stream early and
+        // exit non-zero, and every layer below here (server.ts, api's relay, the HTTP response) reads a
+        // clean EOF as a complete archive. So the exit code is the last thing the body yields to, and a
+        // non-zero one throws: server.ts destroys the socket when the body throws and routes.ts destroys
+        // the response, which is what makes a truncated dump arrive as a failed transfer rather than a
+        // short but perfectly valid tar.gz the client keeps as their backup.
+        async function* body(): AsyncGenerator<Buffer> {
+            for await (const chunk of handle.stdout) yield chunk as Buffer
+            const exit = await handle.exit
+            if (exit.exitCode !== 0) {
+                // The stderr tail names the repository path and restic's own complaint, never the password.
+                throw new Error(`restic dump exited with code ${exit.exitCode}${exit.stderr ? `: ${exit.stderr}` : ''}`)
+            }
+        }
+        return {
+            kind: 'bytes',
+            body: body(),
+            close: () => {
+                handle.stdout.destroy()
+                // Consumed even when nobody read the body: an abandoned download would otherwise leave the
+                // exit promise with no settler attached and the restic child unreaped.
+                void handle.exit.then(() => {}, () => {})
+            },
+        }
     }
 
     private async deploy(project: ProjectEntry, args: DeployArgs): Promise<AgentReply> {

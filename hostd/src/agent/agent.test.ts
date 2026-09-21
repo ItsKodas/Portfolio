@@ -769,8 +769,12 @@ describe('the deploy verb', () => {
 
 // Only what the backup verb itself touches: the runner is a recorder, the store answers a fixed history,
 // and restic's snapshots list is what stands in for the project's own repository. dump returns a
-// PassThrough that is never written to: the tests that reach it only check the outcome's kind.
-function backupsWiring(options: { snapshots?: Snapshot[], runs?: BackupRecord[], running?: boolean, disk?: any, diskError?: Error, failures?: string[] } = {}) {
+// PassThrough carrying whatever `dump.chunks` says, then the exit code `dump.exitCode` says: the real
+// StreamHandle's two halves, and the only way to drive a dump that dies partway.
+function backupsWiring(options: {
+    snapshots?: Snapshot[], runs?: BackupRecord[], running?: boolean, disk?: any, diskError?: Error, failures?: string[],
+    dump?: { chunks?: string[], exitCode?: number, stderr?: string },
+} = {}) {
     const started: Array<{ id: string, request: BackupRequest }> = []
     const restic: Restic = {
         init: async () => ({ ok: true }),
@@ -779,7 +783,12 @@ function backupsWiring(options: { snapshots?: Snapshot[], runs?: BackupRecord[],
         forget: async () => ({ ok: true }),
         retention: async () => ({ ok: true }),
         prune: async () => ({ ok: true }),
-        dump: () => ({ stdout: new PassThrough(), exit: Promise.resolve({ exitCode: 0, stderr: '' }) }),
+        dump: () => {
+            const stdout = new PassThrough()
+            for (const chunk of options.dump?.chunks ?? []) stdout.write(chunk)
+            stdout.end()
+            return { stdout, exit: Promise.resolve({ exitCode: options.dump?.exitCode ?? 0, stderr: options.dump?.stderr ?? '' }) }
+        },
     }
     const backups = {
         runner: {
@@ -846,10 +855,37 @@ describe('backup', () => {
     })
 
     it('answers a download with bytes', async () => {
-        const { backups } = backupsWiring({ snapshots: [{ id: 'deadbeef', at: '2026-09-21T02:00:00.000Z', tag: 'manual', sizeBytes: null }] })
+        const { backups } = backupsWiring({
+            snapshots: [{ id: 'deadbeef', at: '2026-09-21T02:00:00.000Z', tag: 'manual', sizeBytes: null }],
+            dump: { chunks: ['a whole tar'] },
+        })
         const { agent } = setup({ backups })
         const outcome = await agent.handle(backup({ action: 'download', snapshot: 'deadbeef' }))
         assert.equal(outcome.kind, 'bytes')
+        assert.ok(outcome.kind === 'bytes')
+        const chunks: Buffer[] = []
+        for await (const chunk of outcome.body) chunks.push(chunk)
+        assert.equal(Buffer.concat(chunks).toString(), 'a whole tar')
+    })
+
+    it('throws rather than ending cleanly when restic dump exits non-zero', async () => {
+        // The failure this exists for: restic dies partway, its stdout simply reaches EOF, and without
+        // the exit code every layer below reads that as a complete archive and answers 200 with a
+        // truncated tar.gz the client only finds out about at restore time.
+        const { backups } = backupsWiring({
+            snapshots: [{ id: 'deadbeef', at: '2026-09-21T02:00:00.000Z', tag: 'manual', sizeBytes: null }],
+            dump: { chunks: ['half a tar'], exitCode: 1, stderr: 'pack 1a2b3c4d not found in repository' },
+        })
+        const { agent } = setup({ backups })
+        const outcome = await agent.handle(backup({ action: 'download', snapshot: 'deadbeef' }))
+        assert.ok(outcome.kind === 'bytes')
+        const chunks: Buffer[] = []
+        await assert.rejects(
+            async () => { for await (const chunk of outcome.body) chunks.push(chunk) },
+            /restic dump exited with code 1: pack 1a2b3c4d not found in repository/,
+        )
+        // The bytes that did arrive are exactly the truncated archive nobody may be handed as a whole one.
+        assert.equal(Buffer.concat(chunks).toString(), 'half a tar')
     })
 
     it('answers get-run with the matching record, null for an unknown run, and whether a run is in progress', async () => {
