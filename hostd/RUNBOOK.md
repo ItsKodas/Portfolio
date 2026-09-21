@@ -660,24 +660,38 @@ curl -sS -o /dev/null -D- https://<alias-or-primary>/.well-known/hostd/<token>
 ```
 
 The expected result is `HTTP/... 204` carrying `X-Hostd-Token: <token>`. This matters more for an alias
-than for the primary: an alias's `:443` block (`aliasRedirect` in `hostd/src/agent/vhost.ts`) carries a
-`<Location "/.well-known/hostd/<token>">` block followed by `Redirect permanent / https://<primary>/`, and
-whether Apache answers the token path with `204` or redirects it with `301` depends on `mod_alias`
-matching in config-parse order with first-match-wins. That ordering was reasoned about, not proven against
-Apache's source, and nothing this codebase can test settles it either way, because it is a question about
-Apache's runtime rather than about the rendered text. `test.hostd.horizons.gg` above has no alias of its
-own, so run this check for real the first time any environment on this dedi actually gets one, whether
-that is here (add one more hostname to both `allowed` and this environment's `aliases` before moving on)
-or the first time a real client's site is adopted or given a `domain-add` alias. Do not skip it and do not
-assume it is fine because the primary passed: the primary's own `:443` block has no redirect at all, so it
-cannot fail this way, and passing there proves nothing about the alias block.
+than for the primary: an alias's `:443` block (`aliasRedirect` in `hostd/src/agent/vhost.ts`) has to
+answer the token path while also carrying `Redirect permanent / https://<primary>/`, which would take the
+probe with it. The template settles that by making both of them the same kind of directive, a `mod_alias`
+redirect at `translate_name`, with the specific one first:
+
+```apache
+Redirect 204 /.well-known/hostd/<token>
+Redirect permanent / https://<primary>/
+```
+
+`mod_alias` takes the first entry that matches, so the token path wins on order. The earlier shape put a
+`Redirect 204` inside the `<Location>` block, where it would have run at `fixups`, after the catch-all had
+already redirected: that shape depended on config order deciding between two directives that never
+competed at the same stage. The `<Location>` that remains carries only `Header always set X-Hostd-Token`,
+which is scoped rather than at vhost level on purpose, so the token does not go out on every `301` this
+block sends to every visitor.
+
+None of that is proof about Apache's runtime, and nothing this codebase can test settles it, because it
+is a question about Apache rather than about the rendered text. This `curl` is the authority.
+`test.hostd.horizons.gg` above has no alias of its own, so run it for real the first time any environment
+on this dedi actually gets one, whether that is here (add one more hostname to both `allowed` and this
+environment's `aliases` before moving on) or the first time a real client's site is adopted or given a
+`domain-add` alias. Do not skip it and do not assume it is fine because the primary passed: the primary's
+own `:443` block has no catch-all redirect at all, so it cannot fail this way, and passing there proves
+nothing about the alias block.
 
 If it comes back `301` instead of `204`, every alias will sit `pending` for 72 hours and then go `failed`
 while the primary verifies fine, which reads exactly like a DNS problem and would be debugged in entirely
-the wrong place. The fix is in `aliasRedirect` in `hostd/src/agent/vhost.ts`: move the token handling
-ahead of the catch-all redirect, for example with an explicit `Redirect 204
-/.well-known/hostd/<token>` line before `Redirect permanent / https://<primary>/`. Do not try to work
-around it in DNS or Cloudflare; the ordering bug would still be there for the next alias.
+the wrong place. The ordering fix above is already in the template, so a `301` here means something else
+is answering ahead of `mod_alias` on that path, and the next thing to read is the rendered file itself:
+`cat /etc/apache2/hostd/<id>-<env>.conf`. Do not try to work around it in DNS or Cloudflare; whatever it
+is would still be there for the next alias.
 
 Finally, confirm verification itself passes within the minute: a `pending` domain is checked once a
 minute for its first hour, so within about sixty seconds `hc
@@ -746,7 +760,7 @@ shows them.
 | After clearing a wedged `request.json`, or after any adoption that failed partway | Confirm nothing was left with no vhost at all. List all three directories: `ls /etc/apache2/hostd-adopted/`, `ls /etc/apache2/sites-enabled/`, `ls /etc/apache2/hostd/`. Every `<name>.bak` in `hostd-adopted` should correspond to *either* `<name>` being back in `sites-enabled` (the adoption was rolled back) *or* a `<id>-<env>.conf` in `hostd/` that renders that hostname (the adoption succeeded and this is its permanent record). A `.bak` matching neither is a site with nothing currently serving it: put it back immediately with the same commands as **The undo**, above, then confirm the site serves again before doing anything else. |
 | A domain stays `pending` with `No record exists yet. Add the CNAME and this will start working within a few minutes.` | No DNS record resolves yet for the hostname, or it has not propagated. Nothing to do but wait, unless the CNAME was never created. |
 | A domain stays `pending` with `The CNAME is not proxied, so the request reached us directly. Turn the proxy on in Cloudflare.` | The environment's `certificate` is `cloudflare-origin` (which expects Cloudflare in front) but the CNAME's cloud icon is grey, not orange: the Origin certificate only Cloudflare should ever see reached this client's browser directly. Turn proxying on. |
-| A domain stays `pending` with `This name points somewhere else at the moment.` | The token this dedi expects did not come back, meaning the hostname currently resolves (through DNS or Cloudflare) to something other than this environment's vhost: a stale CNAME, a different project holding the name, or the alias-ordering bug described in **Live verification** if this is an alias. |
+| A domain stays `pending` with `This name points somewhere else at the moment.` | The token this dedi expects did not come back, meaning the hostname currently resolves (through DNS or Cloudflare) to something other than this environment's vhost: a stale CNAME, a different project holding the name, or, if this is an alias, its token path being redirected rather than answered. Run the `curl` in **Live verification** against that alias: `204` with the header means the vhost is fine and the name genuinely points elsewhere, and `301` means something is answering ahead of `mod_alias` on that path, which **Live verification** says how to read. |
 | An adoption is refused `these cannot be read well enough to adopt: <path> (Include is used, so the hostnames this file serves cannot be read here)` (or `IncludeOptional`, or `Use`) | The existing vhost pulls in another file, or uses a `mod_macro Use`, that could define a hostname `hostd/src/agent/sites-enabled.ts` cannot see. Resolve or inline whatever that file defines by hand, outside hostd, before adopting; nothing here will half-understand it for you. |
 | `/health` warns `waiting for Let's Encrypt support: <project> <env>` | That environment's `certificate` is set to `letsencrypt`, but 4a serves the Cloudflare Origin certificate to every vhost regardless of this setting: the environment works today over the Origin cert, and this warning is only saying certbot itself (4b) is not built yet. Nothing to fix; it clears once 4b lands. |
 

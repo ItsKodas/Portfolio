@@ -172,11 +172,19 @@ describe('renderVhost', () => {
         assert.ok(primaryBlock.includes(`RewriteCond %{REQUEST_URI} !^${holding.split('.').join('\\.')}`), primaryBlock)
     })
 
-    it('answers the verification token on the alias block before redirecting it away', () => {
-        const text = renderVhost(input({ token: 'deadbeef' }))
-        const aliasBlock = text.split('<VirtualHost').pop() ?? ''
-        const location = aliasBlock.indexOf('<Location "/.well-known/hostd/deadbeef">')
-        const redirect = aliasBlock.indexOf('Redirect permanent')
-        assert.ok(location >= 0 && redirect > location, 'the token Location must come before the redirect')
+    // Both directives have to be mod_alias redirects for their order in the file to settle which one
+    // answers: a Redirect inside a <Location> runs at fixups, after the catch-all's translate_name, so
+    // it would lose however early it appeared and every alias would meet a 301 on its token probe.
+    it('answers the verification token on the alias block with a redirect of the same kind, first', () => {
+        const aliasBlock = blocksOf(renderVhost(input({ token: 'deadbeef' })), 443).pop() ?? ''
+        const token = aliasBlock.indexOf('Redirect 204 /.well-known/hostd/deadbeef')
+        const catchAll = aliasBlock.indexOf('Redirect permanent / https://acme.com/')
+        assert.ok(token >= 0, aliasBlock)
+        assert.ok(catchAll > token, 'the token redirect must come before the catch-all')
+        // The <Location> that is left carries the header and nothing else: at vhost scope the token
+        // would go out on every 301 this block sends to every visitor.
+        const scoped = aliasBlock.slice(aliasBlock.indexOf('<Location'), aliasBlock.indexOf('</Location>'))
+        assert.match(scoped, /Header always set X-Hostd-Token "deadbeef"/)
+        assert.doesNotMatch(scoped, /Redirect/)
     })
 })

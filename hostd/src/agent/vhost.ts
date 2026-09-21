@@ -120,10 +120,21 @@ function port443(input: VhostInput): string {
 // An alias never serves the site. It exists to send a visitor to the one canonical address, so that a
 // site is not reachable at two URLs with two sets of cookies and two entries in a search index.
 //
-// The token Location comes before the redirect, same as on the other two blocks and for the same reason:
-// verify.ts probes https://<alias>/.well-known/hostd/<token> and treats anything but a 2xx as a failure.
-// Without this, the redirect would 301 that probe and every alias would sit pending and then fail, which
-// reads as a DNS problem rather than as the ordering bug it would actually be.
+// This block is the one place where the token has to beat a catch-all redirect, and the two directives
+// have to be the same KIND for their order to decide it. `Redirect permanent /` is mod_alias, which runs
+// at translate_name; a `Redirect` inside a <Location> runs at fixups, which is later, so the catch-all
+// would win whatever the file says and verify.ts (which probes
+// https://<alias>/.well-known/hostd/<token> and treats anything but a 2xx as a failure) would meet a 301
+// on every alias. Every alias would then sit pending for 72 hours and fail while the primary verified
+// fine, which reads as a DNS problem and gets debugged in the wrong place. So the token is its own
+// vhost-scope `Redirect 204` above the catch-all: both are then mod_alias redirects, mod_alias takes the
+// first entry that matches, and the more specific path is first.
+//
+// The header stays inside a <Location>, which is not an oversight. At vhost scope it would be emitted on
+// every 301 this block sends to every visitor, and the token is the credential that proves a hostname
+// reaches this environment. `Header always` is what puts it on a response Apache generates itself rather
+// than through a handler, and the <Location> is merged before translate_name runs, so it still reaches
+// the 204 above.
 function aliasRedirect(input: VhostInput): string {
     if (input.aliases.length === 0) return ''
     return `
@@ -136,9 +147,9 @@ ${serverNames(input.aliases)}
 
     <Location "/.well-known/hostd/${input.token}">
         Header always set X-Hostd-Token "${input.token}"
-        Redirect 204
     </Location>
 
+    Redirect 204 /.well-known/hostd/${input.token}
     Redirect permanent / https://${input.primary}/
 </VirtualHost>`
 }
