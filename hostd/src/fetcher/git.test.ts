@@ -1,7 +1,7 @@
 import { describe, it } from 'node:test'
 import assert from 'node:assert/strict'
 
-import { cloneArgv, checkoutArgv, parseLog, runGit } from './git.ts'
+import { cloneArgv, checkoutArgv, fetchArgv, parseLog, runGit } from './git.ts'
 import type { Runner, RunResult } from '../agent/compose.ts'
 
 const ok: RunResult = { exitCode: 0, stdout: '', stderr: '', timedOut: false }
@@ -30,6 +30,16 @@ describe('argv', () => {
     it('clones one branch, without running repo hooks or prompting', () => {
         assert.deepEqual(cloneArgv('git@github.com:a/b.git', '/var/www/b', 'main'),
             ['clone', '--branch', 'main', '--single-branch', '--', 'git@github.com:a/b.git', '/var/www/b'])
+    })
+
+    it('fetches everything the clone tracks when no branch is named', () => {
+        assert.deepEqual(fetchArgv('/var/www/b.git', null), ['-C', '/var/www/b.git', 'fetch', '--prune', '--', 'origin'])
+    })
+
+    it('fetches an explicit refspec for a named branch, which a --single-branch clone would otherwise never see', () => {
+        assert.deepEqual(fetchArgv('/var/www/b.git', 'develop'), [
+            '-C', '/var/www/b.git', 'fetch', '--prune', '--', 'origin', '+refs/heads/develop:refs/remotes/origin/develop',
+        ])
     })
 
     it('checks a commit out into a separate tree without touching the original', () => {
@@ -67,20 +77,20 @@ describe('runGit', () => {
 
     it('reports a failure with git\'s message, not a stack', async () => {
         const { run } = recorder([{ exitCode: 128, stdout: '', stderr: 'fatal: repository not found', timedOut: false }])
-        const reply = await runGit({ verb: 'fetch', dir: '/var/www/b' }, run)
+        const reply = await runGit({ verb: 'fetch', dir: '/var/www/b', branch: null }, run)
         assert.deepEqual(reply, { ok: false, code: 'failed', message: 'fatal: repository not found' })
     })
 
     it('never puts the token in a message', async () => {
         const { run } = recorder([{ exitCode: 128, stdout: '', stderr: 'fatal: https://x-access-token:ghp_secret@github.com/a/b.git not found', timedOut: false }])
-        const reply = await runGit({ verb: 'fetch', dir: '/var/www/b' }, run)
+        const reply = await runGit({ verb: 'fetch', dir: '/var/www/b', branch: null }, run)
         assert.equal(reply.ok, false)
         assert.ok(!JSON.stringify(reply).includes('ghp_secret'))
     })
 
     it('calls a timeout what it is', async () => {
         const { run } = recorder([{ exitCode: null, stdout: '', stderr: '', timedOut: true }])
-        const reply = await runGit({ verb: 'fetch', dir: '/var/www/b' }, run)
+        const reply = await runGit({ verb: 'fetch', dir: '/var/www/b', branch: null }, run)
         assert.deepEqual(reply, { ok: false, code: 'failed', message: 'git fetch timed out' })
     })
 })

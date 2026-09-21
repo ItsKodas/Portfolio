@@ -16,7 +16,7 @@ describe('parseFetchRequest', () => {
 
     it('refuses an unknown verb and unknown fields', () => {
         assert.equal(refusalOf({ verb: 'push', dir: '/var/www/b' }), 'unknown verb')
-        assert.equal(refusalOf({ verb: 'fetch', dir: '/var/www/b', remote: 'evil' }), 'fetch takes only dir')
+        assert.equal(refusalOf({ verb: 'fetch', dir: '/var/www/b', remote: 'evil' }), 'fetch takes only dir and branch')
     })
 
     it('refuses anything outside /var/www, and any traversal', () => {
@@ -29,6 +29,20 @@ describe('parseFetchRequest', () => {
         assert.match(refusalOf({ verb: 'clone', repo: '--upload-pack=evil', dir: '/var/www/b', branch: 'main' })!, /repo/)
         assert.match(refusalOf({ verb: 'log', dir: '/var/www/b', branch: '--all', limit: 10 })!, /branch/)
         assert.match(refusalOf({ verb: 'checkout', dir: '/var/www/b', worktree: '/var/www/b.next', commit: 'HEAD;rm -rf /' })!, /commit/)
+    })
+
+    it('reads a fetch with no branch, as the ordinary case', () => {
+        const result = parseFetchRequest(JSON.stringify({ verb: 'fetch', dir: '/var/www/b.git' }))
+        assert.deepEqual(result, { ok: true, request: { verb: 'fetch', dir: '/var/www/b.git', branch: null } })
+    })
+
+    it('reads a fetch with a branch, which is what makes a branch switch fetchable at all', () => {
+        const result = parseFetchRequest(JSON.stringify({ verb: 'fetch', dir: '/var/www/b.git', branch: 'develop' }))
+        assert.deepEqual(result, { ok: true, request: { verb: 'fetch', dir: '/var/www/b.git', branch: 'develop' } })
+    })
+
+    it('refuses a fetch branch that could be read as an option', () => {
+        assert.match(refusalOf({ verb: 'fetch', dir: '/var/www/b.git', branch: '--upload-pack=sh' })!, /branch/)
     })
 
     it('bounds the log limit', () => {
