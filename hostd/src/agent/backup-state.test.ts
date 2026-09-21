@@ -64,4 +64,16 @@ describe('BackupStore', () => {
         await store.record('widget', record())
         assert.deepEqual(store.failures(), ['acme: the newest scheduled backup failed: the dump failed'])
     })
+
+    it('keeps the record in memory even when the write fails', async () => {
+        const { fs } = setup()
+        const warnings: string[] = []
+        const store = new BackupStore(PATH, fs, message => warnings.push(message))
+        await store.load()
+        fs.writeFile = async () => { throw new Error('ENOSPC: no space left on device') }
+        await store.record('acme', record())
+        assert.equal(store.get('acme').runs.length, 1)
+        assert.equal(warnings.length, 1)
+        assert.match(warnings[0] ?? '', /could not be written/)
+    })
 })
