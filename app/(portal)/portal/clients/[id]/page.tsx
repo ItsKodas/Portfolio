@@ -8,7 +8,7 @@ import { repo } from '@/server/clients/wiring'
 import { getDb } from '@/server/db'
 import { quoteRepo } from '@/server/quotes/repo'
 import { formatWhen } from '../../format'
-import AdminHeader from '../../header'
+import AdminHeader from '../../adminHeader'
 import {
     AddSiteForm, ClearLockButton, ClientForm, ClientId, DeleteClientButton, RemoveSiteButton,
     ResendInviteButton, ResetTwoFactorButton, SendResetButton, SuspendButton,

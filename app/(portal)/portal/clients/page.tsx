@@ -5,7 +5,7 @@ import { Box, Button, Chip, Container, Paper, Table, TableBody, TableCell, Table
 import { requireAdmin } from '@/server/auth'
 import { repo } from '@/server/clients/wiring'
 import { formatWhen } from '../format'
-import AdminHeader from '../header'
+import AdminHeader from '../adminHeader'
 import { STATE_COLOURS, clientState } from './state'
 
 export const metadata: Metadata = { title: 'Clients' }
