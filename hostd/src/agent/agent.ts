@@ -11,8 +11,8 @@ import {
 import { environmentOf, type ProjectEntry, type Registry } from '../shared/registry.ts'
 import { describeError } from '../shared/formats.ts'
 import { deployKey, lastHealthyCommit } from '../shared/deploys.ts'
-import { manualProblem } from '../shared/backups.ts'
-import type { SystemUsage } from '../shared/system.ts'
+import { diskProblem, manualProblem } from '../shared/backups.ts'
+import type { DiskUsage, SystemUsage } from '../shared/system.ts'
 import { runLifecycle, type Runner } from './compose.ts'
 import { deployTrees } from './deploy-compose.ts'
 import type { DeployDeps } from './deploy.ts'
@@ -59,10 +59,11 @@ export type AgentDeps = {
     // backup verb then refuses unavailable instead of crashing, exactly like deploys and provision do.
     backups?: {
         runner: Pick<BackupRunner, 'start' | 'isRunning'>
-        store: Pick<BackupStore, 'get'>
+        store: Pick<BackupStore, 'get' | 'failures'>
         restic: Restic
         backupDir: string
         newRunId: () => string
+        backupDisk: () => Promise<DiskUsage | null>
     }
 }
 
@@ -223,7 +224,16 @@ export class Agent {
         const invalid = Object.fromEntries([...this.deps.registry().invalid, ...this.deps.guardInvalid()])
         // system is figures for the portal to draw, kept apart from warnings on purpose: nothing it
         // reports, however alarming the number, may make this process unhealthy.
-        return { ok: true, warnings: this.deps.warnings(), invalid, system: await this.deps.system() }
+        const warnings = this.deps.warnings()
+        if (this.deps.backups) {
+            // Two signals the design defers to the backups phase. Warnings, not failures: a full backup
+            // disk and a failed scheduled run are the operator's to act on, and neither means hostd itself
+            // is unhealthy.
+            const problem = diskProblem(await this.deps.backups.backupDisk())
+            if (problem) warnings.push(problem)
+            warnings.push(...this.deps.backups.store.failures())
+        }
+        return { ok: true, warnings, invalid, system: await this.deps.system() }
     }
 
     private async status(project: ProjectEntry): Promise<ServiceStatus[]> {

@@ -245,6 +245,32 @@ describe('status and health', () => {
         // healthy as far as hostd is concerned. These are figures to draw, not checks.
         assert.deepEqual(reply.warnings, [])
     })
+
+    it('warns when the backup disk is nearly full', async () => {
+        const { backups } = backupsWiring({ snapshots: [], disk: { path: '/backups', totalBytes: 1000, usedBytes: 950, freeBytes: 50 } })
+        const { agent } = setup({ backups })
+        const outcome = await agent.handle({ verb: 'health' })
+        const reply = replyOf(outcome)
+        const warnings = reply && reply.ok && 'warnings' in reply ? reply.warnings : []
+        assert.ok(warnings.some((warning: string) => /backup disk has less than 10% free/.test(warning)))
+    })
+
+    it('warns once per project whose newest scheduled backup failed', async () => {
+        const { backups } = backupsWiring({ snapshots: [], failures: ['acme: the newest scheduled backup failed: the dump failed'] })
+        const { agent } = setup({ backups })
+        const outcome = await agent.handle({ verb: 'health' })
+        const reply = replyOf(outcome)
+        const warnings = reply && reply.ok && 'warnings' in reply ? reply.warnings : []
+        assert.ok(warnings.includes('acme: the newest scheduled backup failed: the dump failed'))
+    })
+
+    it('says nothing about backups when they are not configured', async () => {
+        const { agent } = setup()
+        const outcome = await agent.handle({ verb: 'health' })
+        const reply = replyOf(outcome)
+        const warnings = reply && reply.ok && 'warnings' in reply ? reply.warnings : []
+        assert.equal(warnings.some((warning: string) => /backup/.test(warning)), false)
+    })
 })
 
 describe('statuses', () => {
@@ -725,7 +751,7 @@ describe('the deploy verb', () => {
 // Only what the backup verb itself touches: the runner is a recorder, the store answers a fixed history,
 // and restic's snapshots list is what stands in for the project's own repository. dump returns a
 // PassThrough that is never written to: the tests that reach it only check the outcome's kind.
-function backupsWiring(options: { snapshots?: Snapshot[], runs?: BackupRecord[], running?: boolean } = {}) {
+function backupsWiring(options: { snapshots?: Snapshot[], runs?: BackupRecord[], running?: boolean, disk?: any, failures?: string[] } = {}) {
     const started: Array<{ id: string, request: BackupRequest }> = []
     const restic: Restic = {
         init: async () => ({ ok: true }),
@@ -744,10 +770,14 @@ function backupsWiring(options: { snapshots?: Snapshot[], runs?: BackupRecord[],
             },
             isRunning: () => options.running ?? false,
         },
-        store: { get: () => ({ ...emptyBackups(), runs: options.runs ?? [] }) },
+        store: {
+            get: () => ({ ...emptyBackups(), runs: options.runs ?? [] }),
+            failures: () => options.failures ?? [],
+        },
         restic,
         backupDir: '/var/backups',
         newRunId: () => 'run1',
+        backupDisk: async () => options.disk ?? null,
     }
     return { backups, started }
 }
