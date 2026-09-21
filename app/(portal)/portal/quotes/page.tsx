@@ -8,8 +8,8 @@ import { getDb } from '@/server/db'
 import { emailsMissing } from '@/server/quotes/emails'
 import { BUDGET_LABELS, PROJECT_TYPE_LABELS, STATUSES, STATUS_LABELS, type Status } from '@/server/quotes/labels'
 import { quoteRepo } from '@/server/quotes/repo'
-import { STATUS_COLOURS, formatWhen } from './format'
-import AdminHeader from './header'
+import { STATUS_COLOURS, formatWhen } from '../format'
+import AdminHeader from '../adminHeader'
 
 export const metadata: Metadata = { title: 'Quotes' }
 
