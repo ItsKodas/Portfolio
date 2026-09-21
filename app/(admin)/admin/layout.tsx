@@ -1,9 +1,8 @@
 import type { Metadata } from 'next'
-import { AppRouterCacheProvider } from '@mui/material-nextjs/v15-appRouter'
 
-import AdminTheme from './theme'
-
-// MUI's providers live here rather than in the root layout, so the landing page and the wallpaper build don't get them
+// The plan had this file deleted with the theme it wrapped. It is kept, minus the MUI providers: the root
+// layout says index: true, so deleting this would have made the operator sign-in page indexable, and the
+// force-dynamic below is not MUI's either.
 export const metadata: Metadata = {
     title: { default: 'Admin', template: '%s · Admin' },
     robots: { index: false, follow: false },
@@ -14,9 +13,5 @@ export const metadata: Metadata = {
 export const dynamic = 'force-dynamic'
 
 export default function AdminLayout({ children }: Readonly<{ children: React.ReactNode }>) {
-    return (
-        <AppRouterCacheProvider>
-            <AdminTheme>{children}</AdminTheme>
-        </AppRouterCacheProvider>
-    )
+    return <>{children}</>
 }

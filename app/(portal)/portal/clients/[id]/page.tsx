@@ -1,28 +1,30 @@
 import type { Metadata } from 'next'
 import Link from 'next/link'
 import { notFound } from 'next/navigation'
-import { Box, Chip, Container, Divider, Paper, Stack, Typography } from '@mui/material'
 
 import { requireAdmin } from '@/server/auth'
 import { repo } from '@/server/clients/wiring'
 import { getDb } from '@/server/db'
 import { quoteRepo } from '@/server/quotes/repo'
+import { Chip } from '@/ui/Chip/Chip'
 import { formatWhen } from '../../format'
 import AdminHeader from '../../adminHeader'
+import frame from '../../frame.module.css'
 import {
     AddSiteForm, ClearLockButton, ClientForm, ClientId, DeleteClientButton, RemoveSiteButton,
     ResendInviteButton, ResetTwoFactorButton, SendResetButton, SuspendButton,
 } from '../controls'
-import { STATE_COLOURS, clientState } from '../state'
+import { STATE_TONES, clientState } from '../state'
+import styles from './client.module.css'
 
 export const metadata: Metadata = { title: 'Client' }
 
 function Detail({ label, children }: { label: string, children: React.ReactNode }) {
     return (
-        <Box>
-            <Typography variant="caption" color="text.secondary" component="p">{label}</Typography>
-            <Typography component="div">{children}</Typography>
-        </Box>
+        <div>
+            <p className={styles.label}>{label}</p>
+            <div className={styles.value}>{children}</div>
+        </div>
     )
 }
 
@@ -44,73 +46,73 @@ export default async function ClientPage({ params }: { params: Promise<{ id: str
     const state = clientState(client, now)
 
     return (
-        <Container maxWidth="md" sx={{ pb: 6 }}>
+        <div className={[frame.page, frame.md].join(' ')}>
             <AdminHeader />
-            <Stack direction="row" sx={{ alignItems: 'center', gap: 2, mb: 1, flexWrap: 'wrap' }}>
-                <Typography variant="h4" component="h1" sx={{ fontWeight: 700 }}>{client.name}</Typography>
-                <Chip label={state} color={STATE_COLOURS[state]} />
-            </Stack>
-            <Box sx={{ mb: 3 }}><ClientId id={client.id} /></Box>
+            <div className={[frame.head, frame.headCentred].join(' ')}>
+                <h1 className={frame.title}>{client.name}</h1>
+                <Chip tone={STATE_TONES[state]}>{state}</Chip>
+            </div>
+            <div className={frame.subBlock}><ClientId id={client.id} /></div>
 
-            <Paper sx={{ p: 3, mb: 3 }}>
+            <section className={frame.panel}>
                 <ClientForm clientId={client.id} initial={{ name: client.name, company: client.company, email: client.email }} />
-            </Paper>
+            </section>
 
-            <Paper sx={{ p: 3, mb: 3 }}>
-                <Typography variant="h6" component="h2" sx={{ mb: 2 }}>Account</Typography>
-                <Stack sx={{ gap: 2 }}>
+            <section className={frame.panel}>
+                <h2 className={frame.section}>Account</h2>
+                <div className={frame.stack}>
                     <Detail label="Last sign-in">{client.lastSignInAt ? formatWhen(client.lastSignInAt) : 'Never'}</Detail>
                     <Detail label="Recovery codes remaining">{unusedRecoveryCodes}</Detail>
                     <Detail label="Sessions">
                         {sessions.length === 0 ? 'None' : (
-                            <Stack sx={{ gap: 0.5 }}>
+                            <div className={styles.sessions}>
                                 {sessions.map(session => (
-                                    <Typography key={session.id} variant="body2">
+                                    <p key={session.id} className={styles.session}>
                                         {formatWhen(session.lastUsedAt)}{session.mfaAt ? '' : ' (not yet verified)'}
                                         {session.userAgent && ` (${session.userAgent})`}
-                                    </Typography>
+                                    </p>
                                 ))}
-                            </Stack>
+                            </div>
                         )}
                     </Detail>
-                </Stack>
-                <Divider sx={{ my: 2 }} />
-                <Stack direction="row" sx={{ flexWrap: 'wrap', gap: 1 }}>
+                </div>
+                <hr className={frame.rule} />
+                <div className={frame.controls}>
                     {!client.passwordHash && <ResendInviteButton clientId={client.id} />}
                     <SendResetButton clientId={client.id} />
                     <ResetTwoFactorButton clientId={client.id} />
                     <SuspendButton clientId={client.id} suspended={!!client.suspendedAt} />
                     {client.lockedUntil && client.lockedUntil.getTime() > now.getTime() && <ClearLockButton clientId={client.id} />}
                     <DeleteClientButton clientId={client.id} />
-                </Stack>
-            </Paper>
+                </div>
+            </section>
 
-            <Paper sx={{ p: 3, mb: 3 }}>
-                <Typography variant="h6" component="h2" sx={{ mb: 2 }}>Sites</Typography>
-                <Stack sx={{ gap: 1, mb: 2 }}>
-                    {sites.length === 0 ? <Typography color="text.secondary">No sites linked yet.</Typography> : sites.map(site => (
-                        <Stack key={site.id} direction="row" sx={{ alignItems: 'center', gap: 1 }}>
-                            <Typography sx={{ flex: 1 }}>{site.name} <Typography component="span" color="text.secondary" sx={{ fontFamily: 'monospace' }}>{site.projectId}</Typography></Typography>
+            <section className={frame.panel}>
+                <h2 className={frame.section}>Sites</h2>
+                <div className={styles.sites}>
+                    {sites.length === 0 ? <p className={frame.empty}>No sites linked yet.</p> : sites.map(site => (
+                        <div key={site.id} className={styles.site}>
+                            <p className={styles.siteName}>{site.name} <span className={frame.mono}>{site.projectId}</span></p>
                             <RemoveSiteButton clientId={client.id} siteId={site.id} />
-                        </Stack>
+                        </div>
                     ))}
-                </Stack>
+                </div>
                 <AddSiteForm clientId={client.id} />
-            </Paper>
+            </section>
 
-            <Paper sx={{ p: 3 }}>
-                <Typography variant="h6" component="h2" sx={{ mb: 2 }}>Linked quotes</Typography>
-                {quotes.length === 0 ? <Typography color="text.secondary">No quotes linked.</Typography> : (
-                    <Stack sx={{ gap: 1 }}>
+            <section className={frame.panel}>
+                <h2 className={frame.section}>Linked quotes</h2>
+                {quotes.length === 0 ? <p className={frame.empty}>No quotes linked.</p> : (
+                    <div className={styles.quotes}>
                         {quotes.map(quote => (
-                            <Typography key={quote.id}>
-                                <Link href={`/admin/quotes/${quote.id}`} style={{ color: 'inherit' }}>{quote.name}</Link>
-                                <Typography component="span" color="text.secondary"> ({formatWhen(quote.createdAt)})</Typography>
-                            </Typography>
+                            <p key={quote.id} className={styles.quote}>
+                                <Link href={`/admin/quotes/${quote.id}`} className={frame.plainLink}>{quote.name}</Link>
+                                <span className={styles.quoteWhen}> ({formatWhen(quote.createdAt)})</span>
+                            </p>
                         ))}
-                    </Stack>
+                    </div>
                 )}
-            </Paper>
-        </Container>
+            </section>
+        </div>
     )
 }

@@ -5,7 +5,7 @@
 // whichever lines are showing stay in the middle.
 
 import { useEffect, useState } from 'react'
-import { AcUnit, Cloud, Dehaze, FilterDrama, Grain, NightsStay, Place, Thunderstorm, WaterDrop, WbSunny } from '@mui/icons-material'
+import { AcUnit, Cloud, Dehaze, FilterDrama, Grain, NightsStay, Place, Thunderstorm, WaterDrop, WbSunny } from '@/ui/icons'
 
 import NowPlaying from '../nowPlaying'
 import { useSettings } from '../settings'

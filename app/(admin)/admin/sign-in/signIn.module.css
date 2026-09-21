@@ -1,0 +1,39 @@
+/* The one page left in (admin), so it paints its own ground: app/globals.css sets the body to the landing
+   scene's navy, and this page is not that. Same centred card as the portal's pre-auth pages.
+
+   Every colour is a token, which is what ui/palette.test.ts asks of a stylesheet: that test walks ui/ and
+   does not reach this file, so the rule is kept here by hand. */
+
+.ground {
+    min-height: 100vh;
+    display: grid;
+    place-items: center;
+    padding: 16px;
+    background: var(--night);
+    color: var(--ink);
+}
+
+.panel {
+    width: 100%;
+    max-width: 380px;
+    border: 1px solid var(--rule);
+    border-radius: var(--radius-card);
+    background: var(--panel);
+    padding: 28px;
+}
+
+.title {
+    font-size: 18px;
+    font-weight: 600;
+    letter-spacing: -.01em;
+    margin: 0 0 22px;
+}
+
+.problem { margin-bottom: 18px; }
+
+.submit {
+    width: 100%;
+    padding-top: 9px;
+    padding-bottom: 9px;
+    font-size: 13.5px;
+}

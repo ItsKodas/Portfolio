@@ -1,11 +1,12 @@
 import type { Metadata } from 'next'
 import Link from 'next/link'
-import { Alert, Container, Typography } from '@mui/material'
 
 import { requireAdmin } from '@/server/auth'
 import { getDb } from '@/server/db'
 import { quoteRepo } from '@/server/quotes/repo'
+import { Callout } from '@/ui/Callout/Callout'
 import AdminHeader from '../../adminHeader'
+import frame from '../../frame.module.css'
 import { ClientForm } from '../controls'
 
 export const metadata: Metadata = { title: 'New client' }
@@ -16,20 +17,28 @@ export default async function NewClientPage({ searchParams }: { searchParams: Pr
     const quote = fromQuote ? await quoteRepo(getDb()).get(fromQuote) : null
 
     return (
-        <Container maxWidth="sm" sx={{ pb: 6 }}>
+        <div className={[frame.page, frame.sm].join(' ')}>
             <AdminHeader />
-            <Typography variant="h4" component="h1" sx={{ fontWeight: 700, mb: 1 }}>New client</Typography>
+            <div className={frame.head}>
+                <h1 className={frame.title}>New client</h1>
+            </div>
 
             {fromQuote && !quote && (
-                <Alert severity="warning" sx={{ mb: 3 }}>That quote could not be found. Fill in the details by hand instead.</Alert>
+                <div className={frame.subBlock}>
+                    <Callout tone="warn" title="That quote could not be found.">Fill in the details by hand instead.</Callout>
+                </div>
             )}
             {quote && (
-                <Alert severity="info" sx={{ mb: 3 }}>
-                    Prefilled from <Link href={`/admin/quotes/${quote.id}`} style={{ color: 'inherit' }}>{quote.name}</Link>&apos;s quote.
-                </Alert>
+                <div className={frame.subBlock}>
+                    {/* Callout's title is a string, so the sentence with the link in it stays in the body,
+                        word for word as the Alert had it, rather than being reworded to fit a heading. */}
+                    <Callout title="Prefilled from a quote">
+                        Prefilled from <Link href={`/admin/quotes/${quote.id}`} className={frame.link}>{quote.name}</Link>&apos;s quote.
+                    </Callout>
+                </div>
             )}
 
             <ClientForm fromQuoteId={quote?.id} initial={quote ? { name: quote.name, company: quote.company, email: quote.email } : undefined} />
-        </Container>
+        </div>
     )
 }

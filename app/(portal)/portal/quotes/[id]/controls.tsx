@@ -4,11 +4,15 @@
 // successful action refreshes the page itself (the actions revalidate it).
 
 import { useState } from 'react'
-import { Alert, Button, Dialog, DialogActions, DialogContent, DialogContentText, DialogTitle, IconButton, MenuItem, Stack, TextField } from '@mui/material'
-import { DeleteOutline } from '@mui/icons-material'
 
 import { STATUSES, STATUS_LABELS, type Status } from '@/server/quotes/labels'
+import { Button } from '@/ui/Button/Button'
+import { Callout } from '@/ui/Callout/Callout'
+import { Dialog } from '@/ui/Dialog/Dialog'
+import { Field } from '@/ui/Field/Field'
+import { DeleteOutline } from '@/ui/icons'
 import { addNoteAction, deleteNoteAction, deleteQuoteAction, resendEmailsAction, setArchivedAction, setStatusAction, type ActionResult } from '../actions'
+import styles from './controls.module.css'
 
 function useAction() {
     const [pending, setPending] = useState(false)
@@ -29,16 +33,20 @@ function useAction() {
     return { pending, error, run }
 }
 
-const Problem = ({ error }: { error: string | null }) => (error ? <Alert severity="error" sx={{ mt: 1 }}>{error}</Alert> : null)
+// The error is the whole message, as it was in the Alert this replaces, so it goes in the title rather than
+// being split into a heading and a body that nobody wrote. Callout's crit tone announces it either way.
+const Problem = ({ error }: { error: string | null }) => (
+    error ? <div className={styles.problem}><Callout tone="crit" title={error}>{null}</Callout></div> : null
+)
 
 export function StatusPicker({ quoteId, status }: { quoteId: string, status: Status }) {
     const { pending, error, run } = useAction()
     return (
-        <div>
-            <TextField select size="small" label="Status" value={status} disabled={pending} sx={{ minWidth: 160 }}
+        <div className={styles.picker}>
+            <Field as="select" label="Status" value={status} disabled={pending}
                 onChange={event => run(() => setStatusAction(quoteId, event.target.value))}>
-                {STATUSES.map(value => <MenuItem key={value} value={value}>{STATUS_LABELS[value]}</MenuItem>)}
-            </TextField>
+                {STATUSES.map(value => <option key={value} value={value}>{STATUS_LABELS[value]}</option>)}
+            </Field>
             <Problem error={error} />
         </div>
     )
@@ -49,27 +57,30 @@ export function QuoteActions({ quoteId, archived, emailsMissing }: { quoteId: st
     const [confirming, setConfirming] = useState(false)
     return (
         <div>
-            <Stack direction="row" sx={{ flexWrap: 'wrap', gap: 1 }}>
-                <Button variant="outlined" disabled={pending} onClick={() => run(() => setArchivedAction(quoteId, !archived))}>
+            <div className={styles.buttons}>
+                <Button disabled={pending} onClick={() => run(() => setArchivedAction(quoteId, !archived))}>
                     {archived ? 'Unarchive' : 'Archive'}
                 </Button>
                 {emailsMissing && (
-                    <Button variant="outlined" color="warning" disabled={pending} onClick={() => run(() => resendEmailsAction(quoteId))}>
+                    <Button className={styles.warn} disabled={pending} onClick={() => run(() => resendEmailsAction(quoteId))}>
                         Resend emails
                     </Button>
                 )}
-                <Button variant="outlined" color="error" disabled={pending} onClick={() => setConfirming(true)}>Delete</Button>
-            </Stack>
+                <Button className={styles.crit} disabled={pending} onClick={() => setConfirming(true)}>Delete</Button>
+            </div>
             <Problem error={error} />
-            <Dialog open={confirming} onClose={() => setConfirming(false)}>
-                <DialogTitle>Delete this quote?</DialogTitle>
-                <DialogContent>
-                    <DialogContentText>This removes the quote and its notes. It can&apos;t be undone from here.</DialogContentText>
-                </DialogContent>
-                <DialogActions>
-                    <Button onClick={() => setConfirming(false)}>Cancel</Button>
-                    <Button color="error" disabled={pending} onClick={() => run(() => deleteQuoteAction(quoteId), () => setConfirming(false))}>Delete</Button>
-                </DialogActions>
+            <Dialog
+                open={confirming}
+                onClose={() => setConfirming(false)}
+                title="Delete this quote?"
+                footer={
+                    <>
+                        <Button onClick={() => setConfirming(false)}>Cancel</Button>
+                        <Button className={styles.crit} disabled={pending} onClick={() => run(() => deleteQuoteAction(quoteId), () => setConfirming(false))}>Delete</Button>
+                    </>
+                }
+            >
+                <p className={styles.dialogText}>This removes the quote and its notes. It can&apos;t be undone from here.</p>
             </Dialog>
         </div>
     )
@@ -80,8 +91,10 @@ export function NoteForm({ quoteId }: { quoteId: string }) {
     const [body, setBody] = useState('')
     return (
         <form onSubmit={event => { event.preventDefault(); run(() => addNoteAction(quoteId, body), () => setBody('')) }}>
-            <TextField label="Add a note" multiline minRows={2} fullWidth value={body} onChange={event => setBody(event.target.value)} />
-            <Button type="submit" variant="contained" disabled={pending || !body.trim()} sx={{ mt: 1 }}>Save note</Button>
+            <Field as="textarea" label="Add a note" rows={2} value={body} onChange={event => setBody(event.target.value)} />
+            <div className={styles.noteSubmit}>
+                <Button type="submit" variant="primary" disabled={pending || !body.trim()}>Save note</Button>
+            </div>
             <Problem error={error} />
         </form>
     )
@@ -90,11 +103,11 @@ export function NoteForm({ quoteId }: { quoteId: string }) {
 export function DeleteNoteButton({ quoteId, noteId }: { quoteId: string, noteId: string }) {
     const { pending, error, run } = useAction()
     return (
-        <>
-            <IconButton size="small" aria-label="Delete note" disabled={pending} onClick={() => run(() => deleteNoteAction(quoteId, noteId))}>
-                <DeleteOutline fontSize="small" />
-            </IconButton>
+        <div>
+            <Button variant="quiet" size="small" aria-label="Delete note" disabled={pending} onClick={() => run(() => deleteNoteAction(quoteId, noteId))}>
+                <DeleteOutline size={15} />
+            </Button>
             <Problem error={error} />
-        </>
+        </div>
     )
 }

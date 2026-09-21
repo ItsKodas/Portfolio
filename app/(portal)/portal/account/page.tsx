@@ -1,13 +1,15 @@
 import type { Metadata } from 'next'
-import { Box, Chip, Container, Divider, Paper, Stack, Typography } from '@mui/material'
 
 import { requireClient } from '@/server/clients/auth'
 import { describeDevice } from '@/server/clients/account'
 import { RECOVERY_CODE_COUNT } from '@/server/clients/setup'
 import { repo } from '@/server/clients/wiring'
+import { Chip } from '@/ui/Chip/Chip'
 import { formatWhen } from '../format'
 import PortalHeader from '../header'
+import frame from '../frame.module.css'
 import { ChangePasswordForm, RegenerateCodesForm, SignOutElsewhereButton } from '../forms'
+import styles from './account.module.css'
 
 export const metadata: Metadata = { title: 'Account' }
 
@@ -19,43 +21,38 @@ export default async function PortalAccountPage() {
     ])
 
     return (
-        <Container maxWidth="md" sx={{ pb: 6 }}>
+        <div className={[frame.page, frame.md].join(' ')}>
             <PortalHeader name={client.name} />
-            <Typography variant="h4" component="h1" sx={{ fontWeight: 700, mb: 4 }}>Account</Typography>
-            <Stack spacing={3}>
-                <Paper sx={{ p: 3 }}>
-                    <Typography variant="h6" component="h2" sx={{ mb: 2 }}>Password</Typography>
-                    <ChangePasswordForm />
-                </Paper>
+            <div className={frame.head}>
+                <h1 className={frame.title}>Account</h1>
+            </div>
 
-                <Paper sx={{ p: 3 }}>
-                    <Typography variant="h6" component="h2" sx={{ mb: 2 }}>Where you are signed in</Typography>
-                    <Stack spacing={2} divider={<Divider />} sx={{ mb: sessions.length > 1 ? 2 : 0 }}>
-                        {sessions.map(session => (
-                            <Box key={session.id} sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-                                <Box>
-                                    <Stack direction="row" spacing={1} alignItems="center">
-                                        <Typography variant="body1">{describeDevice(session.userAgent)}</Typography>
-                                        {session.id === sessionId && <Chip label="This device" size="small" color="primary" variant="outlined" />}
-                                    </Stack>
-                                    <Typography variant="body2" color="text.secondary">
-                                        Last used {formatWhen(session.lastUsedAt)}
-                                    </Typography>
-                                </Box>
-                            </Box>
-                        ))}
-                    </Stack>
-                    {sessions.length > 1 && <SignOutElsewhereButton />}
-                </Paper>
+            <section className={frame.panel}>
+                <h2 className={frame.section}>Password</h2>
+                <ChangePasswordForm />
+            </section>
 
-                <Paper sx={{ p: 3 }}>
-                    <Typography variant="h6" component="h2" sx={{ mb: 2 }}>Recovery codes</Typography>
-                    <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
-                        {unusedCodes} of {RECOVERY_CODE_COUNT} unused
-                    </Typography>
-                    <RegenerateCodesForm />
-                </Paper>
-            </Stack>
-        </Container>
+            <section className={frame.panel}>
+                <h2 className={frame.section}>Where you are signed in</h2>
+                <div className={styles.sessions}>
+                    {sessions.map(session => (
+                        <div key={session.id} className={styles.session}>
+                            <div className={styles.device}>
+                                <span className={styles.deviceName}>{describeDevice(session.userAgent)}</span>
+                                {session.id === sessionId && <Chip>This device</Chip>}
+                            </div>
+                            <p className={styles.lastUsed}>Last used {formatWhen(session.lastUsedAt)}</p>
+                        </div>
+                    ))}
+                </div>
+                {sessions.length > 1 && <SignOutElsewhereButton />}
+            </section>
+
+            <section className={frame.panel}>
+                <h2 className={frame.section}>Recovery codes</h2>
+                <p className={styles.count}>{unusedCodes} of {RECOVERY_CODE_COUNT} unused</p>
+                <RegenerateCodesForm />
+            </section>
+        </div>
     )
 }

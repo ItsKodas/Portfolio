@@ -1,15 +1,18 @@
 import type { Metadata } from 'next'
 import Link from 'next/link'
-import { Box, Chip, Container, Paper, Stack, Table, TableBody, TableCell, TableContainer, TableHead, TableRow, Tooltip, Typography } from '@mui/material'
-import { WarningAmber } from '@mui/icons-material'
 
 import { requireAdmin } from '@/server/auth'
 import { getDb } from '@/server/db'
 import { emailsMissing } from '@/server/quotes/emails'
 import { BUDGET_LABELS, PROJECT_TYPE_LABELS, STATUSES, STATUS_LABELS, type Status } from '@/server/quotes/labels'
 import { quoteRepo } from '@/server/quotes/repo'
-import { STATUS_COLOURS, formatWhen } from '../format'
+import { Chip } from '@/ui/Chip/Chip'
+import { DataTable } from '@/ui/DataTable/DataTable'
+import { WarningAmber } from '@/ui/icons'
+import { STATUS_TONES, formatWhen } from '../format'
 import AdminHeader from '../adminHeader'
+import frame from '../frame.module.css'
+import styles from './quotes.module.css'
 
 export const metadata: Metadata = { title: 'Quotes' }
 
@@ -31,61 +34,58 @@ export default async function Inbox({ searchParams }: { searchParams: Promise<{ 
         { label: 'Archived', href: '/admin?archived=1', active: archived },
     ]
 
-    return (
-        <Container maxWidth="lg" sx={{ pb: 6 }}>
-            <AdminHeader />
-            <Box sx={{ display: 'flex', alignItems: 'baseline', gap: 2, mb: 2 }}>
-                <Typography variant="h4" component="h1" sx={{ fontWeight: 700 }}>Quotes</Typography>
-                <Typography color="text.secondary">{newCount} new</Typography>
-            </Box>
+    const columns = [
+        { key: 'received', head: 'Received', numeric: true },
+        { key: 'name', head: 'Name' },
+        { key: 'company', head: 'Company' },
+        { key: 'project', head: 'Project' },
+        { key: 'budget', head: 'Budget' },
+        { key: 'status', head: 'Status' },
+    ]
 
-            <Stack direction="row" sx={{ flexWrap: 'wrap', gap: 1, mb: 3 }}>
+    const rows = quotes.map(quote => ({
+        received: formatWhen(quote.createdAt),
+        name: (
+            <>
+                <Link href={`/admin/quotes/${quote.id}`} className={frame.plainLink}>{quote.name}</Link>
+                {/* Was a Tooltip, which said nothing on a touch screen and hid the meaning behind a hover.
+                    An icon with a title has an accessible name and is read out where a tooltip was not. */}
+                {emailsMissing(quote, now) && (
+                    <span className={styles.missing}>
+                        <WarningAmber size={16} title="An email for this quote was not sent" />
+                    </span>
+                )}
+            </>
+        ),
+        company: quote.company,
+        project: quote.projectType && PROJECT_TYPE_LABELS[quote.projectType],
+        budget: quote.budget && BUDGET_LABELS[quote.budget],
+        status: <Chip tone={STATUS_TONES[quote.status]}>{STATUS_LABELS[quote.status]}</Chip>,
+    }))
+
+    return (
+        <div className={frame.page}>
+            <AdminHeader />
+            <div className={frame.head}>
+                <h1 className={frame.title}>Quotes</h1>
+                <p className={frame.sub}>{newCount} new</p>
+            </div>
+
+            <div className={styles.filters}>
                 {filters.map(filter => (
-                    <Link key={filter.label} href={filter.href}>
-                        <Chip label={filter.label} clickable color={filter.active ? 'primary' : 'default'} variant={filter.active ? 'filled' : 'outlined'} />
+                    <Link
+                        key={filter.label}
+                        href={filter.href}
+                        className={[styles.filter, filter.active && styles.filterOn].filter(Boolean).join(' ')}
+                        aria-current={filter.active ? 'page' : undefined}
+                    >
+                        {filter.label}
                     </Link>
                 ))}
-            </Stack>
+            </div>
 
-            {quotes.length === 0 ? (
-                <Typography color="text.secondary">Nothing here.</Typography>
-            ) : (
-                <Paper>
-                    <TableContainer>
-                        <Table size="small">
-                            <TableHead>
-                                <TableRow>
-                                    <TableCell>Received</TableCell>
-                                    <TableCell>Name</TableCell>
-                                    <TableCell>Company</TableCell>
-                                    <TableCell>Project</TableCell>
-                                    <TableCell>Budget</TableCell>
-                                    <TableCell>Status</TableCell>
-                                </TableRow>
-                            </TableHead>
-                            <TableBody>
-                                {quotes.map(quote => (
-                                    <TableRow key={quote.id} hover>
-                                        <TableCell sx={{ whiteSpace: 'nowrap' }}>{formatWhen(quote.createdAt)}</TableCell>
-                                        <TableCell>
-                                            <Link href={`/admin/quotes/${quote.id}`} style={{ color: 'inherit', fontWeight: 600 }}>{quote.name}</Link>
-                                            {emailsMissing(quote, now) && (
-                                                <Tooltip title="An email for this quote was not sent">
-                                                    <WarningAmber color="warning" sx={{ fontSize: 18, ml: 1, verticalAlign: 'middle' }} />
-                                                </Tooltip>
-                                            )}
-                                        </TableCell>
-                                        <TableCell>{quote.company}</TableCell>
-                                        <TableCell>{quote.projectType && PROJECT_TYPE_LABELS[quote.projectType]}</TableCell>
-                                        <TableCell>{quote.budget && BUDGET_LABELS[quote.budget]}</TableCell>
-                                        <TableCell><Chip size="small" label={STATUS_LABELS[quote.status]} color={STATUS_COLOURS[quote.status]} /></TableCell>
-                                    </TableRow>
-                                ))}
-                            </TableBody>
-                        </Table>
-                    </TableContainer>
-                </Paper>
-            )}
-        </Container>
+            {/* DataTable prints its own line rather than headings over nothing, so the page has no empty state of its own */}
+            <DataTable label="Quotes" columns={columns} rows={rows} empty="Nothing here." />
+        </div>
     )
 }

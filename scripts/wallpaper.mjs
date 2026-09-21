@@ -16,7 +16,7 @@ import { join, normalize, sep } from 'node:path'
 const DIST = join('dist', 'wallpaper-engine')
 // ui/ is here because app/globals.css imports ui/tokens.css, so the copy has to contain it or the stylesheet
 // can't resolve.
-const SOURCES = ['app', 'public', 'themes', 'ui', 'global.d.ts', 'next.config.ts', 'tsconfig.json', 'tailwind.config.ts',
+const SOURCES = ['app', 'public', 'ui', 'global.d.ts', 'next.config.ts', 'tsconfig.json', 'tailwind.config.ts',
     'postcss.config.mjs', 'eslint.config.mjs', 'package.json', 'package-lock.json']
 
 // The quote form, the admin area, the client portal and the API are server-side (server actions, route handlers,

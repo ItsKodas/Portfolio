@@ -1,0 +1,69 @@
+/* What the client controls used to get from MUI's Stack, Box and the sx prop. Every colour is a token or a
+   neutral overlay, which is what ui/palette.test.ts asks of a stylesheet: that test walks ui/ and does not
+   reach this file, so the rule is kept here by hand. */
+
+.problem { margin-top: 8px; }
+
+.fields {
+    display: grid;
+    gap: 14px;
+    max-width: 420px;
+}
+
+.idLine {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
+.id {
+    font-family: var(--font-mono), monospace;
+    font-size: 13px;
+}
+
+.copied {
+    font-size: 11.5px;
+    color: var(--good);
+}
+
+.note {
+    font-size: 11.5px;
+    color: var(--ink-3);
+    margin: 4px 0 0;
+}
+
+.link { color: var(--lake); }
+
+.dialogText {
+    margin: 0;
+    color: var(--ink-2);
+    font-size: 13px;
+    line-height: 1.6;
+}
+
+.addSite {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 10px;
+    align-items: flex-start;
+}
+
+/* The two fields are a grid row of their own, so the button lines up with their controls and not their labels */
+.addSiteButton { margin-top: 23px; }
+
+/* A destructive or cautionary button keeps ui/Button's shape and only takes the tone's colour, the same way
+   ui/Chip tints a border rather than repainting the whole control. */
+.warn {
+    color: var(--warn);
+    border-color: color-mix(in srgb, var(--warn) 40%, transparent);
+}
+
+.crit {
+    color: var(--soft-red);
+    border-color: color-mix(in srgb, var(--crit) 45%, transparent);
+}
+
+.good {
+    color: var(--good);
+    border-color: color-mix(in srgb, var(--good) 35%, transparent);
+}

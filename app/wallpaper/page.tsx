@@ -6,10 +6,8 @@
 // and the sky barely at all.
 
 import { useEffect } from 'react'
-import { ThemeProvider } from '@mui/material'
 import { animated, config, to, useSpring } from '@react-spring/web'
 
-import DarkTheme from '@/themes/dark'
 import { setPerf } from '@/app/perf/usePerf'
 import { FullScene, type LayerProps } from '@/app/(landing)/parallax'
 import styles from '@/app/(landing)/parallax/parallax.module.css'
@@ -72,7 +70,7 @@ export default function Wallpaper() {
     const overscan = parallax ? 1.005 + 2 * MAX_SHIFT * strength / 100 : 1
 
     return (
-        <ThemeProvider theme={DarkTheme}>
+        <>
             <div className='relative h-svh overflow-hidden bg-[#0b101f]'>
                 <section className={`absolute inset-x-0 top-0 h-[200svh] ${paused ? styles.paused : ''}`}
                     style={{ transform: `scale(${overscan})`, transformOrigin: '50% 50svh' }}>
@@ -86,6 +84,6 @@ export default function Wallpaper() {
             <NowPlayingCorner />
             <SiteLinks />
             <SceneCurtain />
-        </ThemeProvider>
+        </>
     )
 }

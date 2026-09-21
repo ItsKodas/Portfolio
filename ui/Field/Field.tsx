@@ -1,6 +1,6 @@
 'use client'
 
-import { useId, type InputHTMLAttributes, type TextareaHTMLAttributes } from 'react'
+import { useId, type InputHTMLAttributes, type ReactNode, type TextareaHTMLAttributes } from 'react'
 
 import styles from './Field.module.css'
 
@@ -13,10 +13,14 @@ type Props = Omit<InputHTMLAttributes<HTMLInputElement>, 'id'> & TextareaOnly & 
     label: string
     hint?: string
     error?: string
-    as?: 'input' | 'textarea'
+    as?: 'input' | 'textarea' | 'select'
+    // `as="select"` takes its options as children. children is already part of the input attributes, so this
+    // only narrows what it means here, and it is pulled out of the rest below either way: an input is a void
+    // element and React refuses to render one with children at all.
+    children?: ReactNode
 }
 
-export function Field({ label, hint, error, as = 'input', className, ...rest }: Props) {
+export function Field({ label, hint, error, as = 'input', className, children, ...rest }: Props) {
     // useId rather than the name, so two fields with the same label on one page still get different ids
     const id = useId()
     const hintId = `${id}-hint`
@@ -28,7 +32,9 @@ export function Field({ label, hint, error, as = 'input', className, ...rest }: 
 
     const controlProps = {
         id,
-        className: [styles.control, error && styles.invalid, className].filter(Boolean).join(' '),
+        className: [styles.control, as === 'select' && styles.select, error && styles.invalid, className]
+            .filter(Boolean)
+            .join(' '),
         'aria-invalid': error ? true : false,
         'aria-describedby': describedBy,
         ...rest,
@@ -37,9 +43,9 @@ export function Field({ label, hint, error, as = 'input', className, ...rest }: 
     return (
         <div className={styles.field}>
             <label className={styles.label} htmlFor={id}>{label}</label>
-            {as === 'textarea'
-                ? <textarea {...(controlProps as object)} />
-                : <input {...controlProps} />}
+            {as === 'select' && <select {...(controlProps as object)}>{children}</select>}
+            {as === 'textarea' && <textarea {...(controlProps as object)} />}
+            {as === 'input' && <input {...controlProps} />}
             {hint && <span className={styles.hint} id={hintId}>{hint}</span>}
             {error && <span className={styles.error} id={errorId}>{error}</span>}
         </div>
