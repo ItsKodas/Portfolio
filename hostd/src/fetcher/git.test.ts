@@ -52,6 +52,38 @@ describe('argv', () => {
     })
 })
 
+describe('safe.directory scope', () => {
+    it('trusts only the exact directory a fetch operates on', async () => {
+        const { run, runs } = recorder()
+        await runGit({ verb: 'fetch', dir: '/var/www/b.git', branch: null }, run)
+        assert.deepEqual(runs[0], [
+            'git', '-c', 'safe.directory=/var/www/b.git', '-C', '/var/www/b.git', 'fetch', '--prune', '--', 'origin',
+        ])
+    })
+
+    it('does the same for checkout, log and tip: every verb that runs against a repository someone else owns', async () => {
+        const { run, runs } = recorder([ok, ok, ok])
+        await runGit({ verb: 'checkout', dir: '/var/www/b.git', worktree: '/var/www/b.next', commit: 'a1b2c3d' }, run)
+        await runGit({ verb: 'log', dir: '/var/www/b.git', branch: 'main', limit: 10 }, run)
+        await runGit({ verb: 'tip', dir: '/var/www/b.git', branch: 'main' }, run)
+        assert.deepEqual(runs[0]!.slice(0, 3), ['git', '-c', 'safe.directory=/var/www/b.git'])
+        assert.deepEqual(runs[1]!.slice(0, 3), ['git', '-c', 'safe.directory=/var/www/b.git'])
+        assert.deepEqual(runs[2]!.slice(0, 3), ['git', '-c', 'safe.directory=/var/www/b.git'])
+    })
+
+    it('never adds it for clone, whose destination does not exist yet and so is never dubious', async () => {
+        const { run, runs } = recorder([ok, { ...ok, stdout: 'a1b2c3d4e5f6\n' }])
+        await runGit({ verb: 'clone', repo: 'git@github.com:a/b.git', dir: '/var/www/b', branch: 'main' }, run)
+        assert.deepEqual(runs[0], ['git', 'clone', '--branch', 'main', '--single-branch', '--', 'git@github.com:a/b.git', '/var/www/b'])
+    })
+
+    it('never adds it for branches, which touches no local directory at all', async () => {
+        const { run, runs } = recorder()
+        await runGit({ verb: 'branches', repo: 'git@github.com:a/b.git' }, run)
+        assert.deepEqual(runs[0], ['git', 'ls-remote', '--heads', '--', 'git@github.com:a/b.git'])
+    })
+})
+
 describe('parseBranches', () => {
     it('reads the branch names out of ls-remote --heads, dropping the shas', () => {
         const stdout = 'a1b2c3d4\trefs/heads/main\n9d8c7b6a\trefs/heads/feature/thing\n'

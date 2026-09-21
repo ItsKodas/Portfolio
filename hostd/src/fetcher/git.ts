@@ -80,9 +80,34 @@ function argvFor(request: FetchRequest): string[] {
     }
 }
 
+// Every repository under /var/www belongs to the operator (uid 1000), not root, because these are the
+// operator's own checkouts and hostd must never take ownership of them: chowning them to root to make
+// git happy is exactly the kind of fix that has already taken this machine down once, when a writer left
+// a file root-only and a container running as someone else could no longer read it (see own's own
+// comment in agent/index.ts). Git's own answer to a root process running against a directory it does not
+// own is to refuse outright: "detected dubious ownership in repository at '<dir>'", which is exactly
+// what stopped this container's first deploy on the live server, against a repository the operator had
+// cloned by hand. `-c safe.directory=<dir>`, scoped to the one invocation
+// and the one directory the caller (the agent, which only ever names trees under /var/www) actually
+// asked this command to operate on, is deliberately narrower than a persisted, machine-wide
+// `git config --global --add safe.directory '*'`: it never trusts anything beyond what this single git
+// call was already going to touch, it needs no static list of repositories (sites are enrolled and
+// created long after this process boots, so no such list could be complete anyway), and it leaves
+// nothing behind in root's global gitconfig once the call returns. clone and branches never need it:
+// clone's destination does not exist yet, so there is nothing yet for git to call dubious, and branches
+// (`git ls-remote`) never touches a local directory at all.
+function safeDirectoryArgs(request: FetchRequest): string[] {
+    switch (request.verb) {
+        case 'fetch': case 'checkout': case 'log': case 'tip':
+            return ['-c', `safe.directory=${request.dir}`]
+        case 'clone': case 'branches':
+            return []
+    }
+}
+
 export async function runGit(request: FetchRequest, run: Runner): Promise<FetchReply> {
     const { verb } = request
-    const result = await run('git', argvFor(request), GIT_TIMEOUT_MS)
+    const result = await run('git', [...safeDirectoryArgs(request), ...argvFor(request)], GIT_TIMEOUT_MS)
     if (result.timedOut) return { ok: false, code: 'failed', message: `git ${verb} timed out` }
     if (result.exitCode !== 0) return { ok: false, code: 'failed', message: redact(tail(result.stderr) || tail(result.stdout)) }
 
