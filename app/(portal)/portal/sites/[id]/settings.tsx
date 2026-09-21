@@ -52,6 +52,9 @@ export function SiteSettingsForm({ id, capabilities, repo, environments }: {
         Object.fromEntries(environments.map(env => [env.name, env.branch ?? ''])))
     const [pending, setPending] = useState(false)
     const [said, setSaid] = useState<SiteActionResult | null>(null)
+    // Set instead of said on a no-op save: said is what a call to hostd came back with, and a save that
+    // made no call has nothing of hostd's to report.
+    const [nothingChanged, setNothingChanged] = useState(false)
 
     function toggle(key: string) {
         setChecked(prev => {
@@ -63,28 +66,44 @@ export function SiteSettingsForm({ id, capabilities, repo, environments }: {
     }
 
     async function save() {
-        setPending(true)
         setSaid(null)
+        setNothingChanged(false)
+
+        // The registry's own order first, then anything newly ticked: a hand-maintained [logs, lifecycle]
+        // comes back as it was written rather than sorted into this file's order. The first list also
+        // keeps any capability the registry holds that CAPABILITIES below does not know about (hostd owns
+        // that list, not this page): it has no checkbox, so it can never be unticked here, and dropping it
+        // silently on the first save of any site is not something the day hostd gains a ninth capability
+        // should cost.
+        const nextCapabilities = [
+            ...capabilities.filter(key => checked.has(key)),
+            ...CAPABILITIES.filter(cap => checked.has(cap.key) && !capabilities.includes(cap.key)).map(cap => cap.key),
+        ]
+        const nextRepo = repoValue.trim() === '' ? null : repoValue
+        // Compared per environment, not as one object: a save that only touched live must never carry
+        // test's branch along, because a present key means "set this" to hostd and an untouched one taken
+        // from stale props would set it back to whatever this page happened to be rendered from. That is
+        // exactly how a repo got wiped from a live site: a page that read a stale registry copy sent every
+        // field back, including one the operator had never touched this session.
+        const changedBranches: Record<string, string | null> = {}
+        for (const env of environments) {
+            const nextBranch = blankToNull(branchValues[env.name])
+            if (nextBranch !== (env.branch ?? null)) changedBranches[env.name] = nextBranch
+        }
+
+        const payload: { capabilities?: string[], repo?: string | null, branches?: Record<string, string | null> } = {}
+        if (!sameList(nextCapabilities, capabilities)) payload.capabilities = nextCapabilities
+        if (nextRepo !== repo) payload.repo = nextRepo
+        if (Object.keys(changedBranches).length > 0) payload.branches = changedBranches
+
+        if (Object.keys(payload).length === 0) {
+            setNothingChanged(true)
+            return
+        }
+
+        setPending(true)
         try {
-            const result = await saveSettingsAction(id, {
-                // Every field is sent every time, not only what changed: a present field means "set
-                // this" to hostd, the current value is what the form already holds, and sending it back
-                // is idempotent, so there is nothing a diff against the original would buy.
-                // The registry's own order first, then anything newly ticked: a hand-maintained
-                // [logs, lifecycle] comes back as it was written rather than sorted into this file's
-                // order. The first list also keeps any capability the registry holds that CAPABILITIES
-                // below does not know about (hostd owns that list, not this page): it has no checkbox,
-                // so it can never be unticked here, and dropping it silently on the first save of any
-                // site is not something the day hostd gains a ninth capability should cost.
-                capabilities: [
-                    ...capabilities.filter(key => checked.has(key)),
-                    ...CAPABILITIES.filter(cap => checked.has(cap.key) && !capabilities.includes(cap.key)).map(cap => cap.key),
-                ],
-                repo: repoValue.trim() === '' ? null : repoValue,
-                branches: Object.fromEntries(
-                    environments.map(env => [env.name, blankToNull(branchValues[env.name])]),
-                ),
-            })
+            const result = await saveSettingsAction(id, payload)
             setSaid(result)
             // Capabilities gate which tabs this page shows, so a save that changed them leaves the page
             // showing the wrong set until it is re-read.
@@ -141,10 +160,20 @@ export function SiteSettingsForm({ id, capabilities, repo, environments }: {
                         : <Callout tone="crit" title="That was not saved">{said.error}</Callout>}
                 </div>
             )}
+
+            {nothingChanged && <p className={styles.note}>Nothing changed, so nothing was saved.</p>}
         </div>
     )
 }
 
 function blankToNull(value: string | undefined): string | null {
     return value === undefined || value.trim() === '' ? null : value
+}
+
+// Order matters here, not just membership: CAPABILITIES is rebuilt in the registry's own order (see the
+// comment in save() above), so a real reorder should still count as a change even though nothing else
+// noticed, but the everyday case (nothing ticked or unticked) always rebuilds the same order it started
+// from, which is what makes a plain positional compare the right one rather than a set compare.
+function sameList(a: string[], b: string[]): boolean {
+    return a.length === b.length && a.every((value, index) => value === b[index])
 }

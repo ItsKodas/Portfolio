@@ -36,19 +36,60 @@ describe('the settings form', () => {
         expect(screen.getByText(/not built yet/i)).toBeInTheDocument()
     })
 
-    it('sends the whole form', async () => {
+    // A stale page (api served a registry copy from before an earlier save) must not let an untouched
+    // field overwrite what is actually saved. Sending only what changed means a stale page costs the
+    // operator the one field they edited, not everything on the form: see feedback-dont-touch-apex-mail
+    // in spirit, but the actual incident was hostd's repo getting cleared by a capability-only save.
+    it('sends only the field that actually changed', async () => {
         render(<SiteSettingsForm {...props} />)
 
         await userEvent.click(screen.getByRole('checkbox', { name: /deploy/ }))
-        await userEvent.type(screen.getByLabelText(/repo/i), 'git@github.com:ItsKodas/arbysauto.git')
-        await userEvent.type(screen.getByLabelText(/branch/i), 'main')
         await userEvent.click(screen.getByRole('button', { name: /save/i }))
 
         expect(saveSettingsAction).toHaveBeenCalledWith('arbysauto', {
             capabilities: ['lifecycle', 'logs', 'deploy'],
-            repo: 'git@github.com:ItsKodas/arbysauto.git',
-            branches: { live: 'main' },
         })
+    })
+
+    it('leaves an untouched repo out of the payload entirely', async () => {
+        render(<SiteSettingsForm {...props} repo="git@github.com:ItsKodas/a.git" />)
+
+        await userEvent.click(screen.getByRole('checkbox', { name: /deploy/ }))
+        await userEvent.click(screen.getByRole('button', { name: /save/i }))
+
+        const [, payload] = saveSettingsAction.mock.calls[0] as [string, Record<string, unknown>]
+        expect(payload).not.toHaveProperty('repo')
+    })
+
+    // The whole point: only the environment actually edited rides along, so a save never clears a branch
+    // on the environment left alone.
+    it('sends only the environment whose branch changed, not the other one', async () => {
+        const twoEnvironments = [
+            { name: 'live', branch: 'main', dir: '/var/www/arbysauto', port: 5011 },
+            { name: 'test', branch: 'develop', dir: '/var/www/arbysauto-test', port: 5012 },
+        ]
+        render(<SiteSettingsForm {...props} environments={twoEnvironments} />)
+
+        const liveBranch = screen.getByLabelText(/live branch/i)
+        await userEvent.clear(liveBranch)
+        await userEvent.type(liveBranch, 'release')
+        await userEvent.click(screen.getByRole('button', { name: /save/i }))
+
+        const [, payload] = saveSettingsAction.mock.calls[0] as [string, Record<string, unknown>]
+        expect(payload).not.toHaveProperty('capabilities')
+        expect(payload).not.toHaveProperty('repo')
+        expect(payload).toEqual({ branches: { live: 'release' } })
+    })
+
+    // Saving what nobody touched would report success over a request that changed nothing on hostd's end.
+    it('calls nothing, and says so plainly, when nothing on the form changed', async () => {
+        render(<SiteSettingsForm {...props} />)
+
+        await userEvent.click(screen.getByRole('button', { name: /save/i }))
+
+        expect(saveSettingsAction).not.toHaveBeenCalled()
+        expect(await screen.findByText(/nothing changed/i)).toBeInTheDocument()
+        expect(refresh).not.toHaveBeenCalled()
     })
 
     // The destructive direction, and the one the two below would show up in: everything the form sends is
@@ -62,10 +103,11 @@ describe('the settings form', () => {
         expect(saveSettingsAction).toHaveBeenCalledWith('arbysauto', expect.objectContaining({ capabilities: ['lifecycle'] }))
     })
 
-    it('keeps the order the registry holds them in rather than this page\'s', async () => {
+    it('keeps the order the registry holds them in rather than this page\'s, once something actually changed', async () => {
         render(<SiteSettingsForm {...props} capabilities={['logs', 'lifecycle']} />)
+        await userEvent.click(screen.getByRole('checkbox', { name: /deploy/ }))
         await userEvent.click(screen.getByRole('button', { name: /save/i }))
-        expect(saveSettingsAction).toHaveBeenCalledWith('arbysauto', expect.objectContaining({ capabilities: ['logs', 'lifecycle'] }))
+        expect(saveSettingsAction).toHaveBeenCalledWith('arbysauto', { capabilities: ['logs', 'lifecycle', 'deploy'] })
     })
 
     // hostd owns the capability list, not this page. One it gains that this page has not been taught has
