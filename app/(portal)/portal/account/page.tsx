@@ -5,7 +5,7 @@ import { requireClient } from '@/server/clients/auth'
 import { describeDevice } from '@/server/clients/account'
 import { RECOVERY_CODE_COUNT } from '@/server/clients/setup'
 import { repo } from '@/server/clients/wiring'
-import { formatWhen } from '@/app/(admin)/admin/format'
+import { formatWhen } from '../format'
 import PortalHeader from '../header'
 import { ChangePasswordForm, RegenerateCodesForm, SignOutElsewhereButton } from '../forms'
 

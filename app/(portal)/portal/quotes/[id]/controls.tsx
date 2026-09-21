@@ -8,7 +8,7 @@ import { Alert, Button, Dialog, DialogActions, DialogContent, DialogContentText,
 import { DeleteOutline } from '@mui/icons-material'
 
 import { STATUSES, STATUS_LABELS, type Status } from '@/server/quotes/labels'
-import { addNoteAction, deleteNoteAction, deleteQuoteAction, resendEmailsAction, setArchivedAction, setStatusAction, type ActionResult } from '../../actions'
+import { addNoteAction, deleteNoteAction, deleteQuoteAction, resendEmailsAction, setArchivedAction, setStatusAction, type ActionResult } from '../actions'
 
 function useAction() {
     const [pending, setPending] = useState(false)

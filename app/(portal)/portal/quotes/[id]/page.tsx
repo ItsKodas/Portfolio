@@ -9,7 +9,7 @@ import { emailsMissing } from '@/server/quotes/emails'
 import { BUDGET_LABELS, PROJECT_TYPE_LABELS, STATUS_LABELS, TIMELINE_LABELS } from '@/server/quotes/labels'
 import { quoteRepo } from '@/server/quotes/repo'
 import { STATUS_COLOURS, formatWhen } from '../../format'
-import AdminHeader from '../../header'
+import AdminHeader from '../../adminHeader'
 import { DeleteNoteButton, NoteForm, QuoteActions, StatusPicker } from './controls'
 
 export const metadata: Metadata = { title: 'Quote' }

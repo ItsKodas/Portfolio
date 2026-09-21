@@ -5,7 +5,7 @@ import { Alert, Container, Typography } from '@mui/material'
 import { requireAdmin } from '@/server/auth'
 import { getDb } from '@/server/db'
 import { quoteRepo } from '@/server/quotes/repo'
-import AdminHeader from '../../header'
+import AdminHeader from '../../adminHeader'
 import { ClientForm } from '../controls'
 
 export const metadata: Metadata = { title: 'New client' }

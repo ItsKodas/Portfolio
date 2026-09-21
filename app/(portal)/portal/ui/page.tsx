@@ -2,7 +2,7 @@ import type { Metadata } from 'next'
 import { Container } from '@mui/material'
 
 import { requireAdmin } from '@/server/auth'
-import AdminHeader from '../header'
+import AdminHeader from '../adminHeader'
 import Emails from './emails'
 import Gallery from './gallery'
 

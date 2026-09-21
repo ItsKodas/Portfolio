@@ -32,7 +32,7 @@ describe('notificationEmail', () => {
     })
 
     it('includes every given field, the message and a link to the quote', () => {
-        for (const part of ['Ann & Co', 'https://ann.example.com', 'Web app', '$2k to $5k', 'https://one.example.com', 'https://two.example.com', 'with two lines', 'https://www.horizons.gg/admin/quotes/q1']) {
+        for (const part of ['Ann & Co', 'https://ann.example.com', 'Web app', '$2k to $5k', 'https://one.example.com', 'https://two.example.com', 'with two lines', 'https://www.horizons.gg/portal/quotes/q1']) {
             expect(email.text).toContain(part)
         }
         expect(email.text).not.toContain('Timeline')
@@ -108,7 +108,7 @@ describe('the styled shell', () => {
     })
 
     it('links the notification to the quote, showing the same address as the link text', () => {
-        const link = 'https://www.horizons.gg/admin/quotes/q1'
+        const link = 'https://www.horizons.gg/portal/quotes/q1'
         const hrefs = [...notificationEmail(quote, notify).html.matchAll(/href="([^"]*)"/g)].map(match => match[1])
 
         expect(hrefs).toEqual([link, link])
