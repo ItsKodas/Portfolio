@@ -18,6 +18,7 @@ import { deployTrees } from './deploy-compose.ts'
 import type { DeployDeps } from './deploy.ts'
 import type { DeployRunner } from './deploy-runner.ts'
 import type { DeployStore } from './deploy-state.ts'
+import type { FetchClient } from './fetch-client.ts'
 import { buildServiceStatuses, groupByProject, pickPerService, type ContainerInspect, type ContainerSummary, type DockerApi } from './docker.ts'
 import { createLogDecoder } from './logframes.ts'
 import { listEnvFiles, readEnvFile, writeEnvFile, type EnvFs } from './env-files.ts'
@@ -61,6 +62,11 @@ export type AgentDeps = {
         store: Pick<DeployStore, 'get' | 'resume'>
         deps: DeployDeps
     }
+    // Absent exactly like provision and deploys until the production entrypoint wires the fetcher socket:
+    // the branches verb then refuses unavailable instead of crashing. Separate from provision's and
+    // deploys' own copies of the same FetchClient (they need it for a lot more than this one call), and
+    // Pick<..., 'call'> rather than the class itself, so a test can hand this a plain object.
+    fetcher?: Pick<FetchClient, 'call'>
 }
 
 export type Outcome =
@@ -115,7 +121,23 @@ export class Agent {
                 return reply(await this.deploy(checked.project, request.args))
             case 'configure':
                 return reply(await this.configure(checked.project, request.args))
+            case 'branches':
+                return reply(await this.branches(checked.project))
         }
+    }
+
+    // The repo comes from the registry entry checkStructure just returned, never from the request: a
+    // caller names a project and that is all it is trusted with. Fills the portal's Settings form, so a
+    // project with nothing to list from is refused by name rather than asked of the fetcher for nothing.
+    private async branches(project: ProjectEntry): Promise<AgentReply> {
+        if (!project.repo) return refuse('bad-request', `${project.id} has no repo to list branches from`)
+        if (!this.deps.fetcher) return refuse('unavailable', 'the fetcher is not configured')
+        const result = await this.deps.fetcher.call({ verb: 'branches', repo: project.repo })
+        // Collapsed to bad-request or failed exactly as the deploy verb's own commits case collapses the
+        // fetcher's reply: bad-request is the fetcher itself refusing the shape of the request (which
+        // means a bug here, not something the caller did), and everything else reads as failed.
+        if (!result.ok) return refuse(result.code === 'bad-request' ? 'bad-request' : 'failed', result.message)
+        return { ok: true, branches: result.branches ?? [] }
     }
 
     private async deploy(project: ProjectEntry, args: DeployArgs): Promise<AgentReply> {

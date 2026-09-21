@@ -197,6 +197,10 @@ async function main(): Promise<void> {
         refreshRegistry: async () => { await store.refresh() },
         provision,
         deploys: { runner: deployRunner, store: deployStore, deps: deployDeps },
+        // The same client provision and deploy already hold: branches needs nothing else from it, so it
+        // is never gated behind fetcherProblem/'unavailable' any more than configure is behind the
+        // registry writer above.
+        fetcher,
     })
 
     await rm(SOCKET_PATH, { force: true })
