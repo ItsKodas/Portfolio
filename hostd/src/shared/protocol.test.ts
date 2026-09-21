@@ -203,6 +203,31 @@ describe('parseAgentRequest', () => {
         assert.equal(refusalOf({ verb: 'deploy', project: 'acme', args: { action: 'commits', environment: 'live', limit: 100000 } }), `bad-request: limit must be a whole number from 1 to ${MAX_COMMITS}`)
         assert.equal(refusalOf({ verb: 'deploy', project: 'acme', args: { action: 'history' } }), 'bad-request: environment must be live or test')
     })
+
+    it('parses a configure request carrying all three fields', () => {
+        assert.deepEqual(
+            parsed({ verb: 'configure', project: 'acme', args: { capabilities: ['lifecycle', 'logs'], repo: null, branches: { live: 'main', test: null } } }),
+            { ok: true, request: { verb: 'configure', project: 'acme', args: { capabilities: ['lifecycle', 'logs'], repo: null, branches: { live: 'main', test: null } } } },
+        )
+    })
+
+    it('parses a configure request carrying only some fields, since absent means leave alone', () => {
+        assert.deepEqual(
+            parsed({ verb: 'configure', project: 'acme', args: { repo: 'git@github.com:x/acme.git' } }),
+            { ok: true, request: { verb: 'configure', project: 'acme', args: { repo: 'git@github.com:x/acme.git' } } },
+        )
+        assert.deepEqual(
+            parsed({ verb: 'configure', project: 'acme', args: {} }),
+            { ok: true, request: { verb: 'configure', project: 'acme', args: {} } },
+        )
+    })
+
+    it('refuses malformed configure requests', () => {
+        assert.equal(refusalOf({ verb: 'configure', project: 'acme', args: { capabilities: ['teleport'] } }), 'bad-request: capabilities must be a list of known capabilities')
+        assert.equal(refusalOf({ verb: 'configure', project: 'acme', args: { branches: { live: 'a branch' } } }), 'bad-request: live branch must be null or a plain branch name')
+        assert.equal(refusalOf({ verb: 'configure', project: 'acme', args: { branches: { staging: 'main' } } }), 'bad-request: staging is not an environment')
+        assert.equal(refusalOf({ verb: 'configure', project: 'acme', args: { capabilities: [], extra: true } }), 'bad-request: configure takes only capabilities, repo and branches')
+    })
 })
 
 const registry = parseRegistry(`
