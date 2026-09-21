@@ -7,7 +7,7 @@
 // record (no vhost written for it yet) and a failed one (already gave up; only a manual retry revives it)
 // are never scheduled at all.
 
-import { domainKey, type DomainRecord, type DomainStore } from './domain-state.ts'
+import { domainKey, type DomainRecord } from './domain-state.ts'
 import { verifyHostname, type VerifyOutcome } from './verify.ts'
 
 export const FAST_EVERY_MS = 60_000
@@ -16,7 +16,9 @@ export const FAST_FOR_MS = 60 * 60_000
 export const GIVE_UP_AFTER_MS = 72 * 60 * 60_000
 export const ACTIVE_EVERY_MS = 24 * 60 * 60_000
 
-const CHECK_INTERVAL_MS = 30_000
+// Exported so a test can advance a mocked clock by exactly the interval `start()` schedules on, rather
+// than duplicating the number and risking it drifting from the real one.
+export const CHECK_INTERVAL_MS = 30_000
 
 // The cadence for a record that is still being proved: fast while it is young, then slow, for as long as
 // it takes. Used by both `pending` (racing the 72 hour clock) and `broken` (which never races anything).
@@ -75,6 +77,15 @@ export function afterCheck(record: DomainRecord, outcome: VerifyOutcome, now: st
 // carries itself.
 export type VerifyTarget = { scheme: 'http' | 'https', proxied: boolean }
 
+// The slice of DomainStore the Verifier actually needs. Structural rather than importing the class
+// itself, so a test can hand it a plain in-memory fake instead of a real DomainStore backed by a
+// filesystem; a real DomainStore still satisfies this shape, so production wiring is unaffected.
+export type RecordStore = {
+    get(key: string): DomainRecord | undefined
+    all(): DomainRecord[]
+    put(record: DomainRecord): Promise<void>
+}
+
 // One interval over disk state, rather than a timer per record. `api` restarts (a deploy, a crash, an
 // operator's Ctrl-C), and a per-record timer would begin the 72 hours again every time it did, which is
 // exactly the situation a client is in while they wait for their DNS to propagate: they would never see
@@ -85,7 +96,7 @@ export class Verifier {
     private timer: ReturnType<typeof setInterval> | null = null
 
     constructor(
-        private readonly store: DomainStore,
+        private readonly store: RecordStore,
         private readonly fetchImpl: typeof fetch,
         private readonly target: (record: DomainRecord) => VerifyTarget,
         private readonly log: (message: string) => void = () => {},
@@ -106,6 +117,12 @@ export class Verifier {
     // Forces one record regardless of schedule. A `failed` record is reset to `pending` first, with a
     // fresh `firstSeenAt`, or a manual retry would have nothing to schedule: dueNow would still see the
     // original 72 hours as spent and the very next tick would fail it right back.
+    //
+    // Resetting `firstSeenAt` (not just `state`) is deliberate and easy to mistake for redundant: a
+    // record only reaches `failed` once its `firstSeenAt` is already at least 72 hours old, by
+    // construction (see afterCheck). Flip the state back to `pending` without also moving `firstSeenAt`
+    // and the very next check reads an age that is still past GIVE_UP_AFTER_MS, failing it right back
+    // before the client's retry has had a single chance to succeed. Do not remove this line.
     async checkNow(key: string): Promise<void> {
         const record = this.store.get(key)
         if (record === undefined) return
@@ -116,7 +133,10 @@ export class Verifier {
         await this.check(target)
     }
 
-    private async tick(): Promise<void> {
+    // Exposed (rather than private) so a test can drive one pass directly against an injected clock and
+    // fake store/fetch, with no real timer involved. `start()` still schedules it the same way in
+    // production; this only widens who is allowed to call it.
+    async tick(): Promise<void> {
         const due = dueNow(this.store.all(), this.now())
         for (const record of due) {
             await this.check(record).catch(error => this.log(`check failed for ${domainKey(record.project, record.environment, record.hostname)}: ${String(error)}`))
