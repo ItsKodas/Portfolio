@@ -1,0 +1,81 @@
+/* The site page's own frame, and nothing more: the ui/ components carry their own look.
+
+   Every colour here is a token or a neutral overlay, which is what ui/palette.test.ts asks of a
+   stylesheet. That test walks ui/ and does not reach this file, so the rule is kept here by hand, the
+   same way app/(portal)/portal/portal.module.css keeps it. */
+
+.hello { margin-bottom: 18px; }
+.hello h1 { font-size: 21px; letter-spacing: -.02em; margin: 0; }
+.hello p { color: var(--ink-2); margin: 6px 0 0; font-size: 13.5px; }
+
+.strip { margin-bottom: 18px; }
+
+/* The panel under the tab strip. It is focusable, because a tab panel a keyboard cannot reach is a tab
+   nobody can read. */
+.panel { margin-top: 20px; }
+.panel:focus-visible { outline: 2px solid var(--lake); outline-offset: 4px; }
+
+.block { margin-top: 22px; }
+.block h2 { font-size: 13px; margin: 0 0 10px; }
+
+.mono { font-family: var(--font-mono), monospace; }
+
+.note { color: var(--ink-3); font-size: 12px; line-height: 1.7; margin: 10px 0 0; }
+.empty { color: var(--ink-3); font-size: 12.5px; }
+
+.controls {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    align-items: center;
+    margin-bottom: 16px;
+}
+
+.said { margin-bottom: 16px; }
+
+/* The env file list. Links rather than buttons, because which file is open is part of the URL: it
+   reloads, it is shareable, and it keeps this panel a server component. */
+.files {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    margin-bottom: 16px;
+}
+
+.file {
+    font-family: var(--font-mono), monospace;
+    font-size: 11.5px;
+    color: var(--ink-2);
+    text-decoration: none;
+    border: 1px solid var(--rule-hi);
+    border-radius: var(--radius-chip);
+    padding: 5px 9px;
+}
+/* A neutral overlay rather than a tinted one: it is an operation on whatever is underneath, so it stays
+   correct through a retint, which a frozen copy of a token's value would not. */
+.file:hover { background: rgba(255, 255, 255, .03); color: var(--ink); }
+.file[aria-current] { color: var(--ink); background: var(--panel-hi); border-color: var(--lake); }
+.file:focus-visible { outline: 2px solid var(--lake); outline-offset: 2px; }
+
+.fileSize { color: var(--ink-3); margin-left: 7px; }
+
+.editor { margin-top: 14px; }
+.editor textarea {
+    font-family: var(--font-mono), monospace;
+    font-size: 11.5px;
+    line-height: 1.7;
+    resize: vertical;
+}
+
+.save { margin-top: 12px; display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+
+.logHead {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    align-items: center;
+    margin-bottom: 12px;
+}
+
+.state { color: var(--ink-3); font-size: 11.5px; }
+.stateBad { color: var(--warn); font-size: 11.5px; }

@@ -58,14 +58,20 @@ export async function listProjects(
     return result.ok ? { ok: true, value: result.value.projects } : result
 }
 
+// One project's containers, and only those. GET /projects/:id answers hostd's StatusReply, which is
+// `{ ok: true, services }` and carries no id, name, valid or capabilities (hostd/src/api/routes.ts, the
+// `status` case, which sends the agent's reply through untouched). This was typed as a whole Project,
+// which meant `name` and `valid` read back undefined from every call and nothing ever said so. Those
+// fields come from listProjects, which is the only endpoint that answers them.
 export async function getProject(
     config: HostdConfig,
     caller: Caller,
     id: string,
     fetchImpl: typeof fetch = fetch,
-): Promise<HostdResult<Project>> {
+): Promise<HostdResult<ServiceStatus[]>> {
     if (!PROJECT_ID.test(id)) return { ok: false, code: 'not-found', message: 'no such project' }
-    return hostdRequest<Project>(config, caller, `/projects/${id}`, {}, fetchImpl)
+    const result = await hostdRequest<{ services: ServiceStatus[] }>(config, caller, `/projects/${id}`, {}, fetchImpl)
+    return result.ok ? { ok: true, value: result.value.services } : result
 }
 
 export async function lifecycle(

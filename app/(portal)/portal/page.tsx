@@ -222,8 +222,10 @@ export default async function PortalHome() {
         <>
             <a className={styles.nav} href="/portal" aria-current="page">{isAdmin ? 'Dashboard' : 'Overview'}</a>
             <p className={styles.group}>{isAdmin ? 'sites' : 'your site'}</p>
+            {/* Under /portal/sites/ rather than straight under /portal/: that segment has static siblings
+                now, and a project whose id happened to be one of them would be unreachable. */}
             {view.sites.map(site => (
-                <a className={styles.nav} key={site.id} href={`/portal/${site.id}`}>
+                <a className={styles.nav} key={site.id} href={`/portal/sites/${site.id}`}>
                     <StatusDot state={stateOf(site)} />
                     <span className={styles.navName}>{site.name ?? site.id}</span>
                 </a>
