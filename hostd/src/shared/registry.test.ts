@@ -472,6 +472,30 @@ projects:
     })
 })
 
+// The name of a token in .env.fetcher, not a token. The grammar is exactly what an environment
+// variable suffix can spell once uppercased, which is why capitals and dashes are refused here
+// rather than quietly lowercased into a key the operator never wrote.
+describe('credential', () => {
+    it('takes a name of lowercase letters, digits and underscores', () => {
+        const registry = parseRegistry(project({ repo: 'git@github.com:a/b.git', credential: 'acme_2' }))
+        assert.equal(registry.projects.get('site')?.credential, 'acme_2')
+    })
+
+    it('is null when absent, which is what says "use the default GITHUB_TOKEN"', () => {
+        const registry = parseRegistry(project({ repo: 'git@github.com:a/b.git' }))
+        assert.equal(registry.projects.get('site')?.credential, null)
+    })
+
+    it('refuses a name no env key could spell', () => {
+        assert.match(invalidReason(project({ repo: 'git@github.com:a/b.git', credential: 'Acme-1' })) ?? '',
+            /credential must be 1 to 32 lowercase letters/)
+    })
+
+    it('refuses a credential on a project with no repo to use it on', () => {
+        assert.match(invalidReason(project({ credential: 'acme' })) ?? '', /credential needs repo/)
+    })
+})
+
 describe('aliases', () => {
     const base = (extra: string) => `
 projects:

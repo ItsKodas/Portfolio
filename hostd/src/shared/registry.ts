@@ -50,6 +50,10 @@ export const GIT_REF = /^(?!.*\.\.)(?!.*\.lock$)(?!.*\.$)[A-Za-z0-9][A-Za-z0-9._
 export const GIT_COMMIT = /^[0-9a-f]{7,40}$/
 // ssh (git@host:owner/repo.git) or https (https://host/owner/repo.git)
 export const GIT_REPO = /^(git@[A-Za-z0-9.-]+:[A-Za-z0-9._\/-]+\.git|https:\/\/[A-Za-z0-9.-]+\/[A-Za-z0-9._\/-]+(\.git)?)$/
+// The name of a token the fetcher holds, never a token. Lowercase only, because the fetcher finds it as
+// GITHUB_TOKEN_<NAME uppercased> and a name that needed case-folding to match would be a name the
+// operator cannot read off their own env file.
+export const CREDENTIAL_NAME = /^[a-z0-9_]{1,32}$/
 
 export const DEFAULT_LIMITS = { memory: '1g', cpus: '1' }
 export const DEFAULT_PORT_ENV = 'WEB_PORT'
@@ -59,6 +63,7 @@ export type ProjectEntry = {
     client: string
     name: string
     repo: string | null
+    credential: string | null
     dir: string
     compose: string[]
     composePaths: string[]
@@ -110,7 +115,7 @@ const DEFAULT_RESERVED = ['horizons.gg']
 const TOP_KEYS = new Set(['reserved', 'allowed', 'offsite', 'projects'])
 const PROJECT_KEYS = new Set([
     'client', 'name', 'dir', 'compose', 'upstream', 'services', 'storage', 'capabilities', 'maxDomains', 'backups',
-    'repo', 'portEnv', 'limits', 'environments',
+    'repo', 'credential', 'portEnv', 'limits', 'environments',
 ])
 const ENVIRONMENT_KEYS = new Set(['dir', 'compose', 'branch', 'domain', 'aliases', 'port', 'certificate', 'deployed'])
 const DIR = /^\/var\/www\/[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/
@@ -320,6 +325,13 @@ function parseRepo(raw: unknown, problems: string[]): string | null {
     return null
 }
 
+function parseCredential(raw: unknown, problems: string[]): string | null {
+    if (raw === undefined) return null
+    if (typeof raw === 'string' && CREDENTIAL_NAME.test(raw)) return raw
+    problems.push('credential must be 1 to 32 lowercase letters, digits or underscores')
+    return null
+}
+
 function parsePortEnv(raw: unknown, problems: string[]): string {
     if (raw === undefined) return DEFAULT_PORT_ENV
     if (typeof raw === 'string' && ENV_NAME.test(raw)) return raw
@@ -454,6 +466,7 @@ function parseProject(id: string, raw: unknown, reserved: string[], allowed: str
     if (!name) problems.push('name must be 1 to 100 characters')
 
     const repo = parseRepo(raw.repo, problems)
+    const credential = parseCredential(raw.credential, problems)
     const portEnv = parsePortEnv(raw.portEnv, problems)
     const limits = parseLimits(raw.limits, problems)
 
@@ -489,6 +502,7 @@ function parseProject(id: string, raw: unknown, reserved: string[], allowed: str
     }
 
     if (!repo && [...environments.values()].some(env => env.branch !== null)) problems.push('branch needs repo')
+    if (!repo && credential) problems.push('credential needs repo')
 
     const live = environments.get('live')
     const dir = live?.dir ?? null
@@ -524,7 +538,7 @@ function parseProject(id: string, raw: unknown, reserved: string[], allowed: str
     if (problems.length > 0 || !client || !name || !dir || !upstream || !composePaths) return { problems }
     return {
         entry: {
-            id, client, name, repo, dir, compose, composePaths, upstream, portEnv, limits, environments,
+            id, client, name, repo, credential, dir, compose, composePaths, upstream, portEnv, limits, environments,
             services, storage, capabilities, maxDomains,
             backups: { maxKeep },
         },
