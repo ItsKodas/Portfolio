@@ -5,6 +5,7 @@ import { createServer } from 'node:net'
 import { chmod, chown, rm, stat, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { createSpawnRunner, type Runner } from '../agent/compose.ts'
+import { credentialLine } from './credentials.ts'
 import { runGit } from './git.ts'
 import { buildStatus, writeStatus } from '../shared/status.ts'
 import { describeError } from '../shared/formats.ts'
@@ -32,7 +33,7 @@ function fail(failures: string[]): never {
 // entry can go on giving its repo as an ssh-style URL and still be fetched over HTTPS with this token,
 // so no SSH key needs to exist in this container either.
 async function writeCredentials(token: string, run: Runner): Promise<void> {
-    await writeFile(CREDENTIAL_FILE, `https://${token}@github.com\n`, { mode: 0o600 })
+    await writeFile(CREDENTIAL_FILE, credentialLine(token), { mode: 0o600 })
     await chmod(CREDENTIAL_FILE, 0o600)
 
     const helper = await run('git', ['config', '--global', 'credential.helper', `store --file=${CREDENTIAL_FILE}`], GIT_CONFIG_TIMEOUT_MS)
