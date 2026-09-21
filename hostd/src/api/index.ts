@@ -169,11 +169,18 @@ async function main(): Promise<void> {
                 }
                 for (const { id, schedule } of schedules.due(registry, projectId => lastRuns.get(projectId) ?? null, Date.now())) {
                     if (unreadable.has(id)) continue
-                    const started = await agent.call({ verb: 'backup', project: id, args: { action: 'run', tag: 'scheduled', keep: schedule.keep } })
-                    // A refusal here is ordinary: another backup may hold the dedi-wide lock, and the next
-                    // tick tries again because the slot is still unsatisfied.
-                    if (!started.ok) log(`scheduled backup for ${id} was not started: ${started.message}`)
-                    else log(`scheduled backup for ${id} started`)
+                    // Isolated per project, like the list loop above: starting one project's backup calls
+                    // restic.snapshots(repo) again inside the agent, the same slow call this can time out
+                    // on, and that must not cost every project ordered behind it its slot for this tick.
+                    try {
+                        const started = await agent.call({ verb: 'backup', project: id, args: { action: 'run', tag: 'scheduled', keep: schedule.keep } })
+                        // A refusal here is ordinary: another backup may hold the dedi-wide lock, and the next
+                        // tick tries again because the slot is still unsatisfied.
+                        if (!started.ok) log(`scheduled backup for ${id} was not started: ${started.message}`)
+                        else log(`scheduled backup for ${id} started`)
+                    } catch (error) {
+                        log(`WARN scheduled backup for ${id} could not be started: ${describeError(error)}`)
+                    }
                 }
             } catch (error) {
                 // Last resort: the loop above now isolates every per-project failure itself, so this guards
