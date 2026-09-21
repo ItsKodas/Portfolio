@@ -19,7 +19,7 @@ projects:
     client: cl_1
     name: Acme
     services: { web: { role: site } }
-    capabilities: [lifecycle, logs, provision, env]
+    capabilities: [lifecycle, logs, provision, env, deploy]
     environments:
       live: { dir: /var/www/acme, port: 5010 }
       test: { dir: /var/www/acme-test, port: 5013 }
@@ -143,6 +143,19 @@ describe('matchRoute', () => {
         assert.deepEqual(matchRoute('DELETE', '/projects/acme/test/env/.env'), { verb: 'method-not-allowed' })
         assert.deepEqual(matchRoute('GET', '/projects/acme/staging/env'), { verb: 'not-found' })
     })
+
+    it('matches the deploy routes under an environment, and refuses the rest', () => {
+        assert.deepEqual(matchRoute('POST', '/projects/acme/live/deploy'), { verb: 'deploy', project: 'acme', environment: 'live' })
+        assert.deepEqual(matchRoute('POST', '/projects/acme/test/rollback'), { verb: 'rollback', project: 'acme', environment: 'test' })
+        assert.deepEqual(matchRoute('PUT', '/projects/acme/live/branch'), { verb: 'branch', project: 'acme', environment: 'live' })
+        assert.deepEqual(matchRoute('GET', '/projects/acme/live/deploys'), { verb: 'deploys', project: 'acme', environment: 'live' })
+        assert.deepEqual(matchRoute('GET', '/projects/acme/live/commits'), { verb: 'commits', project: 'acme', environment: 'live' })
+        assert.deepEqual(matchRoute('GET', '/projects/acme/live/deploy'), { verb: 'method-not-allowed' })
+        assert.deepEqual(matchRoute('POST', '/projects/acme/live/branch'), { verb: 'method-not-allowed' })
+        assert.deepEqual(matchRoute('POST', '/projects/acme/live/nonsense'), { verb: 'not-found' })
+        assert.deepEqual(matchRoute('POST', '/projects/acme/live/deploy/now'), { verb: 'not-found' })
+        assert.deepEqual(matchRoute('POST', '/projects/acme/staging/deploy'), { verb: 'not-found' })
+    })
 })
 
 describe('parseLogsQuery', () => {
@@ -187,7 +200,7 @@ describe('GET /projects', () => {
         assert.deepEqual(body, {
             ok: true,
             projects: [
-                { id: 'acme', name: 'Acme', capabilities: ['lifecycle', 'logs', 'provision', 'env'], valid: false, reason: 'guard says no' },
+                { id: 'acme', name: 'Acme', capabilities: ['lifecycle', 'logs', 'provision', 'env', 'deploy'], valid: false, reason: 'guard says no' },
                 { id: 'quiet', name: 'Quiet', capabilities: [], valid: true },
             ],
         })
@@ -207,7 +220,7 @@ describe('GET /projects', () => {
         const body = await (await request('/projects?status=1')).json() as { projects: Array<Record<string, unknown>> }
         assert.deepEqual(agent.calls, [{ verb: 'health' }, { verb: 'statuses', projects: ['acme', 'quiet'] }])
         assert.deepEqual(body.projects, [
-            { id: 'acme', name: 'Acme', capabilities: ['lifecycle', 'logs', 'provision', 'env'], valid: false, reason: 'guard says no', status: { ok: true, services: [] } },
+            { id: 'acme', name: 'Acme', capabilities: ['lifecycle', 'logs', 'provision', 'env', 'deploy'], valid: false, reason: 'guard says no', status: { ok: true, services: [] } },
             { id: 'quiet', name: 'Quiet', capabilities: [], valid: true, status: { ok: true, services: [] } },
         ])
     })
@@ -570,6 +583,94 @@ describe('GET|PUT /projects/:id/:env/env/*path', () => {
         })
         assert.equal(response.status, 400)
         assert.deepEqual(agent.calls, [])
+    })
+})
+
+describe('deploy routes', () => {
+    it('starts a deploy and audits it', async () => {
+        const response = await request('/projects/acme/live/deploy', { method: 'POST', actor: 'admin' })
+        assert.equal(response.status, 200)
+        assert.deepEqual(agent.calls, [{ verb: 'deploy', project: 'acme', args: { action: 'deploy', environment: 'live' } }])
+        const [entry] = await audit.read({ limit: 1 })
+        assert.equal(entry?.verb, 'deploy')
+        assert.equal(entry?.target, 'live deploy')
+        assert.equal(entry?.outcome, 'ok')
+    })
+
+    it('starts a rollback', async () => {
+        const response = await request('/projects/acme/test/rollback', { method: 'POST', actor: 'admin' })
+        assert.equal(response.status, 200)
+        assert.deepEqual(agent.calls, [{ verb: 'deploy', project: 'acme', args: { action: 'rollback', environment: 'test' } }])
+    })
+
+    it('passes a branch switch through, and audits the branch rather than the whole body', async () => {
+        const response = await request('/projects/acme/live/branch', { method: 'PUT', actor: 'admin', body: { branch: 'develop' } })
+        assert.equal(response.status, 200)
+        assert.deepEqual(agent.calls, [{ verb: 'deploy', project: 'acme', args: { action: 'set-branch', environment: 'live', branch: 'develop' } }])
+        const [entry] = await audit.read({ limit: 1 })
+        assert.equal(entry?.target, 'live branch develop')
+    })
+
+    it('refuses a branch body that is missing, malformed or carries an unknown field', async () => {
+        for (const body of [{}, { branch: 3 }, { branch: 'develop', force: true }]) {
+            const response = await request('/projects/acme/live/branch', { method: 'PUT', actor: 'admin', body })
+            assert.equal(response.status, 400, JSON.stringify(body))
+        }
+        assert.deepEqual(agent.calls, [])
+    })
+
+    it('lets a client read its own deploy history and commit list', async () => {
+        agent.reply = request => request.verb === 'deploy' && request.args.action === 'history'
+            ? { ok: true, environment: 'live', branch: 'main', deployed: 'abc1234', paused: false, consecutiveFailures: 0, deploys: [] }
+            : { ok: true, commits: [] }
+
+        const history = await request('/projects/acme/live/deploys')
+        assert.equal(history.status, 200)
+        assert.deepEqual(await history.json(), { ok: true, environment: 'live', branch: 'main', deployed: 'abc1234', paused: false, consecutiveFailures: 0, deploys: [] })
+
+        const commits = await request('/projects/acme/live/commits?limit=5')
+        assert.equal(commits.status, 200)
+        assert.deepEqual(agent.calls[1], { verb: 'deploy', project: 'acme', args: { action: 'commits', environment: 'live', limit: 5 } })
+    })
+
+    it('defaults the commit limit and refuses one that is not a small whole number', async () => {
+        agent.reply = () => ({ ok: true, commits: [] })
+        await request('/projects/acme/live/commits')
+        assert.deepEqual(agent.calls[0], { verb: 'deploy', project: 'acme', args: { action: 'commits', environment: 'live', limit: 30 } })
+        for (const query of ['?limit=0', '?limit=1000', '?limit=all']) {
+            const response = await request(`/projects/acme/live/commits${query}`)
+            assert.equal(response.status, 400, query)
+        }
+        assert.equal(agent.calls.length, 1)
+    })
+
+    it('refuses a client the deploy, rollback and branch routes with a 404, and audits each refusal', async () => {
+        const attempts = [
+            () => request('/projects/acme/live/deploy', { method: 'POST' }),
+            () => request('/projects/acme/live/rollback', { method: 'POST' }),
+            () => request('/projects/acme/live/branch', { method: 'PUT', body: { branch: 'develop' } }),
+        ]
+        for (const attempt of attempts) {
+            const response = await attempt()
+            assert.equal(response.status, 404, await response.text())
+        }
+        assert.deepEqual(agent.calls, [])
+        const events = await audit.read({ limit: attempts.length })
+        assert.ok(events.every(event => event.outcome === 'refused' && event.reason === 'not-found'))
+    })
+
+    it('refuses the deploy routes for a project without the capability', async () => {
+        const response = await request('/projects/quiet/live/deploys')
+        assert.equal(response.status, 403)
+        assert.deepEqual(agent.calls, [])
+    })
+
+    it('answers 503 when the agent cannot be reached, and audits the failure', async () => {
+        agent.call = async () => { throw new AgentUnavailableError('the agent is not answering') }
+        const response = await request('/projects/acme/live/deploy', { method: 'POST', actor: 'admin' })
+        assert.equal(response.status, 503)
+        const [entry] = await audit.read({ limit: 1 })
+        assert.equal(entry?.outcome, 'failed')
     })
 })
 

@@ -94,6 +94,51 @@ describe('authorize: provision and env are admin-only', () => {
     })
 })
 
+describe('authorize: deploying is admin-only, reading a deploy is not', () => {
+    const deployable = parseRegistry(`
+projects:
+  acme:
+    client: cl_1
+    name: Acme
+    repo: git@github.com:ItsKodas/acme.git
+    services: { web: { role: site } }
+    capabilities: [deploy]
+    environments:
+      live: { dir: /var/www/acme, branch: main, port: 5010 }
+  quiet:
+    client: cl_1
+    name: Quiet
+    dir: /var/www/quiet
+    upstream: 127.0.0.1:5011
+    services: { web: { role: site } }
+`)
+
+    it('lets only the admin deploy, roll back or switch branch', () => {
+        assert.equal(authorize(deployable, admin, 'acme', 'deploy').ok, true)
+        // A client owning the project, with the capability on, still gets the same 404 as a stranger.
+        assert.deepEqual(authorize(deployable, owner, 'acme', 'deploy'), authorize(deployable, stranger, 'acme', 'status'))
+    })
+
+    it('lets the owner read the deploy history and the commit list', () => {
+        assert.equal(authorize(deployable, owner, 'acme', 'deploy-read').ok, true)
+        assert.equal(authorize(deployable, admin, 'acme', 'deploy-read').ok, true)
+        assert.deepEqual(authorize(deployable, stranger, 'acme', 'deploy-read'), {
+            ok: false, status: 404, code: 'not-found', message: 'no project acme',
+        })
+    })
+
+    it('refuses both when the deploy capability is off', () => {
+        for (const verb of ['deploy', 'deploy-read'] as const) {
+            assert.deepEqual(authorize(deployable, admin, 'quiet', verb), {
+                ok: false, status: 403, code: 'capability-disabled', message: 'deploy is not enabled for quiet',
+            })
+        }
+        assert.deepEqual(authorize(deployable, owner, 'quiet', 'deploy-read'), {
+            ok: false, status: 403, code: 'capability-disabled', message: 'deploy is not enabled for quiet',
+        })
+    })
+})
+
 describe('visibleProjects', () => {
     it('shows a client only their own projects and the admin everything', () => {
         assert.deepEqual(visibleProjects(registry, owner).map(p => p.id), ['acme', 'quiet'])
