@@ -73,7 +73,13 @@ export async function verifyHostname(
     }
 
     const seen = response.headers.get(TOKEN_HEADER)
-    if (seen === null) return { ok: false, reason: 'no token header in response', client: UNREACHABLE }
+    // Missing and wrong are the same sentence, which is what the design's table says and what the
+    // runbook's troubleshooting row is written against. Missing is also the common one: something
+    // answered, so the name resolves and reaches a server, but that server is not this environment's
+    // vhost (another vhost, a proxy, a 301 with no header on it). "We could not reach this name" would
+    // send the client looking for an outage; "it points somewhere else" sends them to their DNS, which
+    // is where the fix is.
+    if (seen === null) return { ok: false, reason: 'no token header in response', client: ELSEWHERE }
     if (seen !== token) return { ok: false, reason: `token mismatch: expected ${token}, saw ${seen}`, client: ELSEWHERE }
     // The header is scoped to the vhost's <Location> in agent/vhost.ts, which answers a match with 204.
     // That guarantee lives in a different process this function never reads, so it is checked again here:

@@ -38,9 +38,13 @@ describe('verifyHostname', () => {
         assert.match(result.ok === false ? result.client : '', /points somewhere else/)
     })
 
-    it('fails when there is no header at all', async () => {
+    // Missing, not merely wrong: something answered, so the name reaches a server, but not this
+    // environment's vhost. The design's table maps wrong OR missing to the same sentence, and this is
+    // the half that actually happens, including the 301 the runbook's alias-ordering row describes.
+    it('fails when there is no header at all, which also means the name points elsewhere', async () => {
         const result = await verifyHostname(answering(200, null), 'acme.com', 'abc123', 'https', true)
         assert.equal(result.ok, false)
+        assert.match(result.ok === false ? result.client : '', /points somewhere else/)
     })
 
     it('does not verify a matching token carried on a 500, since the header is not proof by itself', async () => {
