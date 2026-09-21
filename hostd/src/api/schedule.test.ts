@@ -75,4 +75,32 @@ describe('ScheduleStore', () => {
         const due = store.due(registry, () => Date.parse('2026-09-21T16:31:00Z'), Date.parse('2026-09-21T17:00:00Z'))
         assert.deepEqual(due, [])
     })
+
+    it('warns rather than throwing when the file is unreadable', async () => {
+        const store = new ScheduleStore(PATH, setup({ [PATH]: 'not json' }).fs)
+        await store.load()
+        assert.deepEqual(store.get('acme'), defaultSchedule())
+        assert.equal(store.warnings().length, 1)
+    })
+
+    it('keeps the schedule in memory even when the write fails', async () => {
+        const { fs } = setup()
+        const warnings: string[] = []
+        const store = new ScheduleStore(PATH, fs, message => warnings.push(message))
+        await store.load()
+        fs.writeFile = async () => { throw new Error('ENOSPC: no space left on device') }
+        await store.set('acme', { mode: 'daily', hour: 2, minute: 30, weekday: 0, keep: { daily: 7, weekly: 4, monthly: 3 } })
+        assert.equal(store.get('acme').mode, 'daily')
+        assert.equal(warnings.length, 1)
+        assert.match(warnings[0] ?? '', /could not be written/)
+    })
+
+    it('does not name a project absent from the registry', async () => {
+        const { fs } = setup()
+        const store = new ScheduleStore(PATH, fs)
+        await store.load()
+        await store.set('removed', { mode: 'daily', hour: 2, minute: 30, weekday: 0, keep: { daily: 7, weekly: 4, monthly: 3 } })
+        const due = store.due(registry, () => null, Date.parse('2026-09-21T16:31:00Z'))
+        assert.deepEqual(due, [])
+    })
 })
