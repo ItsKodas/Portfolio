@@ -5,6 +5,22 @@
     border-bottom: 1px solid var(--rule);
 }
 
+/* Six tabs at phone width wrap onto two lines, and the second line sits under the border that is supposed
+   to underline the selected one, so the strip stops reading as a strip. Scrolling sideways keeps one row
+   and keeps the selected tab's underline meaning what it means. The scrollbar is hidden because the tabs
+   themselves are the affordance: a partly visible tab at the edge is what says there are more. */
+@media (max-width: 760px) {
+    .tablist {
+        flex-wrap: nowrap;
+        overflow-x: auto;
+        scrollbar-width: none;
+    }
+
+    .tablist::-webkit-scrollbar { display: none; }
+
+    .tab { white-space: nowrap; }
+}
+
 .tab {
     font: inherit;
     font-size: 13px;
