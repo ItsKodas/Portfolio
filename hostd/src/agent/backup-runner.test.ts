@@ -56,6 +56,8 @@ describe('BackupRunner', () => {
         release()
         await runner.settle()
         assert.equal(store.get('acme').runs[0]?.snapshot, 'deadbeef')
+        assert.equal(runner.isRunning('acme'), false)
+        assert.equal(runner.isBusy(), false)
     })
 
     it('refuses a second run for the same project', async () => {
@@ -64,7 +66,13 @@ describe('BackupRunner', () => {
         const second = runner.start(acme, { tag: 'manual', actor: 'client', run: 'run2', keep: null })
         assert.equal(second.ok, false)
         assert.equal(!second.ok && second.code, 'busy')
+        assert.match(!second.ok ? second.message : '', /acme already has a backup running/)
         release()
+        await runner.settle()
+        assert.equal(runner.isRunning('acme'), false)
+        // Start a second run after settling to prove the slot is reusable
+        const reusable = runner.start(acme, { tag: 'manual', actor: 'client', run: 'run2', keep: null })
+        assert.equal(reusable.ok, true)
         await runner.settle()
     })
 
@@ -98,5 +106,7 @@ describe('BackupRunner', () => {
         await runner.settle()
         assert.equal(store.get('acme').runs[0]?.outcome, 'failed')
         assert.match(store.get('acme').runs[0]?.reason ?? '', /restic is not installed/)
+        assert.equal(runner.isRunning('acme'), false)
+        assert.equal(runner.isBusy(), false)
     })
 })
