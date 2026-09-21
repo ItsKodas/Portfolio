@@ -229,7 +229,14 @@ export class Agent {
             // Two signals the design defers to the backups phase. Warnings, not failures: a full backup
             // disk and a failed scheduled run are the operator's to act on, and neither means hostd itself
             // is unhealthy.
-            const problem = diskProblem(await this.deps.backups.backupDisk())
+            // health is what the operator reads when something is already wrong, so a disk reading that
+            // cannot be taken must degrade to a warning rather than take the whole reply down with it.
+            let problem: string | null
+            try {
+                problem = diskProblem(await this.deps.backups.backupDisk())
+            } catch (error) {
+                problem = `the backup disk could not be read: ${describeError(error)}`
+            }
             if (problem) warnings.push(problem)
             warnings.push(...this.deps.backups.store.failures())
         }

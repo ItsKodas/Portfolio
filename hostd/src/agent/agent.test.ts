@@ -271,6 +271,25 @@ describe('status and health', () => {
         const warnings = reply && reply.ok && 'warnings' in reply ? reply.warnings : []
         assert.equal(warnings.some((warning: string) => /backup/.test(warning)), false)
     })
+
+    it('stays healthy when backupDisk throws, and warns with the error', async () => {
+        const { backups } = backupsWiring({ snapshots: [], diskError: new Error('the statfs syscall failed') })
+        const { agent } = setup({ backups })
+        const outcome = await agent.handle({ verb: 'health' })
+        const reply = replyOf(outcome)
+        assert.ok(reply && reply.ok, 'health should still be ok: true')
+        const warnings = reply && reply.ok && 'warnings' in reply ? reply.warnings : []
+        assert.ok(warnings.some((warning: string) => /the backup disk could not be read/.test(warning)))
+    })
+
+    it('warns when backupDisk returns null', async () => {
+        const { backups } = backupsWiring({ snapshots: [], disk: null })
+        const { agent } = setup({ backups })
+        const outcome = await agent.handle({ verb: 'health' })
+        const reply = replyOf(outcome)
+        const warnings = reply && reply.ok && 'warnings' in reply ? reply.warnings : []
+        assert.ok(warnings.some((warning: string) => /the backup disk could not be read/.test(warning)))
+    })
 })
 
 describe('statuses', () => {
@@ -751,7 +770,7 @@ describe('the deploy verb', () => {
 // Only what the backup verb itself touches: the runner is a recorder, the store answers a fixed history,
 // and restic's snapshots list is what stands in for the project's own repository. dump returns a
 // PassThrough that is never written to: the tests that reach it only check the outcome's kind.
-function backupsWiring(options: { snapshots?: Snapshot[], runs?: BackupRecord[], running?: boolean, disk?: any, failures?: string[] } = {}) {
+function backupsWiring(options: { snapshots?: Snapshot[], runs?: BackupRecord[], running?: boolean, disk?: any, diskError?: Error, failures?: string[] } = {}) {
     const started: Array<{ id: string, request: BackupRequest }> = []
     const restic: Restic = {
         init: async () => ({ ok: true }),
@@ -777,7 +796,10 @@ function backupsWiring(options: { snapshots?: Snapshot[], runs?: BackupRecord[],
         restic,
         backupDir: '/var/backups',
         newRunId: () => 'run1',
-        backupDisk: async () => options.disk ?? null,
+        backupDisk: async () => {
+            if (options.diskError) throw options.diskError
+            return options.disk ?? null
+        },
     }
     return { backups, started }
 }
