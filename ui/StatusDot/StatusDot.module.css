@@ -8,6 +8,13 @@
 .stopped { background: var(--ink-3); }
 .paused { background: var(--warn); }
 
+/* Not "off", but "hostd could not tell us". Hollow, because a filled dot of any colour reads as a state
+   the site is in, and this is the absence of one. The word beside it is what carries the meaning. */
+.unknown {
+    background: none;
+    box-shadow: inset 0 0 0 1px var(--ink-3);
+}
+
 @keyframes pulse { 50% { opacity: .25; } }
 
 @media (prefers-reduced-motion: reduce) {

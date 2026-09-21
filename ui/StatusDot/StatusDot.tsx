@@ -1,6 +1,6 @@
 import styles from './StatusDot.module.css'
 
-type State = 'up' | 'down' | 'deploying' | 'stopped' | 'paused'
+type State = 'up' | 'down' | 'deploying' | 'stopped' | 'paused' | 'unknown'
 
 export function StatusDot({ state }: { state: State }) {
     // The word is the meaning; the dot is decoration and is hidden, so nothing depends on colour alone.
