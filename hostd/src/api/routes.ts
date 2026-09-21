@@ -892,17 +892,17 @@ export function createHandler(deps: ApiDeps): (req: IncomingMessage, res: Server
                 const downloadStream = stream
                 const stop = () => downloadStream.close()
                 res.on('close', stop)
-                let failed = false
+                let failure: string | null = null
                 try {
                     for await (const chunk of downloadStream.body) {
                         if (!res.write(chunk)) await waitForDrain(res)
                         if (res.destroyed) break
                     }
                 } catch (error) {
-                    failed = true
+                    failure = describeError(error)
                     // The client already left (res.destroyed) is not a failure worth a log line; a dead
                     // agent connection or socket reset mid-transfer is.
-                    if (!res.destroyed) console.error(`[api] ${new Date().toISOString()} backup download for ${route.project} failed: ${describeError(error)}`)
+                    if (!res.destroyed) console.error(`[api] ${new Date().toISOString()} backup download for ${route.project} failed: ${failure}`)
                 } finally {
                     res.off('close', stop)
                     downloadStream.close()
@@ -911,9 +911,14 @@ export function createHandler(deps: ApiDeps): (req: IncomingMessage, res: Server
                     // find out at restore time. Destroying it instead leaves the chunked encoding
                     // incomplete, which every HTTP client reports as a failed transfer rather than a
                     // short but valid file. Destroying an already-destroyed response is harmless.
-                    if (failed) res.destroy()
+                    if (failure !== null) res.destroy()
                     else res.end()
                 }
+                // The entry above records the authorization decision, which was made before a byte moved;
+                // without this one a download that broke mid-transfer would read back as a clean success,
+                // so the operator's own record would agree with the truncated archive rather than expose
+                // it. The reason is the transport's own message: the client's bytes never appear in it.
+                if (failure !== null) await audit(who, { project: route.project, verb: 'backup', target, outcome: 'failed', reason: failure })
                 return
             }
 

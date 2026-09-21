@@ -932,6 +932,25 @@ describe('the backup endpoints', () => {
             const response = await request('/projects/acme/backups/deadbeef/download')
             await response.text()
         })
+
+        // And the operator's own record must not say otherwise. The entry written before the transfer
+        // records the authorization decision, which really was ok; without a second entry the audit log
+        // would agree with the truncated archive that the download succeeded, and the one place the
+        // failure could still be seen after the fact would be gone.
+        const entries = await audit.read({ limit: 10 })
+        const [failure] = entries
+        assert.deepEqual([failure?.verb, failure?.target, failure?.outcome], ['backup', 'deadbeef', 'failed'])
+        assert.match(failure?.reason ?? '', /socket reset/)
+        assert.deepEqual(entries.map(entry => entry.outcome), ['failed', 'ok'])
+    })
+
+    it('leaves no failure entry and delivers every byte when the download completes', async () => {
+        // The other side of the same audit: a download that finishes must not gain a failure entry, or
+        // the log stops meaning anything.
+        const response = await request('/projects/acme/backups/deadbeef/download')
+        assert.equal(response.status, 200)
+        assert.equal(await response.text(), 'bytes')
+        assert.deepEqual((await audit.read({ limit: 10 })).map(entry => entry.outcome), ['ok'])
     })
 
     it('reads the default schedule without asking the agent or auditing a plain read', async () => {
