@@ -4,9 +4,11 @@
 
 import { PROJECT_ID, SERVICE_NAME, isRecord } from './formats.ts'
 import {
-    isComposeService, environmentOf, ENVIRONMENTS, CERTIFICATE_MODES,
+    isComposeService, environmentOf, ENVIRONMENTS, CERTIFICATE_MODES, GIT_REF,
     type Capability, type CertificateMode, type EnvironmentName, type ProjectEntry, type Registry,
 } from './registry.ts'
+import type { Commit } from './fetch-protocol.ts'
+import type { DeployRecord, DeployTrigger } from './deploys.ts'
 import type { EnvFileList } from './envfiles.ts'
 import type { SystemUsage } from './system.ts'
 
@@ -60,7 +62,20 @@ export type EnvWriteArgs = { action: 'write', environment: EnvironmentName, path
 export type EnvArgs = EnvListArgs | EnvReadArgs | EnvWriteArgs
 export type EnvRequest = { verb: 'env', project: string, args: EnvArgs }
 
-export type ProjectRequest = StatusRequest | LifecycleRequest | LogsRequest | ProvisionOnProjectRequest | EnvRequest
+// How many commits one commits request may ask for. Bounded here as well as in the fetcher, because
+// this is what a portal page can ask for and the fetcher's own bound is far higher.
+export const MAX_COMMITS = 100
+export const DEFAULT_COMMITS = 30
+
+export type DeployStartArgs = { action: 'deploy', environment: EnvironmentName }
+export type DeployRollbackArgs = { action: 'rollback', environment: EnvironmentName }
+export type DeployBranchArgs = { action: 'set-branch', environment: EnvironmentName, branch: string }
+export type DeployHistoryArgs = { action: 'history', environment: EnvironmentName }
+export type DeployCommitsArgs = { action: 'commits', environment: EnvironmentName, limit: number }
+export type DeployArgs = DeployStartArgs | DeployRollbackArgs | DeployBranchArgs | DeployHistoryArgs | DeployCommitsArgs
+export type DeployRequest = { verb: 'deploy', project: string, args: DeployArgs }
+
+export type ProjectRequest = StatusRequest | LifecycleRequest | LogsRequest | ProvisionOnProjectRequest | EnvRequest | DeployRequest
 export type AgentRequest = HealthRequest | StatusesRequest | ProvisionCreateRequest | ProjectRequest
 export type Verb = AgentRequest['verb']
 
@@ -99,8 +114,23 @@ export type LifecycleReply = { ok: true, output: string }
 export type ProvisionReply = { ok: true, project: { id: string, state: 'needs-setup' }, envFiles: EnvFileList }
 export type EnvListReply = { ok: true, files: EnvFileList }
 export type EnvReadReply = { ok: true, text: string }
+// A deploy is minutes of building and api's own call timeout is 150 seconds, so a deploy, a rollback and
+// a branch switch all answer as soon as the work has started. The outcome lands in the history below.
+export type DeployStartedReply = { ok: true, started: { environment: EnvironmentName, trigger: DeployTrigger } }
+export type DeployHistoryReply = {
+    ok: true
+    environment: EnvironmentName
+    branch: string | null
+    deployed: string | null
+    paused: boolean
+    consecutiveFailures: number
+    deploys: DeployRecord[]
+}
+export type DeployCommitsReply = { ok: true, commits: Commit[] }
 export type StreamHeader = { ok: true, stream: true }
-export type AgentReply = HealthReply | StatusReply | StatusesReply | LifecycleReply | ProvisionReply | EnvListReply | EnvReadReply | Refusal
+export type AgentReply =
+    | HealthReply | StatusReply | StatusesReply | LifecycleReply | ProvisionReply | EnvListReply | EnvReadReply
+    | DeployStartedReply | DeployHistoryReply | DeployCommitsReply | Refusal
 export type LogLine = { stream: 'stdout' | 'stderr', ts: string | null, text: string, truncated: boolean }
 
 // Status is visible to anyone who may see the project at all; everything else needs its capability.
@@ -112,6 +142,9 @@ export const VERB_CAPABILITY: Record<Verb, Capability | null> = {
     logs: 'logs',
     provision: 'provision',
     env: 'env',
+    // Reading the history and the commit list is the half of this a client may use; api's policy is
+    // where that split lives, because only api knows who is asking.
+    deploy: 'deploy',
 }
 
 type Parsed = { ok: true, request: AgentRequest } | Refusal
@@ -242,6 +275,34 @@ function parseEnvArgs(raw: unknown): EnvArgs | Refusal {
     return refuse('bad-request', 'action must be list, read or write')
 }
 
+function parseDeployArgs(raw: unknown): DeployArgs | Refusal {
+    if (!isRecord(raw)) return refuse('bad-request', 'deploy requires args')
+    const environment = raw.environment
+    if (typeof environment !== 'string' || !(ENVIRONMENTS as readonly string[]).includes(environment)) {
+        return refuse('bad-request', 'environment must be live or test')
+    }
+    const name = environment as EnvironmentName
+
+    if (raw.action === 'deploy' || raw.action === 'rollback' || raw.action === 'history') {
+        if (!onlyKeys(raw, ['action', 'environment'])) return refuse('bad-request', `${raw.action} takes only environment`)
+        return { action: raw.action, environment: name }
+    }
+    if (raw.action === 'set-branch') {
+        if (!onlyKeys(raw, ['action', 'environment', 'branch'])) return refuse('bad-request', 'set-branch takes only environment and branch')
+        if (typeof raw.branch !== 'string' || !GIT_REF.test(raw.branch)) return refuse('bad-request', 'branch must be a plain branch name')
+        return { action: 'set-branch', environment: name, branch: raw.branch }
+    }
+    if (raw.action === 'commits') {
+        if (!onlyKeys(raw, ['action', 'environment', 'limit'])) return refuse('bad-request', 'commits takes only environment and limit')
+        const limit = raw.limit === undefined ? DEFAULT_COMMITS : raw.limit
+        if (typeof limit !== 'number' || !Number.isInteger(limit) || limit < 1 || limit > MAX_COMMITS) {
+            return refuse('bad-request', `limit must be a whole number from 1 to ${MAX_COMMITS}`)
+        }
+        return { action: 'commits', environment: name, limit }
+    }
+    return refuse('bad-request', 'action must be deploy, rollback, set-branch, history or commits')
+}
+
 export function parseAgentRequest(line: string): Parsed {
     if (Buffer.byteLength(line) > MAX_REQUEST_BYTES) return refuse('bad-request', 'request is too large')
     let raw: unknown
@@ -311,6 +372,15 @@ export function parseAgentRequest(line: string): Parsed {
             return { ok: true, request: { verb: 'env', project, args } }
         }
 
+        case 'deploy': {
+            if (!onlyKeys(raw, ['verb', 'project', 'args'])) return refuse('bad-request', 'deploy takes only project and args')
+            const project = projectOf(raw)
+            if (!project) return refuse('bad-request', 'project is malformed')
+            const args = parseDeployArgs(raw.args)
+            if ('ok' in args) return args
+            return { ok: true, request: { verb: 'deploy', project, args } }
+        }
+
         default:
             return refuse('bad-request', 'unknown verb')
     }
@@ -344,7 +414,7 @@ export function checkStructure(
         const entry = Object.hasOwn(project.services, service) ? project.services[service] : undefined
         if (!entry || !isComposeService(entry)) return refuse('unknown-service', `${service} is not a registered service of ${id}`)
     }
-    if (request.verb === 'env' && !environmentOf(project, request.args.environment)) {
+    if ((request.verb === 'env' || request.verb === 'deploy') && !environmentOf(project, request.args.environment)) {
         return refuse('unknown-environment', `${id} has no ${request.args.environment} environment`)
     }
     return { ok: true, project }

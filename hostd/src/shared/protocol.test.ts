@@ -1,6 +1,9 @@
 import { describe, it } from 'node:test'
 import assert from 'node:assert/strict'
-import { parseAgentRequest, checkStructure, MAX_REQUEST_BYTES, type ProjectRequest } from './protocol.ts'
+import {
+    parseAgentRequest, checkStructure, VERB_CAPABILITY, MAX_REQUEST_BYTES, MAX_COMMITS, DEFAULT_COMMITS,
+    type ProjectRequest,
+} from './protocol.ts'
 import { parseRegistry } from './registry.ts'
 
 function parsed(value: unknown) {
@@ -160,6 +163,46 @@ describe('parseAgentRequest', () => {
         assert.equal(refusalOf({ verb: 'env', project: 'acme', args: { action: 'list', environment: 'live', path: '.env' } }), 'bad-request: list takes only environment')
         assert.equal(refusalOf({ verb: 'env', project: 'acme', args: { action: 'delete', environment: 'live' } }), 'bad-request: action must be list, read or write')
     })
+
+    it('parses every deploy action', () => {
+        assert.deepEqual(
+            parsed({ verb: 'deploy', project: 'acme', args: { action: 'deploy', environment: 'live' } }),
+            { ok: true, request: { verb: 'deploy', project: 'acme', args: { action: 'deploy', environment: 'live' } } },
+        )
+        assert.deepEqual(
+            parsed({ verb: 'deploy', project: 'acme', args: { action: 'rollback', environment: 'test' } }),
+            { ok: true, request: { verb: 'deploy', project: 'acme', args: { action: 'rollback', environment: 'test' } } },
+        )
+        assert.deepEqual(
+            parsed({ verb: 'deploy', project: 'acme', args: { action: 'set-branch', environment: 'live', branch: 'develop' } }),
+            { ok: true, request: { verb: 'deploy', project: 'acme', args: { action: 'set-branch', environment: 'live', branch: 'develop' } } },
+        )
+        assert.deepEqual(
+            parsed({ verb: 'deploy', project: 'acme', args: { action: 'history', environment: 'live' } }),
+            { ok: true, request: { verb: 'deploy', project: 'acme', args: { action: 'history', environment: 'live' } } },
+        )
+        assert.deepEqual(
+            parsed({ verb: 'deploy', project: 'acme', args: { action: 'commits', environment: 'live', limit: 10 } }),
+            { ok: true, request: { verb: 'deploy', project: 'acme', args: { action: 'commits', environment: 'live', limit: 10 } } },
+        )
+    })
+
+    it('defaults the commit limit rather than making the caller name one', () => {
+        assert.deepEqual(
+            parsed({ verb: 'deploy', project: 'acme', args: { action: 'commits', environment: 'live' } }),
+            { ok: true, request: { verb: 'deploy', project: 'acme', args: { action: 'commits', environment: 'live', limit: DEFAULT_COMMITS } } },
+        )
+    })
+
+    it('refuses malformed deploy requests', () => {
+        assert.equal(refusalOf({ verb: 'deploy', project: 'acme', args: { action: 'destroy', environment: 'live' } }), 'bad-request: action must be deploy, rollback, set-branch, history or commits')
+        assert.equal(refusalOf({ verb: 'deploy', project: 'acme', args: { action: 'deploy', environment: 'staging' } }), 'bad-request: environment must be live or test')
+        assert.equal(refusalOf({ verb: 'deploy', project: 'acme', args: { action: 'deploy', environment: 'live', force: true } }), 'bad-request: deploy takes only environment')
+        assert.equal(refusalOf({ verb: 'deploy', project: 'acme', args: { action: 'set-branch', environment: 'live', branch: 'a branch' } }), 'bad-request: branch must be a plain branch name')
+        assert.equal(refusalOf({ verb: 'deploy', project: 'acme', args: { action: 'set-branch', environment: 'live', branch: 'main..other' } }), 'bad-request: branch must be a plain branch name')
+        assert.equal(refusalOf({ verb: 'deploy', project: 'acme', args: { action: 'commits', environment: 'live', limit: 100000 } }), `bad-request: limit must be a whole number from 1 to ${MAX_COMMITS}`)
+        assert.equal(refusalOf({ verb: 'deploy', project: 'acme', args: { action: 'history' } }), 'bad-request: environment must be live or test')
+    })
 })
 
 const registry = parseRegistry(`
@@ -254,5 +297,27 @@ projects:
         assert.deepEqual(provisionResult, { ok: false, code: 'capability-disabled', message: 'provision is not enabled for quiet' })
         const envResult = checkStructure(noProvisionOrEnv, { verb: 'env', project: 'quiet', args: { action: 'list', environment: 'live' } }, none)
         assert.deepEqual(envResult, { ok: false, code: 'capability-disabled', message: 'env is not enabled for quiet' })
+    })
+
+    it('gates the deploy verb on the deploy capability, and on the environment existing', () => {
+        assert.equal(VERB_CAPABILITY.deploy, 'deploy')
+        const disabled = checkStructure(registry, { verb: 'deploy', project: 'acme', args: { action: 'history', environment: 'live' } }, none)
+        assert.deepEqual(disabled, { ok: false, code: 'capability-disabled', message: 'deploy is not enabled for acme' })
+
+        const deployable = parseRegistry(`
+projects:
+  acme:
+    client: cl_1
+    name: Acme
+    repo: git@github.com:ItsKodas/acme.git
+    services: { web: { role: site } }
+    capabilities: [deploy]
+    environments:
+      live: { dir: /var/www/acme, branch: main, port: 5010 }
+`)
+        const live = checkStructure(deployable, { verb: 'deploy', project: 'acme', args: { action: 'deploy', environment: 'live' } }, none)
+        assert.equal(live.ok, true)
+        const test = checkStructure(deployable, { verb: 'deploy', project: 'acme', args: { action: 'deploy', environment: 'test' } }, none)
+        assert.deepEqual(test, { ok: false, code: 'unknown-environment', message: 'acme has no test environment' })
     })
 })

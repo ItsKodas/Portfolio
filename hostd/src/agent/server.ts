@@ -61,6 +61,9 @@ function describe(request: AgentRequest): string {
         case 'provision': return 'project' in request ? `provision ${request.args.action} ${request.project}` : `provision create ${request.args.id}`
         // Never args.text: that is the one place an env write carries the file's own contents.
         case 'env': return `env ${request.args.action} ${request.project} ${request.args.environment}`
+        // The branch is safe to name (it is a plain branch name, already validated) and is the one thing
+        // that makes a set-branch line worth reading.
+        case 'deploy': return `deploy ${request.args.action} ${request.project} ${request.args.environment}${request.args.action === 'set-branch' ? ` ${request.args.branch}` : ''}`
     }
 }
 

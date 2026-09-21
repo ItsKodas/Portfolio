@@ -3,14 +3,19 @@
 
 import {
     checkStructure, refuse,
-    type AgentReply, type AgentRequest, type EnvArgs, type HealthReply, type LifecycleAction, type LifecycleReply,
-    type LogLine, type LogsArgs, type ProjectStatus, type ProvisionAddEnvironmentArgs, type ProvisionCreateArgs,
-    type ProvisionRemoveArgs, type Refusal, type ServiceStatus, type StatusesReply,
+    type AgentReply, type AgentRequest, type DeployArgs, type EnvArgs, type HealthReply, type LifecycleAction,
+    type LifecycleReply, type LogLine, type LogsArgs, type ProjectStatus, type ProvisionAddEnvironmentArgs,
+    type ProvisionCreateArgs, type ProvisionRemoveArgs, type Refusal, type ServiceStatus, type StatusesReply,
 } from '../shared/protocol.ts'
 import { environmentOf, type ProjectEntry, type Registry } from '../shared/registry.ts'
 import { describeError } from '../shared/formats.ts'
+import { deployKey, lastHealthyCommit } from '../shared/deploys.ts'
 import type { SystemUsage } from '../shared/system.ts'
 import { runLifecycle, type Runner } from './compose.ts'
+import { deployTrees } from './deploy-compose.ts'
+import type { DeployDeps } from './deploy.ts'
+import type { DeployRunner } from './deploy-runner.ts'
+import type { DeployStore } from './deploy-state.ts'
 import { buildServiceStatuses, groupByProject, pickPerService, type ContainerInspect, type ContainerSummary, type DockerApi } from './docker.ts'
 import { createLogDecoder } from './logframes.ts'
 import { listEnvFiles, readEnvFile, writeEnvFile, type EnvFs } from './env-files.ts'
@@ -37,6 +42,14 @@ export type AgentDeps = {
     // Defaults to the real filesystem (env-files.ts's own default) when absent; only ever overridden in
     // tests, so env reads and writes never depend on a real /var/www while this suite runs.
     envFs?: EnvFs
+    // Absent until the production entrypoint wires the deploy store, runner and poller: the deploy verb
+    // then refuses unavailable instead of crashing, exactly like provision does. Structural types, not
+    // the classes themselves, so the tests can hand this a recorder.
+    deploys?: {
+        runner: Pick<DeployRunner, 'start'>
+        store: Pick<DeployStore, 'get' | 'resume'>
+        deps: DeployDeps
+    }
 }
 
 export type Outcome =
@@ -87,7 +100,56 @@ export class Agent {
                 return reply(await this.provisionExisting(checked.project, request.args))
             case 'env':
                 return reply(await this.env(checked.project, request.args))
+            case 'deploy':
+                return reply(await this.deploy(checked.project, request.args))
         }
+    }
+
+    private async deploy(project: ProjectEntry, args: DeployArgs): Promise<AgentReply> {
+        if (!this.deps.deploys) return refuse('unavailable', 'deploys are not configured')
+        const { runner, store, deps } = this.deps.deploys
+        // checkStructure has already confirmed this environment exists on the project.
+        const environment = environmentOf(project, args.environment)!
+        const key = deployKey(project.id, environment.name)
+
+        if (args.action === 'history') {
+            const state = store.get(key)
+            return {
+                ok: true, environment: environment.name, branch: environment.branch, deployed: environment.deployed,
+                paused: state.paused, consecutiveFailures: state.consecutiveFailures, deploys: state.deploys,
+            }
+        }
+
+        if (args.action === 'commits') {
+            if (!environment.branch) return refuse('bad-request', `${project.id} ${environment.name} has no branch to list`)
+            const trees = deployTrees(environment.dir)
+            // Before the first deploy the repository is still inside the tree, where provisioning cloned
+            // it; after it, it is beside the tree. Both are asked about rather than assumed.
+            const dir = (await deps.fs.exists(trees.repo)) ? trees.repo : environment.dir
+            const log = await deps.fetcher.call({ verb: 'log', dir, branch: environment.branch, limit: args.limit })
+            if (!log.ok) return refuse(log.code === 'bad-request' ? 'bad-request' : 'failed', log.message)
+            return { ok: true, commits: log.commits ?? [] }
+        }
+
+        if (args.action === 'rollback') {
+            const target = lastHealthyCommit(store.get(key), environment.deployed)
+            if (!target) return refuse('bad-request', `${project.id} ${environment.name} has no earlier healthy deploy to go back to`)
+            return runner.start(project, environment, { trigger: 'rollback', actor: 'admin', commit: target })
+        }
+
+        if (args.action === 'set-branch') {
+            const written = await deps.writer.write({ kind: 'set-branch', id: project.id, environment: environment.name, branch: args.branch })
+            if (!written.ok) return refuse('bad-request', written.problem)
+            await deps.refreshRegistry()
+            // Re-read, so the deploy below tracks the branch just written rather than the one this
+            // request arrived holding.
+            const refreshed = deps.registry().projects.get(project.id)
+            const moved = refreshed ? environmentOf(refreshed, environment.name) : null
+            if (!refreshed || !moved) return { ok: true, output: `${environment.name} now tracks ${args.branch}` }
+            return runner.start(refreshed, moved, { trigger: 'branch', actor: 'admin' })
+        }
+
+        return runner.start(project, environment, { trigger: 'manual', actor: 'admin' })
     }
 
     private async health(): Promise<HealthReply> {
