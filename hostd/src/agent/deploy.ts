@@ -44,6 +44,16 @@ export type DeployFs = {
     // The flag Apache reads to serve the holding page, keyed <id>-<env> as the design names it.
     setMaintenance(key: string): Promise<void>
     clearMaintenance(key: string): Promise<void>
+    // The ownership and mode an existing path already has, read before it is used as the pattern for a
+    // tree this deploy is about to create beside it. Never guessed, the same reasoning registry-write.ts
+    // already carries a file's own owner and mode across its replacement by: what belongs to the
+    // operator must go on belonging to the operator, in whatever mode the operator themselves chose.
+    owner(path: string): Promise<{ uid: number, gid: number, mode: number }>
+    // Applies that ownership and mode to a whole tree hostd just created: every directory in it gets
+    // `like.mode` (so the tree stays as traversable as the one it is patterned on), and every file gets
+    // the same bits with the execute ones stripped (`like.mode & 0o666`), since a checkout made under a
+    // restrictive umask carries no record of which files git meant to be executable for this to restore.
+    own(dir: string, like: { uid: number, gid: number, mode: number }): Promise<void>
 }
 
 export type DeployDeps = {
@@ -88,7 +98,14 @@ async function ensureRepo(trees: DeployTrees, deps: DeployDeps): Promise<{ ok: t
     if (!(await deps.fs.exists(trees.git))) {
         return { ok: false, problem: `${trees.dir} has no git repository, so it cannot be deployed` }
     }
+    // trees.repo is a directory this process makes itself, under its own restrictive umask (right for
+    // the secrets it mostly writes; see index.ts), so left alone it lands root-owned with no group or
+    // other bits at all: on the live server this came out drw-rw---- root root, a directory with no
+    // execute bit that nothing but root can even enter. It belongs with the site it was split out of, so
+    // it is given that site's own ownership and mode before anything moves into it, never root's.
+    const like = await deps.fs.owner(trees.dir)
     await deps.fs.mkdir(trees.repo)
+    await deps.fs.own(trees.repo, like)
     await deps.fs.move(trees.git, posix.join(trees.repo, '.git'))
     deps.log(`deploy ${trees.dir}: moved the git repository to ${trees.repo}`)
     return { ok: true }
@@ -235,6 +252,17 @@ export async function runDeploy(
             await deps.fs.rmdir(trees.next).catch(() => {})
             return fail(carried.problem)
         }
+
+        // The checkout above ran in the fetcher, under its own restrictive umask, and the env files just
+        // carried across ran under this process's own restrictive umask (both right for the secrets they
+        // mostly handle, wrong for a site's tree): trees.next is root-owned with no group or other bits
+        // at all. A swap that put that straight into <dir> would still pass the health check below, then
+        // take the site down anyway the moment anything but root tried to read its own files. Fixed here,
+        // before the build (which reads this same tree) and before the swap, to the ownership and mode
+        // <dir> itself already has right now, read fresh rather than assumed, so an operator's own choice
+        // of mode (or a future change to it) survives every deploy rather than being baked in once.
+        const like = await deps.fs.owner(trees.dir)
+        await deps.fs.own(trees.next, like)
 
         // Build. The site is still serving the old version throughout, and a failure here ends the
         // deploy with nothing of the running environment touched.

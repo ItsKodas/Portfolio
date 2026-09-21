@@ -2,7 +2,7 @@
 // the Docker socket, so it listens on nothing but a Unix socket shared with api.
 
 import { createServer, createConnection } from 'node:net'
-import { chmod, chown, mkdir, rename, rm, stat, statfs, writeFile } from 'node:fs/promises'
+import { chmod, chown, lchown, mkdir, readdir, rename, rm, stat, statfs, writeFile } from 'node:fs/promises'
 import { posix } from 'node:path'
 import { RegistryStore, explainRegistryError } from '../shared/registry-store.ts'
 import { RegistryWriter } from '../shared/registry-write.ts'
@@ -52,6 +52,39 @@ const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms))
 function fail(failures: string[]): never {
     for (const failure of failures) log(`FATAL ${failure}`)
     process.exit(1)
+}
+
+// deploy.ts's own DeployFs.own: gives every entry in a tree this process just created (a checkout, or a
+// fresh repository directory) the ownership and mode named in `like`, which by the time this runs is
+// always read fresh from the site directory the tree is about to become or sit beside. Directories get
+// `like.mode` itself, so the tree stays as traversable as the one it is patterned on; files get the same
+// bits with every execute one stripped, because a checkout made under this process's own restrictive
+// umask (see main, below) carries no surviving record of which files git meant to be executable, so
+// there is nothing here to preserve one way or the other.
+//
+// A symlink gets lchown, never chown: chown follows a symlink and would change the ownership of whatever
+// it points at, and a repository is content from GitHub, not something this process wrote itself, so a
+// link inside it can point anywhere at all, including outside the tree entirely. Its mode is left alone
+// completely: Linux ignores a symlink's own permission bits, and Node has no lchmod on Linux to set them
+// without following the link even if it mattered.
+//
+// One pass, chowning and chmodding every entry concurrently rather than one at a time, so the cost of
+// walking a large tree (a big node_modules, say) is bounded by how many of those syscalls the platform
+// will run at once rather than by the tree's own size multiplied by a network-sized latency; each call is
+// still one chown and one chmod, so the total work is unavoidably linear in the number of entries.
+async function ownTree(dir: string, like: { uid: number, gid: number, mode: number }): Promise<void> {
+    await chown(dir, like.uid, like.gid)
+    await chmod(dir, like.mode)
+    const entries = await readdir(dir, { withFileTypes: true, recursive: true })
+    await Promise.all(entries.map(async entry => {
+        const path = posix.join(entry.parentPath, entry.name)
+        if (entry.isSymbolicLink()) {
+            await lchown(path, like.uid, like.gid)
+            return
+        }
+        await chown(path, like.uid, like.gid)
+        await chmod(path, entry.isDirectory() ? like.mode : like.mode & 0o666)
+    }))
 }
 
 async function main(): Promise<void> {
@@ -155,6 +188,14 @@ async function main(): Promise<void> {
                 await writeFile(posix.join(MAINTENANCE_DIR, key), '')
             },
             clearMaintenance: key => rm(posix.join(MAINTENANCE_DIR, key), { force: true }),
+            owner: async path => {
+                const info = await stat(path)
+                // Masked to the nine permission bits, the same reasoning registry-write.ts's own chmod
+                // carries: stat can report more than that (the regular-file bit, a stray setuid bit),
+                // none of which belongs on a mode this hands straight to chmod.
+                return { uid: info.uid, gid: info.gid, mode: info.mode & 0o777 }
+            },
+            own: (dir, like) => ownTree(dir, like),
         },
         now: Date.now,
         sleep: async ms => { await sleep(ms) },
