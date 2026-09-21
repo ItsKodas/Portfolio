@@ -98,7 +98,8 @@ projects:
   project only, with the message `credential must be lowercase letters, digits or underscore, 1 to 32
   characters`.
 - `registry-write.ts`: the `configure` change gains `credential?: string | null`. Absent leaves the key
-  alone, a name sets it, null deletes it, matching how `repo` already behaves.
+  alone, a name sets it, null deletes it, matching how `repo` already behaves. `ProjectDraft` gains the
+  same optional field, so a project created with a credential is written with one.
 
 ### Fetcher
 
@@ -119,23 +120,32 @@ projects:
 - `fetch-protocol.ts`: `clone`, `fetch` and `branches` gain an optional `credential` field, validated
   against the name regex and included in each verb's `onlyKeys` guard. A new `{ verb: 'credentials' }`
   request answers `{ ok: true, credentials: string[] }`, names only, sorted.
-- `protocol.ts`: `ConfigureArgs` gains `credential?: string | null`, parsed and refused the same way
-  `repo` is. A new project-less `credentials` verb and its reply type are added.
+- `protocol.ts`: `ConfigureArgs` gains `credential?: string | null` and `ProvisionCreateArgs` an optional
+  `credential`, both parsed and refused the way `repo` is. A new project-less `credentials` verb and its
+  reply type are added.
 
 ### Agent
 
 - `agent.ts` passes `project.credential` on its `clone`, `fetch` and `branches` calls, proxies the new
   `credentials` verb to the fetcher, and validates a non-null `credential` in `configure` against that
   list before writing, refusing `bad-request: no credential named <name>`.
-- The other call sites that reach the fetcher, in `provision.ts`, `deploy.ts` and `deploy-runner.ts`,
-  pass the project's credential too. This is the part most easily missed: a project that clones with the
-  right token and then polls with the wrong one would look provisioned and never deploy again.
+- The other two call sites that reach GitHub pass a credential too. `deploy.ts`'s `currentTip` takes it
+  from the project entry it is already given. This is the part most easily missed: a project that clones
+  with the right token and then polls with the wrong one would look provisioned and never deploy again.
+- `provision.ts` clones in two places. `addEnvironment` reads the credential from the existing project
+  entry. `createProject` has no entry yet, so `ProvisionCreateArgs` gains an optional `credential`, which
+  is passed to the clone and written into the new registry entry by `registry-write.ts`'s `ProjectDraft`.
+  Without it, a site on a second account could not be created through hostd at all, only enrolled by hand
+  and then pointed at its credential afterwards.
+- `log`, `tip` and `checkout` read local refs and carry nothing.
 
 ### api
 
 `GET /credentials`, machine level, admin only. It is gated by `caller.actor.kind !== 'admin'` the way
 `audit-all` is, not through `authorize`, because there is no project in the question. `configure` passes
-the new field through `parseConfigureArgs` unchanged in shape.
+the new field through `parseConfigureArgs` unchanged in shape. The project listing carries `credential`
+beside `repo`, under the same admin-only condition and for the same reason: it is a fact about the
+machine, and a client has no use for it. That is how the Settings form learns the saved name.
 
 ### Portal
 
