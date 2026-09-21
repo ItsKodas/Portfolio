@@ -73,7 +73,10 @@ ${aliasLines(input.aliases)}
     Header always set Retry-After "120" "expr=%{REQUEST_STATUS} == 503"
 
     RewriteEngine On
-    RewriteCond expr -f "${input.maintenanceFlag}"
+    // Outer double quotes group -f and the path into the one CondPattern argument RewriteCond expects
+    // (they are separated by a space, and a bare third token would be read as an invalid flags list).
+    // The inner single quotes are ap_expr's own string-literal syntax, not the config tokenizer's.
+    RewriteCond expr "-f '${input.maintenanceFlag}'"
     RewriteRule ^ - [R=503,L]
 
     ProxyPreserveHost On

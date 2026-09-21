@@ -51,7 +51,7 @@ describe('renderVhost', () => {
 
     it('serves the holding page when the maintenance flag exists', () => {
         const text = renderVhost(input())
-        assert.match(text, /-f "\/run\/hostd\/maintenance\/acme-live"/)
+        assert.match(text, /RewriteCond expr "-f '\/run\/hostd\/maintenance\/acme-live'"/)
         assert.match(text, /ErrorDocument 503/)
     })
 
