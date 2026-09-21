@@ -11,8 +11,11 @@ import { parseRegistry, type ProjectEntry } from '../shared/registry.ts'
 import { emptyDeploys, type DeployRecord, type EnvironmentDeploys } from '../shared/deploys.ts'
 import type { Change } from '../shared/registry-write.ts'
 import type { FetchReply, FetchRequest } from '../shared/fetch-protocol.ts'
-import type { AgentRequest, DeployArgs, LogLine } from '../shared/protocol.ts'
+import type { AgentRequest, BackupArgs, DeployArgs, LogLine } from '../shared/protocol.ts'
 import type { SystemUsage } from '../shared/system.ts'
+import { emptyBackups, type Snapshot } from '../shared/backups.ts'
+import type { BackupRequest } from './backup-run.ts'
+import type { Restic } from './restic.ts'
 
 const registry = parseRegistry(`
 projects:
@@ -23,7 +26,7 @@ projects:
     dir: /var/www/acme
     upstream: 127.0.0.1:5010
     services: { web: { role: site }, db: { role: database, engine: postgres } }
-    capabilities: [lifecycle, logs, provision, env]
+    capabilities: [lifecycle, logs, provision, env, backups]
   quiet:
     client: cl_1
     name: Quiet
@@ -716,5 +719,75 @@ describe('the deploy verb', () => {
         const reply = replyOf(await agent.handle(deploy({ action: 'set-branch', environment: 'live', branch: 'develop' })))
         assert.equal(reply?.ok === false && reply.code, 'bad-request')
         assert.deepEqual(context.started, [])
+    })
+})
+
+// Only what the backup verb itself touches: the runner is a recorder, the store answers a fixed history,
+// and restic's snapshots list is what stands in for the project's own repository. dump returns a
+// PassThrough that is never written to: the tests that reach it only check the outcome's kind.
+function backupsWiring(options: { snapshots?: Snapshot[] } = {}) {
+    const started: Array<{ id: string, request: BackupRequest }> = []
+    const restic: Restic = {
+        init: async () => ({ ok: true }),
+        backup: async () => ({ ok: true, snapshot: 'deadbeef', sizeBytes: null }),
+        snapshots: async () => ({ ok: true, snapshots: options.snapshots ?? [] }),
+        forget: async () => ({ ok: true }),
+        retention: async () => ({ ok: true }),
+        prune: async () => ({ ok: true }),
+        dump: () => ({ stdout: new PassThrough(), exit: Promise.resolve({ exitCode: 0, stderr: '' }) }),
+    }
+    const backups = {
+        runner: {
+            start: (project: ProjectEntry, request: BackupRequest) => {
+                started.push({ id: project.id, request })
+                return { ok: true as const, started: { run: 'run1', tag: 'manual' as const } }
+            },
+            isRunning: () => false,
+        },
+        store: { get: () => emptyBackups() },
+        restic,
+        backupDir: '/var/backups',
+        newRunId: () => 'run1',
+    }
+    return { backups, started }
+}
+
+describe('backup', () => {
+    const backup = (action: BackupArgs, project = 'acme'): AgentRequest => ({ verb: 'backup', project, args: action })
+
+    it('refuses when backups are not configured', async () => {
+        const { agent } = setup()
+        const outcome = await agent.handle(backup({ action: 'list' }))
+        assert.equal(outcome.kind === 'reply' && outcome.reply.ok, false)
+        assert.equal(outcome.kind === 'reply' && !outcome.reply.ok && outcome.reply.code, 'unavailable')
+    })
+
+    it('lists the snapshots and the run history together', async () => {
+        const { backups } = backupsWiring({ snapshots: [{ id: 'deadbeef', at: '2026-09-21T02:00:00.000Z', tag: 'manual', sizeBytes: null }] })
+        const { agent } = setup({ backups })
+        const outcome = await agent.handle(backup({ action: 'list' }))
+        assert.equal(outcome.kind === 'reply' && outcome.reply.ok && 'snapshots' in outcome.reply && outcome.reply.snapshots.length, 1)
+    })
+
+    it('refuses a sixth manual run itself, whatever api decided', async () => {
+        const snapshots = ['a1', 'a2', 'a3', 'a4', 'a5'].map(id => ({ id: id.padEnd(8, '0'), at: '2026-09-21T02:00:00.000Z', tag: 'manual' as const, sizeBytes: null }))
+        const { backups } = backupsWiring({ snapshots })
+        const { agent } = setup({ backups })
+        const outcome = await agent.handle(backup({ action: 'run', tag: 'manual' }))
+        assert.equal(outcome.kind === 'reply' && !outcome.reply.ok && outcome.reply.code, 'bad-request')
+    })
+
+    it('refuses to delete a snapshot that is not in this project\'s repository', async () => {
+        const { backups } = backupsWiring({ snapshots: [] })
+        const { agent } = setup({ backups })
+        const outcome = await agent.handle(backup({ action: 'delete', snapshot: 'deadbeef' }))
+        assert.equal(outcome.kind === 'reply' && !outcome.reply.ok && outcome.reply.code, 'bad-request')
+    })
+
+    it('answers a download with bytes', async () => {
+        const { backups } = backupsWiring({ snapshots: [{ id: 'deadbeef', at: '2026-09-21T02:00:00.000Z', tag: 'manual', sizeBytes: null }] })
+        const { agent } = setup({ backups })
+        const outcome = await agent.handle(backup({ action: 'download', snapshot: 'deadbeef' }))
+        assert.equal(outcome.kind, 'bytes')
     })
 })

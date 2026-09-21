@@ -3,13 +3,15 @@
 
 import {
     checkStructure, refuse,
-    type AgentReply, type AgentRequest, type DeployArgs, type EnvArgs, type HealthReply, type LifecycleAction,
-    type LifecycleReply, type LogLine, type LogsArgs, type ProjectStatus, type ProvisionAddEnvironmentArgs,
-    type ProvisionCreateArgs, type ProvisionRemoveArgs, type Refusal, type ServiceStatus, type StatusesReply,
+    type AgentReply, type AgentRequest, type BackupArgs, type DeployArgs, type EnvArgs, type HealthReply,
+    type LifecycleAction, type LifecycleReply, type LogLine, type LogsArgs, type ProjectStatus,
+    type ProvisionAddEnvironmentArgs, type ProvisionCreateArgs, type ProvisionRemoveArgs, type Refusal,
+    type ServiceStatus, type StatusesReply,
 } from '../shared/protocol.ts'
 import { environmentOf, type ProjectEntry, type Registry } from '../shared/registry.ts'
 import { describeError } from '../shared/formats.ts'
 import { deployKey, lastHealthyCommit } from '../shared/deploys.ts'
+import { manualProblem } from '../shared/backups.ts'
 import type { SystemUsage } from '../shared/system.ts'
 import { runLifecycle, type Runner } from './compose.ts'
 import { deployTrees } from './deploy-compose.ts'
@@ -20,6 +22,9 @@ import { buildServiceStatuses, groupByProject, pickPerService, type ContainerIns
 import { createLogDecoder } from './logframes.ts'
 import { listEnvFiles, readEnvFile, writeEnvFile, type EnvFs } from './env-files.ts'
 import { createProject, addEnvironment, removeProject, type ProvisionDeps } from './provision.ts'
+import type { BackupRunner } from './backup-runner.ts'
+import type { BackupStore } from './backup-state.ts'
+import { repoPath, type Restic } from './restic.ts'
 
 export const MAX_FOLLOWS_PER_PROJECT = 4
 export const FOLLOW_MAX_MS = 60 * 60_000
@@ -49,6 +54,15 @@ export type AgentDeps = {
         runner: Pick<DeployRunner, 'start'>
         store: Pick<DeployStore, 'get' | 'resume'>
         deps: DeployDeps
+    }
+    // Absent until the production entrypoint wires the backup directory, the store and the runner: the
+    // backup verb then refuses unavailable instead of crashing, exactly like deploys and provision do.
+    backups?: {
+        runner: Pick<BackupRunner, 'start' | 'isRunning'>
+        store: Pick<BackupStore, 'get'>
+        restic: Restic
+        backupDir: string
+        newRunId: () => string
     }
 }
 
@@ -107,8 +121,55 @@ export class Agent {
             case 'deploy':
                 return reply(await this.deploy(checked.project, request.args))
             case 'backup':
-                return reply(refuse('unavailable', 'backups are not configured'))
+                return this.backup(checked.project, request.args)
         }
+    }
+
+    private async backup(project: ProjectEntry, args: BackupArgs): Promise<Outcome> {
+        if (!this.deps.backups) return reply(refuse('unavailable', 'backups are not configured'))
+        const { runner, store, restic, backupDir, newRunId } = this.deps.backups
+        const repo = repoPath(backupDir, project.id)
+        const state = store.get(project.id)
+
+        if (args.action === 'list') {
+            const listed = await restic.snapshots(repo)
+            // A repository that does not exist yet is not an error: it is a project that has never been
+            // backed up, and the portal draws an empty list for it.
+            const snapshots = listed.ok ? listed.snapshots : []
+            return reply({ ok: true, snapshots, runs: state.runs, running: runner.isRunning(project.id) })
+        }
+
+        if (args.action === 'get-run') {
+            return reply({ ok: true, run: state.runs.find(run => run.run === args.run) ?? null, running: runner.isRunning(project.id) })
+        }
+
+        if (args.action === 'run') {
+            const listed = await restic.snapshots(repo)
+            if (args.tag === 'manual') {
+                // Checked here as well as in api: the agent never lets api's decision stand in for its own.
+                const problem = manualProblem(listed.ok ? listed.snapshots : [], state.runs, Date.now())
+                if (problem) return reply(refuse('bad-request', problem))
+            }
+            return reply(runner.start(project, {
+                tag: args.tag, actor: args.tag === 'scheduled' ? 'hostd' : 'admin',
+                run: newRunId(), keep: args.keep ?? null,
+            }))
+        }
+
+        // delete and download both name a snapshot, and both look it up in this project's own repository
+        // first: a hex id is not proof that it belongs to this client.
+        const listed = await restic.snapshots(repo)
+        if (!listed.ok) return reply(refuse('failed', listed.reason, listed.output))
+        const snapshot = listed.snapshots.find(entry => entry.id === args.snapshot || entry.id.startsWith(args.snapshot))
+        if (!snapshot) return reply(refuse('bad-request', `no backup ${args.snapshot} for ${project.id}`))
+
+        if (args.action === 'delete') {
+            const forgotten = await restic.forget(repo, snapshot.id)
+            return reply(forgotten.ok ? { ok: true, output: `backup ${snapshot.id} deleted` } : refuse('failed', forgotten.reason, forgotten.output))
+        }
+
+        const handle = restic.dump(repo, snapshot.id)
+        return { kind: 'bytes', body: handle.stdout, close: () => handle.stdout.destroy() }
     }
 
     private async deploy(project: ProjectEntry, args: DeployArgs): Promise<AgentReply> {
