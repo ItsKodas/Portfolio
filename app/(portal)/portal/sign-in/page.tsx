@@ -1,9 +1,10 @@
 import type { Metadata } from 'next'
 import { redirect } from 'next/navigation'
-import { Alert } from '@mui/material'
 
 import { currentClient, PORTAL_HOME } from '@/server/clients/auth'
+import { Callout } from '@/ui/Callout/Callout'
 import { Panel, SignInForm } from '../forms'
+import styles from '../forms.module.css'
 
 export const metadata: Metadata = { title: 'Sign in' }
 
@@ -12,7 +13,11 @@ export default async function PortalSignInPage({ searchParams }: { searchParams:
     const { reset } = await searchParams
     return (
         <Panel title="Client sign-in">
-            {reset === '1' && <Alert severity="success" sx={{ mb: 2 }}>Your password has been changed. Sign in with the new one.</Alert>}
+            {reset === '1' && (
+                <div className={styles.done}>
+                    <Callout tone="good" title="Your password has been changed.">Sign in with the new one.</Callout>
+                </div>
+            )}
             <SignInForm />
         </Panel>
     )

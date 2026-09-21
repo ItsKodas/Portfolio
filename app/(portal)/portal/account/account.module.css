@@ -1,0 +1,35 @@
+/* What this page used to get from MUI's Stack, Box and Typography, the Divider between sessions included.
+   Every colour is a token, which is what ui/palette.test.ts asks of a stylesheet: that test walks ui/ and
+   does not reach this file, so the rule is kept here by hand. */
+
+.sessions {
+    display: grid;
+    gap: 14px;
+    margin-bottom: 16px;
+}
+
+/* The rule between sessions, which was a Divider. Not after the last one, which had none either. */
+.session + .session {
+    border-top: 1px solid var(--rule);
+    padding-top: 14px;
+}
+
+.device {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
+.deviceName { font-size: 13.5px; }
+
+.lastUsed {
+    font-size: 12px;
+    color: var(--ink-3);
+    margin: 3px 0 0;
+}
+
+.count {
+    font-size: 12.5px;
+    color: var(--ink-3);
+    margin: 0 0 16px;
+}

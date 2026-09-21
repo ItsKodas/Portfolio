@@ -7,14 +7,17 @@
 import { useState } from 'react'
 import type { ZodType } from 'zod'
 import Link from 'next/link'
-import { Alert, Box, Button, Paper, Stack, TextField, Typography } from '@mui/material'
 
 import { MIN_PASSWORD_LENGTH, codeSchema, emailSchema, passwordSchema } from '@/server/clients/schema'
+import { Button } from '@/ui/Button/Button'
+import { Callout } from '@/ui/Callout/Callout'
+import { Field } from '@/ui/Field/Field'
 import {
     acknowledgeCodesAction, changePasswordAction, codeAction, completeInviteAction, completeResetAction,
     confirmEnrolmentAction, regenerateCodesAction, requestResetAction, signInAction, signOutElsewhereAction,
     type PortalResult,
 } from './actions'
+import styles from './forms.module.css'
 
 function useAction() {
     const [pending, setPending] = useState(false)
@@ -35,7 +38,11 @@ function useAction() {
     return { pending, error, run }
 }
 
-const Problem = ({ error }: { error: string | null }) => (error ? <Alert severity="error" sx={{ mt: 1 }}>{error}</Alert> : null)
+// The error is the whole message, as it was in the Alert this replaces, so it goes in the title rather than
+// being split into a heading and a body that nobody wrote. Callout's crit tone announces it either way.
+const Problem = ({ error }: { error: string | null }) => (
+    error ? <div className={styles.problem}><Callout tone="crit" title={error}>{null}</Callout></div> : null
+)
 
 // Instant feedback only: the schema the server applies is the one that counts, this just avoids a round trip
 // for an address that is obviously not one, or a code that is obviously empty
@@ -55,14 +62,15 @@ function passwordHint(password: string): string {
 
 const CONFIRM_MISMATCH = 'Those two passwords are not the same.'
 
+// These pages sit outside ui/Shell, so each is its own centred card on the portal's ground.
 export function Panel({ title, children }: { title: string, children: React.ReactNode }) {
     return (
-        <Box sx={{ minHeight: '100vh', display: 'grid', placeItems: 'center', p: 2 }}>
-            <Paper sx={{ p: 4, width: '100%', maxWidth: 380 }}>
-                <Typography variant="h5" component="h1" sx={{ mb: 3, fontWeight: 700 }}>{title}</Typography>
+        <div className={styles.ground}>
+            <div className={styles.panel}>
+                <h1 className={styles.panelTitle}>{title}</h1>
                 {children}
-            </Paper>
-        </Box>
+            </div>
+        </div>
     )
 }
 
@@ -74,18 +82,20 @@ export function SignInForm() {
     const passwordProblem = fieldProblem(password, passwordSchema)
     return (
         <form onSubmit={event => { event.preventDefault(); run(() => signInAction(email, password)) }}>
-            <TextField label="Email" type="email" fullWidth autoComplete="username" value={email}
-                error={!!emailProblem} helperText={emailProblem}
-                onChange={event => setEmail(event.target.value)} sx={{ mb: 2 }} />
-            <TextField label="Password" type="password" fullWidth autoComplete="current-password" value={password}
-                error={!!passwordProblem} helperText={passwordProblem}
-                onChange={event => setPassword(event.target.value)} sx={{ mb: 2 }} />
-            <Button type="submit" variant="contained" fullWidth size="large"
+            <div className={styles.fields}>
+                <Field label="Email" type="email" autoComplete="username" value={email}
+                    error={emailProblem}
+                    onChange={event => setEmail(event.target.value)} />
+                <Field label="Password" type="password" autoComplete="current-password" value={password}
+                    error={passwordProblem}
+                    onChange={event => setPassword(event.target.value)} />
+            </div>
+            <Button type="submit" variant="primary" className={styles.submit}
                 disabled={pending || !email || !password || !!emailProblem || !!passwordProblem}>Sign in</Button>
             <Problem error={error} />
-            <Box sx={{ mt: 2, textAlign: 'center' }}>
-                <Link href="/portal/forgot" style={{ color: 'inherit', fontSize: '0.875rem' }}>Forgotten your password?</Link>
-            </Box>
+            <p className={styles.footLink}>
+                <Link href="/portal/forgot" className={styles.link}>Forgotten your password?</Link>
+            </p>
         </form>
     )
 }
@@ -96,10 +106,12 @@ export function CodeForm() {
     const codeProblem = fieldProblem(code, codeSchema)
     return (
         <form onSubmit={event => { event.preventDefault(); run(() => codeAction(code)) }}>
-            <TextField label="Code from your authenticator app" fullWidth autoComplete="one-time-code" inputMode="numeric"
-                value={code} error={!!codeProblem} helperText={codeProblem ?? 'A recovery code works here too.'}
-                onChange={event => setCode(event.target.value)} sx={{ mb: 2 }} />
-            <Button type="submit" variant="contained" fullWidth size="large" disabled={pending || !code || !!codeProblem}>Verify</Button>
+            <div className={styles.fields}>
+                <Field label="Code from your authenticator app" autoComplete="one-time-code" inputMode="numeric"
+                    value={code} error={codeProblem} hint={codeProblem ? undefined : 'A recovery code works here too.'}
+                    onChange={event => setCode(event.target.value)} />
+            </div>
+            <Button type="submit" variant="primary" className={styles.submit} disabled={pending || !code || !!codeProblem}>Verify</Button>
             <Problem error={error} />
         </form>
     )
@@ -133,17 +145,14 @@ function RecoveryCodesList({ codes, notice, children }: { codes: string[], notic
 
     return (
         <div>
-            <Typography variant="body2" sx={{ mb: 2 }}>{notice}</Typography>
-            <Box component="ul" sx={{
-                fontFamily: 'monospace', listStyle: 'none', p: 2, m: 0, mb: 2,
-                bgcolor: 'background.default', borderRadius: 1,
-            }}>
+            <p className={styles.notice}>{notice}</p>
+            <ul className={styles.codes}>
                 {codes.map(code => <li key={code}>{code}</li>)}
-            </Box>
-            <Stack direction="row" spacing={1} sx={{ mb: 2 }}>
-                <Button variant="outlined" fullWidth onClick={copyCodes}>{copied ? 'Copied' : 'Copy'}</Button>
-                <Button variant="outlined" fullWidth onClick={downloadCodes}>Download</Button>
-            </Stack>
+            </ul>
+            <div className={styles.codeButtons}>
+                <Button className={styles.grow} onClick={copyCodes}>{copied ? 'Copied' : 'Copy'}</Button>
+                <Button className={styles.grow} onClick={downloadCodes}>Download</Button>
+            </div>
             {children}
         </div>
     )
@@ -153,7 +162,7 @@ function RecoveryCodes({ codes }: { codes: string[] }) {
     const { pending, error, run } = useAction()
     return (
         <RecoveryCodesList codes={codes} notice="Save these recovery codes somewhere safe, like a password manager. Each one signs you in once, if you ever lose access to your authenticator app. They will not be shown again.">
-            <Button variant="contained" fullWidth size="large" disabled={pending}
+            <Button variant="primary" className={styles.wide} disabled={pending}
                 onClick={() => run(() => acknowledgeCodesAction())}>I have saved these</Button>
             <Problem error={error} />
         </RecoveryCodesList>
@@ -188,20 +197,20 @@ export function EnrolmentForm({ qr, typed }: { qr: string, typed: string }) {
 
     return (
         <form onSubmit={confirm}>
-            <Typography variant="body2" sx={{ mb: 2 }}>
+            <p className={styles.notice}>
                 Scan this with your authenticator app, or type the code in below it.
-            </Typography>
-            <Box sx={{ display: 'grid', placeItems: 'center', mb: 2 }}>
+            </p>
+            <div className={styles.qr}>
                 {/* eslint-disable-next-line @next/next/no-img-element -- a data URI, not something next/image can optimise */}
                 <img src={qr} alt="QR code for your authenticator app" width={240} height={240} />
-            </Box>
-            <Typography variant="body2" sx={{ mb: 2, textAlign: 'center', fontFamily: 'monospace', letterSpacing: 1 }}>
-                {typed}
-            </Typography>
-            <TextField label="Code from your authenticator app" fullWidth autoComplete="one-time-code" inputMode="numeric"
-                value={code} error={!!codeProblem} helperText={codeProblem}
-                onChange={event => setCode(event.target.value)} sx={{ mb: 2 }} />
-            <Button type="submit" variant="contained" fullWidth size="large" disabled={pending || !code || !!codeProblem}>
+            </div>
+            <p className={styles.typed}>{typed}</p>
+            <div className={styles.fields}>
+                <Field label="Code from your authenticator app" autoComplete="one-time-code" inputMode="numeric"
+                    value={code} error={codeProblem}
+                    onChange={event => setCode(event.target.value)} />
+            </div>
+            <Button type="submit" variant="primary" className={styles.submit} disabled={pending || !code || !!codeProblem}>
                 Confirm and continue
             </Button>
             <Problem error={error} />
@@ -220,13 +229,15 @@ export function InviteForm({ token }: { token: string }) {
     const canSubmit = !!password && !passwordProblem && !!confirm && !mismatch
     return (
         <form onSubmit={event => { event.preventDefault(); run(() => completeInviteAction(token, password)) }}>
-            <TextField label="Choose a password" type="password" fullWidth autoComplete="new-password" value={password}
-                error={!!passwordProblem} helperText={passwordHint(password)}
-                onChange={event => setPassword(event.target.value)} sx={{ mb: 2 }} />
-            <TextField label="Confirm password" type="password" fullWidth autoComplete="new-password" value={confirm}
-                error={mismatch} helperText={mismatch ? CONFIRM_MISMATCH : undefined}
-                onChange={event => setConfirm(event.target.value)} sx={{ mb: 2 }} />
-            <Button type="submit" variant="contained" fullWidth size="large"
+            <div className={styles.fields}>
+                <Field label="Choose a password" type="password" autoComplete="new-password" value={password}
+                    error={passwordProblem ? passwordHint(password) : undefined} hint={passwordProblem ? undefined : passwordHint(password)}
+                    onChange={event => setPassword(event.target.value)} />
+                <Field label="Confirm password" type="password" autoComplete="new-password" value={confirm}
+                    error={mismatch ? CONFIRM_MISMATCH : undefined}
+                    onChange={event => setConfirm(event.target.value)} />
+            </div>
+            <Button type="submit" variant="primary" className={styles.submit}
                 disabled={pending || !canSubmit}>Set password</Button>
             <Problem error={error} />
         </form>
@@ -259,17 +270,19 @@ export function ForgotForm() {
         }
     }
 
-    if (message) return <Typography variant="body2">{message}</Typography>
+    if (message) return <p className={styles.notice}>{message}</p>
 
     return (
         <form onSubmit={submit}>
-            <Typography variant="body2" sx={{ mb: 2 }}>
+            <p className={styles.notice}>
                 Enter your email address and, if it has an account, we will send a link to reset your password.
-            </Typography>
-            <TextField label="Email" type="email" fullWidth autoComplete="username" value={email}
-                error={!!emailProblem} helperText={emailProblem}
-                onChange={event => setEmail(event.target.value)} sx={{ mb: 2 }} />
-            <Button type="submit" variant="contained" fullWidth size="large"
+            </p>
+            <div className={styles.fields}>
+                <Field label="Email" type="email" autoComplete="username" value={email}
+                    error={emailProblem}
+                    onChange={event => setEmail(event.target.value)} />
+            </div>
+            <Button type="submit" variant="primary" className={styles.submit}
                 disabled={pending || !email || !!emailProblem}>Send reset link</Button>
             <Problem error={error} />
         </form>
@@ -291,18 +304,20 @@ export function ResetForm({ token, needsCode }: { token: string, needsCode: bool
     const canSubmit = !!password && !passwordProblem && !!confirm && !mismatch && (!needsCode || (!!code && !codeProblem))
     return (
         <form onSubmit={event => { event.preventDefault(); run(() => completeResetAction(token, password, needsCode ? code : '')) }}>
-            <TextField label="Choose a new password" type="password" fullWidth autoComplete="new-password" value={password}
-                error={!!passwordProblem} helperText={passwordHint(password)}
-                onChange={event => setPassword(event.target.value)} sx={{ mb: 2 }} />
-            <TextField label="Confirm password" type="password" fullWidth autoComplete="new-password" value={confirm}
-                error={mismatch} helperText={mismatch ? CONFIRM_MISMATCH : undefined}
-                onChange={event => setConfirm(event.target.value)} sx={{ mb: 2 }} />
-            {needsCode && (
-                <TextField label="Code from your authenticator app" fullWidth autoComplete="one-time-code" inputMode="numeric"
-                    value={code} error={!!codeProblem} helperText={codeProblem ?? 'A recovery code works here too.'}
-                    onChange={event => setCode(event.target.value)} sx={{ mb: 2 }} />
-            )}
-            <Button type="submit" variant="contained" fullWidth size="large" disabled={pending || !canSubmit}>
+            <div className={styles.fields}>
+                <Field label="Choose a new password" type="password" autoComplete="new-password" value={password}
+                    error={passwordProblem ? passwordHint(password) : undefined} hint={passwordProblem ? undefined : passwordHint(password)}
+                    onChange={event => setPassword(event.target.value)} />
+                <Field label="Confirm password" type="password" autoComplete="new-password" value={confirm}
+                    error={mismatch ? CONFIRM_MISMATCH : undefined}
+                    onChange={event => setConfirm(event.target.value)} />
+                {needsCode && (
+                    <Field label="Code from your authenticator app" autoComplete="one-time-code" inputMode="numeric"
+                        value={code} error={codeProblem} hint={codeProblem ? undefined : 'A recovery code works here too.'}
+                        onChange={event => setCode(event.target.value)} />
+                )}
+            </div>
+            <Button type="submit" variant="primary" className={styles.submit} disabled={pending || !canSubmit}>
                 Reset password
             </Button>
             <Problem error={error} />
@@ -336,19 +351,23 @@ export function ChangePasswordForm() {
 
     return (
         <form onSubmit={submit}>
-            <TextField label="Current password" type="password" fullWidth autoComplete="current-password" value={current}
-                onChange={event => setCurrent(event.target.value)} sx={{ mb: 2 }} />
-            <TextField label="New password" type="password" fullWidth autoComplete="new-password" value={password}
-                error={!!passwordProblem} helperText={passwordHint(password)}
-                onChange={event => setPassword(event.target.value)} sx={{ mb: 2 }} />
-            <TextField label="Confirm new password" type="password" fullWidth autoComplete="new-password" value={confirm}
-                error={mismatch} helperText={mismatch ? CONFIRM_MISMATCH : undefined}
-                onChange={event => setConfirm(event.target.value)} sx={{ mb: 2 }} />
-            <Button type="submit" variant="contained" disabled={pending || !canSubmit}>Change password</Button>
+            <div className={styles.fields}>
+                <Field label="Current password" type="password" autoComplete="current-password" value={current}
+                    onChange={event => setCurrent(event.target.value)} />
+                <Field label="New password" type="password" autoComplete="new-password" value={password}
+                    error={passwordProblem ? passwordHint(password) : undefined} hint={passwordProblem ? undefined : passwordHint(password)}
+                    onChange={event => setPassword(event.target.value)} />
+                <Field label="Confirm new password" type="password" autoComplete="new-password" value={confirm}
+                    error={mismatch ? CONFIRM_MISMATCH : undefined}
+                    onChange={event => setConfirm(event.target.value)} />
+            </div>
+            <Button type="submit" variant="primary" className={styles.submit} disabled={pending || !canSubmit}>Change password</Button>
             {done && (
-                <Alert severity="success" sx={{ mt: 2 }}>
-                    Your password has been changed. This device stays signed in, and every other session has been signed out.
-                </Alert>
+                <div className={styles.done}>
+                    <Callout tone="good" title="Your password has been changed.">
+                        This device stays signed in, and every other session has been signed out.
+                    </Callout>
+                </div>
             )}
             <Problem error={error} />
         </form>
@@ -385,19 +404,21 @@ export function RegenerateCodesForm() {
     if (codes) {
         return (
             <RecoveryCodesList codes={codes} notice="Save these somewhere safe, like a password manager. Your previous recovery codes have stopped working. Each new one signs you in once, if you ever lose access to your authenticator app, and they will not be shown again.">
-                <Button variant="contained" fullWidth size="large" onClick={() => setCodes(null)}>Done</Button>
+                <Button variant="primary" className={styles.wide} onClick={() => setCodes(null)}>Done</Button>
             </RecoveryCodesList>
         )
     }
 
     return (
         <form onSubmit={submit}>
-            <Typography variant="body2" sx={{ mb: 2 }}>
+            <p className={styles.notice}>
                 Confirm your password to generate a new set of recovery codes. The old set stops working as soon as the new one is created.
-            </Typography>
-            <TextField label="Password" type="password" fullWidth autoComplete="current-password" value={password}
-                onChange={event => setPassword(event.target.value)} sx={{ mb: 2 }} />
-            <Button type="submit" variant="contained" disabled={pending || !password}>Generate new codes</Button>
+            </p>
+            <div className={styles.fields}>
+                <Field label="Password" type="password" autoComplete="current-password" value={password}
+                    onChange={event => setPassword(event.target.value)} />
+            </div>
+            <Button type="submit" variant="primary" className={styles.submit} disabled={pending || !password}>Generate new codes</Button>
             <Problem error={error} />
         </form>
     )
@@ -406,10 +427,10 @@ export function RegenerateCodesForm() {
 export function SignOutElsewhereButton() {
     const { pending, error, run } = useAction()
     return (
-        <Box>
-            <Button variant="outlined" color="error" disabled={pending}
+        <div>
+            <Button className={styles.crit} disabled={pending}
                 onClick={() => run(() => signOutElsewhereAction())}>Sign out everywhere else</Button>
             <Problem error={error} />
-        </Box>
+        </div>
     )
 }
