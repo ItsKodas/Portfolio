@@ -96,6 +96,7 @@ function setup(options: SetupOptions = {}) {
             logStreams.push(stream)
             return stream
         },
+        exec: async () => ({ exitCode: 0, stderr: '' }),
     }
     const deps: AgentDeps = {
         registry: () => registry,
