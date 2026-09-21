@@ -10,17 +10,41 @@
 // for the agent's own revert() to undo, because the agent is what knows what was there before. A double
 // that quietly applied everything and never put anything back would let an integration test pass while
 // the rollback protecting five live client sites was broken.
+//
+// A `.ts` file, not `.mjs`, specifically so a `.ts` test can import it directly: the suite glob is
+// `src/**/*.test.ts`, and a test importing an untyped `.mjs` fails typecheck, which is what let this go
+// unexercised by anything automated for a while.
 
 import { readFile, writeFile, rename, unlink, mkdir } from 'node:fs/promises'
 import { join, dirname, basename } from 'node:path'
 
-export function startFakeRail(dir, { configtest = () => ({ ok: true, output: 'Syntax OK' }), adoptedDir = null } = {}) {
+export type FakeRailRequest = {
+    seq: number
+    action: string
+    write: { path: string, text: string } | null
+    remove?: string[]
+    disable?: string[]
+}
+
+export type FakeRailResult = { ok: boolean, output: string }
+
+export type FakeRailOptions = {
+    configtest?: (request: FakeRailRequest) => FakeRailResult
+    // Where a disabled file is moved to. Defaults to the script's own default, relative to the file being
+    // disabled, but a test over a throwaway directory names one explicitly rather than relying on that
+    // file living inside a real sites-enabled/../ layout.
+    adoptedDir?: string | null
+}
+
+export function startFakeRail(dir: string, options: FakeRailOptions = {}) {
+    const configtest = options.configtest ?? (() => ({ ok: true, output: 'Syntax OK' }))
+    const adoptedDir = options.adoptedDir ?? null
     let stopped = false
     const loop = (async () => {
         while (!stopped) {
-            let request
+            let request: FakeRailRequest
             try {
-                request = JSON.parse(await readFile(join(dir, 'request.json'), 'utf8'))
+                request = JSON.parse(await readFile(join(dir, 'request.json'), 'utf8')) as FakeRailRequest
             } catch {
                 await new Promise(resolve => setTimeout(resolve, 5))
                 continue
@@ -29,7 +53,7 @@ export function startFakeRail(dir, { configtest = () => ({ ok: true, output: 'Sy
             // Everything moved aside in this run, so a failed configtest can be undone completely. A
             // disabled file is moved, never deleted: undoing an adoption has to be possible by hand,
             // months later.
-            const moved = []
+            const moved: { from: string, to: string }[] = []
             for (const path of request.remove ?? []) await unlink(path).catch(() => undefined)
             // Only an adopt disables anything, exactly as the script gates it: a reload request carrying
             // a disable list would otherwise move files aside on a path that never runs a restore.

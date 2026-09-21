@@ -512,6 +512,22 @@ uses `IncludeOptional`, precisely so a fresh install with nothing adopted yet is
 This is the one thing no automated test covers, because there is no Apache and no systemd in CI. Do this
 once after the units are installed, and again after any change to `hostd-apache.sh` itself.
 
+The script guarantees the handshake completes whatever goes wrong: an `EXIT` trap answers with `ok:false`
+and always removes `request.json`, even if `jq` is missing, a path cannot be written, or anything else
+fails somewhere `set -eu` was not already guarding (which is most of the script; POSIX only suspends
+`errexit` inside an `if` condition, not around a plain command). This matters because
+`hostd-apache.path` uses `PathExists=`, which needs a false-to-true edge to fire again: a request left
+sitting on disk unanswered would mean no domain change on this dedi could ever run again until a human
+noticed and cleared it by hand, which is a permanent failure, not the ordinary 30 second timeout
+`apache-rail.ts` already tolerates. The same trap also restores anything the script moved aside if it dies
+partway through disabling several files, for the same reason the explicit failed-configtest path already
+did: a client's hand-written vhost must never end up moved aside with nothing serving in its place. The two
+checks below exercise the deliberate failure path (a configtest that fails cleanly); the crash-safety net
+itself has no separate hand check here because there is nothing safe to break on purpose on a host that is
+serving real traffic. It is proven instead by the automated integration test in
+`hostd/src/agent/apache-rail-fake.test.ts`, which runs the real handshake protocol against a temporary
+directory and asserts the restore happens.
+
 First, a harmless write. This drops a comment-only file, so `apache2ctl configtest` cannot fail on it:
 
 ```bash
@@ -587,23 +603,13 @@ This is the same target most client domains are CNAMEd to today (see **Enrolling
 unsure which host that is); it is not the apex and does not touch anything `koda@horizons.gg` mail depends
 on.
 
-hostd only ever takes over a hostname that some file in `sites-enabled` already claims (see **Adopting a
-site** below for why): there is no route yet that writes a brand-new vhost for a domain nothing has ever
-served. So this check doubles as the first live rehearsal of adoption. Hand-write a throwaway stub, using
-the `hostd-test` project already set up under **Live checks with a throwaway project**:
-
-```bash
-sudo tee /etc/apache2/sites-enabled/hostd-test.conf >/dev/null <<'EOF'
-<VirtualHost *:80>
-    ServerName test.hostd.horizons.gg
-    DocumentRoot /var/www/hostd-test/html
-</VirtualHost>
-EOF
-sudo apache2ctl configtest && sudo systemctl reload apache2
-```
-
-Give `hostd-test` an `environments` block instead of its plain `dir`/`upstream` entry, keeping the same
-directory and port it already has, and add `domains` to its capabilities:
+`adopt` is the only route to a vhost hostd owns, and it is also the one that writes it for the first time:
+an empty `disable` list is allowed (`hostd/src/shared/protocol.ts`), specifically so an environment nobody
+has hand-written a file for is not stuck with a domain in the registry and no vhost forever. So this check
+doubles as the first live rehearsal of adoption, using the `hostd-test` project already set up under
+**Live checks with a throwaway project**. Give it an `environments` block instead of its plain
+`dir`/`upstream` entry, keeping the same directory and port it already has, and add `domains` to its
+capabilities:
 
 ```yaml
   hostd-test:
@@ -625,6 +631,10 @@ hc http://hostd-api:8080/projects/hostd-test/live/adopt
 hc -X POST http://hostd-api:8080/projects/hostd-test/live/adopt \
   -H 'Content-Type: application/json' -d '{"confirm":"hostd test"}'
 ```
+
+The preview's `claims` list is expected to be empty here (`hostd-test` has no hand-written vhost of its
+own to hand over), and `adoptable` is `true` regardless: an empty list has nothing to fail the "can this be
+read well enough" check.
 
 Confirm the site serves:
 
@@ -670,14 +680,17 @@ http://hostd-api:8080/projects/hostd-test/live/domains` should show `test.hostd.
 `"state":"active"`.
 
 When you are done, remove the `hostd-test` entry's `environments` block (or the whole entry, matching
-**Live checks with a throwaway project**'s own cleanup), remove `/etc/apache2/sites-enabled/hostd-test.conf`
-and whatever hostd wrote under `/etc/apache2/hostd/`, reload Apache, and take `test.hostd.horizons.gg` back
-out of `allowed`.
+**Live checks with a throwaway project**'s own cleanup), remove whatever hostd wrote under
+`/etc/apache2/hostd/` (`ls /etc/apache2/hostd/` to see it), reload Apache, and take `test.hostd.horizons.gg`
+back out of `allowed`.
 
 ### 4. Adopting a site
 
 Every real site on this dedi already has a hand-written vhost, serving traffic right now, and adoption is
-what replaces that file with hostd's own without a moment where neither is in force. Do it in this order:
+what replaces that file with hostd's own without a moment where neither is in force. (An environment with
+no existing file, freshly provisioned and never hand-configured, adopts too: the steps below still apply,
+except steps 2 and 3 have nothing to read and the preview's `claims` list is simply empty. See **Live
+verification** above for that case worked through end to end.) Do it in this order:
 
 1. **Preview it, before anything is touched.** `hc http://hostd-api:8080/projects/<id>/<env>/adopt` (GET)
    renders the vhost hostd would write and lists every file in `sites-enabled` that claims one of the
@@ -705,19 +718,27 @@ what replaces that file with hostd's own without a moment where neither is in fo
 **The undo**, if adoption needs to be reversed:
 
 ```bash
-sudo mv /etc/apache2/hostd-adopted/<name>.bak /etc/apache2/sites-enabled/<name>
-sudo rm /etc/apache2/hostd/<id>-<env>.conf
+ls /etc/apache2/hostd-adopted/
+```
+
+Find the `.bak` file that belongs to this site (there is one per disabled file, named after it), then:
+
+```bash
+sudo mv "/etc/apache2/hostd-adopted/<the .bak file just listed>" "/etc/apache2/sites-enabled/<its name with .bak removed>"
+sudo rm "/etc/apache2/hostd/<id>-<env>.conf"
 sudo apache2ctl configtest && sudo systemctl reload apache2
 ```
 
 The `.bak` file is moved, never deleted, specifically so this is possible by hand, months later, by
-someone who was not the one who adopted the site.
+someone who was not the one who adopted the site and has nothing memorized about it beyond what `ls`
+shows them.
 
 ### 5. Troubleshooting
 
 | Symptom | Cause |
 | --- | --- |
-| `/health` warns `the Apache host unit has not answered; no domain change can take effect` | The agent's `railAge` (time since the rail last got an answer) is null or over 10 minutes. `hostd-apache.path` is not enabled or not running on the host, `hostd-apache.service` is failing, or `/etc/hostd/apache` is not the same directory on both sides of the bind mount. `systemctl status hostd-apache.path hostd-apache.service` and `journalctl -u hostd-apache.service` on the host. |
+| `/health` warns `the Apache host unit has not answered; no domain change can take effect` | The agent's `railAge` (time since the rail last got an answer) is null or over 10 minutes. First look at the unit itself: `sudo systemctl status hostd-apache.path hostd-apache.service` and `sudo journalctl -u hostd-apache.service -n 50` on the host. If both look fine, check whether a request is simply stuck: `cat /etc/hostd/apache/request.json`. The script's own trap means it should always answer and remove that file itself now, even on a crash, but if something outside its control kept it from running at all (the unit disabled, the script not executable, the directory missing), a wedged `request.json` is possible: `hostd-apache.path` only fires on the file going from absent to present (`PathExists`, not `PathChanged`), so a request already sitting there when the unit comes back will never be picked up on its own. Clear it by hand and let the unit re-arm: `sudo rm /etc/hostd/apache/request.json` then `sudo systemctl restart hostd-apache.path`. The domain action that wrote it will already have timed out on the agent's side (after 30 seconds) and reported a failure; retry it once the rail is answering again. |
+| After clearing a wedged `request.json`, or after any adoption that failed partway | Confirm nothing was left with no vhost at all. List all three directories: `ls /etc/apache2/hostd-adopted/`, `ls /etc/apache2/sites-enabled/`, `ls /etc/apache2/hostd/`. Every `<name>.bak` in `hostd-adopted` should correspond to *either* `<name>` being back in `sites-enabled` (the adoption was rolled back) *or* a `<id>-<env>.conf` in `hostd/` that renders that hostname (the adoption succeeded and this is its permanent record). A `.bak` matching neither is a site with nothing currently serving it: put it back immediately with the same commands as **The undo**, above, then confirm the site serves again before doing anything else. |
 | A domain stays `pending` with `No record exists yet. Add the CNAME and this will start working within a few minutes.` | No DNS record resolves yet for the hostname, or it has not propagated. Nothing to do but wait, unless the CNAME was never created. |
 | A domain stays `pending` with `The CNAME is not proxied, so the request reached us directly. Turn the proxy on in Cloudflare.` | The environment's `certificate` is `cloudflare-origin` (which expects Cloudflare in front) but the CNAME's cloud icon is grey, not orange: the Origin certificate only Cloudflare should ever see reached this client's browser directly. Turn proxying on. |
 | A domain stays `pending` with `This name points somewhere else at the moment.` | The token this dedi expects did not come back, meaning the hostname currently resolves (through DNS or Cloudflare) to something other than this environment's vhost: a stale CNAME, a different project holding the name, or the alias-ordering bug described in **Live verification** if this is an alias. |
