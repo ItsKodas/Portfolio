@@ -27,6 +27,15 @@ export function deployTrees(dir: string): DeployTrees {
     return { dir, next: `${dir}.next`, prev: `${dir}.prev`, repo: `${dir}.git`, git: posix.join(dir, '.git') }
 }
 
+// What proves <dir>.git holds the repository, rather than merely existing. ensureRepo creates that
+// directory one step before the repository moves into it, so the directory on its own proves nothing:
+// asking `exists(trees.repo)` and running git there answers "fatal: not a git repository" for every
+// deploy from then on. Every reader that has to choose between the tree and the directory beside it asks
+// this instead.
+export function repositoryIn(trees: DeployTrees): string {
+    return posix.join(trees.repo, '.git')
+}
+
 // The environment's own folder basename, which is what an unpinned compose file resolves to and what
 // guard.ts already refuses to let drift (see composeNameProblem). Pinning it with --project-name is what
 // lets a build in <dir>.next produce the images the swapped-in tree then starts: compose would otherwise

@@ -203,9 +203,33 @@ describe('currentTip', () => {
     })
 
     it('leaves an already-moved repository alone', async () => {
-        const context = setup({ existsPaths: ['/var/www/acme.git'] })
+        const context = setup({ existsPaths: ['/var/www/acme.git/.git'] })
         await currentTip(context.project(), context.environment(), context.deps)
         assert.equal(context.calls.some(call => call.startsWith('move')), false)
+    })
+
+    // mkdir, own and move are three steps, and an interruption anywhere between the first and the last
+    // leaves <dir>.git sitting there with no repository inside it. Taking the directory's own existence
+    // as proof it holds one is what turned that into a deploy that could never succeed again: every
+    // later attempt skipped the move, handed git a directory that is not a repository, and failed in
+    // under a second with "fatal: not a git repository (or any parent up to mount point /var)".
+    it('finishes a move an earlier deploy left half done, rather than trusting the directory it made', async () => {
+        const context = setup({ existsPaths: ['/var/www/acme/.git', '/var/www/acme.git'] })
+        const result = await currentTip(context.project(), context.environment(), context.deps)
+        assert.deepEqual(result, { ok: true, commit: TIP })
+        assert.ok(context.calls.includes('move /var/www/acme/.git /var/www/acme.git/.git'))
+        // Already there, so it is not made again: mkdir on an existing directory throws EEXIST.
+        assert.equal(context.calls.includes('mkdir /var/www/acme.git'), false)
+    })
+
+    it('names both places it looked when neither holds a repository, instead of leaving git to say it', async () => {
+        const context = setup({ existsPaths: ['/var/www/acme.git'] })
+        const result = await currentTip(context.project(), context.environment(), context.deps)
+        assert.equal(result.ok, false)
+        const problem = result.ok === false ? result.problem : ''
+        assert.match(problem, /no git repository/)
+        assert.ok(problem.includes('/var/www/acme.git'), problem)
+        assert.equal(context.fetchRequests.length, 0)
     })
 
     it('gives the freshly made repository directory the site directory\'s ownership and mode, not root\'s', async () => {
@@ -222,7 +246,7 @@ describe('currentTip', () => {
     })
 
     it('does not touch ownership again once the repository directory already exists', async () => {
-        const context = setup({ existsPaths: ['/var/www/acme.git'] })
+        const context = setup({ existsPaths: ['/var/www/acme.git/.git'] })
         await currentTip(context.project(), context.environment(), context.deps)
         assert.equal(context.calls.some(call => call.startsWith('own ') || call.startsWith('owner ')), false)
     })
