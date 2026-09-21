@@ -51,8 +51,12 @@ describe('clientSentence', () => {
         expect(said).not.toMatch(/\/etc\//)
     })
 
-    it('says nothing alarming about an unmanaged domain, because nothing is wrong with one', () => {
-        expect(clientSentence(domain({ state: 'unmanaged' }))).toMatch(/working/)
+    // Nothing alarming, because nothing is wrong with one, and no claim that it works either: hostd has
+    // never checked an unmanaged address, and telling a client it is working is a check we did not make.
+    it('says an unmanaged domain is set up, without claiming a check nobody made', () => {
+        const said = clientSentence(domain({ state: 'unmanaged' }))
+        expect(said).toMatch(/set up/)
+        expect(said).not.toMatch(/working/)
     })
 })
 

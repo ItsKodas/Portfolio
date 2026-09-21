@@ -26,14 +26,21 @@ DONE=""
 # Everything moved in this run, so a failed configtest, or anything else going wrong, can be undone
 # completely. A disabled file is moved, never deleted: undoing an adoption has to be possible by hand,
 # months later.
+#
+# One move per line, from and to separated by a pipe, and read back a line at a time. The pathnames come
+# from a directory an operator writes by hand, so one of them containing a space is not far-fetched, and
+# a space is exactly what a whitespace-separated list of these would come apart on. Undoing a half-done
+# adoption is not a thing to get wrong on a Tuesday because somebody named a file "old site.conf".
 MOVED=""
 
 restore() {
-    for pair in $MOVED; do
-        from=$(echo "$pair" | cut -d'|' -f1)
-        to=$(echo "$pair" | cut -d'|' -f2)
+    [ -n "$MOVED" ] || return 0
+    while IFS='|' read -r from to; do
+        [ -n "$from" ] || continue
         mv "$to" "$from" 2>/dev/null || true
-    done
+    done <<RESTORE
+$MOVED
+RESTORE
 }
 
 finish() {
@@ -74,19 +81,32 @@ ACTION=$(jq -r '.action' "$REQUEST")
 
 # Removals first, then the disables, then the write. All before the single configtest, which is what
 # makes an adoption one reload rather than two.
+#
+# Both loops read jq's output a line at a time rather than iterating an unquoted command substitution,
+# which would split every path on whitespace. Every path here is agent-derived and so has none today,
+# but this file is the one piece that cannot be tested, so it does not get to hold an assumption it
+# cannot check. A here-document rather than a pipe: a piped while loop runs in a subshell, and MOVED
+# would not survive it, which is what the trap above restores from.
 STAGE="removing files"
-for path in $(jq -r '.remove[]?' "$REQUEST"); do
+while IFS= read -r path; do
+    [ -n "$path" ] || continue
     rm -f "$path"
-done
+done <<REMOVE
+$(jq -r '.remove[]?' "$REQUEST")
+REMOVE
 
 if [ "$ACTION" = "adopt" ]; then
     STAGE="disabling files"
     mkdir -p "$ADOPTED"
-    for path in $(jq -r '.disable[]?' "$REQUEST"); do
+    while IFS= read -r path; do
+        [ -n "$path" ] || continue
         target="$ADOPTED/$(basename "$path").bak"
         mv "$path" "$target"
-        MOVED="$MOVED $path|$target"
-    done
+        MOVED="$MOVED$path|$target
+"
+    done <<DISABLE
+$(jq -r '.disable[]?' "$REQUEST")
+DISABLE
 fi
 
 if [ "$(jq -r '.write // "null"' "$REQUEST")" != "null" ]; then

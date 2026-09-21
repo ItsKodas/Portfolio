@@ -41,7 +41,11 @@ export function stateTone(state: DomainState): 'good' | 'warn' | 'crit' | 'idle'
 // something a client should see, and if a future route ever lets one reach `error`, this is the one
 // place that keeps it off their screen.
 const FALLBACKS: Record<DomainState, string> = {
-    unmanaged: 'Your website address is working.',
+    // Not "is working", which would claim a check hostd has never made: an unmanaged address is one the
+    // operator set up by hand, before hostd had anything to do with it, and hostd has proved nothing
+    // about it either way. It is almost certainly serving, which is why this says nothing alarming
+    // either; it just stops short of asserting a result nobody measured.
+    unmanaged: 'Your website address is set up.',
     pending: 'Your website address is being set up.',
     active: 'Your website address is working.',
     failed: "We couldn't finish setting up your website address. We're looking into it.",
