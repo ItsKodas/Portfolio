@@ -12,7 +12,7 @@ import type { EnvironmentName } from '@/server/hostd/env'
 import { Callout } from '@/ui/Callout/Callout'
 import { DataTable } from '@/ui/DataTable/DataTable'
 import { StatusDot, type State as DotState } from '@/ui/StatusDot/StatusDot'
-import { AddDomain, AdoptSite, DomainActions, SetPrimaryDomain } from './domainControls'
+import { AddDomain, AdoptSite, DomainActions, PrimaryDomain } from './domainControls'
 import { clientSentence, needsYou, sortDomains, stateTone, stateWord } from './domains'
 import { EnvSwitcher } from './envSwitcher'
 import { formatWhen } from '../../format'
@@ -106,10 +106,10 @@ export function DomainsPanel({ id, environments, environment, domains, isAdmin, 
         )
     }
 
-    // Whether the environment has an address at all. The list is what hostd answers about the registry
-    // entry, so no primary row means no domain key on the entry, which is the state every site enrolled
-    // by hand is in.
-    const hasPrimary = ordered.some(domain => domain.primary)
+    // The environment's address, or null when it has none. The list is what hostd answers about the
+    // registry entry, so no primary row means no domain key on the entry, which is the state every site
+    // enrolled by hand is in.
+    const primary = ordered.find(domain => domain.primary)?.hostname ?? null
 
     const rows = ordered.map(domain => ({
         hostname: <span className={styles.mono}>{domain.hostname}</span>,
@@ -152,13 +152,14 @@ export function DomainsPanel({ id, environments, environment, domains, isAdmin, 
 
             {!trouble && (
                 <>
-                    {/* An alias is a name that redirects to the primary, so with no primary there is
-                        nothing for one to redirect to and hostd refuses every alias this form could
-                        send. Offering it would be offering the one thing that cannot work, which is
-                        exactly the dead end an operator meets on a site enrolled by hand. */}
-                    {hasPrimary
-                        ? <AddDomain id={id} environment={environment} />
-                        : <SetPrimaryDomain id={id} environment={environment} />}
+                    {/* Both, always, and never one instead of the other. An alias is a name that
+                        redirects to the primary, so with no primary there is nothing for one to
+                        redirect to and hostd refuses every alias the form could send: it is switched
+                        off with the reason beside it rather than taken off the page. Hiding it is what
+                        made this tab look as though setting an address and adding a name were two
+                        different tabs' worth of work, when they are the two halves of one job. */}
+                    <PrimaryDomain id={id} environment={environment} current={primary} />
+                    <AddDomain id={id} environment={environment} disabled={primary === null} />
 
                     <section className={styles.block}>
                         <h2>Addresses</h2>

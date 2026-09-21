@@ -15,8 +15,8 @@ import { Callout } from '@/ui/Callout/Callout'
 import { Dialog } from '@/ui/Dialog/Dialog'
 import { Field } from '@/ui/Field/Field'
 import {
-    adoptAction, adoptPreviewAction, addDomainAction, removeDomainAction, setPrimaryDomainAction,
-    verifyDomainAction, type SiteActionResult,
+    adoptAction, adoptPreviewAction, addDomainAction, changePrimaryDomainAction, removeDomainAction,
+    setPrimaryDomainAction, verifyDomainAction, type SiteActionResult,
 } from './actions'
 import styles from './site.module.css'
 
@@ -31,7 +31,11 @@ function Said({ said }: { said: SiteActionResult | null }) {
         : <span className={styles.stateBad}>{said.error}</span>
 }
 
-export function AddDomain({ id, environment }: { id: string, environment: string }) {
+// An alias: a name that redirects to the primary. It is rendered whether or not the environment has a
+// primary yet, and switched off rather than hidden when it has none. Hiding it is what made this tab look
+// as though it could only ever do one of the two jobs, and an operator cannot ask about a control that is
+// not on the page. Disabled with the reason beside it says the same thing honestly.
+export function AddDomain({ id, environment, disabled = false }: { id: string, environment: string, disabled?: boolean }) {
     const router = useRouter()
     const [hostname, setHostname] = useState('')
     const [pending, setPending] = useState(false)
@@ -55,47 +59,67 @@ export function AddDomain({ id, environment }: { id: string, environment: string
     }
 
     return (
-        <div className={styles.addDomain}>
-            <Field
-                label="Hostname"
-                value={hostname}
-                spellCheck={false}
-                autoComplete="off"
-                placeholder="shop.example.com"
-                hint="A name whose DNS already points at this server. hostd checks it before it goes live."
-                onChange={event => setHostname(event.target.value)}
-            />
-            <div className={styles.addAction}>
-                <Button variant="primary" disabled={pending || !hostname.trim()} onClick={add}>
-                    {pending ? 'Adding...' : 'Add'}
-                </Button>
-                <Said said={said} />
+        <section className={styles.block}>
+            <h2>Other addresses</h2>
+            <div className={styles.addDomain}>
+                <Field
+                    label="Hostname"
+                    value={hostname}
+                    disabled={disabled}
+                    spellCheck={false}
+                    autoComplete="off"
+                    placeholder="shop.example.com"
+                    hint="A name whose DNS already points at this server. hostd checks it before it goes live."
+                    onChange={event => setHostname(event.target.value)}
+                />
+                <div className={styles.addAction}>
+                    <Button variant="primary" disabled={disabled || pending || !hostname.trim()} onClick={add}>
+                        {pending ? 'Adding...' : 'Add'}
+                    </Button>
+                    <Said said={said} />
+                </div>
             </div>
-        </div>
+            <p className={styles.note}>
+                {disabled
+                    ? 'Set the site\'s address first. Every name added here redirects to it, and there is nothing to redirect to yet.'
+                    : 'Each of these redirects to the address above, so the site is only ever reachable at one URL.'}
+            </p>
+        </section>
     )
 }
 
-// The environment has no address at all, which is every site that was enrolled by hand. Until one is
-// recorded there is nothing for an alias to redirect to and nothing to adopt, so this is the only
-// control the panel offers in that state.
+// The environment's main address, in both of the states it can be in. `current` is null on every site
+// that was enrolled by hand, and giving one its first address is safe: nothing is being served from it
+// yet, so the write records a name and stops there.
 //
-// Set once. Changing an address afterwards rewrites the vhost and invalidates the verification of every
-// hostname on it, so hostd refuses it here and it stays an edit of the registry on the server. That is
-// why this box never appears again once an address exists.
-export function SetPrimaryDomain({ id, environment }: { id: string, environment: string }) {
+// Replacing an address that already exists is the dangerous half, and it is a different interaction
+// rather than the same button with a different label: the old name stops being served, the new one has
+// to prove itself before it counts, every alias starts redirecting somewhere else and hostd rewrites the
+// Apache configuration. So it goes behind the dialog below, which names all four and asks for the new
+// hostname back, the same ceremony AdoptSite uses for the other change on this tab that a live site
+// notices immediately.
+export function PrimaryDomain({ id, environment, current }: { id: string, environment: string, current: string | null }) {
     const router = useRouter()
     const [hostname, setHostname] = useState('')
     const [pending, setPending] = useState(false)
     const [said, setSaid] = useState<SiteActionResult | null>(null)
+    const [asking, setAsking] = useState(false)
+    const [typed, setTyped] = useState('')
 
-    async function set() {
+    const wanted = hostname.trim().toLowerCase()
+    // Typed back exactly, because this takes a live site off the address it answers on today
+    const named = typed.trim().toLowerCase() === wanted
+
+    async function run(action: () => Promise<SiteActionResult>) {
         setPending(true)
         setSaid(null)
         try {
-            const result = await setPrimaryDomainAction(id, environment, hostname.trim())
+            const result = await action()
             setSaid(result)
             if (result.ok) {
                 setHostname('')
+                setTyped('')
+                setAsking(false)
                 router.refresh()
             }
         } catch {
@@ -110,28 +134,99 @@ export function SetPrimaryDomain({ id, environment }: { id: string, environment:
             <h2>The site&apos;s address</h2>
             <div className={styles.addDomain}>
                 <Field
-                    label="Address"
+                    label={current ? 'New address' : 'Address'}
                     value={hostname}
                     spellCheck={false}
                     autoComplete="off"
                     placeholder="example.com"
-                    hint="The main name this environment answers to. Other names can be pointed at it afterwards."
+                    hint={current
+                        ? `This environment answers on ${current} today. What you put here replaces it.`
+                        : 'The main name this environment answers to. Other names can be pointed at it afterwards.'}
                     onChange={event => setHostname(event.target.value)}
                 />
                 <div className={styles.addAction}>
-                    <Button variant="primary" disabled={pending || !hostname.trim()} onClick={set}>
-                        {pending ? 'Saving...' : 'Set the address'}
-                    </Button>
-                    <Said said={said} />
+                    {current
+                        ? (
+                            <Button
+                                variant="danger"
+                                disabled={pending || wanted === '' || wanted === current}
+                                onClick={() => { setTyped(''); setSaid(null); setAsking(true) }}
+                            >
+                                Change the address
+                            </Button>
+                        )
+                        : (
+                            <Button
+                                variant="primary"
+                                disabled={pending || wanted === ''}
+                                onClick={() => run(() => setPrimaryDomainAction(id, environment, wanted))}
+                            >
+                                {pending ? 'Saving...' : 'Set the address'}
+                            </Button>
+                        )}
+                    <Said said={asking ? null : said} />
                 </div>
             </div>
-            <p className={styles.note}>
-                This records the address and changes nothing that is being served: whatever answers this
-                name today keeps answering it. The site is served from it once this environment is
-                adopted, which replaces the hand-written configuration in one reload. Set it carefully:
-                changing it later means editing projects.yaml on the server, because a change rewrites
-                the configuration and every name on it has to be checked again.
-            </p>
+            {!current && (
+                <p className={styles.note}>
+                    This records the address and changes nothing that is being served: whatever answers
+                    this name today keeps answering it. The site is served from it once this environment
+                    is adopted, which replaces the hand-written configuration in one reload.
+                </p>
+            )}
+
+            <Dialog
+                open={asking}
+                onClose={() => setAsking(false)}
+                title="Move this site to another address"
+                footer={
+                    <>
+                        <Button variant="quiet" onClick={() => setAsking(false)}>Leave it where it is</Button>
+                        <Button
+                            variant="danger"
+                            disabled={pending || !named}
+                            onClick={() => run(() => changePrimaryDomainAction(id, environment, wanted, typed.trim()))}
+                        >
+                            {pending ? 'Changing...' : 'Change it'}
+                        </Button>
+                    </>
+                }
+            >
+                {said && !said.ok && (
+                    <div className={styles.said}>
+                        <Callout tone="crit" title="That did not happen">{said.error}</Callout>
+                    </div>
+                )}
+
+                <p>
+                    <span className={styles.mono}>{current}</span> becomes{' '}
+                    <span className={styles.mono}>{wanted}</span>. Four things follow from that:
+                </p>
+                <ul>
+                    <li>
+                        <span className={styles.mono}>{current}</span> stops being served here. Anyone who
+                        visits it reaches whatever else answers on this server.
+                    </li>
+                    <li>
+                        <span className={styles.mono}>{wanted}</span> starts unverified. hostd has to reach
+                        it and prove it lands on this site before it counts as working, so its DNS needs to
+                        point at this server.
+                    </li>
+                    <li>Every other name on this environment starts redirecting to the new address instead.</li>
+                    <li>
+                        The Apache configuration for this environment is rewritten and reloaded, if hostd
+                        is the one serving it.
+                    </li>
+                </ul>
+                <Field
+                    label={`Type ${wanted} to confirm`}
+                    value={typed}
+                    spellCheck={false}
+                    autoComplete="off"
+                    hint="Its DNS record is not ours and is left alone, and so is the old name's."
+                    onChange={event => setTyped(event.target.value)}
+                />
+            </Dialog>
         </section>
     )
 }
@@ -140,8 +235,9 @@ type ActionProps = {
     id: string
     environment: string
     hostname: string
-    // The main address of the environment has no remove button. Changing it is deliberately out of scope
-    // here, and a button that only ever answers hostd's refusal is worse than no button.
+    // The main address of the environment has no remove button: hostd refuses to remove a primary at all
+    // (an environment without one has nothing for its aliases to redirect to), and a button that only
+    // ever answers that refusal is worse than no button. Moving it somewhere else is PrimaryDomain's job.
     removable: boolean
 }
 

@@ -1,7 +1,7 @@
 import { describe, it } from 'node:test'
 import assert from 'node:assert/strict'
 
-import { renderVhost, vhostPath, type VhostInput } from './vhost.ts'
+import { renderVhost, tokenFromVhost, vhostPath, type VhostInput } from './vhost.ts'
 
 const input = (over: Partial<VhostInput> = {}): VhostInput => ({
     id: 'acme',
@@ -186,5 +186,16 @@ describe('renderVhost', () => {
         const scoped = aliasBlock.slice(aliasBlock.indexOf('<Location'), aliasBlock.indexOf('</Location>'))
         assert.match(scoped, /Header always set X-Hostd-Token "deadbeef"/)
         assert.doesNotMatch(scoped, /Redirect/)
+    })
+
+    // Read back out of a file this module wrote, because a rewrite that changed something else must not
+    // mint a new token: every hostname of the environment proves itself against the one value in the
+    // file, so a fresh one would fail every alias the rewrite never touched.
+    it('reads its own token back out of a rendered vhost', () => {
+        assert.equal(tokenFromVhost(renderVhost(input({ token: 'deadbeefcafe' }))), 'deadbeefcafe')
+    })
+
+    it('answers null for a file that carries no token of ours, rather than a half of one', () => {
+        assert.equal(tokenFromVhost('<VirtualHost *:443>\n    ServerName acme.com\n</VirtualHost>\n'), null)
     })
 })

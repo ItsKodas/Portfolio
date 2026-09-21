@@ -12,7 +12,7 @@ vi.mock('@/server/hostd/config', () => ({ readHostd: () => ({ url: 'http://hostd
 vi.mock('@/server/hostd/session', () => ({ callerFromSession: () => callerFromSession() }))
 vi.mock('@/server/hostd/settings', () => ({ writeSettings: (...args: unknown[]) => writeSettings(...args) }))
 
-const { saveSettingsAction, setPrimaryDomainAction } = await import('./actions')
+const { changePrimaryDomainAction, saveSettingsAction, setPrimaryDomainAction } = await import('./actions')
 
 const CANNOT = { ok: false, error: 'That is not something this page can do.' }
 
@@ -107,6 +107,48 @@ describe('setPrimaryDomainAction', () => {
         callerFromSession.mockResolvedValue({ caller: { kind: 'client' }, clientId: 'cl_1' })
 
         expect(await setPrimaryDomainAction('acme', 'live', 'acme.com')).toEqual({ ok: false, error: 'This is not set up yet.' })
+        expect(writeSettings).not.toHaveBeenCalled()
+    })
+})
+
+// Moving an address that already exists is the same request behind a confirmation, and the confirmation
+// is checked here rather than only in the dialog: a server action is a request like any other, so a
+// disabled button proves nothing about what actually arrived.
+describe('changePrimaryDomainAction', () => {
+    it('refuses an environment, a hostname or a confirmation the page could not have sent', async () => {
+        expect(await changePrimaryDomainAction('acme', 'staging', 'acme.com', 'acme.com')).toEqual(CANNOT)
+        expect(await changePrimaryDomainAction('acme', 'live', 5 as never, 'acme.com')).toEqual(CANNOT)
+        expect(await changePrimaryDomainAction('acme', 'live', 'acme.com', 5 as never)).toEqual(CANNOT)
+        expect(callerFromSession).not.toHaveBeenCalled()
+        expect(writeSettings).not.toHaveBeenCalled()
+    })
+
+    it('refuses a confirmation that is not the new hostname, without asking hostd', async () => {
+        callerFromSession.mockResolvedValue({ caller: { kind: 'admin' }, clientId: null })
+
+        const result = await changePrimaryDomainAction('acme', 'live', 'shop.acme.com', 'shop.acme.co')
+
+        expect(result).toEqual({ ok: false, error: 'Type the new address back exactly to confirm the change.' })
+        expect(writeSettings).not.toHaveBeenCalled()
+    })
+
+    it('sends the trimmed, lowercased hostname once it has been named back', async () => {
+        callerFromSession.mockResolvedValue({ caller: { kind: 'admin' }, clientId: null })
+        writeSettings.mockResolvedValue({ ok: true, data: { ok: true } })
+
+        const result = await changePrimaryDomainAction('acme', 'live', '  SHOP.acme.com ', 'shop.acme.com')
+
+        expect(result.ok).toBe(true)
+        expect(writeSettings).toHaveBeenCalledWith(
+            expect.anything(), expect.anything(), 'acme', { domains: { live: 'shop.acme.com' } },
+        )
+    })
+
+    it('refuses a client outright, exactly as setting a first address does', async () => {
+        callerFromSession.mockResolvedValue({ caller: { kind: 'client' }, clientId: 'cl_1' })
+
+        expect(await changePrimaryDomainAction('acme', 'live', 'acme.com', 'acme.com'))
+            .toEqual({ ok: false, error: 'This is not set up yet.' })
         expect(writeSettings).not.toHaveBeenCalled()
     })
 })

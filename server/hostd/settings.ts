@@ -12,9 +12,9 @@ export type SiteSettings = {
     capabilities?: string[]
     repo?: string | null
     branches?: Record<string, string | null>
-    // An environment's primary address. No null member, unlike branches: this gives an environment its
-    // first address and never clears one, and hostd refuses it outright for an environment that already
-    // has one, because changing an address rewrites the vhost.
+    // An environment's primary address. No null member, unlike branches: this gives an environment an
+    // address or moves it to another one, and never clears one. Moving it makes hostd rewrite the vhost
+    // it owns, so the page that sends one is expected to have confirmed it first.
     domains?: Record<string, string>
 }
 
