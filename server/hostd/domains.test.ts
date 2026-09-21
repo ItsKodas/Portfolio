@@ -6,7 +6,8 @@ const config = { url: 'http://hostd:8080', token: 'secret' }
 const caller = { actor: 'admin' as const, user: 'koda@horizons.gg', clientId: null }
 
 const answering = (body: unknown, status = 200) =>
-    vi.fn(async () => new Response(JSON.stringify(body), { status, headers: { 'content-type': 'application/json' } }))
+    vi.fn(async (_url: string | URL | Request, _init?: RequestInit) =>
+        new Response(JSON.stringify(body), { status, headers: { 'content-type': 'application/json' } }))
 
 describe('listDomains', () => {
     it('asks the environment\'s own path and unwraps the list', async () => {
