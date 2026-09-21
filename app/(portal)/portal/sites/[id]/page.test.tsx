@@ -6,6 +6,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 const listProjects = vi.fn()
 const listDeploys = vi.fn()
+const listDomains = vi.fn()
 const getProject = vi.fn()
 const assertOwned = vi.fn()
 const callerFromSession = vi.fn()
@@ -31,8 +32,14 @@ vi.mock('./actions', () => ({
     deployAction: async () => ({ ok: true, message: 'ok' }),
     rollbackAction: async () => ({ ok: true, message: 'ok' }),
     setBranchAction: async () => ({ ok: true, message: 'ok' }),
+    addDomainAction: async () => ({ ok: true, message: 'ok' }),
+    removeDomainAction: async () => ({ ok: true, message: 'ok' }),
+    verifyDomainAction: async () => ({ ok: true, message: 'ok' }),
+    adoptAction: async () => ({ ok: true, message: 'ok' }),
+    adoptPreviewAction: async () => ({ ok: false, error: 'not asked in a test' }),
 }))
 vi.mock('@/server/hostd/deploys', () => ({ listDeploys: (...args: unknown[]) => listDeploys(...args) }))
+vi.mock('@/server/hostd/domains', () => ({ listDomains: (...args: unknown[]) => listDomains(...args) }))
 const listBranches = vi.fn()
 vi.mock('@/server/hostd/branches', () => ({ listBranches: (...args: unknown[]) => listBranches(...args) }))
 
@@ -64,6 +71,7 @@ beforeEach(() => {
     callerFromSession.mockResolvedValue({ caller: { actor: 'admin', user: 'koda@horizons.gg' }, clientId: null })
     listProjects.mockResolvedValue({ ok: true, value: [{ id: 'asot', name: 'ASOT', valid: true, capabilities: ['lifecycle', 'logs'] }] })
     getProject.mockResolvedValue({ ok: true, value: [service('running')] })
+    listDomains.mockResolvedValue({ ok: true, value: [] })
     assertOwned.mockResolvedValue(true)
     listBranches.mockResolvedValue({ ok: true, value: [] })
 })
@@ -327,5 +335,38 @@ describe('the deploys tab', () => {
         render(await page())
 
         expect(screen.getByRole('tab', { name: 'Deploys' })).not.toHaveAttribute('aria-disabled')
+    })
+})
+
+describe('the domains tab', () => {
+    // It was built admin-only and disabled, on the reasoning that domains would never be a client's to
+    // read. hostd leaves 'domains-read' out of its admin-only verbs, so that reasoning is gone: a client
+    // reads their own site's addresses, and only acting on them is the operator's.
+    it('shows a client the Domains tab, which used to be hidden from them', async () => {
+        callerFromSession.mockResolvedValue(client)
+
+        render(await page())
+
+        expect(screen.getByRole('tab', { name: 'Domains' })).toBeInTheDocument()
+    })
+
+    // It used to be disabled for everyone, whatever the project could do. Now the capability is the only
+    // thing that disables it, exactly as it is for Deploys.
+    it('does not disable the Domains tab for a project hostd serves domains for', async () => {
+        listProjects.mockResolvedValue({
+            ok: true,
+            value: [{ id: 'asot', name: 'ASOT', valid: true, capabilities: ['lifecycle', 'logs', 'domains'] }],
+        })
+
+        render(await page())
+
+        expect(screen.getByRole('tab', { name: 'Domains' })).not.toHaveAttribute('aria-disabled')
+    })
+
+    it('never asks hostd for a list it would refuse, on a site with no domains capability', async () => {
+        render(await page({ tab: 'domains' }))
+
+        expect(listDomains).not.toHaveBeenCalled()
+        expect(screen.getByText(/not switched on for this site/)).toBeInTheDocument()
     })
 })

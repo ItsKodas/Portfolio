@@ -38,6 +38,7 @@ export type EnvironmentDraft = {
     dir: string
     branch: string
     domain: string | null
+    aliases: string[]
     port: number
     certificate: CertificateMode | null
 }
@@ -55,6 +56,10 @@ export type Change =
     | { kind: 'add-environment', id: string, environment: EnvironmentDraft }
     | { kind: 'set-deployed', id: string, environment: EnvironmentName, commit: string }
     | { kind: 'set-branch', id: string, environment: EnvironmentName, branch: string }
+    // The whole list, not one alias at a time. A read-modify-write of a list through two verbs would
+    // race with the operator's own editor; handing over the list that should be there makes the write
+    // idempotent and lets the existing conflict check do its job.
+    | { kind: 'set-aliases', id: string, environment: EnvironmentName, aliases: string[] }
     // One kind rather than three, because a write takes one Change: three would be three reads, three
     // validations, three files on disk and a half-applied save if the second failed. Absent fields are
     // left alone; a null repo or branch deletes that key.
@@ -72,6 +77,7 @@ const environmentNode = (draft: EnvironmentDraft) => ({
     dir: draft.dir,
     branch: draft.branch,
     ...(draft.domain ? { domain: draft.domain } : {}),
+    ...(draft.aliases.length ? { aliases: draft.aliases } : {}),
     port: draft.port,
     ...(draft.certificate ? { certificate: draft.certificate } : {}),
 })
@@ -201,6 +207,15 @@ function edit(doc: Document, change: Change): EditResult {
             // parseRegistry below, which refuses a branch name that is not a plain one, so there is one
             // rule about what a branch may be rather than two that could drift.
             doc.setIn(['projects', change.id, 'environments', change.environment, 'branch'], change.branch)
+            return null
+        case 'set-aliases':
+            if (!doc.hasIn(['projects', change.id, 'environments', change.environment])) {
+                return { problem: `${change.id} has no ${change.environment} environment` }
+            }
+            // An empty list removes the key entirely, so the last alias going away leaves no empty
+            // aliases: [] behind, the same way domain and certificate are only ever present when set.
+            if (change.aliases.length === 0) doc.deleteIn(['projects', change.id, 'environments', change.environment, 'aliases'])
+            else doc.setIn(['projects', change.id, 'environments', change.environment, 'aliases'], change.aliases)
             return null
         case 'configure': {
             if (!has(change.id)) return { problem: `${change.id} is not registered` }

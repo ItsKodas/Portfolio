@@ -4,8 +4,14 @@
 # good version in force. Both containers mount this directory rather than the file, so any editor's save
 # is seen, however it writes.
 
-# Hostnames at or below these are never accepted as client domains (phase 4).
+# Hostnames at or below these are never accepted as client domains.
 reserved: [horizons.gg]
+
+# Exact hostnames exempted from the rule above, for the one test name domain verification needs on the
+# dedi. Exact names only: this never exempts the subtree below an entry. The apex horizons.gg and
+# anything under dev.horizons.gg (the mail stack) are refused here whatever this says, and listing one
+# rejects the whole file.
+# allowed: [test.hostd.horizons.gg]
 
 # Offsite backup retention, which only the operator sets (phase 2).
 offsite:
@@ -58,6 +64,8 @@ projects:
   #                                         # project-level compose key above
   #       branch: main
   #       domain: widgetshop.com
+  #       aliases: [www.widgetshop.com]  # served, and each one 301s to the domain above. The domain
+  #                                      # plus its aliases must not exceed maxDomains (default 3).
   #       port: 5020
   #       certificate: letsencrypt          # letsencrypt | cloudflare-origin
   #       deployed: 3f7c1a2                 # the commit currently checked out, set by hostd itself

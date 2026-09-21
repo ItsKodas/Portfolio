@@ -18,6 +18,7 @@ import { KeyValue } from '@/ui/KeyValue/KeyValue'
 import { Row } from '@/ui/Row/Row'
 import { DeployControls } from './deployControls'
 import { formatDuration, outcomeTone, outcomeWord, rollbackTarget, shortCommit, updatesFor } from './deploys'
+import { EnvSwitcher } from './envSwitcher'
 import { formatDay, formatWhen } from '../../format'
 import styles from './site.module.css'
 
@@ -63,25 +64,6 @@ function Deploy({ record }: { record: DeployRecord }) {
     )
 }
 
-function Switcher({ id, environments, chosen }: { id: string, environments: Environment[], chosen: string }) {
-    // One environment is the ordinary case and a switcher over a list of one is furniture
-    if (environments.length < 2) return null
-    return (
-        <div className={styles.files}>
-            {environments.map(environment => (
-                <a
-                    className={styles.file}
-                    key={environment.name}
-                    href={`/portal/sites/${id}?tab=deploys&env=${environment.name}`}
-                    aria-current={environment.name === chosen ? 'page' : undefined}
-                >
-                    {environment.name}
-                </a>
-            ))}
-        </div>
-    )
-}
-
 type Props = {
     id: string
     environments: Environment[]
@@ -108,7 +90,7 @@ export async function DeployPanel({ id, environments, environment, enabled }: Pr
     if (!history.ok) {
         return (
             <>
-                <Switcher id={id} environments={environments} chosen={environment} />
+                <EnvSwitcher id={id} tab="deploys" environments={environments} chosen={environment} />
                 <Callout tone="warn" title="The deploy history could not be read">
                     {isAdmin ? forAdmin(history.code, history.message) : forClient(history.code)}
                 </Callout>
@@ -144,7 +126,7 @@ export async function DeployPanel({ id, environments, environment, enabled }: Pr
 
     return (
         <>
-            <Switcher id={id} environments={environments} chosen={environment} />
+            <EnvSwitcher id={id} tab="deploys" environments={environments} chosen={environment} />
 
             <KeyValue pairs={[
                 { key: 'branch', value: view.branch ?? 'none set' },

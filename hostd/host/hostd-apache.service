@@ -1,0 +1,9 @@
+[Unit]
+Description=Apply a hostd Apache request
+After=apache2.service
+
+[Service]
+Type=oneshot
+# systemd will not run a second copy of a oneshot service while one is running, which is the other half
+# of the agent's own lock: two requests can never be applied at once.
+ExecStart=/usr/local/sbin/hostd-apache.sh

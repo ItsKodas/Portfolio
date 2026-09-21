@@ -44,7 +44,7 @@ const addProject: Change = {
     project: {
         client: 'cl_2', name: 'Bakery', repo: 'git@github.com:ItsKodas/bakery.git',
         services: { web: { role: 'site' } },
-        environment: { name: 'live', dir: '/var/www/bakery', branch: 'main', domain: 'bakery.com', port: 5011, certificate: 'letsencrypt' },
+        environment: { name: 'live', dir: '/var/www/bakery', branch: 'main', domain: 'bakery.com', aliases: [], port: 5011, certificate: 'letsencrypt' },
     },
 }
 
@@ -70,7 +70,7 @@ describe('applyChange', () => {
     it('adds an environment to an existing project', () => {
         const result = applyChange(BASE, {
             kind: 'add-environment', id: 'acme',
-            environment: { name: 'test', dir: '/var/www/acme-test', branch: 'develop', domain: 'test.acme.com', port: 5110, certificate: 'letsencrypt' },
+            environment: { name: 'test', dir: '/var/www/acme-test', branch: 'develop', domain: 'test.acme.com', aliases: [], port: 5110, certificate: 'letsencrypt' },
         })
         assert.ok(result.ok)
         assert.equal(parseRegistry(result.text).projects.get('acme')!.environments.get('test')!.branch, 'develop')
@@ -122,7 +122,7 @@ describe('applyChange', () => {
 
         const environmentTaken = applyChange(BASE, {
             kind: 'add-environment', id: 'acme',
-            environment: { name: 'live', dir: '/var/www/acme-2', branch: 'main', domain: null, port: 5099, certificate: null },
+            environment: { name: 'live', dir: '/var/www/acme-2', branch: 'main', domain: null, aliases: [], port: 5099, certificate: null },
         })
         assert.deepEqual(environmentTaken, { ok: false, problem: 'acme already has a live environment', conflict: true })
 
@@ -132,6 +132,30 @@ describe('applyChange', () => {
 
     it('refuses a change to a project that is not there', () => {
         assert.equal(applyChange(BASE, { kind: 'set-deployed', id: 'ghost', environment: 'live', commit: '9a1b2c3' }).ok, false)
+    })
+})
+
+describe('set-aliases', () => {
+    it('writes the list under the environment', () => {
+        const result = applyChange(BASE, { kind: 'set-aliases', id: 'acme', environment: 'live', aliases: ['www.acme.com'] })
+        assert.equal(result.ok, true)
+        assert.match(result.ok ? result.text : '', /aliases:\s*\n?\s*- www\.acme\.com|aliases: \[ ?www\.acme\.com ?\]/)
+    })
+
+    it('removes the key entirely when the list is empty, rather than leaving aliases: []', () => {
+        const withOne = applyChange(BASE, { kind: 'set-aliases', id: 'acme', environment: 'live', aliases: ['www.acme.com'] })
+        const result = applyChange(withOne.ok ? withOne.text : '', { kind: 'set-aliases', id: 'acme', environment: 'live', aliases: [] })
+        assert.doesNotMatch(result.ok ? result.text : '', /aliases/)
+    })
+
+    it('refuses an environment the project does not have', () => {
+        const result = applyChange(BASE, { kind: 'set-aliases', id: 'acme', environment: 'test', aliases: [] })
+        assert.equal(result.ok, false)
+    })
+
+    it('leaves the rest of the entry untouched, comments included', () => {
+        const result = applyChange(BASE, { kind: 'set-aliases', id: 'acme', environment: 'live', aliases: ['www.acme.com'] })
+        assert.match(result.ok ? result.text : '', /domain: acme\.com/)
     })
 })
 

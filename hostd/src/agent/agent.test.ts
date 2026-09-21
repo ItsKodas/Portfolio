@@ -7,7 +7,7 @@ import type { ContainerInspect, ContainerSummary, DockerApi } from './docker.ts'
 import type { EnvFs } from './env-files.ts'
 import type { ProvisionDeps } from './provision.ts'
 import type { DeployRequest } from './deploy.ts'
-import { parseRegistry, type ProjectEntry } from '../shared/registry.ts'
+import { parseRegistry, type ProjectEntry, type Registry } from '../shared/registry.ts'
 import { emptyDeploys, type DeployRecord, type EnvironmentDeploys } from '../shared/deploys.ts'
 import type { Change } from '../shared/registry-write.ts'
 import type { FetchReply, FetchRequest } from '../shared/fetch-protocol.ts'
@@ -105,6 +105,7 @@ function setup(options: SetupOptions = {}) {
         docker,
         runner,
         system: async () => usage,
+        railAge: () => null,
         recheck: async (project: ProjectEntry) => {
             rechecked.push(project.id)
             return null
@@ -753,6 +754,206 @@ describe('the deploy verb', () => {
         const reply = replyOf(await agent.handle(deploy({ action: 'set-branch', environment: 'live', branch: 'develop' })))
         assert.equal(reply?.ok === false && reply.code, 'bad-request')
         assert.deepEqual(context.started, [])
+    })
+})
+
+// The un-shadowed factory above, captured before the domains describe block below shadows `setup` with
+// its own version: this is what that version delegates to for everything but the registry and the
+// domains deps, exactly as fakeDeploys's callers pass registry and deploys in by hand.
+const baseSetup = setup
+
+const domainsRegistrySource = (capabilities: string) => `
+projects:
+  acme:
+    client: cl_1
+    name: Acme
+    repo: git@github.com:ItsKodas/acme.git
+    services: { web: { role: site } }
+    capabilities: ${capabilities}
+    environments:
+      live:
+        dir: /var/www/acme
+        branch: main
+        port: 5010
+        domain: acme.com
+        aliases: [www.acme.com]
+  quiet:
+    client: cl_1
+    name: Quiet
+    dir: /var/www/quiet
+    upstream: 127.0.0.1:5011
+    services: { web: { role: site } }
+`
+
+const domainsRegistry = parseRegistry(domainsRegistrySource('[lifecycle, logs, provision, env, domains]'))
+
+type SentRail = { action: string, write: { path: string, text: string } | null, remove: string[], disable: string[] }
+
+// Only what the domains verb itself touches: the rail is a recorder (the real one is covered by
+// apache-rail.test.ts and the writeVhost/removeVhost/etc functions by domains.test.ts), so this exists
+// only to prove the agent wires the request through, checks structure itself and reloads first.
+function fakeDomains(registry: Registry) {
+    const sent: SentRail[] = []
+    const reload = { calls: 0 }
+    const domains: NonNullable<AgentDeps['domains']> = {
+        rail: {
+            async send(action, parts) {
+                sent.push({ action, ...parts })
+                return { seq: sent.length - 1, ok: true, output: 'Syntax OK' }
+            },
+        },
+        async readFile() { return null },
+        async listSitesEnabled() { return [] },
+        async writeRegistry() { return { ok: true } },
+        async reloadRegistry() {
+            reload.calls += 1
+            return registry
+        },
+        config: {
+            includeDir: '/etc/apache2/hostd',
+            sitesEnabled: '/etc/apache2/sites-enabled',
+            originCert: '/etc/ssl/hostd/origin.pem',
+            originKey: '/etc/ssl/hostd/origin.key',
+            acmeWebroot: '/var/www/hostd-acme',
+            maintenanceFlagDir: '/run/hostd/maintenance',
+            maintenancePageDir: '/var/www/hostd-maintenance',
+        },
+    }
+    return { domains, sent, reload }
+}
+
+describe('the domains verb', () => {
+    // Shadows the module's own setup(), only within this describe block: the domains verb needs a
+    // registry with the domains capability and a domain to write, which nothing above this point
+    // provides, and every domains test below wants the rail's own recorders back rather than the ones
+    // the base setup returns.
+    function setup(options: { capabilities?: string } = {}) {
+        const registry = options.capabilities === undefined ? domainsRegistry : parseRegistry(domainsRegistrySource(options.capabilities))
+        const context = fakeDomains(registry)
+        const base = baseSetup({ registry: () => registry, domains: context.domains })
+        return { ...base, sent: context.sent, reload: context.reload }
+    }
+
+    it('refuses a project without the domains capability, before touching the rail', async () => {
+        const { agent, sent } = setup({ capabilities: '[lifecycle]' })
+        const result = await agent.domains({ verb: 'domains', project: 'acme', args: { action: 'write', environment: 'live', token: 'abc123' } })
+        assert.equal(result.ok, false)
+        assert.equal(result.ok === false && result.code, 'capability-disabled')
+        assert.equal(sent.length, 0)
+    })
+
+    it('refuses an unknown project', async () => {
+        const { agent } = setup()
+        const result = await agent.domains({ verb: 'domains', project: 'nobody', args: { action: 'remove', environment: 'live' } })
+        assert.equal(result.ok === false && result.code, 'unknown-project')
+    })
+
+    it('refuses an environment the project does not have', async () => {
+        const { agent } = setup()
+        const result = await agent.domains({ verb: 'domains', project: 'acme', args: { action: 'remove', environment: 'test' } })
+        assert.equal(result.ok === false && result.code, 'unknown-environment')
+    })
+
+    it('re-reads the registry rather than trusting what api sent', async () => {
+        const { agent, reload } = setup()
+        await agent.domains({ verb: 'domains', project: 'acme', args: { action: 'write', environment: 'live', token: 'abc123' } })
+        assert.equal(reload.calls, 1)
+    })
+
+    it('writes the vhost for a project that has the capability', async () => {
+        const { agent, sent } = setup()
+        const result = await agent.domains({ verb: 'domains', project: 'acme', args: { action: 'write', environment: 'live', token: 'abc123' } })
+        assert.equal(result.ok, true)
+        assert.equal(sent[0]!.write?.path, '/etc/apache2/hostd/acme-live.conf')
+    })
+
+    it('previews with the token that was passed in, not a placeholder', async () => {
+        const { agent } = setup()
+        const result = await agent.domains({ verb: 'domains', project: 'acme', args: { action: 'preview', environment: 'live', token: 'deadbeef' } })
+        assert.equal(result.ok, true)
+        assert.ok(result.ok && 'preview' in result && result.preview.proposed.includes('deadbeef'))
+    })
+
+    it('reports the rail\'s last answer in health, so a dead host unit is visible', async () => {
+        const { agent } = setup()
+        const health = replyOf(await agent.handle({ verb: 'health' }))
+        assert.ok(health && 'railAge' in health)
+    })
+})
+
+// Left behind, a vhost goes on claiming its hostnames and goes on proxying to a port choosePort may
+// hand to another project: one client's visitors reaching another client's application.
+describe('removing an environment takes its vhost with it', () => {
+    const twoEnvironments = parseRegistry(`
+projects:
+  acme:
+    client: cl_1
+    name: Acme
+    repo: git@github.com:ItsKodas/acme.git
+    services: { web: { role: site } }
+    capabilities: [lifecycle, provision, domains]
+    environments:
+      live: { dir: /var/www/acme, port: 5010, domain: acme.com }
+      test: { dir: /var/www/acme-test, port: 5011, domain: test.acme.com }
+`)
+
+    function setup(registry: Registry) {
+        const context = fakeDomains(registry)
+        const base = baseSetup({
+            registry: () => registry,
+            domains: context.domains,
+            provision: fakeProvisionDeps({ registry: () => registry }),
+        })
+        return { ...base, sent: context.sent }
+    }
+
+    it('removes only that environment\'s file', async () => {
+        const { agent, sent } = setup(twoEnvironments)
+        const reply = replyOf(await agent.handle({ verb: 'provision', project: 'acme', args: { action: 'remove', environment: 'test' } }))
+        assert.equal(reply?.ok, true)
+        assert.deepEqual(sent.map(request => request.remove), [['/etc/apache2/hostd/acme-test.conf']])
+    })
+
+    it('removes every environment\'s file when the whole project goes', async () => {
+        const { agent, sent } = setup(twoEnvironments)
+        const reply = replyOf(await agent.handle({ verb: 'provision', project: 'acme', args: { action: 'remove', environment: null } }))
+        assert.equal(reply?.ok, true)
+        assert.deepEqual(
+            sent.flatMap(request => request.remove).sort(),
+            ['/etc/apache2/hostd/acme-live.conf', '/etc/apache2/hostd/acme-test.conf'],
+        )
+    })
+
+    // The registry entry is already gone by then, so an operator who is told the removal failed would
+    // retry something that cannot happen twice. They are told which file is still there instead.
+    it('reports a vhost it could not remove rather than failing the removal that already happened', async () => {
+        const context = fakeDomains(twoEnvironments)
+        context.domains.rail = { send: async () => { throw new Error('the Apache host unit did not answer request 3') } }
+        const failing = baseSetup({
+            registry: () => twoEnvironments,
+            domains: context.domains,
+            provision: fakeProvisionDeps({ registry: () => twoEnvironments }),
+        })
+        const answer = replyOf(await failing.agent.handle({ verb: 'provision', project: 'acme', args: { action: 'remove', environment: 'test' } }))
+        assert.equal(answer?.ok, true)
+        assert.match(answer?.ok && 'output' in answer ? answer.output : '', /vhost for acme test could not be removed/)
+    })
+
+    it('leaves the rail alone for a project hostd never wrote a vhost for', async () => {
+        const noDomains = parseRegistry(`
+projects:
+  acme:
+    client: cl_1
+    name: Acme
+    dir: /var/www/acme
+    upstream: 127.0.0.1:5010
+    services: { web: { role: site } }
+    capabilities: [lifecycle, provision]
+`)
+        const { agent, sent } = setup(noDomains)
+        const reply = replyOf(await agent.handle({ verb: 'provision', project: 'acme', args: { action: 'remove', environment: null } }))
+        assert.equal(reply?.ok, true)
+        assert.deepEqual(sent, [])
     })
 })
 

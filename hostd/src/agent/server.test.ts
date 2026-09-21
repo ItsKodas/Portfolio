@@ -7,7 +7,7 @@ import { MAX_REQUEST_BYTES } from '../shared/protocol.ts'
 
 const line: LogLine = { stream: 'stdout', ts: null, text: 'hello', truncated: false }
 // Any reply will do for a transport test; health is the smallest real one.
-const health: HealthReply = { ok: true, warnings: [], invalid: {}, system: { memory: null, cpu: null, disk: null, problems: [] } }
+const health: HealthReply = { ok: true, warnings: [], invalid: {}, system: { memory: null, cpu: null, disk: null, problems: [] }, railAge: null }
 
 function stubAgent(handle: AgentHandler['handle']): AgentHandler & { requests: AgentRequest[] } {
     const requests: AgentRequest[] = []

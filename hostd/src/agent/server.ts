@@ -64,6 +64,8 @@ function describe(request: AgentRequest): string {
         // The branch is safe to name (it is a plain branch name, already validated) and is the one thing
         // that makes a set-branch line worth reading.
         case 'deploy': return `deploy ${request.args.action} ${request.project} ${request.args.environment}${request.args.action === 'set-branch' ? ` ${request.args.branch}` : ''}`
+        // Never the token or the alias list here, for the same reason env write never logs text.
+        case 'domains': return `domains ${request.args.action} ${request.project} ${request.args.environment}`
         // Never the values themselves: a capability list, a repo URL or a branch name changing is exactly
         // the kind of edit this line exists to prove happened, but the edit's contents belong to the
         // registry diff, not to a log line api itself could have written.

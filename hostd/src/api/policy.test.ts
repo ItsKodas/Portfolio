@@ -12,7 +12,7 @@ projects:
     dir: /var/www/acme
     upstream: 127.0.0.1:5010
     services: { web: { role: site } }
-    capabilities: [lifecycle, logs, provision, env]
+    capabilities: [lifecycle, logs, provision, env, domains]
   quiet:
     client: cl_1
     name: Quiet
@@ -136,6 +136,37 @@ projects:
         assert.deepEqual(authorize(deployable, owner, 'quiet', 'deploy-read'), {
             ok: false, status: 403, code: 'capability-disabled', message: 'deploy is not enabled for quiet',
         })
+    })
+})
+
+describe('the domains verbs', () => {
+    const withoutDomains = parseRegistry(`
+projects:
+  acme:
+    client: cl_1
+    name: Acme
+    dir: /var/www/acme
+    upstream: 127.0.0.1:5010
+    services: { web: { role: site } }
+    capabilities: [lifecycle]
+`)
+
+    it('lets a client read their own site\'s domains', () => {
+        const decision = authorize(registry, { kind: 'client', client: 'cl_1' }, 'acme', 'domains-read')
+        assert.equal(decision.ok, true)
+    })
+
+    it('answers a client asking to add a domain exactly as it answers one asking about a stranger\'s site', () => {
+        const mine = authorize(registry, { kind: 'client', client: 'cl_1' }, 'acme', 'domains')
+        const theirs = authorize(registry, { kind: 'client', client: 'cl_1' }, 'someone-else', 'domains')
+        assert.equal(mine.ok, false)
+        assert.equal(mine.ok === false && mine.status, 404)
+        assert.equal(theirs.ok === false && theirs.status, 404)
+    })
+
+    it('refuses both verbs when the project has no domains capability', () => {
+        const decision = authorize(withoutDomains, { kind: 'admin' }, 'acme', 'domains-read')
+        assert.equal(decision.ok === false && decision.code, 'capability-disabled')
     })
 })
 
