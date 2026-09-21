@@ -178,3 +178,68 @@
     white-space: pre-wrap;
     word-break: break-word;
 }
+
+/* The Domains tab.
+
+   The add box sits above the table, and its button lines up with the input rather than under it: the
+   field is one short line and a button on its own row below reads as belonging to the table instead. */
+.addDomain {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: flex-start;
+    gap: 12px;
+    margin-bottom: 4px;
+}
+.addDomain > :first-child { flex: 1 1 260px; max-width: 360px; }
+
+/* Nudged down so the button meets the input, not the label above it */
+.addAction { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; padding-top: 21px; }
+
+/* The controls inside a table cell. Small buttons here, unlike the lifecycle ones: these are one row's
+   worth of a list, not the reason the page was opened. */
+.rowActions { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+
+/* What a client is told, which is their own address and one sentence about it. No table: a client with
+   one domain would be reading a one-row spreadsheet. */
+.address { padding: 12px 0; border-top: 1px solid var(--rule); }
+.address:first-of-type { border-top: 0; padding-top: 0; }
+.address p { margin: 0; }
+.address p + p { margin-top: 4px; color: var(--ink-2); font-size: 13.5px; }
+.addressName { font-family: var(--font-mono), monospace; font-size: 13px; color: var(--ink); }
+
+/* The adopt dialog: what is being replaced beside what would replace it. Side by side because the
+   question the operator is answering is which of the two is on the server tomorrow, and that is a
+   comparison. It stacks on a narrow window rather than shrinking both to nothing. */
+.sideBySide {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+    gap: 16px;
+    margin-bottom: 16px;
+}
+
+@media (max-width: 720px) {
+    .sideBySide { grid-template-columns: minmax(0, 1fr); }
+}
+
+.pane { min-width: 0; }
+.paneHead { font-size: 11px; text-transform: uppercase; letter-spacing: .08em; color: var(--ink-3); margin: 0 0 8px; }
+
+.claim { margin-bottom: 10px; }
+.claim p { margin: 0; overflow-wrap: anywhere; }
+.claim .note { margin-top: 2px; }
+
+.vhost {
+    margin: 0;
+    padding: 10px 12px;
+    background: var(--night);
+    border: 1px solid var(--rule);
+    border-radius: 6px;
+    max-height: 300px;
+    overflow: auto;
+    font-family: var(--font-mono), monospace;
+    font-size: 11px;
+    line-height: 1.7;
+    color: var(--ink-2);
+    white-space: pre-wrap;
+    word-break: break-word;
+}

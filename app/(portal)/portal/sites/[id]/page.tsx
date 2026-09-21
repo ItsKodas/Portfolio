@@ -3,6 +3,9 @@ import { notFound, redirect } from 'next/navigation'
 
 import { getDb } from '@/server/db'
 import { readHostd } from '@/server/hostd/config'
+import { listDomains, type Domain } from '@/server/hostd/domains'
+import type { EnvironmentName } from '@/server/hostd/env'
+import { forAdmin, forClient } from '@/server/hostd/errors'
 import { assertOwned, getProject, listProjects, type ServiceStatus } from '@/server/hostd/projects'
 import { callerFromSession } from '@/server/hostd/session'
 import { Callout } from '@/ui/Callout/Callout'
@@ -10,6 +13,7 @@ import { Shell } from '@/ui/Shell/Shell'
 import { StatStrip } from '@/ui/StatStrip/StatStrip'
 import { StatusDot } from '@/ui/StatusDot/StatusDot'
 import { DeployPanel } from './deployPanel'
+import { DomainsPanel } from './domainsPanel'
 import { EnvPanel } from './env'
 import { Lifecycle } from './lifecycle'
 import { SiteLogs } from './logs'
@@ -28,12 +32,17 @@ export const dynamic = 'force-dynamic'
 // a second panel. That one waits for hostd to report services per environment.
 const LIVE = 'live'
 
-// Designed, and hostd implements none of them. They are shown and marked rather than left out: a missing
-// tab reads as a product that cannot do the thing, and a marked one reads as a product that will. In the
-// client's language rather than the stack's, and with no date promised, because there is not one.
+// What stands in for a tab with nothing behind it. A tab is shown and marked rather than left out: a
+// missing tab reads as a product that cannot do the thing, and a marked one reads as a product that will.
+// In the client's language rather than the stack's, and with no date promised, because there is not one.
+//
+// Backups is the only entry left that means what this record originally meant, which is that nothing is
+// built. Deploys has a real panel and keeps an entry here for the other sentence: the tab works, and
+// hostd would refuse this one site. Domains says that same second sentence beside its own panel instead,
+// rather than through a record whose name says the feature is still coming.
 const WAITING: Record<string, { title: string, body: string }> = {
     // Shown only when this project has no deploy capability: the tab itself works, and hostd refusing
-    // the whole thing for this site is a different sentence from the two below.
+    // the whole thing for this site is a different sentence from the one below.
     deploys: {
         title: 'Not set up for this site',
         body: 'Deploys are not switched on for this site yet. When they are, this is where you will see '
@@ -43,11 +52,6 @@ const WAITING: Record<string, { title: string, body: string }> = {
         title: 'Not here yet',
         body: 'Your site is backed up, and this is where you will be able to see when it last happened '
             + 'and ask for a copy. The page comes after the deploys work.',
-    },
-    domains: {
-        title: 'Not here yet',
-        body: 'Domains and certificates are set up by hand today. This is where they will be listed, with '
-            + 'what each one points at and when its certificate runs out.',
     },
 }
 
@@ -104,6 +108,33 @@ function Environment({ name, services, trouble }: { name: string, services: Serv
     )
 }
 
+// The Domains tab's own read. DeployPanel asks hostd itself while it renders; DomainsPanel cannot,
+// because the operator's table and the client's sentences are two screens over one list and both are
+// worth rendering without a network in the way, so it takes the list as a prop and the asking happens
+// here. Only when that tab is open: every other tab would be paying for a round trip nobody is looking at.
+//
+// The caller is re-derived from the session rather than taken from the page's own view, the same way
+// env.tsx and deployPanel.tsx do it, so nothing the browser sent decides who hostd is asked as.
+async function readDomains(
+    id: string,
+    environment: EnvironmentName,
+    isAdmin: boolean,
+): Promise<{ domains: Domain[], trouble: string | null }> {
+    const who = await callerFromSession()
+    if (!who) return { domains: [], trouble: forClient('unavailable') }
+
+    const problems: string[] = []
+    const config = readHostd(process.env, problems)
+    // The operator is told which setting; a client is told nothing about our infrastructure
+    if (problems.length) return { domains: [], trouble: isAdmin ? problems.join('; ') : forClient('unavailable') }
+
+    const result = await listDomains(config, who.caller, id, environment)
+    if (!result.ok) {
+        return { domains: [], trouble: isAdmin ? forAdmin(result.code, result.message) : forClient(result.code) }
+    }
+    return { domains: result.value, trouble: null }
+}
+
 type Props = {
     params: Promise<{ id: string }>
     searchParams: Promise<Record<string, string | string[] | undefined>>
@@ -139,6 +170,9 @@ export default async function SitePage({ params, searchParams }: Props) {
 
     // hostd needs the project to carry the deploy capability for any of it, reading the history included
     const canDeploy = view.capabilities.includes('deploy')
+    // The same rule for domains: without the capability hostd refuses the listing too, so the tab is
+    // marked rather than opened onto a refusal.
+    const canDomains = view.capabilities.includes('domains')
 
     const tabs: Tab[] = [
         { id: 'overview', label: 'Overview' },
@@ -151,10 +185,12 @@ export default async function SitePage({ params, searchParams }: Props) {
         // Both roles need the project to have the capability at all, which is what disables it.
         { id: 'deploys', label: 'Deploys', disabled: !canDeploy },
         { id: 'backups', label: 'Backups', disabled: true },
-        // Absent for a client rather than disabled, for the same reason Environment is: domains will be
-        // the operator's to set, so promising a client a tab they will never be given is a worse lie than
-        // not showing it.
-        ...(view.isAdmin ? [{ id: 'domains' as const, label: 'Domains', disabled: true }] : []),
+        // This was absent for a client, on the reasoning that domains would only ever be the operator's
+        // to set and that promising a tab nobody would be given is the worse lie. That was right for a
+        // tab with no read side. It is not right now: hostd leaves 'domains-read' out of its admin-only
+        // verbs, so a client may read their own site's addresses and be told whether each one works.
+        // Acting on them is still the operator's alone, which the panel decides, not this list.
+        { id: 'domains', label: 'Domains', disabled: !canDomains },
     ]
 
     // Checked against the tabs this viewer actually has, not merely against the list of names, so ?tab=env
@@ -162,13 +198,19 @@ export default async function SitePage({ params, searchParams }: Props) {
     const wanted = one(search.tab)
     const selected = tabs.some(tab => tab.id === wanted) ? wanted as TabId : 'overview'
 
-    // Which environment the Deploys tab is about. Checked against the ones this project actually has,
+    // Which environment the Deploys and Domains tabs are about. Both are per environment: a deploy runs
+    // against one, and a hostname belongs to one. Checked against the ones this project actually has,
     // so ?env=test on a project that has only live lands on live rather than asking hostd about an
     // environment that is not there. Falls back to live when the listing could not be read at all: the
     // panel then asks and reports hostd's own refusal, which is better than not asking.
     const names = view.environments.map(environment => environment.name)
     const askedFor = one(search.env)
     const environment = names.find(name => name === askedFor) ?? names[0] ?? LIVE
+
+    // Asked for only when that tab is the one open, and only when hostd would answer it at all
+    const domains = selected === 'domains' && canDomains
+        ? await readDomains(view.id, environment, view.isAdmin)
+        : { domains: [], trouble: null }
 
     // What this one site is doing, taken from the single project read rather than from the listing. The
     // listing is one call for every site and can come back with nothing to say about any of them; this
@@ -256,6 +298,23 @@ export default async function SitePage({ params, searchParams }: Props) {
                         enabled={canDeploy}
                     />
                 )}
+
+                {selected === 'domains' && (canDomains
+                    ? <DomainsPanel
+                        id={view.id}
+                        environments={view.environments}
+                        environment={environment}
+                        domains={domains.domains}
+                        isAdmin={view.isAdmin}
+                        projectName={view.name}
+                        trouble={domains.trouble}
+                    />
+                    // Said here rather than from WAITING, which is for a tab with nothing behind it at
+                    // all. This tab has a panel; it is this one site hostd would refuse.
+                    : <Callout title="Not set up for this site">
+                        Domains are not switched on for this site yet. When they are, this is where its
+                        addresses are listed, with what each one is doing and what secures it.
+                    </Callout>)}
 
                 {/* Only when the tab is disabled: deploys has a panel now, and this is what stands in
                     for a project hostd would refuse it for. */}
