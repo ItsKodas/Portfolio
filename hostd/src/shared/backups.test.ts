@@ -82,4 +82,8 @@ describe('diskProblem', () => {
         assert.equal(diskProblem({ path: '/backups', totalBytes: 1000, usedBytes: 900, freeBytes: 100 }), null)
         assert.match(diskProblem(null) ?? '', /could not be read/)
     })
+
+    it('refuses a zero-total disk', () => {
+        assert.match(diskProblem({ path: '/backups', totalBytes: 0, usedBytes: 0, freeBytes: 0 }) ?? '', /could not be read/)
+    })
 })
