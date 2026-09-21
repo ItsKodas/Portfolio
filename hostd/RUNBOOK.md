@@ -457,7 +457,18 @@ follow, because there is no per-environment lifecycle yet.
    docker compose up -d --build agent
    ```
 
-5. Turn backups on for a project by adding `backups` to its `capabilities:` in `registry/projects.yaml`,
+5. Check that the image actually has both tools the agent needs, rather than assuming the Alpine packages
+   provide what the code shells out to:
+
+   ```bash
+   docker compose exec agent restic version
+   docker compose exec agent sqlite3 --version
+   ```
+
+   Both should print a version. If either command is missing, the image needs rebuilding
+   (`docker compose build agent`) before any backup, or any sqlite-backed project's backup, can run.
+
+6. Turn backups on for a project by adding `backups` to its `capabilities:` in `registry/projects.yaml`,
    then wait ten seconds for the reload:
 
    ```yaml
@@ -603,34 +614,46 @@ show both, in the order you would try them: `docker exec` first, the host fallba
    | redis | `dump.rdb` | `redis-cli --rdb` | stop the service, put the rdb where the image expects it, start |
    | generic | a copied data directory | stop, copy, start | stop the service, copy it back, start |
 
+   `SERVICE` below is that database's own name, exactly as it appears under the project's `services:` in
+   the registry (`db` in every worked example elsewhere in this runbook, but genuinely the operator's own
+   to substitute: `backup-run.ts` writes each dump to `db/<service>/`, not to a fixed name, so the path is
+   only right once `SERVICE` names the real service). The dump files under `$DUMP` are root-owned too, so
+   reading one is `sudo cat` first, same reason `RESTIC_PASSWORD` above needed `sudo env`: a plain
+   `< file` redirection, or a bare `$VAR`, runs in your own shell before `sudo` (or `docker compose exec`)
+   ever starts, so it either hits the same permission error the raw `restic` call would, or, for a
+   variable the *container* sets (`$POSTGRES_USER` and the like), expands to nothing because your shell
+   has never heard of it. Every variable below that belongs to the database's own container is kept inside
+   the single-quoted `sh -c '...'` for exactly that reason; only `SERVICE` and `DUMP`, which belong to you,
+   are expanded outside it.
+
+   ```bash
+   SERVICE=<service>   # replace with this project's own database service name
+   DUMP=/srv/backups/hostd/restore/acme-bakery/backups/.staging/acme-bakery/<run>/db/$SERVICE
+   ```
+
    `psql`, `mysql`/`mariadb` and `mongorestore` all talk to a running server, so bring just that one
    database service back up first (the site's other services can stay down; nothing else needs to be
    writing to it yet):
 
-   The dump files under `$DUMP` are root-owned too, so piping one into a command is `sudo cat` on the
-   read side, same reason `RESTIC_PASSWORD` above needed `sudo env`: a plain `< file` redirection runs in
-   your own shell, before `sudo` ever starts, so it hits the same permission error the raw `restic` call
-   would.
-
    ```bash
-   sudo docker compose start db
-   DUMP=/srv/backups/hostd/restore/acme-bakery/backups/.staging/acme-bakery/<run>/db/db
+   sudo docker compose start "$SERVICE"
 
    # postgres, using the same user pg_dumpall ran as (POSTGRES_USER by default, or whatever the
-   # registry's dump.userEnv names):
-   sudo cat "$DUMP/dump.sql" | sudo docker compose exec -T db psql -U "$POSTGRES_USER"
+   # registry's dump.userEnv names). $POSTGRES_USER is the container's own, so it stays inside sh -c:
+   sudo cat "$DUMP/dump.sql" | sudo docker compose exec -T "$SERVICE" sh -c 'psql -U "$POSTGRES_USER"'
 
    # mysql (mariadb: swap mysql for mariadb, and MYSQL_ROOT_PASSWORD for MARIADB_ROOT_PASSWORD, or
    # whatever the registry's dump.passwordEnv/userEnv name instead):
-   sudo cat "$DUMP/dump.sql" | sudo docker compose exec -T db sh -c 'MYSQL_PWD="$MYSQL_ROOT_PASSWORD" mysql -u root'
+   sudo cat "$DUMP/dump.sql" | sudo docker compose exec -T "$SERVICE" sh -c 'MYSQL_PWD="$MYSQL_ROOT_PASSWORD" mysql -u root'
 
    # mongodb (the ${VAR:+...} expands only when the image actually sets credentials, same as the dump did):
-   sudo cat "$DUMP/dump.archive.gz" | sudo docker compose exec -T db sh -c \
+   sudo cat "$DUMP/dump.archive.gz" | sudo docker compose exec -T "$SERVICE" sh -c \
      'mongorestore --archive --gzip ${MONGO_INITDB_ROOT_USERNAME:+-u "$MONGO_INITDB_ROOT_USERNAME" -p "$MONGO_INITDB_ROOT_PASSWORD" --authenticationDatabase admin}'
    ```
 
    sqlite, redis and generic are filesystem copies instead, and never need their service started first;
-   `docker cp` and a plain file copy both work against a stopped container:
+   `docker cp` and a plain file copy both work against a stopped container. They still read `$SERVICE` and
+   `$DUMP` from just above, so set those first even if you skip the block above:
 
    ```bash
    # sqlite: copy the file to the path named by that service's file: in the registry, under the live
@@ -638,8 +661,9 @@ show both, in the order you would try them: `docker exec` first, the host fallba
    sudo cp "$DUMP/dump.db" /var/www/acme-bakery/live/<the service's file: path>
 
    # redis: the official image reads /data/dump.rdb by default; check the site's own redis command or
-   # config if it sets `dir` or `dbfilename` to something else.
-   sudo docker cp "$DUMP/dump.rdb" acme-bakery-cache-1:/data/dump.rdb
+   # config if it sets `dir` or `dbfilename` to something else. Compose names the container
+   # <project>-<service>-<index>, so this follows $SERVICE too, not a fixed name:
+   sudo docker cp "$DUMP/dump.rdb" "acme-bakery-$SERVICE-1:/data/dump.rdb"
 
    # generic: db/<service>/data/ holds one directory per bind mount the service had, named for that
    # mount's own directory name; copy each one back to where it was mounted from.

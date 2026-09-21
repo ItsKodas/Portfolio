@@ -11,8 +11,11 @@ The portal screens that put a UI on this are designed in
 
 hostd phase 1 named backups as phase 2 and described them in full: one restic repository per project, a
 dump per database engine, manual and scheduled runs, an offsite copy on Cloudflare R2, and downloads
-streamed as a tar.gz. None of it is built. `hostd/src` has no backup code, and the only parts in place are
-the registry's `backups.maxKeep` key, the `backups` capability and the `offsite.keep` block.
+streamed as a tar.gz. None of it was built yet when this design was written. `hostd/src` had no backup
+code, and the only parts phase 1 had left in place were the registry's `backups.maxKeep` key, the
+`backups` capability and the `offsite.keep` block. It is built now, on `claude/portal-backups-system-4a738e`,
+except for the offsite copy, which this revision narrows out of scope (see below and the Status line
+above).
 
 The portal's Backups tab is a placeholder that says the page comes after the deploys work. The deploys
 work has landed, so this is next.
