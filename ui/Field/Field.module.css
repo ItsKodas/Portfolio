@@ -24,6 +24,13 @@
     outline-offset: 1px;
 }
 
+/* Left as the browser's own control rather than appearance: none, so the arrow the platform draws is still
+   there. Only the padding is trimmed on the right, where that arrow sits. */
+.select {
+    padding-right: 7px;
+    cursor: pointer;
+}
+
 .invalid {
     border-color: var(--crit);
 }

@@ -1,6 +1,6 @@
 import { render, screen } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 
 import { Field } from './Field'
 
@@ -49,5 +49,42 @@ describe('Field', () => {
     it('lets a textarea be given a height', () => {
         render(<Field as="textarea" label="Message" name="message" rows={4} />)
         expect(screen.getByLabelText('Message')).toHaveAttribute('rows', '4')
+    })
+
+    it('can be a select, with the label tied to it like any other field', () => {
+        render(
+            <Field as="select" label="Status" name="status" defaultValue="NEW">
+                <option value="NEW">New</option>
+                <option value="WON">Won</option>
+            </Field>,
+        )
+        expect(screen.getByLabelText('Status').tagName).toBe('SELECT')
+    })
+
+    // The only thing a status picker has to do: say which one was chosen. onChange is typed for an input,
+    // so this is also the check that a select's value still arrives through it.
+    it('tells onChange which option was chosen', async () => {
+        const onChange = vi.fn()
+        render(
+            <Field as="select" label="Status" name="status" defaultValue="NEW" onChange={onChange}>
+                <option value="NEW">New</option>
+                <option value="WON">Won</option>
+            </Field>,
+        )
+        await userEvent.selectOptions(screen.getByLabelText('Status'), 'WON')
+        expect(onChange).toHaveBeenCalledOnce()
+        expect((onChange.mock.calls[0][0].target as HTMLSelectElement).value).toBe('WON')
+    })
+
+    it('marks an errored select invalid and describes it by the error, same as an input', () => {
+        render(
+            <Field as="select" label="Status" name="status" error="Pick one" defaultValue="">
+                <option value="">Choose</option>
+                <option value="WON">Won</option>
+            </Field>,
+        )
+        const select = screen.getByLabelText('Status')
+        expect(select).toHaveAttribute('aria-invalid', 'true')
+        expect(select).toHaveAccessibleDescription('Pick one')
     })
 })
