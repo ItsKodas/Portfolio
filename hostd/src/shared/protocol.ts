@@ -347,7 +347,7 @@ function parseDeployArgs(raw: unknown): DeployArgs | Refusal {
 // Hex only, and bounded. This string is interpolated into a <Location> and into a header value in the
 // vhost, so it is the one value from api that reaches Apache's configuration. Nothing that could be read
 // as a path, a quote or a directive is allowed to be a token.
-const DOMAIN_TOKEN = /^[0-9a-f]{6,64}$/
+export const DOMAIN_TOKEN = /^[0-9a-f]{6,64}$/
 // The only directory an adopt may disable a file in. Checked here as well as in the agent, because this
 // is where a value from api first becomes something a root process will act on.
 const SITES_ENABLED = '/etc/apache2/sites-enabled/'
