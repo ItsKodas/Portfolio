@@ -243,13 +243,15 @@ export function applyChange(text: string, change: Change): WriteResult {
     const edited = edit(doc, change)
     if (edited) return { ok: false, problem: edited.problem, ...(edited.conflict ? { conflict: edited.conflict } : {}) }
 
-    // yaml's default stringify options pad every flow collection ("[ a, b ]", "{ a: b }") whether or not
-    // its source had that padding, which would reformat the operator's own "[lifecycle, logs]" style on
-    // any write, not just one that touched it. There is no per-node override, only this whole-document
-    // one, so unpadded is the document-wide default: it matches how every flow sequence in the real
-    // registry is hand-written, at the cost of also flattening the padding on flow mappings like
-    // "{ role: site }", which the file does write padded. See registry-write.test.ts's flow-style case.
-    const next = doc.toString({ flowCollectionPadding: false })
+    // Plain doc.toString(): yaml's flowCollectionPadding option is whole-document, not per-node, so
+    // turning it off to make one freshly-written list read "[lifecycle, env]" instead of "[ lifecycle,
+    // env ]" would also reformat every other flow collection already in the file, e.g. every untouched
+    // "services: { role: site }" on every write, including one as routine as set-deployed after a
+    // deploy. The writer exists to keep the operator's hand-written formatting intact; that reformat is
+    // a worse breach of that than a stray space is. What the plan actually needs is flow style rather
+    // than a block sequence (see the capabilities case above); the padding is the library's default to
+    // live with, not ours to fight.
+    const next = doc.toString()
     // The same validator that runs at load, so a write can never produce a file hostd would refuse
     let registry
     try {

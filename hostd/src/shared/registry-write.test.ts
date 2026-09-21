@@ -147,10 +147,29 @@ describe('configure', () => {
     })
 
     it('writes the capability list in flow style, the way the file already writes it', () => {
-        // A block sequence would validate and would reformat a file a person maintains by hand
+        // A block sequence would validate and would reformat a file a person maintains by hand: that is
+        // the structural difference this test actually cares about. Whether the library pads the inside
+        // of the brackets with a space is its own stringify default, applied to the whole document, not
+        // a choice this writer makes for this one list, so the match tolerates either spacing.
         const result = applyChange(LIVE_ONLY, { kind: 'configure', id: 'arbysauto', capabilities: ['lifecycle', 'env'] })
         assert.ok(result.ok)
-        assert.match(result.text, /capabilities: \[lifecycle, env\]/)
+        assert.match(result.text, /capabilities: \[ ?lifecycle, env ?\]/)
+        assert.doesNotMatch(result.text, /\n\s+- lifecycle/)
+    })
+
+    it('leaves an untouched flow mapping padded exactly as the operator wrote it, across more than one write', () => {
+        // flowCollectionPadding is a whole-document stringify option, not a per-node one: turning it off
+        // to keep a freshly flow-styled list unpadded would also strip the padding from every other flow
+        // collection already in the file, on every write from here on, including ones that never touch
+        // this project at all. So the writer leaves the library's default padding alone, and this is the
+        // proof: services: { role: site } is never touched by either of these changes, and survives both.
+        const first = applyChange(LIVE_ONLY, { kind: 'configure', id: 'arbysauto', capabilities: ['lifecycle', 'env'] })
+        assert.ok(first.ok)
+        assert.match(first.text, /services:\n\s+web: \{ role: site \}/)
+
+        const second = applyChange(first.text, { kind: 'configure', id: 'arbysauto', repo: 'git@github.com:ItsKodas/arbysauto.git' })
+        assert.ok(second.ok)
+        assert.match(second.text, /services:\n\s+web: \{ role: site \}/)
     })
 
     it('sets a repo, and clears one', () => {
