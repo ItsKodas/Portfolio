@@ -898,6 +898,33 @@ describe('the backup endpoints', () => {
         assert.deepEqual(await response.json(), { ok: false, code: 'bad-request', message: 'no backup deadbeef for acme' })
     })
 
+    // The headers are already on the wire by the time a mid-stream failure happens, so the only way to
+    // tell the client anything is real broke is to leave the chunked response incomplete rather than
+    // end it cleanly: a clean end reads as a short but valid file, which is only caught at restore time.
+    it('destroys the response rather than ending it when the download fails mid-stream, so a truncated archive is never reported as complete', async () => {
+        agent.download = async agentRequest => {
+            agent.calls.push(agentRequest)
+            return {
+                ok: true,
+                body: (async function* () {
+                    yield Buffer.from('partial bytes')
+                    throw new Error('the agent connection failed: socket reset')
+                })(),
+                close() {},
+            }
+        }
+        // The status line and headers were already sent before the failure, so status alone would pass
+        // whether the transfer completed or not; what actually distinguishes a truncated transfer is
+        // that the client never gets to read a complete body. undici's fetch tears the whole request
+        // promise down for this one (a destroyed socket before the response is framed as complete), but
+        // either that or a Response whose .text() rejects would prove the same thing, so both are
+        // covered here.
+        await assert.rejects(async () => {
+            const response = await request('/projects/acme/backups/deadbeef/download')
+            await response.text()
+        })
+    })
+
     it('reads the default schedule without asking the agent or auditing a plain read', async () => {
         const response = await request('/projects/acme/backups/schedule')
         assert.equal(response.status, 200)

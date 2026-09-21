@@ -884,17 +884,27 @@ export function createHandler(deps: ApiDeps): (req: IncomingMessage, res: Server
                 const downloadStream = stream
                 const stop = () => downloadStream.close()
                 res.on('close', stop)
+                let failed = false
                 try {
                     for await (const chunk of downloadStream.body) {
                         if (!res.write(chunk)) await waitForDrain(res)
                         if (res.destroyed) break
                     }
                 } catch (error) {
-                    console.error(`[api] ${new Date().toISOString()} backup download for ${route.project} failed: ${describeError(error)}`)
+                    failed = true
+                    // The client already left (res.destroyed) is not a failure worth a log line; a dead
+                    // agent connection or socket reset mid-transfer is.
+                    if (!res.destroyed) console.error(`[api] ${new Date().toISOString()} backup download for ${route.project} failed: ${describeError(error)}`)
                 } finally {
                     res.off('close', stop)
                     downloadStream.close()
-                    res.end()
+                    // A truncated archive must never look like a complete one. Ending the response
+                    // cleanly here would tell the client the download succeeded, and they would only
+                    // find out at restore time. Destroying it instead leaves the chunked encoding
+                    // incomplete, which every HTTP client reports as a failed transfer rather than a
+                    // short but valid file. Destroying an already-destroyed response is harmless.
+                    if (failed) res.destroy()
+                    else res.end()
                 }
                 return
             }
