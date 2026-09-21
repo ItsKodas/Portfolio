@@ -7,6 +7,7 @@ import { buildStatus, writeStatus } from '../shared/status.ts'
 import { describeError } from '../shared/formats.ts'
 import { createAgentClient, socketConnect } from './agent-client.ts'
 import { AuditLog } from './audit.ts'
+import { ScheduleStore } from './schedule.ts'
 import { createHandler } from './routes.ts'
 
 const TOKEN = process.env.HOSTD_API_TOKEN ?? ''
@@ -18,6 +19,9 @@ const PORT = 8080
 const POLL_MS = 10_000
 const AGENT_CHECK_MS = 60_000
 const PRUNE_MS = 24 * 60 * 60_000
+// One minute, as the design says: often enough that a due schedule starts promptly, cheap enough to poll
+// forever.
+const SCHEDULE_TICK_MS = 60_000
 const MIN_TOKEN_LENGTH = 32
 const BOOT_BACKOFF_MS = [5_000, 10_000, 20_000, 40_000]
 
@@ -43,10 +47,10 @@ async function main(): Promise<void> {
     if (failures.length > 0) fail(failures)
 
     // A short timeout for health checks, so a wedged agent is reported promptly.
-    const agent = createAgentClient(socketConnect(AGENT_SOCKET), { callTimeoutMs: 15_000 })
+    const healthAgent = createAgentClient(socketConnect(AGENT_SOCKET), { callTimeoutMs: 15_000 })
     const agentAnswers = async () => {
         try {
-            await agent.call({ verb: 'health' })
+            await healthAgent.call({ verb: 'health' })
             return true
         } catch {
             return false
@@ -69,12 +73,17 @@ async function main(): Promise<void> {
         log(`WARN audit prune failed at boot: ${describeError(error)}`)
     }
 
+    const schedules = new ScheduleStore(join(STATE_DIR, 'schedules.json'), undefined, log)
+    await schedules.load()
+
     // Lifecycle calls get the full timeout; only the health probe above uses the short one.
+    const agent = createAgentClient(socketConnect(AGENT_SOCKET))
     const handler = createHandler({
         token: TOKEN,
         registry: () => store.current(),
-        agent: createAgentClient(socketConnect(AGENT_SOCKET)),
+        agent,
         audit,
+        schedules,
     })
     const server = createServer(handler)
     // A bind failure (say the port is already taken) must fail boot with a named FATAL line, through the
@@ -95,9 +104,10 @@ async function main(): Promise<void> {
     let agentWarning: string | null = null
     let lastAgentCheck = Date.now()
     let lastPrune = Date.now()
+    let lastTick = Date.now()
     let lastWarnings = ''
     for (;;) {
-        const warnings = [...store.warnings(), ...audit.warnings(), ...(agentWarning ? [agentWarning] : [])]
+        const warnings = [...store.warnings(), ...audit.warnings(), ...schedules.warnings(), ...(agentWarning ? [agentWarning] : [])]
         if (warnings.join('\n') !== lastWarnings) {
             for (const warning of warnings) log(`WARN ${warning}`)
             if (warnings.length === 0 && lastWarnings !== '') log('all warnings cleared')
@@ -128,6 +138,29 @@ async function main(): Promise<void> {
                 log(`WARN audit prune failed: ${describeError(error)}`)
             }
             lastPrune = Date.now()
+        }
+        // One minute, as the design says. A slot that fell due while api was down is caught by isDue
+        // comparing against the last run rather than against the tick, so this also covers startup.
+        if (Date.now() - lastTick >= SCHEDULE_TICK_MS) {
+            lastTick = Date.now()
+            try {
+                const registry = store.current()
+                const lastRuns = new Map<string, number | null>()
+                for (const id of registry.projects.keys()) {
+                    const reply = await agent.call({ verb: 'backup', project: id, args: { action: 'list' } })
+                    const newest = reply.ok && 'runs' in reply ? reply.runs[0] : undefined
+                    lastRuns.set(id, newest ? Date.parse(newest.startedAt) : null)
+                }
+                for (const { id, schedule } of schedules.due(registry, projectId => lastRuns.get(projectId) ?? null, Date.now())) {
+                    const started = await agent.call({ verb: 'backup', project: id, args: { action: 'run', tag: 'scheduled', keep: schedule.keep } })
+                    // A refusal here is ordinary: another backup may hold the dedi-wide lock, and the next
+                    // tick tries again because the slot is still unsatisfied.
+                    if (!started.ok) log(`scheduled backup for ${id} was not started: ${started.message}`)
+                    else log(`scheduled backup for ${id} started`)
+                }
+            } catch (error) {
+                log(`WARN the backup schedule tick failed: ${describeError(error)}`)
+            }
         }
     }
 }

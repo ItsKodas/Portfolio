@@ -2,7 +2,9 @@
 // the Docker socket, so it listens on nothing but a Unix socket shared with api.
 
 import { createServer, createConnection } from 'node:net'
-import { chmod, chown, mkdir, rename, rm, stat, statfs, writeFile } from 'node:fs/promises'
+import { createWriteStream } from 'node:fs'
+import { chmod, chown, cp, mkdir, rename, rm, stat, statfs, writeFile } from 'node:fs/promises'
+import { randomBytes } from 'node:crypto'
 import { posix } from 'node:path'
 import { RegistryStore, explainRegistryError } from '../shared/registry-store.ts'
 import { RegistryWriter } from '../shared/registry-write.ts'
@@ -10,6 +12,8 @@ import { choosePort } from '../shared/ports.ts'
 import { buildStatus, writeStatus } from '../shared/status.ts'
 import { readSystemUsage, systemSource, DEFAULT_SYSTEM_DISK_PATH } from '../shared/system.ts'
 import { describeError } from '../shared/formats.ts'
+import { ENVIRONMENTS } from '../shared/registry.ts'
+import { deployKey } from '../shared/deploys.ts'
 import { createDockerApi, dockerPortCheck } from './docker.ts'
 import { createSpawnRunner, resolveNewProject } from './compose.ts'
 import { GuardTracker } from './guard-tracker.ts'
@@ -20,6 +24,10 @@ import { currentTip, type DeployDeps } from './deploy.ts'
 import { DeployStore } from './deploy-state.ts'
 import { DeployRunner } from './deploy-runner.ts'
 import { DeployPoller } from './deploy-poller.ts'
+import { createResticRunner, createRestic, nodeSpawnStream, repoPath } from './restic.ts'
+import { BackupStore } from './backup-state.ts'
+import { BackupRunner, type BackupRunnerDeps } from './backup-runner.ts'
+import type { BackupFs } from './backup-run.ts'
 import { handleConnection } from './server.ts'
 
 const REGISTRY_FILE = process.env.HOSTD_REGISTRY_FILE ?? '/etc/hostd/registry/projects.yaml'
@@ -36,8 +44,15 @@ const DEPLOY_STATE_FILE = process.env.HOSTD_DEPLOY_STATE_FILE ?? '/var/lib/hostd
 // The flags Apache reads to serve the holding page. Bind-mounted from the host's own /run, which is a
 // tmpfs, so a reboot can never leave a site behind a maintenance page nobody remembers putting up.
 const MAINTENANCE_DIR = process.env.HOSTD_MAINTENANCE_DIR ?? '/run/hostd/maintenance'
+// The backup repository root and the run history that sits beside it, on their own volume for the same
+// reason the deploy state is: both have to survive a restart.
+const BACKUP_DIR = process.env.HOSTD_BACKUP_DIR ?? '/backups'
+const BACKUP_STATE_FILE = process.env.HOSTD_BACKUP_STATE_FILE ?? '/var/lib/hostd/backups.json'
 const WWW = '/var/www'
 const POLL_MS = 10_000
+// Once a week per repository. Prunes are expensive and take the repository lock, so they are worth
+// running rarely rather than on every tick.
+const PRUNE_MS = 7 * 24 * 60 * 60_000
 // Compose files can change without the registry changing, so the guard also runs on a timer.
 const GUARD_EVERY_MS = 10 * 60_000
 // Projects that are already invalid are re-checked much sooner, so a fix shows up in /projects in about a
@@ -170,6 +185,44 @@ async function main(): Promise<void> {
         log,
     })
 
+    const source = systemSource()
+    const backupFs: BackupFs = {
+        mkdir: async dir => { await mkdir(dir, { recursive: true }) },
+        writeStream: path => {
+            const sink = createWriteStream(path)
+            const done = new Promise<void>((resolve, reject) => {
+                sink.on('finish', resolve)
+                sink.on('error', reject)
+            })
+            return { sink, done }
+        },
+        remove: async path => { await rm(path, { recursive: true, force: true }) },
+        copy: async (from, to) => { await cp(from, to, { recursive: true }) },
+        exists,
+    }
+    const backupStore = new BackupStore(BACKUP_STATE_FILE, undefined, log)
+    await backupStore.load()
+    // restic needs its own runner, built with createResticRunner(): the docker runner's allowlist
+    // deliberately omits RESTIC_PASSWORD, since compose interpolates ${VAR} into client compose files and
+    // must never see it. The docker runner is still what dump plans use for sqlite3 and compose stop/start.
+    const resticRunner = createResticRunner()
+    const restic = createRestic(resticRunner, nodeSpawnStream())
+    const backupDeps: BackupRunnerDeps = {
+        backupDir: BACKUP_DIR,
+        restic,
+        docker,
+        runner,
+        fs: backupFs,
+        disk: async () => (await readSystemUsage(source, BACKUP_DIR)).disk,
+        now: () => Date.now(),
+        log,
+        store: backupStore,
+        // Both environments: a deploy of either renames a directory beside the one being backed up, and the
+        // live tree is what a backup reads.
+        deployRunning: id => ENVIRONMENTS.some(environment => deployRunner.isRunning(deployKey(id, environment))),
+    }
+    const backupRunner = new BackupRunner(backupDeps)
+
     const warnings = () => [
         ...store.warnings(),
         ...deployStore.warnings(),
@@ -178,7 +231,6 @@ async function main(): Promise<void> {
         ...(fetcherProblem ? [fetcherProblem] : []),
     ]
 
-    const source = systemSource()
     const agent = new Agent({
         registry: () => store.current(),
         guardInvalid: () => guard.current(),
@@ -191,6 +243,15 @@ async function main(): Promise<void> {
         recheck: project => guard.check(project),
         provision,
         deploys: { runner: deployRunner, store: deployStore, deps: deployDeps },
+        backups: {
+            runner: backupRunner,
+            store: backupStore,
+            restic,
+            backupDir: BACKUP_DIR,
+            // Six bytes of hex, which is what RUN_ID accepts.
+            newRunId: () => randomBytes(6).toString('hex'),
+            backupDisk: async () => (await readSystemUsage(source, BACKUP_DIR)).disk,
+        },
     })
 
     await rm(SOCKET_PATH, { force: true })
@@ -209,6 +270,7 @@ async function main(): Promise<void> {
 
     let lastGuardRun = Date.now()
     let lastInvalidRun = lastGuardRun
+    let lastPrune = Date.now()
     let lastWarnings = ''
     for (;;) {
         const current = warnings()
@@ -236,6 +298,16 @@ async function main(): Promise<void> {
         // Cheap when nothing is due: an environment is only asked about once its 2 minutes are up, and a
         // deploy this starts is never awaited, so a build cannot hold up the loop or the other sites.
         await deployPoller.tick()
+        // Prunes are expensive and take the repository lock, so they never run while a backup might want
+        // it, and they are skipped rather than queued: next week is soon enough.
+        if (Date.now() - lastPrune >= PRUNE_MS && !backupRunner.isBusy()) {
+            for (const project of store.current().projects.values()) {
+                if (!project.capabilities.has('backups')) continue
+                const pruned = await restic.prune(repoPath(BACKUP_DIR, project.id))
+                if (!pruned.ok) log(`WARN prune of ${project.id} failed: ${pruned.reason}`)
+            }
+            lastPrune = Date.now()
+        }
     }
 }
 
