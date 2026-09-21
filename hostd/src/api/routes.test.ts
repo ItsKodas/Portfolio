@@ -106,7 +106,7 @@ let handler: ReturnType<typeof createHandler>
 beforeEach(async () => {
     audit = new AuditLog(join(dir, `audit-${Math.random().toString(36).slice(2)}`))
     agent = fakeAgent()
-    handler = createHandler({ token: TOKEN, registry: () => registry, agent, audit, keepaliveMs: 60_000 })
+    handler = createHandler({ token: TOKEN, registry: () => registry, refreshRegistry: async () => false, agent, audit, keepaliveMs: 60_000 })
 })
 
 function request(
@@ -855,6 +855,137 @@ describe('GET /projects/:id/branches', () => {
         agent.call = async () => { throw new AgentUnavailableError('the agent is not answering') }
         const response = await request('/projects/acme/branches', { actor: 'admin' })
         assert.equal(response.status, 503)
+    })
+})
+
+// api answers a write from its own in-memory copy of the registry, which otherwise only catches up on
+// its own ten second poll. For a write that changed the file synchronously, that means an operator's own
+// save can look like it did nothing for up to ten seconds. These tests stand in a RegistryStore with a
+// refreshRegistry() that swaps in a second parsed registry, so "the read after the write sees the change"
+// can be told apart from "some refresh function was called": the assertion is always what a request made
+// after the write actually sees, not the call count on its own.
+describe('registry refresh after a write', () => {
+    const updatedRegistry = parseRegistry(`
+projects:
+  acme:
+    client: cl_1
+    name: Acme
+    repo: git@github.com:acme/site.git
+    services: { web: { role: site } }
+    capabilities: [lifecycle, logs, provision, env, deploy, backups]
+    environments:
+      live: { dir: /var/www/acme, port: 5010, branch: main, domain: acme.example, certificate: letsencrypt, deployed: abc1234 }
+      test: { dir: /var/www/acme-test, port: 5013, branch: develop, domain: test.acme.example }
+`)
+
+    // A fresh handler per test, wired to its own mutable "live" registry and its own count of
+    // refreshRegistry calls, standing in for the RegistryStore api actually holds.
+    function refreshableHandler() {
+        let live = registry
+        let calls = 0
+        const h = createHandler({
+            token: TOKEN,
+            registry: () => live,
+            refreshRegistry: async () => { calls++; live = updatedRegistry; return true },
+            agent, audit, keepaliveMs: 60_000,
+        })
+        return { handler: h, calls: () => calls }
+    }
+
+    function requestVia(h: ReturnType<typeof createHandler>, path: string, options?: Parameters<typeof request>[1]) {
+        const original = handler
+        handler = h
+        return request(path, options).finally(() => { handler = original })
+    }
+
+    it('a settings write refreshes before answering, so the very next read sees it', async () => {
+        agent.reply = () => ({ ok: true, output: 'configured' })
+        const { handler: h, calls } = refreshableHandler()
+
+        const write = await requestVia(h, '/projects/acme/settings', { method: 'PUT', actor: 'admin', body: { capabilities: ['lifecycle'] } })
+        assert.equal(write.status, 200)
+        assert.equal(calls(), 1)
+
+        const listBody = await (await requestVia(h, '/projects', { actor: 'admin' })).json() as { projects: Array<{ id: string, capabilities: string[] }> }
+        const acme = listBody.projects.find(p => p.id === 'acme')
+        assert.deepEqual(acme?.capabilities, ['lifecycle', 'logs', 'provision', 'env', 'deploy', 'backups'])
+    })
+
+    it('a provisioning write (create) refreshes before answering', async () => {
+        agent.reply = () => ({ ok: true, project: { id: 'newsite', state: 'needs-setup' }, envFiles: [] })
+        const { handler: h, calls } = refreshableHandler()
+
+        const response = await requestVia(h, '/projects', { method: 'POST', actor: 'admin', body: CREATE_BODY })
+        assert.equal(response.status, 200)
+        assert.equal(calls(), 1)
+    })
+
+    it('a delete (also provision) refreshes before answering', async () => {
+        agent.reply = () => ({ ok: true, output: 'unregistered' })
+        const { handler: h, calls } = refreshableHandler()
+
+        const response = await requestVia(h, '/projects/acme', { method: 'DELETE', actor: 'admin', body: { name: 'Acme' } })
+        assert.equal(response.status, 200)
+        assert.equal(calls(), 1)
+    })
+
+    it('a branch switch refreshes before answering, even though it shares deploy\'s audit verb', async () => {
+        agent.reply = () => ({ ok: true, output: 'live now tracks develop' })
+        const { handler: h, calls } = refreshableHandler()
+
+        const response = await requestVia(h, '/projects/acme/live/branch', { method: 'PUT', actor: 'admin', body: { branch: 'develop' } })
+        assert.equal(response.status, 200)
+        assert.equal(calls(), 1)
+    })
+
+    it('starting a deploy does not refresh: it answers before the registry write, which lands minutes later', async () => {
+        const { handler: h, calls } = refreshableHandler()
+        const response = await requestVia(h, '/projects/acme/live/deploy', { method: 'POST', actor: 'admin' })
+        assert.equal(response.status, 200)
+        assert.equal(calls(), 0)
+    })
+
+    it('starting a rollback does not refresh, for the same reason as a deploy', async () => {
+        const { handler: h, calls } = refreshableHandler()
+        const response = await requestVia(h, '/projects/acme/test/rollback', { method: 'POST', actor: 'admin' })
+        assert.equal(response.status, 200)
+        assert.equal(calls(), 0)
+    })
+
+    it('writing an env file does not refresh: it never touches the registry', async () => {
+        agent.reply = () => ({ ok: true, output: '.env was written' })
+        const { handler: h, calls } = refreshableHandler()
+        const response = await requestVia(h, '/projects/acme/live/env/.env', { method: 'PUT', actor: 'admin', body: { text: 'SECRET=shh' } })
+        assert.equal(response.status, 200)
+        assert.equal(calls(), 0)
+    })
+
+    it('a refusal never refreshes, whether it is caught before the agent or comes back from it', async () => {
+        const { handler: h, calls } = refreshableHandler()
+
+        // Caught before the agent is ever called: a malformed settings body.
+        const badBody = await requestVia(h, '/projects/acme/settings', { method: 'PUT', actor: 'admin', body: { nonsense: 1 } })
+        assert.equal(badBody.status, 400)
+        assert.equal(calls(), 0)
+
+        // The agent itself refuses the write.
+        agent.reply = () => ({ ok: false, code: 'bad-request', message: 'nope' })
+        const agentRefused = await requestVia(h, '/projects/acme/settings', { method: 'PUT', actor: 'admin', body: { capabilities: ['lifecycle'] } })
+        assert.equal(agentRefused.status, 400)
+        assert.equal(calls(), 0)
+    })
+
+    it('a refresh that fails does not turn a successful write into an error answer', async () => {
+        agent.reply = () => ({ ok: true, output: 'configured' })
+        const failing = createHandler({
+            token: TOKEN,
+            registry: () => registry,
+            refreshRegistry: async () => { throw new Error('registry disappeared mid-refresh') },
+            agent, audit, keepaliveMs: 60_000,
+        })
+        const response = await requestVia(failing, '/projects/acme/settings', { method: 'PUT', actor: 'admin', body: { capabilities: ['lifecycle'] } })
+        assert.equal(response.status, 200)
+        assert.deepEqual(await response.json(), { ok: true, output: 'configured' })
     })
 })
 

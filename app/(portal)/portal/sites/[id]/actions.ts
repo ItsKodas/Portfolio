@@ -173,13 +173,9 @@ export async function saveSettingsAction(id: string, settings: SiteSettings): Pr
     if (!result.ok) return refused(`settings on ${id}`, allowed.isAdmin, result)
 
     revalidatePath(`/portal/sites/${id}`)
-    // The last sentence is about where the page reads capabilities from: api's own store, polled from
-    // hostd every ten seconds, so a tab this save has just enabled can stay disabled for a moment after
-    // the page re-reads. Said plainly here rather than left to be discovered as the tab still refusing.
     return {
         ok: true,
-        message: 'Saved. Nothing was started or stopped: this only changes what the site is allowed to do. '
-            + 'It takes a few seconds for the change to show on this page.',
+        message: 'Saved. Nothing was started or stopped: this only changes what the site is allowed to do.',
     }
 }
 
