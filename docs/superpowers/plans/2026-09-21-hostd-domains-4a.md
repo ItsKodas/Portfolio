@@ -3342,7 +3342,7 @@ git commit -m "Build the Domains tab, and stop hiding it from clients"
 - [ ] No em dashes in the runbook or the host files. `grep -P` is unavailable in this environment's locale, so use node:
 
 ```bash
-node -e "for (const f of process.argv.slice(1)) { const n = [...require('fs').readFileSync(f,'utf8')].filter(c => c === '—').length; if (n) console.log(f, n) }" hostd/RUNBOOK.md hostd/host/*
+node -e "for (const f of process.argv.slice(1)) { const n = [...require('fs').readFileSync(f,'utf8')].filter(c => c.charCodeAt(0) === 8212).length; if (n) console.log(f, n) }" hostd/RUNBOOK.md hostd/host/*
 ```
 - [ ] The five existing sites are untouched: nothing in this branch writes to `projects.yaml`, and no vhost is written until somebody calls adopt
 - [ ] The PR names what 4a deliberately leaves out: certbot and Let's Encrypt, changing a primary hostname, wildcards, and the maintenance page's own markup
