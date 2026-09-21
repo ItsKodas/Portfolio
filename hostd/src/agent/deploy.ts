@@ -49,10 +49,12 @@ export type DeployFs = {
     // already carries a file's own owner and mode across its replacement by: what belongs to the
     // operator must go on belonging to the operator, in whatever mode the operator themselves chose.
     owner(path: string): Promise<{ uid: number, gid: number, mode: number }>
-    // Applies that ownership and mode to a whole tree hostd just created: every directory in it gets
-    // `like.mode` (so the tree stays as traversable as the one it is patterned on), and every file gets
-    // the same bits with the execute ones stripped (`like.mode & 0o666`), since a checkout made under a
-    // restrictive umask carries no record of which files git meant to be executable for this to restore.
+    // Applies that ownership to a whole tree hostd just created, and a mode built from `like` and, for a
+    // regular file, from the mode the file already has: a directory gets `like.mode` outright (so the
+    // tree stays as traversable as the one it is patterned on), a file keeps `like`'s read and write bits
+    // but its own execute bits, because whether a file is meant to run is the commit's own business, not
+    // the site directory's. See own-tree.ts's fileModeFor for the exact rule, and its own comment for why
+    // this can only keep an execute bit that survived the checkout, not restore one that did not.
     own(dir: string, like: { uid: number, gid: number, mode: number }): Promise<void>
 }
 
@@ -253,14 +255,16 @@ export async function runDeploy(
             return fail(carried.problem)
         }
 
-        // The checkout above ran in the fetcher, under its own restrictive umask, and the env files just
-        // carried across ran under this process's own restrictive umask (both right for the secrets they
-        // mostly handle, wrong for a site's tree): trees.next is root-owned with no group or other bits
-        // at all. A swap that put that straight into <dir> would still pass the health check below, then
-        // take the site down anyway the moment anything but root tried to read its own files. Fixed here,
-        // before the build (which reads this same tree) and before the swap, to the ownership and mode
-        // <dir> itself already has right now, read fresh rather than assumed, so an operator's own choice
-        // of mode (or a future change to it) survives every deploy rather than being baked in once.
+        // The checkout above runs as root, in the fetcher, and the env files just carried across run as
+        // root here too, so trees.next is root-owned throughout, whatever mode either process left its
+        // own entries at. A swap that put that straight into <dir> would still pass the health check
+        // below, then take the site down anyway the moment anything but root tried to read its own
+        // files. Fixed here, before the build (which reads this same tree) and before the swap, to the
+        // ownership <dir> itself already has right now, read fresh rather than assumed, so an operator's
+        // own choice of mode (or a future change to it) survives every deploy rather than being baked in
+        // once. This is ownership and directory mode, not a substitute for the fetcher checking commits
+        // out under a umask that lets git set a file's own mode correctly in the first place (see
+        // fetcher/index.ts): own only ever keeps an execute bit it is handed, never invents one.
         const like = await deps.fs.owner(trees.dir)
         await deps.fs.own(trees.next, like)
 

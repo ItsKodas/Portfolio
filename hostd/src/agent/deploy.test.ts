@@ -297,8 +297,8 @@ describe('runDeploy, before the swap', () => {
         const build = context.calls.indexOf('compose build')
         assert.ok(ownAt !== -1)
         // After the checkout (which is what needs fixing) and before the build or the swap: the checkout
-        // ran under the fetcher's own restrictive umask, so everything in .next is root-owned with no
-        // group or other bits until this runs, and a build or a swap must never see that tree unfixed.
+        // ran as root, in the fetcher, so everything in .next is root-owned until this runs, whatever
+        // mode git itself left individual files at, and a build or a swap must never see that unfixed.
         assert.ok(carriedEnv < ownAt && ownAt < build)
     })
 
