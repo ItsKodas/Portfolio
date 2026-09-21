@@ -84,6 +84,13 @@ async function main(): Promise<void> {
     } catch {
         failures.push(`${WWW} is not mounted`)
     }
+    // Without it restic cannot open or create a single repository, so every backup fails at init and a
+    // project only finds out when it wants one back. An .env.agent that exists but was never filled in is
+    // exactly what example.env.agent ships, which is why this is checked rather than assumed. Whether it
+    // is set is said here and nowhere else, and the value itself never reaches a log line.
+    if ((process.env.RESTIC_PASSWORD ?? '') === '') {
+        failures.push('RESTIC_PASSWORD is not set; copy example.env.agent to .env.agent and fill it in, or every backup fails at restic init')
+    }
     if (failures.length > 0) fail(failures)
 
     const docker = createDockerApi()
@@ -226,6 +233,10 @@ async function main(): Promise<void> {
     const warnings = () => [
         ...store.warnings(),
         ...deployStore.warnings(),
+        // A backup history that could not be read empties every project's run history and disables the
+        // failed-scheduled-backup signal that reads it, so it has to be said out loud rather than
+        // silently tolerated.
+        ...backupStore.warnings(),
         ...[...store.current().invalid].map(([id, problem]) => `project ${id} is invalid: ${problem}`),
         ...guard.warnings(),
         ...(fetcherProblem ? [fetcherProblem] : []),
@@ -270,7 +281,11 @@ async function main(): Promise<void> {
 
     let lastGuardRun = Date.now()
     let lastInvalidRun = lastGuardRun
-    let lastPrune = Date.now()
+    // When each repository was last pruned, rather than one timestamp for a whole sweep: at most one
+    // project is pruned per loop iteration (see below), so each one carries its own weekly clock. A
+    // project never pruned counts from boot.
+    const bootedAt = Date.now()
+    const lastPruned = new Map<string, number>()
     let lastWarnings = ''
     for (;;) {
         const current = warnings()
@@ -299,15 +314,27 @@ async function main(): Promise<void> {
         // deploy this starts is never awaited, so a build cannot hold up the loop or the other sites.
         await deployPoller.tick()
         // Prunes are expensive and take the repository lock, so they never run while a backup might want
-        // it. lastPrune only advances once the sweep actually runs, so a busy runner does not defer this a
-        // week: the loop's own 10 second cadence simply polls again until a free moment shows up.
-        if (Date.now() - lastPrune >= PRUNE_MS && !backupRunner.isBusy()) {
-            for (const project of store.current().projects.values()) {
-                if (!project.capabilities.has('backups')) continue
-                const pruned = await restic.prune(repoPath(BACKUP_DIR, project.id))
-                if (!pruned.ok) log(`WARN prune of ${project.id} failed: ${pruned.reason}`)
+        // it, and exactly one project is pruned per iteration rather than all of them in a sweep.
+        // Everything above runs on this same loop: a sweep would stop the registry refresh, the guard
+        // checks, the deploy poller and the status file until it finished, each prune bounded only by the
+        // one hour restic timeout, and the healthcheck calls the agent unhealthy once the status file is
+        // 180 seconds old. One per iteration means isBusy() is re-checked for each project, on the
+        // iteration that prunes it, rather than once for a whole sweep. A repository's clock only
+        // advances when its turn actually comes, so a busy runner defers a prune by iterations, not by a
+        // week.
+        if (!backupRunner.isBusy()) {
+            const due = [...store.current().projects.values()].find(project =>
+                project.capabilities.has('backups') && Date.now() - (lastPruned.get(project.id) ?? bootedAt) >= PRUNE_MS)
+            if (due) {
+                lastPruned.set(due.id, Date.now())
+                const repo = repoPath(BACKUP_DIR, due.id)
+                // A project that has never been backed up has no repository, and pruning one that is not
+                // there fails every week for no reason at all.
+                if (await exists(posix.join(repo, 'config'))) {
+                    const pruned = await restic.prune(repo)
+                    if (!pruned.ok) log(`WARN prune of ${due.id} failed: ${pruned.reason}`)
+                }
             }
-            lastPrune = Date.now()
         }
     }
 }

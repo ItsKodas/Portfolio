@@ -730,6 +730,7 @@ database on a timer.
 | `FATAL ... is not a file (was projects.yaml created before the first docker compose up?)` | Something other than a file sits at `registry/projects.yaml`, most likely a directory Docker created because the file did not exist before the first `docker compose up`. Remove it, create the file, start again. |
 | `registry reload rejected ... has been replaced on the host` | The registry's bind mount is detached, from an older deployment that mounted the file itself. See **Editing the registry**. |
 | `FATAL HOSTD_API_TOKEN must be at least 32 characters` | `.env` is missing, or the token is empty or too short. |
+| `FATAL RESTIC_PASSWORD is not set` (agent) | `.env.agent` is missing, or it is the unfilled copy of `example.env.agent`. Fill it in (and keep a copy off the dedi), then start again. Without it every backup would fail at `restic init`. |
 | `FATAL the agent is not answering on /run/hostd/agent.sock` (api) | The agent is not running or failed its own gate. Read `docker compose logs agent`. |
 | `503` with `"code":"agent-unavailable"` | The same, after startup. |
 | A project is `"valid":false` with `compose resolves the project name ...` | See step 1 of Enrolling a real site. |
