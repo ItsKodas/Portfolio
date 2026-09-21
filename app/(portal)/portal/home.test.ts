@@ -14,6 +14,8 @@ function deps(over: Record<string, unknown> = {}) {
         who: async () => ({ caller: { actor: 'admin', user: 'koda@horizons.gg' }, clientId: null }),
         config: () => ({ ok: true as const, value: { url: 'http://hostd-api:8080', token: 'a'.repeat(32) } }),
         listProjects: async () => ({ ok: true as const, value: [project('asot', 'exited'), project('pmpc', 'running')] }),
+        // Only reached when the listing carried no status, which this one does
+        getProject: async () => ({ ok: false as const, code: 'failed', message: 'not asked in these tests' }),
         getHealth: async () => ({ ok: true as const, value: { warnings: [], invalid: {}, system: null } }),
         ...over,
     }

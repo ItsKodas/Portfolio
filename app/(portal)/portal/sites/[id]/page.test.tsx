@@ -163,11 +163,31 @@ describe('the site page', () => {
         expect(screen.getByRole('link', { name: /ASOT/ })).toHaveTextContent('up')
     })
 
-    it('says of the other sites that it could not read them, rather than calling them stopped', async () => {
+    // A listing with no status field is what a hostd older than that flag answers. Every other site in
+    // the nav read as unknown, and the only way to see what one was doing was to open it.
+    it('asks about the other sites on their own when the listing said nothing about them', async () => {
         listProjects.mockResolvedValue({ ok: true, value: [
             { id: 'asot', name: 'ASOT', valid: true, capabilities: [] },
             { id: 'pmpc-group', name: 'PMPC Group', valid: true, capabilities: [] },
         ] })
+
+        render(await page())
+
+        expect(screen.getByRole('link', { name: /PMPC Group/ })).toHaveTextContent('up')
+        // Once for the site being looked at, once for the other one, and no more: the reading this page
+        // already took stands in for its own project rather than being asked for twice.
+        expect(getProject.mock.calls.map(call => call[2])).toEqual(['asot', 'pmpc-group'])
+    })
+
+    it('says of a site it still could not read that it could not read it', async () => {
+        listProjects.mockResolvedValue({ ok: true, value: [
+            { id: 'asot', name: 'ASOT', valid: true, capabilities: [] },
+            { id: 'pmpc-group', name: 'PMPC Group', valid: true, capabilities: [] },
+        ] })
+        getProject.mockImplementation(async (_config: unknown, _caller: unknown, id: string) =>
+            id === 'asot'
+                ? { ok: true, value: [service('running')] }
+                : { ok: false, code: 'failed', message: 'the Docker API could not be read' })
 
         render(await page())
 
