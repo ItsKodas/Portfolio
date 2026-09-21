@@ -20,7 +20,7 @@ export type QuoteForEmail = {
 }
 
 export function notificationEmail(quote: QuoteForEmail, options: { from: string, to: string, siteUrl: string }): Email {
-    const link = `${options.siteUrl}/admin/quotes/${quote.id}`
+    const link = `${options.siteUrl}/portal/quotes/${quote.id}`
     const rows: [string, string | null][] = [
         ['Name', quote.name],
         ['Email', quote.email],
