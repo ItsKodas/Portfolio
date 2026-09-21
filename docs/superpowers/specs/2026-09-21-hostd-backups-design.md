@@ -1,7 +1,7 @@
 # hostd backups design
 
 Date: 2026-09-21
-Status: approved design, not yet implemented
+Status: implemented on claude/portal-backups-system-4a738e, local backups only (offsite remains out of scope, see below)
 Extends: `docs/superpowers/specs/2026-09-20-hostd-design.md` (phase 1, deployed) and
 `docs/superpowers/specs/2026-09-20-hostd-provisioning-design.md` (provisioning and deploys, deployed).
 The portal screens that put a UI on this are designed in
@@ -122,6 +122,19 @@ the moment it walks them. The database dump is already in staging by then, so th
 db/<service>/...        a dump of each database service
 storage/<dir>/...       every storage directory, whatever its mode, including hidden
 ```
+
+**As built, corrected 2026-09-21:** this is not the layout a snapshot actually has. restic stores the
+paths it is given, not a curated tree copied into place first, and `backup-run.ts` gives it the staging
+directory (`<HOSTD_BACKUP_DIR>/.staging/<id>/<run>`, holding the dumps under `db/<service>/...`) plus each
+storage directory's own absolute path, unchanged. A real snapshot therefore contains
+`/backups/.staging/<id>/<run>/db/<service>/...` and each storage directory at its real path, for example
+`/var/www/<id>/live/<storage>/...`, not a clean `db/` and `storage/` split at the snapshot root. This was
+a deliberate choice, not an oversight: producing the layout above would mean copying every storage
+directory into staging before capturing it, doubling disk usage for the run, which is exactly what
+capturing storage in place avoids. A downloaded archive (`GET .../backups/:snapshot/download`) carries
+these same real paths, which means it exposes the dedi's own directory layout, including the project id
+and the run id that produced the dump. The offsite phase and the portal's Backups tab should both read
+this correction, not the block above, as what a snapshot and a download actually contain.
 
 The compose file, env files and source code are excluded. They are the operator's deployment, not the
 client's data, and a downloaded backup must not carry the operator's secrets.

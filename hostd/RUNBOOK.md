@@ -442,10 +442,13 @@ follow, because there is no per-environment lifecycle yet.
    unreadable, and a lost dedi is exactly the situation backups exist for: you would have kept the backups
    and lost the only key to them.
 
-3. Install `restic` on the dedi itself, not only in the agent image. The bind mount at `/backups` exists so
-   a restore can reach the repository files directly off `/srv/backups/hostd`, without going through
-   Docker at all; that only works if `restic` is also on the host (`apt-get install restic` on
-   Debian/Ubuntu, or a static binary from restic's own releases).
+3. Install `restic` on the dedi itself too, not only in the agent image, while things are calm. An
+   ordinary restore never needs this (see **Restoring** below: `docker exec hostd-agent restic` already
+   works, because the agent image carries its own copy), but the day `hostd` itself is down, or the dedi
+   is being rebuilt, there is no agent container to exec into, and the bind mount at `/backups` exists
+   for exactly that day: it lets restic on the bare host reach the repository files directly off
+   `/srv/backups/hostd`, with no Docker involved at all. Install it now so it is already there when it is
+   needed (`apt-get install restic` on Debian/Ubuntu, or a static binary from restic's own releases).
 
 4. Bring the agent up (or recreate it) so it picks up the new mount and env file:
 
@@ -508,36 +511,69 @@ an old one; a control that can do that from one click in a tired 3am moment is a
 procedure that costs ten minutes and forces you to look at what you are about to overwrite before you do
 it.
 
-1. **Find the snapshot.** Each project has its own repository, named by its id. `RESTIC_PASSWORD` has to
-   be in the environment for every restic command below; the shortest way is to read it out of
-   `hostd/.env.agent` on the dedi (or out of your own copy, if the dedi is the thing you have lost):
+There are two ways to run the restic commands below, and which one applies depends on whether `hostd`
+itself is up:
 
-   The repository is root-owned (the agent container writes it as root), so read and restore commands
-   need `sudo`, and `sudo` does not carry your own shell's exported variables into the command it runs
-   unless you pass them through explicitly:
+- **Ordinary case, `hostd` is healthy and only a client's site is broken.** Use `docker exec hostd-agent
+  restic ...`. The agent image already carries restic and `RESTIC_PASSWORD`, and the repository is already
+  mounted inside it at `/backups`. Nothing extra to install; this is what you will do almost every time.
+- **The case the bind mount exists for: `hostd` itself is down, or the dedi is being rebuilt, so there is
+  no agent container to exec into.** Use `restic` on the bare host instead, pointed at
+  `/srv/backups/hostd/<id>` directly, with no Docker involved. This only works if you installed `restic`
+  on the dedi ahead of time (see **Setting backups up**, step 3) and can get `RESTIC_PASSWORD` from
+  somewhere: `hostd/.env.agent` on the dedi if it survived, or your own off-dedi copy if it did not.
+
+Both reach the same repository and produce the same result; only how you reach it differs. The steps below
+show both, in the order you would try them: `docker exec` first, the host fallback under it.
+
+1. **Find the snapshot.** Each project has its own repository, named by its id.
+
+   Ordinary case:
+
+   ```bash
+   docker exec hostd-agent restic -r /backups/acme-bakery snapshots
+   ```
+
+   Fallback, `hostd` is down: the repository is root-owned (the agent container writes it as root), so
+   read and restore commands need `sudo`, and `sudo` does not carry your own shell's exported variables
+   into the command it runs unless you pass them through explicitly:
 
    ```bash
    export RESTIC_PASSWORD=$(grep ^RESTIC_PASSWORD= hostd/.env.agent | cut -d= -f2)
    sudo env RESTIC_PASSWORD="$RESTIC_PASSWORD" restic -r /srv/backups/hostd/acme-bakery snapshots
    ```
 
-   Note the short id of the snapshot you want. `tags` says `manual` or `scheduled`; `time` is when it was
-   taken.
+   Either way, note the short id of the snapshot you want. `tags` says `manual` or `scheduled`; `time` is
+   when it was taken.
 
-2. **Restore it to a staging path, never straight over the live tree:**
+2. **Restore it to a staging path, never straight over the live tree.**
+
+   Ordinary case, restoring inside the agent container (its `/backups` is the same bind mount as the
+   host's `/srv/backups/hostd`, so the result appears at the same place on the host either way):
+
+   ```bash
+   docker exec hostd-agent restic -r /backups/acme-bakery restore \
+     <snapshot-id> --target /backups/restore/acme-bakery
+   ```
+
+   Fallback, `hostd` is down:
 
    ```bash
    sudo env RESTIC_PASSWORD="$RESTIC_PASSWORD" restic -r /srv/backups/hostd/acme-bakery restore \
      <snapshot-id> --target /srv/backups/hostd/restore/acme-bakery
    ```
 
-   restic recreates the absolute paths it captured, and it captured them from the agent container's own
-   point of view. A database dump lands under
+   Either way, the restored copy lands on the host at `/srv/backups/hostd/restore/acme-bakery/...`. restic
+   recreates the absolute paths it captured, and it captured them from the agent container's own point of
+   view. A database dump lands under
    `/srv/backups/hostd/restore/acme-bakery/backups/.staging/acme-bakery/<run>/db/<service>/<file>`
    (`<run>` is whichever run produced that snapshot; the snapshot's own `paths` field, or just `ls` the
    restored `db/` directory, will show it). Each `storage` directory lands at its real host path, for
    example `/srv/backups/hostd/restore/acme-bakery/var/www/acme-bakery/live/uploads/`, because `/var/www`
    is the same bind mount on the host and in every container.
+
+   The rest of this procedure is the same either way, and runs on the host regardless of which route you
+   used above.
 
 3. **Stop the site:**
 
