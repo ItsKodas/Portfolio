@@ -3,7 +3,8 @@
 
 import {
     checkStructure, refuse,
-    type AgentReply, type AgentRequest, type DeployArgs, type EnvArgs, type HealthReply, type LifecycleAction,
+    type AdoptPreview, type AgentReply, type AgentRequest, type DeployArgs, type DomainsRequest, type DomainsWritten,
+    type EnvArgs, type HealthReply, type LifecycleAction,
     type LifecycleReply, type LogLine, type LogsArgs, type ProjectStatus, type ProvisionAddEnvironmentArgs,
     type ProvisionCreateArgs, type ProvisionRemoveArgs, type Refusal, type ServiceStatus, type StatusesReply,
 } from '../shared/protocol.ts'
@@ -16,10 +17,15 @@ import { deployTrees } from './deploy-compose.ts'
 import type { DeployDeps } from './deploy.ts'
 import type { DeployRunner } from './deploy-runner.ts'
 import type { DeployStore } from './deploy-state.ts'
+import { adopt, previewAdopt, removeVhost, setAliases, writeVhost, type DomainsDeps } from './domains.ts'
 import { buildServiceStatuses, groupByProject, pickPerService, type ContainerInspect, type ContainerSummary, type DockerApi } from './docker.ts'
 import { createLogDecoder } from './logframes.ts'
 import { listEnvFiles, readEnvFile, writeEnvFile, type EnvFs } from './env-files.ts'
 import { createProject, addEnvironment, removeProject, type ProvisionDeps } from './provision.ts'
+
+// A preview never reaches Apache and is matched against no real challenge, so any hex-looking string
+// stands in for the token a written vhost would actually carry.
+const PREVIEW_TOKEN = '0'.repeat(32)
 
 export const MAX_FOLLOWS_PER_PROJECT = 4
 export const FOLLOW_MAX_MS = 60 * 60_000
@@ -50,6 +56,14 @@ export type AgentDeps = {
         store: Pick<DeployStore, 'get' | 'resume'>
         deps: DeployDeps
     }
+    // Absent until the production entrypoint wires the Apache rail, the registry writer and the vhost
+    // configuration: the domains verb then refuses unavailable instead of crashing, exactly like
+    // provision and deploy do.
+    domains?: DomainsDeps
+    // The rail's own lastSuccessAt, read fresh on every health request exactly like system is. Required
+    // rather than optional, unlike domains itself: health must always answer with a railAge, even one
+    // that stayed null because nothing ever configured the rail, so no caller of health can forget it.
+    railAge: () => number | null
 }
 
 export type Outcome =
@@ -102,10 +116,39 @@ export class Agent {
                 return reply(await this.env(checked.project, request.args))
             case 'deploy':
                 return reply(await this.deploy(checked.project, request.args))
-            // Wired up in a later task; the grammar accepts the verb before the handler exists so the
-            // two can land separately without either one compiling against a shape that isn't there yet.
+            // domains re-checks the registry, the guard and the capability itself, from a freshly
+            // reloaded registry rather than the checked snapshot above: see domains() for why.
             case 'domains':
-                return reply(refuse('unavailable', 'domains is not yet available'))
+                return reply(await this.domains(request))
+        }
+    }
+
+    // Public, unlike env/deploy/lifecycle, because writing a vhost is dangerous enough that nothing here
+    // may act on a registry any staler than the moment this runs. It re-reads the registry, checks
+    // structure and the capability itself against that fresh read, rather than trusting the checked
+    // project handle() already produced from its own (merely per-connection) registry() snapshot.
+    async domains(request: DomainsRequest): Promise<DomainsWritten | AdoptPreview | Refusal> {
+        if (!this.deps.domains) return refuse('unavailable', 'domains is not configured')
+        const domains = this.deps.domains
+        const registry = await domains.reloadRegistry()
+        const checked = checkStructure(registry, request, this.deps.guardInvalid())
+        if (!checked.ok) return checked
+        // checkStructure only enforces environment presence for env and deploy; domains checks it here
+        // instead, against the project entry the fresh reload just produced.
+        const environment = environmentOf(checked.project, request.args.environment)
+        if (!environment) return refuse('unknown-environment', `${checked.project.id} has no ${request.args.environment} environment`)
+
+        switch (request.args.action) {
+            case 'write':
+                return writeVhost(domains, checked.project, environment, request.args.token)
+            case 'remove':
+                return removeVhost(domains, checked.project, environment)
+            case 'preview':
+                return previewAdopt(domains, checked.project, environment, PREVIEW_TOKEN)
+            case 'adopt':
+                return adopt(domains, checked.project, environment, request.args.token, request.args.disable)
+            case 'set-aliases':
+                return setAliases(domains, checked.project, environment, request.args.aliases, request.args.token)
         }
     }
 
@@ -159,8 +202,9 @@ export class Agent {
     private async health(): Promise<HealthReply> {
         const invalid = Object.fromEntries([...this.deps.registry().invalid, ...this.deps.guardInvalid()])
         // system is figures for the portal to draw, kept apart from warnings on purpose: nothing it
-        // reports, however alarming the number, may make this process unhealthy.
-        return { ok: true, warnings: this.deps.warnings(), invalid, system: await this.deps.system() }
+        // reports, however alarming the number, may make this process unhealthy. railAge is the same
+        // idea: a stale rail is worth surfacing (Task 14 does), but it is not this process's own health.
+        return { ok: true, warnings: this.deps.warnings(), invalid, system: await this.deps.system(), railAge: this.deps.railAge() }
     }
 
     private async status(project: ProjectEntry): Promise<ServiceStatus[]> {

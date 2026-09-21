@@ -65,7 +65,7 @@ function fakeAgent() {
         calls,
         reply: request => {
             switch (request.verb) {
-                case 'health': return { ok: true, warnings: [], invalid: { acme: 'guard says no' }, system: usage }
+                case 'health': return { ok: true, warnings: [], invalid: { acme: 'guard says no' }, system: usage, railAge: null }
                 case 'status': return { ok: true, services: [] }
                 case 'statuses': return { ok: true, projects: request.projects.map(project => ({ project, ok: true as const, services: [] })) }
                 default: return { ok: true, output: 'done' }
@@ -251,7 +251,7 @@ describe('GET /projects', () => {
     it('carries a refusal per project rather than failing the list', async () => {
         agent.reply = request => request.verb === 'statuses'
             ? { ok: true, projects: [{ project: 'acme', ok: false, code: 'failed', message: 'the Docker API could not be read' }] }
-            : { ok: true, warnings: [], invalid: {}, system: usage }
+            : { ok: true, warnings: [], invalid: {}, system: usage, railAge: null }
         const response = await request('/projects?status=1')
         assert.equal(response.status, 200)
         const body = await response.json() as { projects: Array<{ id: string, status: Record<string, unknown> }> }
@@ -308,7 +308,7 @@ describe('GET /health', () => {
     it('gives the admin the machine\'s figures', async () => {
         const response = await request('/health', { actor: 'admin' })
         assert.equal(response.status, 200)
-        assert.deepEqual(await response.json(), { ok: true, warnings: [], invalid: { acme: 'guard says no' }, system: usage })
+        assert.deepEqual(await response.json(), { ok: true, warnings: [], invalid: { acme: 'guard says no' }, system: usage, railAge: null })
     })
 
     it('refuses a client', async () => {

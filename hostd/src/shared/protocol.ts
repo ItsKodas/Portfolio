@@ -94,6 +94,20 @@ export type DomainsSetAliasesArgs = { action: 'set-aliases', environment: Enviro
 export type DomainsArgs = DomainsWriteArgs | DomainsRemoveArgs | DomainsPreviewArgs | DomainsAdoptArgs | DomainsSetAliasesArgs
 export type DomainsRequest = { verb: 'domains', project: string, args: DomainsArgs }
 
+// The domains verb's own replies. Defined here rather than in agent/domains.ts, which is what builds
+// them, because everything else this wire speaks lives here too, and shared/ must never import from
+// agent/: agent/domains.ts imports these back from this file instead.
+export type DomainsWritten = { ok: true, written: { hostnames: string[], path: string } }
+export type AdoptPreview = {
+    ok: true
+    preview: {
+        proposed: string
+        claims: { path: string, names: string[], unsupported: string | null }[]
+        extraNames: string[]
+        adoptable: boolean
+    }
+}
+
 export type ProjectRequest = StatusRequest | LifecycleRequest | LogsRequest | ProvisionOnProjectRequest | EnvRequest | DeployRequest | DomainsRequest
 export type AgentRequest = HealthRequest | StatusesRequest | ProvisionCreateRequest | ProjectRequest
 export type Verb = AgentRequest['verb']
@@ -118,7 +132,11 @@ export type ServiceStatus = {
 }
 // system carries figures only. Nothing in it is a check, and none of its problems reach warnings, so a
 // busy machine never makes hostd unhealthy (see system.ts).
-export type HealthReply = { ok: true, warnings: string[], invalid: Record<string, string>, system: SystemUsage }
+// railAge is the rail's own lastSuccessAt, carried out of the agent process so api can serve it at
+// /health: null means the rail has never once heard back from the Apache host unit, not that it recently
+// failed. Task 14 uses this to warn when the host unit has gone quiet, which nothing else surfaces before
+// a domain action hangs for 30 seconds and then fails.
+export type HealthReply = { ok: true, warnings: string[], invalid: Record<string, string>, system: SystemUsage, railAge: number | null }
 export type StatusReply = { ok: true, services: ServiceStatus[] }
 // One project's status inside a statuses reply. A project the agent refuses (unregistered, invalid, or a
 // Docker read that failed) carries its refusal here instead of failing the whole batch: the dashboard
@@ -149,7 +167,7 @@ export type DeployCommitsReply = { ok: true, commits: Commit[] }
 export type StreamHeader = { ok: true, stream: true }
 export type AgentReply =
     | HealthReply | StatusReply | StatusesReply | LifecycleReply | ProvisionReply | EnvListReply | EnvReadReply
-    | DeployStartedReply | DeployHistoryReply | DeployCommitsReply | Refusal
+    | DeployStartedReply | DeployHistoryReply | DeployCommitsReply | DomainsWritten | AdoptPreview | Refusal
 export type LogLine = { stream: 'stdout' | 'stderr', ts: string | null, text: string, truncated: boolean }
 
 // Status is visible to anyone who may see the project at all; everything else needs its capability.
@@ -471,6 +489,15 @@ export function parseAgentRequest(line: string): Parsed {
             const args = parseDeployArgs(raw.args)
             if ('ok' in args) return args
             return { ok: true, request: { verb: 'deploy', project, args } }
+        }
+
+        case 'domains': {
+            if (!onlyKeys(raw, ['verb', 'project', 'args'])) return refuse('bad-request', 'domains takes only project and args')
+            const project = projectOf(raw)
+            if (!project) return refuse('bad-request', 'project is malformed')
+            const parsed = parseDomainsArgs(raw.args)
+            if (!parsed.ok) return parsed
+            return { ok: true, request: { verb: 'domains', project, args: parsed.args } }
         }
 
         default:

@@ -7,7 +7,7 @@
 
 import { posix } from 'node:path'
 import { hostnamesOf, type EnvironmentEntry, type ProjectEntry, type Registry } from '../shared/registry.ts'
-import { refuse, type Refusal } from '../shared/protocol.ts'
+import { refuse, type AdoptPreview, type DomainsWritten, type Refusal } from '../shared/protocol.ts'
 import type { Change } from '../shared/registry-write.ts'
 import type { ApacheRail } from './apache-rail.ts'
 import { findClaims, type VhostFile } from './sites-enabled.ts'
@@ -36,8 +36,6 @@ export type DomainsDeps = {
     reloadRegistry(): Promise<Registry>
     config: DomainsConfig
 }
-
-export type DomainsWritten = { ok: true, written: { hostnames: string[], path: string } }
 
 function render(deps: DomainsDeps, project: ProjectEntry, environment: EnvironmentEntry, token: string): string {
     return renderVhost({
@@ -142,16 +140,6 @@ export async function setAliases(
         return refuse('failed', `${project.id} ${environment.name} did not survive the change`)
     }
     return writeVhost(deps, registry.projects.get(project.id)!, fresh, token)
-}
-
-export type AdoptPreview = {
-    ok: true
-    preview: {
-        proposed: string
-        claims: { path: string, names: string[], unsupported: string | null }[]
-        extraNames: string[]
-        adoptable: boolean
-    }
 }
 
 // Reading only. Nothing here moves a file or reloads anything: an operator has to see what they are
