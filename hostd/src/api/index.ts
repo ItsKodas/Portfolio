@@ -73,6 +73,9 @@ async function main(): Promise<void> {
     const handler = createHandler({
         token: TOKEN,
         registry: () => store.current(),
+        // Lets a route that just carried out a write catch the store up before it answers, instead of
+        // waiting for this same refresh to come round on the poll below, up to POLL_MS later.
+        refreshRegistry: () => store.refresh(),
         agent: createAgentClient(socketConnect(AGENT_SOCKET)),
         audit,
     })

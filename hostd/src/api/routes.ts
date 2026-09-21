@@ -23,6 +23,12 @@ import { sseEvent, SSE_KEEPALIVE } from './sse.ts'
 export type ApiDeps = {
     token: string
     registry: () => Registry
+    // Re-reads the registry file if its modification time has moved, the same check the boot loop's own
+    // poll makes. Called after a write this process just carried out itself, so that write is visible to
+    // the very next request rather than waiting for the next poll, up to POLL_MS later. See the agent's
+    // own refreshRegistry (agent.ts, provision.ts, deploy.ts) for the other half of this: the agent
+    // refreshes its copy after a write it makes; this is api doing the same after a write it relayed.
+    refreshRegistry: () => Promise<boolean>
     agent: AgentClient
     audit: AuditLog
     now?: () => number
@@ -410,9 +416,28 @@ export function createHandler(deps: ApiDeps): (req: IncomingMessage, res: Server
         // refused. Neither ever puts the agent's reply body itself into the audit entry, only the
         // target and (on a refusal) the code or message, so an env file's text can only ever reach the
         // caller's own response, never the audit trail.
-        const respondAgentAction = async (verb: 'provision' | 'env' | 'deploy' | 'configure', reply: AgentReply, project: string, target: string) => {
+        //
+        // refreshRegistry is true only for a reply from a write that just changed the registry file
+        // synchronously: provision, configure, and the branch switch (which is audited under the
+        // 'deploy' verb, like deploy and rollback, but unlike them writes the registry before it answers
+        // rather than minutes afterwards). It is false for env, which never touches the registry, and
+        // for starting a deploy or rollback, which answer the instant the work begins while `deployed`
+        // is only written once it finishes: refreshing then would just re-read the copy this request
+        // already has. Each call site below says which it is.
+        //
+        // Only runs on the ok path, and only after the audit: a refusal must never refresh (nothing
+        // changed), and the write already happened, so a refresh failure is logged and swallowed rather
+        // than turned into an error response for a save that in fact succeeded.
+        const respondAgentAction = async (verb: 'provision' | 'env' | 'deploy' | 'configure', reply: AgentReply, project: string, target: string, refreshRegistry: boolean) => {
             if (reply.ok) {
                 await audit(who, { project, verb, target, outcome: 'ok' })
+                if (refreshRegistry) {
+                    try {
+                        await deps.refreshRegistry()
+                    } catch (error) {
+                        console.error(`[api] ${new Date().toISOString()} registry refresh after ${verb} ${target} failed: ${describeError(error)}`)
+                    }
+                }
                 return sendJson(res, 200, reply)
             }
             const outcome: AuditOutcome = reply.code === 'failed' ? 'failed' : 'refused'
@@ -438,12 +463,17 @@ export function createHandler(deps: ApiDeps): (req: IncomingMessage, res: Server
 
             const reply = await callAgentAudited({ verb: 'provision', project, args: { action: 'remove', environment } }, project, 'provision', target)
             if (!reply) return
-            return respondAgentAction('provision', reply, project, target)
+            return respondAgentAction('provision', reply, project, target, true)
         }
 
         // Deploy, rollback and branch all start work on the operator's behalf, so all three are
         // admin-only (the 'deploy' policy verb) and all three are audited, refusals included. The
         // target says which environment, because live and test are different sites.
+        //
+        // Neither deploy nor rollback refreshes the registry: deploy-runner.ts answers the instant the
+        // deploy starts, and `deployed` is only written once it finishes, minutes later, long after this
+        // reply is on the wire. A refresh here would just re-read the copy this request already has. The
+        // branch switch below is different: it writes the registry before it answers, so it does refresh.
         const startDeploy = async (
             project: string, target: string, args: Extract<AgentRequest, { verb: 'deploy' }>['args'],
         ): Promise<void> => {
@@ -451,7 +481,7 @@ export function createHandler(deps: ApiDeps): (req: IncomingMessage, res: Server
             if (!entry) return
             const reply = await callAgentAudited({ verb: 'deploy', project, args }, project, 'deploy', target)
             if (!reply) return
-            return respondAgentAction('deploy', reply, project, target)
+            return respondAgentAction('deploy', reply, project, target, false)
         }
 
         // The history and the commit list are plain reads, and the owner may make them: audited only
@@ -590,7 +620,7 @@ export function createHandler(deps: ApiDeps): (req: IncomingMessage, res: Server
                 const target = `${parsed.args.id} create`
                 const reply = await callAgentAudited({ verb: 'provision', args: parsed.args }, parsed.args.id, 'provision', target)
                 if (!reply) return
-                return respondAgentAction('provision', reply, parsed.args.id, target)
+                return respondAgentAction('provision', reply, parsed.args.id, target, true)
             }
 
             case 'delete':
@@ -611,7 +641,7 @@ export function createHandler(deps: ApiDeps): (req: IncomingMessage, res: Server
                     route.project, 'provision', target,
                 )
                 if (!reply) return
-                return respondAgentAction('provision', reply, route.project, target)
+                return respondAgentAction('provision', reply, route.project, target, true)
             }
 
             case 'remove-environment':
@@ -632,7 +662,7 @@ export function createHandler(deps: ApiDeps): (req: IncomingMessage, res: Server
 
                 const reply = await callAgentAudited({ verb: 'configure', project: route.project, args }, route.project, 'configure', target)
                 if (!reply) return
-                return respondAgentAction('configure', reply, route.project, target)
+                return respondAgentAction('configure', reply, route.project, target, true)
             }
 
             case 'env-list': {
@@ -645,7 +675,7 @@ export function createHandler(deps: ApiDeps): (req: IncomingMessage, res: Server
                     route.project, 'env', target,
                 )
                 if (!reply) return
-                return respondAgentAction('env', reply, route.project, target)
+                return respondAgentAction('env', reply, route.project, target, false)
             }
 
             case 'env-file': {
@@ -671,7 +701,7 @@ export function createHandler(deps: ApiDeps): (req: IncomingMessage, res: Server
                         route.project, 'env', target,
                     )
                     if (!reply) return
-                    return respondAgentAction('env', reply, route.project, target)
+                    return respondAgentAction('env', reply, route.project, target, false)
                 }
 
                 const body = await readJsonBody(req, MAX_REQUEST_BYTES)
@@ -684,7 +714,7 @@ export function createHandler(deps: ApiDeps): (req: IncomingMessage, res: Server
                     route.project, 'env', target,
                 )
                 if (!reply) return
-                return respondAgentAction('env', reply, route.project, target)
+                return respondAgentAction('env', reply, route.project, target, false)
             }
 
             case 'deploy':
@@ -711,7 +741,10 @@ export function createHandler(deps: ApiDeps): (req: IncomingMessage, res: Server
                     route.project, 'deploy', named,
                 )
                 if (!reply) return
-                return respondAgentAction('deploy', reply, route.project, named)
+                // Unlike deploy and rollback above, a branch switch writes the registry synchronously
+                // (the agent's own set-branch calls its refreshRegistry for exactly this reason, in
+                // agent.ts), so api's copy needs catching up here too.
+                return respondAgentAction('deploy', reply, route.project, named, true)
             }
 
             case 'deploys':

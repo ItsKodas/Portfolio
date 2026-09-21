@@ -54,11 +54,7 @@ describe('saveSettingsAction', () => {
         expect(callerFromSession).toHaveBeenCalled()
     })
 
-    // The page reads capabilities from api's listing, which api serves from a store it polls off hostd
-    // every ten seconds, so the refresh the form fires the instant this returns can still see the old
-    // entry: a tab this save enabled stays disabled for a moment. The operator is told, rather than left
-    // to read it as the save not having worked.
-    it('says the change takes a moment to show, as well as that nothing was restarted', async () => {
+    it('says nothing was started or stopped', async () => {
         callerFromSession.mockResolvedValue({ caller: { kind: 'admin' }, clientId: null })
         writeSettings.mockResolvedValue({ ok: true, data: { ok: true } })
 
@@ -66,6 +62,5 @@ describe('saveSettingsAction', () => {
 
         expect(result.ok).toBe(true)
         expect(result.ok && result.message).toMatch(/nothing was started or stopped/i)
-        expect(result.ok && result.message).toMatch(/few seconds/i)
     })
 })
