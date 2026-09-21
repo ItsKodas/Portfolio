@@ -36,6 +36,10 @@ export type AdoptPreview = {
     // now, and the two directives hostd's parser reads are not the whole of what the file does.
     claims: { path: string, text: string, names: string[], unsupported: string | null }[]
     extraNames: string[]
+    // Files in Apache's sites-enabled that could not be opened at all, so nothing at all is known about
+    // them. Usually a symlink whose target has gone. They claim no hostname and block no write, but
+    // Apache's own configuration test fails while they are there, so every reload is refused.
+    unreadable: string[]
     adoptable: boolean
 }
 

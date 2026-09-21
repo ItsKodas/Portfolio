@@ -145,6 +145,11 @@ export type AdoptPreview = {
         // because shared/ must never import from agent/.
         claims: { path: string, text: string, names: string[], unsupported: string | null }[]
         extraNames: string[]
+        // Paths in sites-enabled that could not be opened at all, so nothing is known about them, not
+        // even whether they name one of these hostnames. Usually a symlink whose target has gone. They
+        // block no write, since a file Apache cannot read serves nothing, but they do fail Apache's
+        // configuration test, so the operator is shown them before adopting rather than after.
+        unreadable: string[]
         adoptable: boolean
     }
 }

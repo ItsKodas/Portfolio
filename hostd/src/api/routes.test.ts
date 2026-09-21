@@ -1281,7 +1281,7 @@ describe('GET|POST /projects/:id/:env/adopt', () => {
     }
     const preview = (over: Partial<{ claims: typeof claim[], adoptable: boolean }> = {}): AgentReply => ({
         ok: true,
-        preview: { proposed: '<VirtualHost *:443>', claims: over.claims ?? [claim], extraNames: [], adoptable: over.adoptable ?? true },
+        preview: { proposed: '<VirtualHost *:443>', claims: over.claims ?? [claim], extraNames: [], unreadable: [], adoptable: over.adoptable ?? true },
     })
 
     it('previews with the token adopt will write, so the file shown is the file written', async () => {

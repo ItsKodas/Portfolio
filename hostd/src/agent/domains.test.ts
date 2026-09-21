@@ -3,6 +3,11 @@ import assert from 'node:assert/strict'
 
 import { parseRegistry } from '../shared/registry.ts'
 import { writeVhost, removeVhost, setAliases, previewAdopt, adopt, type DomainsDeps } from './domains.ts'
+import type { VhostFile } from './sites-enabled.ts'
+
+// What listSitesEnabled answers with: the files that were read, and the paths of any that could not be.
+// Most tests here care only about the first, so the second defaults to none.
+const listing = (files: VhostFile[], unreadable: string[] = []) => async () => ({ files, unreadable })
 
 const REGISTRY = `
 projects:
@@ -32,7 +37,7 @@ function setup(options: { railOk?: boolean, existing?: string | null } = {}) {
             },
         },
         async readFile() { return options.existing ?? null },
-        async listSitesEnabled() { return [] },
+        listSitesEnabled: listing([]),
         // Neither is exercised unless a test overrides it: writeRegistry defaults to succeeding, and
         // reloadRegistry defaults to handing back the fixture unchanged.
         async writeRegistry() { return { ok: true } },
@@ -204,9 +209,9 @@ projects:
     // claiming one hostname either: it warns and serves whichever loaded first.
     it('refuses an alias a hand-written vhost already claims, naming the file', async () => {
         const { deps, sent, project, environment } = setup()
-        deps.listSitesEnabled = async () => [
+        deps.listSitesEnabled = listing([
             { path: '/etc/apache2/sites-enabled/legacy.conf', text: 'ServerName legacy.example\nServerAlias shop.acme.com\n' },
-        ]
+        ])
         const result = await setAliases(deps, project, environment, ['www.acme.com', 'shop.acme.com'], 'abc123')
         assert.equal(result.ok, false)
         assert.match(result.ok === false ? result.message : '', /shop\.acme\.com is already served by \/etc\/apache2\/sites-enabled\/legacy\.conf/)
@@ -218,9 +223,9 @@ projects:
     // claimed by a file nobody is proposing to change.
     it('does not re-check the names the environment already serves', async () => {
         const { deps, project, environment } = setup()
-        deps.listSitesEnabled = async () => [
+        deps.listSitesEnabled = listing([
             { path: '/etc/apache2/sites-enabled/legacy.conf', text: 'ServerName www.acme.com\n' },
-        ]
+        ])
         // Removing the alias that file claims, and adding nothing.
         const result = await setAliases(deps, project, environment, [], 'abc123')
         assert.equal(result.ok, true)
@@ -232,9 +237,9 @@ projects:
     // the hand-written file carried, which is the very thing adopt's preview exists to prevent.
     it('refuses to write a vhost at all while a hand-written file still serves the primary', async () => {
         const { deps, sent, project, environment } = setup()
-        deps.listSitesEnabled = async () => [
+        deps.listSitesEnabled = listing([
             { path: '/etc/apache2/sites-enabled/acme.conf', text: 'ServerName acme.com\n' },
-        ]
+        ])
         const result = await setAliases(deps, project, environment, ['www.acme.com', 'shop.acme.com'], 'abc123')
         assert.equal(result.ok, false)
         const message = result.ok === false ? result.message : ''
@@ -269,7 +274,7 @@ describe('previewAdopt', () => {
 
     it('shows the file that serves this site today and the one hostd proposes', async () => {
         const { deps, project, environment } = setup()
-        deps.listSitesEnabled = async () => [handWritten]
+        deps.listSitesEnabled = listing([handWritten])
         const result = await previewAdopt(deps, project, environment, 'abc123')
         assert.equal(result.ok, true)
         assert.equal(result.ok && result.preview.claims[0]!.path, handWritten.path)
@@ -280,28 +285,28 @@ describe('previewAdopt', () => {
     // confirm an overwrite of a configuration serving a live site on the strength of this screen.
     it('carries the old file verbatim, not merely its path and the names it was understood to serve', async () => {
         const { deps, project, environment } = setup()
-        deps.listSitesEnabled = async () => [handWritten]
+        deps.listSitesEnabled = listing([handWritten])
         const result = await previewAdopt(deps, project, environment, 'abc123')
         assert.equal(result.ok && result.preview.claims[0]!.text, handWritten.text)
     })
 
     it('lists hostnames the old file serves that the registry does not know about', async () => {
         const { deps, project, environment } = setup()
-        deps.listSitesEnabled = async () => [handWritten]
+        deps.listSitesEnabled = listing([handWritten])
         const result = await previewAdopt(deps, project, environment, 'abc123')
         assert.deepEqual(result.ok && result.preview.extraNames, ['legacy.acme.com'])
     })
 
     it('moves nothing and reloads nothing', async () => {
         const { deps, sent, project, environment } = setup()
-        deps.listSitesEnabled = async () => [handWritten]
+        deps.listSitesEnabled = listing([handWritten])
         await previewAdopt(deps, project, environment, 'abc123')
         assert.equal(sent.length, 0)
     })
 
     it('refuses to call a file adoptable when it uses Include', async () => {
         const { deps, project, environment } = setup()
-        deps.listSitesEnabled = async () => [{ path: handWritten.path, text: 'ServerName acme.com\nInclude /etc/apache2/common.conf' }]
+        deps.listSitesEnabled = listing([{ path: handWritten.path, text: 'ServerName acme.com\nInclude /etc/apache2/common.conf' }])
         const result = await previewAdopt(deps, project, environment, 'abc123')
         assert.equal(result.ok && result.preview.adoptable, false)
     })
@@ -319,7 +324,7 @@ describe('adopt', () => {
 
     it('writes the new file and disables the old one in a single request', async () => {
         const { deps, sent, project, environment } = setup()
-        deps.listSitesEnabled = async () => [handWritten]
+        deps.listSitesEnabled = listing([handWritten])
         const result = await adopt(deps, project, environment, 'abc123', [handWritten.path])
         assert.equal(result.ok, true)
         assert.equal(sent.length, 1)
@@ -344,7 +349,7 @@ describe('adopt', () => {
 
     it('refuses a file that is not currently claiming one of this environment\'s hostnames', async () => {
         const { deps, project, environment } = setup()
-        deps.listSitesEnabled = async () => [handWritten]
+        deps.listSitesEnabled = listing([handWritten])
         const result = await adopt(deps, project, environment, 'abc123', ['/etc/apache2/sites-enabled/other.conf'])
         assert.equal(result.ok, false)
         assert.match(result.ok === false ? result.message : '', /does not serve/)
@@ -352,7 +357,7 @@ describe('adopt', () => {
 
     it('refuses to adopt a file it could not fully read', async () => {
         const { deps, project, environment } = setup()
-        deps.listSitesEnabled = async () => [{ path: handWritten.path, text: 'ServerName acme.com\nUse CommonSite acme' }]
+        deps.listSitesEnabled = listing([{ path: handWritten.path, text: 'ServerName acme.com\nUse CommonSite acme' }])
         const result = await adopt(deps, project, environment, 'abc123', [handWritten.path])
         assert.equal(result.ok, false)
         assert.match(result.ok === false ? result.message : '', /cannot be read/)
@@ -360,9 +365,79 @@ describe('adopt', () => {
 
     it('reverts when the configtest fails, so the old file comes back', async () => {
         const { deps, sent, project, environment } = setup({ railOk: false })
-        deps.listSitesEnabled = async () => [handWritten]
+        deps.listSitesEnabled = listing([handWritten])
         const result = await adopt(deps, project, environment, 'abc123', [handWritten.path])
         assert.equal(result.ok, false)
         assert.equal(sent.length, 2)
+    })
+})
+
+// One file in sites-enabled that cannot be opened used to throw out of listSitesEnabled, so the agent's
+// top-level catch turned it into "unavailable" and every domain action on every site on the box failed,
+// naming a file belonging to a site the operator was not even looking at. A file Apache cannot read
+// serves nothing, so it claims no hostname, and it must not stop an unrelated site's change. It is not
+// forgotten either: it goes to the preview and to /health.
+describe('an unreadable file in sites-enabled', () => {
+    const handWritten = {
+        path: '/etc/apache2/sites-enabled/acme.conf',
+        text: 'ServerName acme.com\nServerAlias www.acme.com\n',
+    }
+    const dangling = '/etc/apache2/sites-enabled/010-arbys.horizons.gg.conf'
+
+    it('does not stop an alias being added to a different site', async () => {
+        const { deps, sent, project, environment } = setup()
+        deps.listSitesEnabled = listing([], [dangling])
+        const result = await setAliases(deps, project, environment, ['www.acme.com', 'shop.acme.com'], 'abc123')
+        assert.equal(result.ok, true)
+        assert.equal(sent.length, 1)
+    })
+
+    // The readable files still have to be checked. Carrying on past the broken one must not also mean
+    // carrying on past a real clash.
+    it('still refuses an alias a readable file claims', async () => {
+        const { deps, project, environment } = setup()
+        deps.listSitesEnabled = listing(
+            [{ path: '/etc/apache2/sites-enabled/legacy.conf', text: 'ServerName shop.acme.com\n' }],
+            [dangling],
+        )
+        const result = await setAliases(deps, project, environment, ['www.acme.com', 'shop.acme.com'], 'abc123')
+        assert.equal(result.ok, false)
+        assert.match(result.ok === false ? result.message : '', /legacy\.conf/)
+    })
+
+    it('does not stop an adopt of a site whose own file reads fine', async () => {
+        const { deps, sent, project, environment } = setup()
+        deps.listSitesEnabled = listing([handWritten], [dangling])
+        const result = await adopt(deps, project, environment, 'abc123', [handWritten.path])
+        assert.equal(result.ok, true)
+        assert.equal(sent[0]!.disable[0], handWritten.path)
+    })
+
+    // The preview's whole job is to show what is actually in sites-enabled before it is replaced, and a
+    // file nobody could open is exactly the sort of thing that pane exists to say: it is also what makes
+    // Apache refuse the reload this adopt ends with.
+    it('is reported by the preview, alongside the claims it did read', async () => {
+        const { deps, project, environment } = setup()
+        deps.listSitesEnabled = listing([handWritten], [dangling])
+        const result = await previewAdopt(deps, project, environment, 'abc123')
+        assert.equal(result.ok, true)
+        assert.deepEqual(result.ok && result.preview.unreadable, [dangling])
+        assert.equal(result.ok && result.preview.claims[0]!.path, handWritten.path)
+    })
+
+    // A file that could not be read is not a file that could not be parsed: adoptable is about what the
+    // parser made of a claim, and this one never became a claim at all.
+    it('does not on its own make the site unadoptable', async () => {
+        const { deps, project, environment } = setup()
+        deps.listSitesEnabled = listing([handWritten], [dangling])
+        const result = await previewAdopt(deps, project, environment, 'abc123')
+        assert.equal(result.ok && result.preview.adoptable, true)
+    })
+
+    it('leaves the preview saying so plainly when there is nothing unreadable', async () => {
+        const { deps, project, environment } = setup()
+        deps.listSitesEnabled = listing([handWritten])
+        const result = await previewAdopt(deps, project, environment, 'abc123')
+        assert.deepEqual(result.ok && result.preview.unreadable, [])
     })
 })

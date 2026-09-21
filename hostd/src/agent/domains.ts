@@ -10,7 +10,7 @@ import { hostnamesOf, type EnvironmentEntry, type ProjectEntry, type Registry } 
 import { refuse, type AdoptPreview, type DomainsWritten, type Refusal } from '../shared/protocol.ts'
 import type { Change } from '../shared/registry-write.ts'
 import type { ApacheRail } from './apache-rail.ts'
-import { findClaims, type VhostFile } from './sites-enabled.ts'
+import { findClaims, type SitesEnabled } from './sites-enabled.ts'
 import { renderVhost, vhostPath } from './vhost.ts'
 
 export type DomainsConfig = {
@@ -28,7 +28,10 @@ export type DomainsDeps = {
     // null rather than a throw when the file is not there: a first write has no previous file, and that
     // is the ordinary case rather than an error.
     readFile(path: string): Promise<string | null>
-    listSitesEnabled(): Promise<VhostFile[]>
+    // Both halves of the sweep: the files that were read, and the paths of any that could not be. A
+    // file nobody can open claims no hostname, so it never blocks a write, but the caller is told about
+    // it rather than left to believe sites-enabled held nothing else.
+    listSitesEnabled(): Promise<SitesEnabled>
     // The same RegistryWriter provisioning already uses, and a reload so the entry this just wrote is
     // what the vhost is rendered from. Rendering from the arguments instead would let a write that was
     // silently rejected still produce a vhost claiming the alias.
@@ -133,7 +136,10 @@ export async function setAliases(
     // anyway, and which one answers depends on the order the files loaded. Every refusal here names the
     // file, because the operator's next move is to adopt it or edit it, and neither is possible without
     // knowing which one it is.
-    const sitesEnabled = await deps.listSitesEnabled()
+    // Only the files that were read. An unreadable one is Apache serving nothing from that path, so it
+    // cannot be claiming a hostname and it must not stop this write; /health is where it is raised,
+    // because it is a problem with the server rather than with this site.
+    const { files: sitesEnabled } = await deps.listSitesEnabled()
 
     // The primary first, and it is checked on every call rather than only when something is being added.
     // This path does not merely register a name: it writes a whole vhost, and that vhost claims the
@@ -190,7 +196,8 @@ export async function previewAdopt(
         return refuse('bad-request', `${project.id} ${environment.name} has no domain, so there is nothing to adopt`)
     }
     const hostnames = hostnamesOf(environment)
-    const claims = findClaims(await deps.listSitesEnabled(), hostnames)
+    const { files, unreadable } = await deps.listSitesEnabled()
+    const claims = findClaims(files, hostnames)
     // Names the old file serves that the registry has never heard of. Offered rather than taken: adopting
     // without carrying these across would silently stop serving hostnames that work today, and adding
     // them automatically would put hostnames in the registry nobody asked for.
@@ -201,6 +208,11 @@ export async function previewAdopt(
             proposed: render(deps, project, environment, token),
             claims,
             extraNames,
+            // Carried even though none of it can be a claim. This pane's whole job is to show what is
+            // actually in sites-enabled before it is replaced, and "there is a file here nobody could
+            // open" is exactly the sort of thing an operator should see before confirming, not least
+            // because Apache will refuse the reload the adopt ends with while it is there.
+            unreadable,
             adoptable: claims.every(claim => claim.unsupported === null),
         },
     }
@@ -217,7 +229,9 @@ export async function adopt(
         return refuse('bad-request', `${project.id} ${environment.name} has no domain, so there is nothing to adopt`)
     }
     const hostnames = hostnamesOf(environment)
-    const claims = findClaims(await deps.listSitesEnabled(), hostnames)
+    // Only the files that were read, for the same reason as in setAliases: an unreadable file serves
+    // nothing, so it claims nothing, and it cannot be one of the paths api asked to have disabled.
+    const claims = findClaims((await deps.listSitesEnabled()).files, hostnames)
 
     // Every named file has to be one this environment's hostnames actually reach. api chose these from a
     // preview, and the preview could be minutes old, so the claim is re-established here against the

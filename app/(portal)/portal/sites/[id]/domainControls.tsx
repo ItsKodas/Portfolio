@@ -367,6 +367,11 @@ export function AdoptSite({ id, environment, projectName }: AdoptProps) {
     // Typed back exactly, because this replaces the file a live site is being served from
     const named = typed.trim() === projectName
     const ready = preview !== null && preview.adoptable && named && !pending
+    // A file Apache lists but cannot open fails its own configuration test, and hostd runs that test
+    // before every reload, so this stops the adopt as surely as an unparseable file does. It is not made
+    // to block the button, because the operator cannot fix it from this page, only on the server.
+    const unreadable = preview?.unreadable ?? []
+    const onlyOne = unreadable.length === 1
 
     return (
         <div className={styles.rowActions}>
@@ -402,6 +407,19 @@ export function AdoptSite({ id, environment, projectName }: AdoptProps) {
                                     One of the files below uses a directive this parser will not follow,
                                     so what it serves cannot be established. hostd refuses the change
                                     rather than guessing, and the file has to be simplified by hand first.
+                                </Callout>
+                            </div>
+                        )}
+
+                        {unreadable.length > 0 && (
+                            <div className={styles.said}>
+                                <Callout tone="crit" title="Apache cannot read everything in sites-enabled">
+                                    {`${unreadable.join(', ')}. Apache lists ${onlyOne ? 'that file' : 'those files'} `
+                                        + `but cannot open ${onlyOne ? 'it' : 'them'}, which almost always means a link `
+                                        + `pointing at something that has been deleted or renamed. Apache checks its own `
+                                        + `configuration before every reload and that check fails while ${onlyOne ? 'it is' : 'they are'} `
+                                        + `there, so no domain change on this server, including this one, can take effect `
+                                        + `until ${onlyOne ? 'it is' : 'they are'} removed on the server itself.`}
                                 </Callout>
                             </div>
                         )}
