@@ -50,7 +50,7 @@ inbox is how a conversion stalls.
 - Modify: `ui/Field/Field.tsx`, `Field.module.css`, `Field.test.tsx`
 - Decide and record: what replaces `Tooltip`
 
-- [ ] **Step 1: Give `Field` a select**
+- [x] **Step 1: Give `Field` a select**
 
 `Select` and `MenuItem` appear three times, all as a status picker. Add `as="select"` to `Field` beside its
 existing `as="textarea"`, taking its options as children.
@@ -59,7 +59,7 @@ Write the test first, and assert the thing that actually matters: that the label
 that changing it fires `onChange` with the chosen value. The existing label and error wiring must keep
 working, so add a case for a select with an error.
 
-- [ ] **Step 2: Replace `Tooltip`, do not rebuild it**
+- [x] **Step 2: Replace `Tooltip`, do not rebuild it**
 
 All three uses are a hover explanation on an icon: in the quote inbox, a warning mark meaning an email was
 not sent. A tooltip is the wrong answer there twice over, because it is invisible on a touch screen and it
@@ -72,7 +72,7 @@ where there is room.
 Record in the PR which of the three you changed and how. Do not build a `Tooltip` component: three uses
 that should not have been tooltips do not justify one.
 
-- [ ] **Step 3: Confirm and commit**
+- [x] **Step 3: Confirm and commit**
 
 Run: `npx vitest run ui/ && npm run build && npx tsc --noEmit`
 
@@ -91,12 +91,12 @@ frame.
 **Files:**
 - Modify: `app/(portal)/portal/ui/page.tsx`, and add a CSS module beside it
 
-- [ ] **Step 1: Convert it**
+- [x] **Step 1: Convert it**
 
 `Container` becomes a wrapper with a max width and the page's side padding. `AdminHeader` stays for now:
 the header is converted in Task 6, when every page that uses it changes at once.
 
-- [ ] **Step 2: Confirm and commit**
+- [x] **Step 2: Confirm and commit**
 
 Run: `npm run build && npm run wallpaper && npx tsc --noEmit`
 
@@ -112,7 +112,7 @@ git commit -m "Convert the gallery off MUI"
 **Files:**
 - Modify: `app/(portal)/portal/clients/page.tsx`, `[id]/page.tsx`, `new/page.tsx`, `controls.tsx`, and a CSS module per page
 
-- [ ] **Step 1: Convert the list**
+- [x] **Step 1: Convert the list**
 
 The table becomes `ui/DataTable`. Read its props from `ui/DataTable/DataTable.tsx`: it takes `label`,
 `columns` and `rows`, and it renders a `<p>` rather than headers over nothing when `rows` is empty, so the
@@ -122,12 +122,12 @@ State chips become `ui/Chip`. `STATE_COLOURS` in `clients/state.ts` maps to MUI 
 `ui/Chip`'s tones (`good`, `warn`, `crit`) instead. **`state.test.ts` covers that mapping, so change the
 test with it rather than around it.**
 
-- [ ] **Step 2: Convert the detail and new pages**
+- [x] **Step 2: Convert the detail and new pages**
 
 `TextField` becomes `ui/Field`, `Alert` becomes `ui/Callout`, `Dialog` becomes `ui/Dialog`. `controls.tsx`
 holds the client components, so its `'use client'` stays.
 
-- [ ] **Step 3: Confirm and commit**
+- [x] **Step 3: Confirm and commit**
 
 Run: `npx vitest run && npm run build && npm run wallpaper && npx tsc --noEmit`
 
@@ -145,7 +145,7 @@ The densest, and the most used. Convert last of the operator pages.
 **Files:**
 - Modify: `app/(portal)/portal/quotes/page.tsx`, `[id]/page.tsx`, `[id]/controls.tsx`, `../format.ts`, and a CSS module per page
 
-- [ ] **Step 1: Convert the inbox**
+- [x] **Step 1: Convert the inbox**
 
 The table becomes `ui/DataTable`. `STATUS_COLOURS` in `format.ts` maps to MUI colour names; map to
 `ui/Chip` tones as in Task 3.
@@ -153,14 +153,14 @@ The table becomes `ui/DataTable`. `STATUS_COLOURS` in `format.ts` maps to MUI co
 The warning mark for an unsent email is the `Tooltip` from Task 1. It becomes an icon with a `title`, and
 the row keeps its meaning without a hover.
 
-- [ ] **Step 2: Convert the quote page**
+- [x] **Step 2: Convert the quote page**
 
 `Dialog` becomes `ui/Dialog` for the delete confirmation. The status picker is `Field` with `as="select"`
 from Task 1. Notes become `ui/Row`s.
 
 **The server actions do not change.** `actions.ts` is untouched by this task; only what renders them moves.
 
-- [ ] **Step 3: Confirm and commit**
+- [x] **Step 3: Confirm and commit**
 
 Run: `npx vitest run && npm run build && npm run wallpaper && npx tsc --noEmit`
 
@@ -179,7 +179,7 @@ Sign-in, the code step, forgot, invite, reset, setup and account. About 120 MUI 
 **Files:**
 - Modify: `app/(portal)/portal/forms.tsx`, `sign-in/`, `sign-in/code/`, `forgot/`, `invite/[token]/`, `reset/[token]/`, `setup/`, `account/`, `header.tsx`
 
-- [ ] **Step 1: Write a test for each flow before converting it**
+- [x] **Step 1: Write a test for each flow before converting it**
 
 These shipped recently and work, and nothing covers what a person actually does with them. Before touching
 a page, add a render test: submit empty, submit wrong, submit right, and the error text that appears.
@@ -187,12 +187,12 @@ a page, add a render test: submit empty, submit wrong, submit right, and the err
 **This is the task's real work.** The conversion itself is mechanical; the risk is a TOTP or recovery-code
 flow quietly changing behaviour, and only a test written against the current behaviour can catch that.
 
-- [ ] **Step 2: Convert them**
+- [x] **Step 2: Convert them**
 
 `TextField` to `ui/Field`, `Alert` to `ui/Callout`, `Paper` and `Box` to CSS. These pages sit outside the
 `Shell`, so each keeps its own centred layout.
 
-- [ ] **Step 3: Confirm and commit**
+- [x] **Step 3: Confirm and commit**
 
 Run: `npx vitest run && npm run build && npm run wallpaper && npx tsc --noEmit`
 
@@ -208,7 +208,7 @@ git commit -m "Convert the client auth flows off MUI"
 **Files:**
 - Modify: `app/(portal)/portal/adminHeader.tsx`, `header.tsx`, `app/(admin)/admin/sign-in/page.tsx`
 
-- [ ] **Step 1: Convert both headers**
+- [x] **Step 1: Convert both headers**
 
 They are small and every page that uses them is already converted, so they change together.
 
@@ -216,13 +216,13 @@ Consider whether `adminHeader` should still exist. Every operator page now rende
 has its own bar. If a page shows both, one of them goes, and that is a judgement to make with the pages in
 front of you. Say which you chose in the PR.
 
-- [ ] **Step 2: Convert the operator sign-in**
+- [x] **Step 2: Convert the operator sign-in**
 
 `app/(admin)/admin/sign-in/page.tsx` is the last MUI page and the reason the admin layout and theme still
 exist. Convert it, then delete `app/(admin)/admin/layout.tsx` and `app/(admin)/admin/theme.tsx`, which is
 now safe and was not before.
 
-- [ ] **Step 3: Confirm and commit**
+- [x] **Step 3: Confirm and commit**
 
 Run: `npx vitest run && npm run build && npm run wallpaper && npx tsc --noEmit`
 
@@ -242,12 +242,12 @@ emotion's runtime from the landing bundle, which helps the scene rather than thr
 - Modify: `app/(landing)/parallax/index.tsx`, `app/(landing)/page.tsx`, `app/(landing)/logo/index.tsx`, `app/wallpaper/page.tsx` and its three components
 - Delete: `themes/dark.ts`
 
-- [ ] **Step 1: Replace the icons**
+- [x] **Step 1: Replace the icons**
 
 These pages use MUI icons. `ui/icons` already has all 26, generated from the installed package, so they are
 the same drawings. Swap the imports.
 
-- [ ] **Step 2: Remove the providers and the theme**
+- [x] **Step 2: Remove the providers and the theme**
 
 `themes/dark.ts` is a MUI theme used only by the landing parallax and the wallpaper page. With the icons
 swapped and `Typography` replaced by a real element, both `ThemeProvider` wrappers and the theme file go.
@@ -255,7 +255,7 @@ swapped and `Typography` replaced by a real element, both `ThemeProvider` wrappe
 **Do not touch anything else in these files.** The parallax components, the perf tier attributes and the
 scene's CSS modules are not part of this.
 
-- [ ] **Step 3: Check the scene, carefully**
+- [x] **Step 3: Check the scene, carefully**
 
 Run `npm run dev` and open the landing page. Compare against production or against a build from before this
 task:
@@ -266,7 +266,7 @@ task:
 Then `npm run wallpaper` and open the exported build. The wallpaper page is the one most likely to break
 quietly, because nothing else exercises it.
 
-- [ ] **Step 4: Confirm and commit**
+- [x] **Step 4: Confirm and commit**
 
 Run: `npx vitest run && npm run build && npm run wallpaper && npm run lint && npx tsc --noEmit`
 
@@ -283,32 +283,32 @@ git commit -m "Convert the landing page and wallpaper off MUI"
 - Modify: `package.json`, `app/(portal)/layout.tsx`
 - Delete: `app/(portal)/theme.tsx`
 
-- [ ] **Step 1: Prove nothing imports MUI**
+- [x] **Step 1: Prove nothing imports MUI**
 
 Run: `grep -rn "@mui\|@emotion" app/ server/ ui/ themes/ scripts/ --include=*.ts --include=*.tsx`
 Expected: nothing. If anything remains, convert it before going further. Do not remove a package that is
 still imported and hope the build tells you.
 
-- [ ] **Step 2: Remove the providers**
+- [x] **Step 2: Remove the providers**
 
 `app/(portal)/layout.tsx` still wraps everything in `AppRouterCacheProvider` and `PortalTheme`. Both go, and
 `app/(portal)/theme.tsx` is deleted with them. Keep the layout's `metadata` and its `force-dynamic`, which
 are not MUI's and still matter.
 
-- [ ] **Step 3: Remove the packages**
+- [x] **Step 3: Remove the packages**
 
 ```bash
 npm uninstall @mui/material @mui/icons-material @mui/material-nextjs @emotion/react @emotion/styled @emotion/cache
 ```
 
-- [ ] **Step 4: Confirm, and look at the size**
+- [x] **Step 4: Confirm, and look at the size**
 
 Run: `npx vitest run && npm run build && npm run wallpaper && npm run lint && npx tsc --noEmit`
 
 Record the landing page's first-load JS from the build output, before and after, in the PR. That number is
 the only measurable thing this whole plan produces, and it is worth knowing.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add -A
@@ -326,6 +326,12 @@ The thing to look for is not "does it work" but "does it look like one product".
 isolation can pass its tests and still be the odd one out.
 
 Record what you found in the PR, fixed or not.
+
+**Not done.** This branch was built without a `.env`, and both sign-ins need one: the operator's is Google
+OAuth and the client's needs a database. Everything reachable signed out was looked at, at desktop and phone
+width (the landing page, the wallpaper and its exported build, `/quote`, both sign-in pages, forgot), and
+`?debug=perf` was checked against what `app/perf/debug.tsx` documents. The pages behind a session, which is
+most of what this task is about, were not. Left unticked on purpose rather than claimed.
 
 ---
 
