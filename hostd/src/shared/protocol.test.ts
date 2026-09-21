@@ -1,7 +1,7 @@
 import { describe, it } from 'node:test'
 import assert from 'node:assert/strict'
 import {
-    parseAgentRequest, checkStructure, VERB_CAPABILITY, MAX_REQUEST_BYTES, MAX_COMMITS, DEFAULT_COMMITS,
+    parseAgentRequest, checkStructure, VERB_CAPABILITY, MAX_REQUEST_BYTES, MAX_COMMITS, DEFAULT_COMMITS, SNAPSHOT_ID,
     type ProjectRequest,
 } from './protocol.ts'
 import { parseRegistry } from './registry.ts'
@@ -202,6 +202,64 @@ describe('parseAgentRequest', () => {
         assert.equal(refusalOf({ verb: 'deploy', project: 'acme', args: { action: 'set-branch', environment: 'live', branch: 'main..other' } }), 'bad-request: branch must be a plain branch name')
         assert.equal(refusalOf({ verb: 'deploy', project: 'acme', args: { action: 'commits', environment: 'live', limit: 100000 } }), `bad-request: limit must be a whole number from 1 to ${MAX_COMMITS}`)
         assert.equal(refusalOf({ verb: 'deploy', project: 'acme', args: { action: 'history' } }), 'bad-request: environment must be live or test')
+    })
+})
+
+describe('the backup verb', () => {
+    it('needs the backups capability', () => {
+        assert.equal(VERB_CAPABILITY.backup, 'backups')
+    })
+
+    it('accepts the five actions', () => {
+        for (const args of [
+            { action: 'run', tag: 'manual' },
+            { action: 'list' },
+            { action: 'get-run', run: 'a1b2c3d4' },
+            { action: 'delete', snapshot: 'deadbeef' },
+            { action: 'download', snapshot: 'deadbeef' },
+        ]) {
+            const result = parseAgentRequest(JSON.stringify({ verb: 'backup', project: 'acme', args }))
+            assert.equal(result.ok, true, `${args.action} should parse`)
+        }
+    })
+
+    it('carries the run tag and an optional keep through', () => {
+        assert.deepEqual(
+            parsed({ verb: 'backup', project: 'acme', args: { action: 'run', tag: 'scheduled' } }),
+            { ok: true, request: { verb: 'backup', project: 'acme', args: { action: 'run', tag: 'scheduled' } } },
+        )
+        assert.deepEqual(
+            parsed({ verb: 'backup', project: 'acme', args: { action: 'run', tag: 'manual', keep: { daily: 7, weekly: 4, monthly: 3 } } }),
+            { ok: true, request: { verb: 'backup', project: 'acme', args: { action: 'run', tag: 'manual', keep: { daily: 7, weekly: 4, monthly: 3 } } } },
+        )
+    })
+
+    it('refuses a snapshot id that is not hex', () => {
+        for (const snapshot of ['../../etc/passwd', 'deadbeef; rm -rf /', '', 'g'.repeat(8)]) {
+            const result = parseAgentRequest(JSON.stringify({ verb: 'backup', project: 'acme', args: { action: 'delete', snapshot } }))
+            assert.equal(result.ok, false, `${snapshot} should be refused`)
+        }
+        assert.equal(SNAPSHOT_ID.test('deadbeefcafe1234'), true)
+    })
+
+    it('refuses a run id that is not hex', () => {
+        assert.equal(refusalOf({ verb: 'backup', project: 'acme', args: { action: 'get-run', run: '../etc' } }), 'bad-request: get-run needs a run id')
+    })
+
+    it('refuses an unknown tag and an unknown action', () => {
+        assert.equal(parseAgentRequest(JSON.stringify({ verb: 'backup', project: 'acme', args: { action: 'run', tag: 'hourly' } })).ok, false)
+        assert.equal(parseAgentRequest(JSON.stringify({ verb: 'backup', project: 'acme', args: { action: 'restore' } })).ok, false)
+    })
+
+    it('refuses a malformed keep and unknown keys per action', () => {
+        assert.equal(refusalOf({ verb: 'backup', project: 'acme', args: { action: 'run', tag: 'manual', keep: { daily: 7, weekly: 4 } } }), 'bad-request: keep must hold whole daily, weekly and monthly counts')
+        assert.equal(refusalOf({ verb: 'backup', project: 'acme', args: { action: 'run', tag: 'manual', keep: { daily: -1, weekly: 4, monthly: 3 } } }), 'bad-request: keep must hold whole daily, weekly and monthly counts')
+        assert.equal(refusalOf({ verb: 'backup', project: 'acme', args: { action: 'list', extra: true } }), 'bad-request: list takes only action')
+        assert.equal(refusalOf({ verb: 'backup', project: 'acme', args: { action: 'run', tag: 'manual', extra: true } }), 'bad-request: run takes only action, tag and keep')
+        assert.equal(refusalOf({ verb: 'backup', project: 'acme', args: { action: 'get-run', run: 'a1b2c3d4', extra: true } }), 'bad-request: get-run takes only action and run')
+        assert.equal(refusalOf({ verb: 'backup', project: 'acme', args: { action: 'delete', snapshot: 'deadbeef', extra: true } }), 'bad-request: delete takes only action and snapshot')
+        assert.equal(refusalOf({ verb: 'backup', project: 'acme', args: { action: 'download', snapshot: 'deadbeef', extra: true } }), 'bad-request: download takes only action and snapshot')
+        assert.equal(refusalOf({ verb: 'backup', project: 'acme', args: 'nope' }), 'bad-request: backup needs args')
     })
 })
 

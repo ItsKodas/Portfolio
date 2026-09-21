@@ -5,12 +5,13 @@
 import { PROJECT_ID, SERVICE_NAME, isRecord } from './formats.ts'
 import {
     isComposeService, environmentOf, ENVIRONMENTS, CERTIFICATE_MODES, GIT_REF,
-    type Capability, type CertificateMode, type EnvironmentName, type ProjectEntry, type Registry,
+    type Capability, type CertificateMode, type EnvironmentName, type Keep, type ProjectEntry, type Registry,
 } from './registry.ts'
 import type { Commit } from './fetch-protocol.ts'
 import type { DeployRecord, DeployTrigger } from './deploys.ts'
 import type { EnvFileList } from './envfiles.ts'
 import type { SystemUsage } from './system.ts'
+import { BACKUP_TAGS, type BackupRecord, type BackupTag, type Snapshot } from './backups.ts'
 
 export const MAX_REQUEST_BYTES = 64 * 1024
 export const MAX_TAIL = 5000
@@ -75,7 +76,25 @@ export type DeployCommitsArgs = { action: 'commits', environment: EnvironmentNam
 export type DeployArgs = DeployStartArgs | DeployRollbackArgs | DeployBranchArgs | DeployHistoryArgs | DeployCommitsArgs
 export type DeployRequest = { verb: 'deploy', project: string, args: DeployArgs }
 
-export type ProjectRequest = StatusRequest | LifecycleRequest | LogsRequest | ProvisionOnProjectRequest | EnvRequest | DeployRequest
+// Restic's own short ids are hex, and this is checked here, where every other request shape is checked,
+// so a malformed id can never reach a repository path or a command.
+export const SNAPSHOT_ID = /^[0-9a-f]{8,64}$/
+// The agent's own run id, which it generates; validated on the way back in for the same reason.
+export const RUN_ID = /^[0-9a-f]{8,32}$/
+
+export type BackupRunArgs = { action: 'run', tag: BackupTag, keep?: Keep }
+export type BackupListArgs = { action: 'list' }
+export type BackupGetRunArgs = { action: 'get-run', run: string }
+export type BackupDeleteArgs = { action: 'delete', snapshot: string }
+export type BackupDownloadArgs = { action: 'download', snapshot: string }
+export type BackupArgs = BackupRunArgs | BackupListArgs | BackupGetRunArgs | BackupDeleteArgs | BackupDownloadArgs
+export type BackupRequest = { verb: 'backup', project: string, args: BackupArgs }
+
+export type BackupStartedReply = { ok: true, started: { run: string, tag: BackupTag } }
+export type BackupListReply = { ok: true, snapshots: Snapshot[], runs: BackupRecord[], running: boolean }
+export type BackupRunReply = { ok: true, run: BackupRecord | null, running: boolean }
+
+export type ProjectRequest = StatusRequest | LifecycleRequest | LogsRequest | ProvisionOnProjectRequest | EnvRequest | DeployRequest | BackupRequest
 export type AgentRequest = HealthRequest | StatusesRequest | ProvisionCreateRequest | ProjectRequest
 export type Verb = AgentRequest['verb']
 
@@ -130,7 +149,7 @@ export type DeployCommitsReply = { ok: true, commits: Commit[] }
 export type StreamHeader = { ok: true, stream: true }
 export type AgentReply =
     | HealthReply | StatusReply | StatusesReply | LifecycleReply | ProvisionReply | EnvListReply | EnvReadReply
-    | DeployStartedReply | DeployHistoryReply | DeployCommitsReply | Refusal
+    | DeployStartedReply | DeployHistoryReply | DeployCommitsReply | BackupStartedReply | BackupListReply | BackupRunReply | Refusal
 export type LogLine = { stream: 'stdout' | 'stderr', ts: string | null, text: string, truncated: boolean }
 
 // Status is visible to anyone who may see the project at all; everything else needs its capability.
@@ -145,12 +164,22 @@ export const VERB_CAPABILITY: Record<Verb, Capability | null> = {
     // Reading the history and the commit list is the half of this a client may use; api's policy is
     // where that split lives, because only api knows who is asking.
     deploy: 'deploy',
+    backup: 'backups',
 }
 
 type Parsed = { ok: true, request: AgentRequest } | Refusal
 
 function onlyKeys(value: Record<string, unknown>, allowed: string[]): boolean {
     return Object.keys(value).every(key => allowed.includes(key))
+}
+
+const isWholeCount = (value: unknown): boolean => typeof value === 'number' && Number.isInteger(value) && value >= 0
+
+// The client's retention, already clamped to the project ceiling by api. The agent re-clamps when it
+// applies it, so this only has to reject a shape that is not a Keep at all.
+function isKeep(value: unknown): value is Keep {
+    return isRecord(value) && onlyKeys(value, ['daily', 'weekly', 'monthly'])
+        && isWholeCount(value.daily) && isWholeCount(value.weekly) && isWholeCount(value.monthly)
 }
 
 function projectOf(raw: Record<string, unknown>): string | null {
@@ -303,6 +332,33 @@ function parseDeployArgs(raw: unknown): DeployArgs | Refusal {
     return refuse('bad-request', 'action must be deploy, rollback, set-branch, history or commits')
 }
 
+function parseBackupArgs(raw: unknown): BackupArgs | Refusal {
+    if (!isRecord(raw)) return refuse('bad-request', 'backup needs args')
+    if (raw.action === 'run') {
+        if (!onlyKeys(raw, ['action', 'tag', 'keep'])) return refuse('bad-request', 'run takes only action, tag and keep')
+        if (!(BACKUP_TAGS as readonly unknown[]).includes(raw.tag)) return refuse('bad-request', 'backup run needs a tag of manual or scheduled')
+        // keep is the client's retention, which api clamped to the registry ceiling before it ever got
+        // here; the agent re-clamps when it applies it.
+        if (raw.keep !== undefined && !isKeep(raw.keep)) return refuse('bad-request', 'keep must hold whole daily, weekly and monthly counts')
+        return { action: 'run', tag: raw.tag as BackupTag, ...(raw.keep !== undefined ? { keep: raw.keep as Keep } : {}) }
+    }
+    if (raw.action === 'list') {
+        if (!onlyKeys(raw, ['action'])) return refuse('bad-request', 'list takes only action')
+        return { action: 'list' }
+    }
+    if (raw.action === 'get-run') {
+        if (!onlyKeys(raw, ['action', 'run'])) return refuse('bad-request', 'get-run takes only action and run')
+        if (typeof raw.run !== 'string' || !RUN_ID.test(raw.run)) return refuse('bad-request', 'get-run needs a run id')
+        return { action: 'get-run', run: raw.run }
+    }
+    if (raw.action === 'delete' || raw.action === 'download') {
+        if (!onlyKeys(raw, ['action', 'snapshot'])) return refuse('bad-request', `${raw.action} takes only action and snapshot`)
+        if (typeof raw.snapshot !== 'string' || !SNAPSHOT_ID.test(raw.snapshot)) return refuse('bad-request', 'a snapshot id must be hex')
+        return { action: raw.action, snapshot: raw.snapshot }
+    }
+    return refuse('bad-request', 'backup action must be run, list, get-run, delete or download')
+}
+
 export function parseAgentRequest(line: string): Parsed {
     if (Buffer.byteLength(line) > MAX_REQUEST_BYTES) return refuse('bad-request', 'request is too large')
     let raw: unknown
@@ -379,6 +435,15 @@ export function parseAgentRequest(line: string): Parsed {
             const args = parseDeployArgs(raw.args)
             if ('ok' in args) return args
             return { ok: true, request: { verb: 'deploy', project, args } }
+        }
+
+        case 'backup': {
+            if (!onlyKeys(raw, ['verb', 'project', 'args'])) return refuse('bad-request', 'backup takes only project and args')
+            const project = projectOf(raw)
+            if (!project) return refuse('bad-request', 'project is malformed')
+            const args = parseBackupArgs(raw.args)
+            if ('ok' in args) return args
+            return { ok: true, request: { verb: 'backup', project, args } }
         }
 
         default:

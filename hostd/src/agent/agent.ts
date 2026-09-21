@@ -102,6 +102,8 @@ export class Agent {
                 return reply(await this.env(checked.project, request.args))
             case 'deploy':
                 return reply(await this.deploy(checked.project, request.args))
+            case 'backup':
+                return reply(refuse('unavailable', 'backups are not configured'))
         }
     }
 
