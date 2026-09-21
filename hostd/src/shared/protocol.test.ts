@@ -203,6 +203,40 @@ describe('parseAgentRequest', () => {
         assert.equal(refusalOf({ verb: 'deploy', project: 'acme', args: { action: 'commits', environment: 'live', limit: 100000 } }), `bad-request: limit must be a whole number from 1 to ${MAX_COMMITS}`)
         assert.equal(refusalOf({ verb: 'deploy', project: 'acme', args: { action: 'history' } }), 'bad-request: environment must be live or test')
     })
+
+    it('parses a configure request carrying all three fields', () => {
+        assert.deepEqual(
+            parsed({ verb: 'configure', project: 'acme', args: { capabilities: ['lifecycle', 'logs'], repo: null, branches: { live: 'main', test: null } } }),
+            { ok: true, request: { verb: 'configure', project: 'acme', args: { capabilities: ['lifecycle', 'logs'], repo: null, branches: { live: 'main', test: null } } } },
+        )
+    })
+
+    it('parses a configure request carrying only some fields, since absent means leave alone', () => {
+        assert.deepEqual(
+            parsed({ verb: 'configure', project: 'acme', args: { repo: 'git@github.com:x/acme.git' } }),
+            { ok: true, request: { verb: 'configure', project: 'acme', args: { repo: 'git@github.com:x/acme.git' } } },
+        )
+        assert.deepEqual(
+            parsed({ verb: 'configure', project: 'acme', args: {} }),
+            { ok: true, request: { verb: 'configure', project: 'acme', args: {} } },
+        )
+    })
+
+    it('refuses malformed configure requests', () => {
+        assert.equal(refusalOf({ verb: 'configure', project: 'acme', args: { capabilities: ['teleport'] } }), 'bad-request: capabilities must be a list of known capabilities')
+        assert.equal(refusalOf({ verb: 'configure', project: 'acme', args: { branches: { live: 'a branch' } } }), 'bad-request: live branch must be null or a plain branch name')
+        assert.equal(refusalOf({ verb: 'configure', project: 'acme', args: { branches: { staging: 'main' } } }), 'bad-request: staging is not an environment')
+        assert.equal(refusalOf({ verb: 'configure', project: 'acme', args: { capabilities: [], extra: true } }), 'bad-request: configure takes only capabilities, repo and branches')
+    })
+
+    it('parses a branches request', () => {
+        assert.deepEqual(parsed({ verb: 'branches', project: 'acme' }), { ok: true, request: { verb: 'branches', project: 'acme' } })
+    })
+
+    it('refuses a branches request with a malformed project or an extra field', () => {
+        assert.equal(refusalOf({ verb: 'branches', project: 'Not An Id' }), 'bad-request: project is malformed')
+        assert.equal(refusalOf({ verb: 'branches', project: 'acme', extra: true }), 'bad-request: branches takes only project')
+    })
 })
 
 describe('parseDomainsArgs', () => {
@@ -423,5 +457,13 @@ projects:
         assert.equal(live.ok, true)
         const test = checkStructure(deployable, { verb: 'deploy', project: 'acme', args: { action: 'deploy', environment: 'test' } }, none)
         assert.deepEqual(test, { ok: false, code: 'unknown-environment', message: 'acme has no test environment' })
+    })
+
+    // Null, exactly like configure: gating the list on a capability would leave the dropdown empty on
+    // exactly the site an operator is setting deploys up on, which is the one place this list matters.
+    it('gates branches on no capability at all', () => {
+        assert.equal(VERB_CAPABILITY.branches, null)
+        const result = checkStructure(registry, { verb: 'branches', project: 'acme' }, none)
+        assert.equal(result.ok, true)
     })
 })

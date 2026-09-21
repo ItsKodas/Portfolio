@@ -155,7 +155,10 @@ beforeEach(async () => {
     agent = fakeAgent()
     domains = memoryDomains()
     verifier = fakeVerifier(() => domains)
-    handler = createHandler({ token: TOKEN, registry: () => registry, agent, audit, domains, verifier, keepaliveMs: 60_000 })
+    handler = createHandler({
+        token: TOKEN, registry: () => registry, refreshRegistry: async () => false,
+        agent, audit, domains, verifier, keepaliveMs: 60_000,
+    })
 })
 
 function request(
@@ -377,6 +380,19 @@ describe('GET /projects', () => {
         const body = await (await request('/projects', { actor: 'admin' })).json() as { projects: Array<{ id: string }> }
         const broken = body.projects.find(project => project.id === 'broken')
         assert.equal(Object.hasOwn(broken ?? {}, 'environments'), false)
+    })
+
+    it('answers the operator a project\'s repo', async () => {
+        const body = await (await request('/projects', { actor: 'admin' })).json() as { projects: Array<{ id: string, repo?: string | null }> }
+        const acme = body.projects.find(project => project.id === 'acme')
+        assert.equal(acme?.repo, 'git@github.com:acme/site.git')
+    })
+
+    it('tells a client nothing about the repo', async () => {
+        const body = await (await request('/projects')).json() as { projects: Array<Record<string, unknown>> }
+        for (const project of body.projects) {
+            assert.equal(Object.hasOwn(project, 'repo'), false)
+        }
     })
 })
 
@@ -1010,6 +1026,51 @@ describe('DELETE /projects/:id/:env/domains/:hostname', () => {
     })
 })
 
+describe('PUT /projects/:id/settings', () => {
+    it('routes a settings write, and allows only PUT there', () => {
+        assert.deepEqual(matchRoute('PUT', '/projects/acme/settings'), { verb: 'settings', project: 'acme' })
+        assert.equal(matchRoute('GET', '/projects/acme/settings').verb, 'method-not-allowed')
+    })
+
+    it('refuses a body with a field it does not recognise, without calling the agent', async () => {
+        const response = await request('/projects/acme/settings', { method: 'PUT', actor: 'admin', body: { nonsense: 1 } })
+        assert.equal(response.status, 400)
+        assert.deepEqual(agent.calls, [])
+    })
+
+    it('refuses capabilities that is not a list of strings', async () => {
+        const response = await request('/projects/acme/settings', { method: 'PUT', actor: 'admin', body: { capabilities: 'lifecycle' } })
+        assert.equal(response.status, 400)
+        assert.deepEqual(agent.calls, [])
+    })
+
+    it('refuses a branch keyed by something that is not a known environment, naming it', async () => {
+        const response = await request('/projects/acme/settings', { method: 'PUT', actor: 'admin', body: { branches: { staging: 'main' } } })
+        assert.equal(response.status, 400)
+        const body = await response.json() as { message: string }
+        assert.match(body.message, /staging/)
+        assert.deepEqual(agent.calls, [])
+    })
+
+    it('carries capabilities, repo and branches through to the agent, with repo: null included rather than dropped', async () => {
+        agent.reply = () => ({ ok: true, output: 'configured' })
+        const settingsBody = { capabilities: ['lifecycle', 'logs'], repo: null, branches: { live: 'main' } }
+        const response = await request('/projects/acme/settings', { method: 'PUT', actor: 'admin', body: settingsBody })
+        assert.equal(response.status, 200)
+        assert.deepEqual(agent.calls, [{ verb: 'configure', project: 'acme', args: settingsBody }])
+        const [entry] = await audit.read({ limit: 1 })
+        assert.deepEqual([entry?.verb, entry?.target, entry?.outcome], ['configure', 'settings', 'ok'])
+    })
+
+    // configure is in ADMIN_ONLY, so a client gets the same 404 every other admin-only route gives,
+    // not a 403: that is what makes a client's attempt indistinguishable from a project that is not theirs.
+    it('refuses a client with a 404, and never calls the agent', async () => {
+        const response = await request('/projects/acme/settings', { method: 'PUT', body: { repo: 'git@example.com:acme/site.git' } })
+        assert.equal(response.status, 404)
+        assert.deepEqual(agent.calls, [])
+    })
+})
+
 describe('POST /projects/:id/:env/domains/:hostname/verify', () => {
     it('forces one check and answers the record it left behind', async () => {
         await seedDomains([domainRecord({ hostname: 'www.acme.example', primary: false, state: 'pending', token: TOKEN_IN_PLACE })])
@@ -1234,6 +1295,174 @@ describe('GET /health: what only health can see', () => {
         agent.reply = () => ({ ok: true, warnings: ['the registry could not be re-read'], invalid: {}, system: usage, railAge: 1_000 })
         const body = await (await request('/health', { actor: 'admin' })).json() as { warnings: string[] }
         assert.equal(body.warnings[0], 'the registry could not be re-read')
+    })
+})
+
+describe('GET /projects/:id/branches', () => {
+    it('routes a branches read, project level rather than under an environment, and allows only GET there', () => {
+        assert.deepEqual(matchRoute('GET', '/projects/acme/branches'), { verb: 'branches', project: 'acme' })
+        assert.equal(matchRoute('PUT', '/projects/acme/branches').verb, 'method-not-allowed')
+    })
+
+    it('asks the agent and answers its branch list', async () => {
+        agent.reply = () => ({ ok: true, branches: ['main', 'develop'] })
+        const response = await request('/projects/acme/branches', { actor: 'admin' })
+        assert.equal(response.status, 200)
+        assert.deepEqual(await response.json(), { ok: true, branches: ['main', 'develop'] })
+        assert.deepEqual(agent.calls, [{ verb: 'branches', project: 'acme' }])
+    })
+
+    // Reusing 'configure' rather than a new policy verb: the list exists to fill the Settings form, which
+    // is admin-only end to end, and configure is already the null-capability, admin-only verb this needs.
+    it('refuses a client with a 404, the same as settings, and never calls the agent', async () => {
+        const response = await request('/projects/acme/branches')
+        assert.equal(response.status, 404)
+        assert.deepEqual(agent.calls, [])
+    })
+
+    it('passes the agent\'s refusal through, mapped by its code', async () => {
+        agent.reply = () => ({ ok: false, code: 'bad-request', message: 'acme has no repo to list branches from' })
+        const response = await request('/projects/acme/branches', { actor: 'admin' })
+        assert.equal(response.status, 400)
+        const body = await response.json() as { message: string }
+        assert.equal(body.message, 'acme has no repo to list branches from')
+    })
+
+    it('answers 503 when the agent cannot be reached', async () => {
+        agent.call = async () => { throw new AgentUnavailableError('the agent is not answering') }
+        const response = await request('/projects/acme/branches', { actor: 'admin' })
+        assert.equal(response.status, 503)
+    })
+})
+
+// api answers a write from its own in-memory copy of the registry, which otherwise only catches up on
+// its own ten second poll. For a write that changed the file synchronously, that means an operator's own
+// save can look like it did nothing for up to ten seconds. These tests stand in a RegistryStore with a
+// refreshRegistry() that swaps in a second parsed registry, so "the read after the write sees the change"
+// can be told apart from "some refresh function was called": the assertion is always what a request made
+// after the write actually sees, not the call count on its own.
+describe('registry refresh after a write', () => {
+    const updatedRegistry = parseRegistry(`
+projects:
+  acme:
+    client: cl_1
+    name: Acme
+    repo: git@github.com:acme/site.git
+    services: { web: { role: site } }
+    capabilities: [lifecycle, logs, provision, env, deploy, backups]
+    environments:
+      live: { dir: /var/www/acme, port: 5010, branch: main, domain: acme.example, certificate: letsencrypt, deployed: abc1234 }
+      test: { dir: /var/www/acme-test, port: 5013, branch: develop, domain: test.acme.example }
+`)
+
+    // A fresh handler per test, wired to its own mutable "live" registry and its own count of
+    // refreshRegistry calls, standing in for the RegistryStore api actually holds.
+    function refreshableHandler() {
+        let live = registry
+        let calls = 0
+        const h = createHandler({
+            token: TOKEN,
+            registry: () => live,
+            refreshRegistry: async () => { calls++; live = updatedRegistry; return true },
+            agent, audit, domains, verifier, keepaliveMs: 60_000,
+        })
+        return { handler: h, calls: () => calls }
+    }
+
+    function requestVia(h: ReturnType<typeof createHandler>, path: string, options?: Parameters<typeof request>[1]) {
+        const original = handler
+        handler = h
+        return request(path, options).finally(() => { handler = original })
+    }
+
+    it('a settings write refreshes before answering, so the very next read sees it', async () => {
+        agent.reply = () => ({ ok: true, output: 'configured' })
+        const { handler: h, calls } = refreshableHandler()
+
+        const write = await requestVia(h, '/projects/acme/settings', { method: 'PUT', actor: 'admin', body: { capabilities: ['lifecycle'] } })
+        assert.equal(write.status, 200)
+        assert.equal(calls(), 1)
+
+        const listBody = await (await requestVia(h, '/projects', { actor: 'admin' })).json() as { projects: Array<{ id: string, capabilities: string[] }> }
+        const acme = listBody.projects.find(p => p.id === 'acme')
+        assert.deepEqual(acme?.capabilities, ['lifecycle', 'logs', 'provision', 'env', 'deploy', 'backups'])
+    })
+
+    it('a provisioning write (create) refreshes before answering', async () => {
+        agent.reply = () => ({ ok: true, project: { id: 'newsite', state: 'needs-setup' }, envFiles: [] })
+        const { handler: h, calls } = refreshableHandler()
+
+        const response = await requestVia(h, '/projects', { method: 'POST', actor: 'admin', body: CREATE_BODY })
+        assert.equal(response.status, 200)
+        assert.equal(calls(), 1)
+    })
+
+    it('a delete (also provision) refreshes before answering', async () => {
+        agent.reply = () => ({ ok: true, output: 'unregistered' })
+        const { handler: h, calls } = refreshableHandler()
+
+        const response = await requestVia(h, '/projects/acme', { method: 'DELETE', actor: 'admin', body: { name: 'Acme' } })
+        assert.equal(response.status, 200)
+        assert.equal(calls(), 1)
+    })
+
+    it('a branch switch refreshes before answering, even though it shares deploy\'s audit verb', async () => {
+        agent.reply = () => ({ ok: true, output: 'live now tracks develop' })
+        const { handler: h, calls } = refreshableHandler()
+
+        const response = await requestVia(h, '/projects/acme/live/branch', { method: 'PUT', actor: 'admin', body: { branch: 'develop' } })
+        assert.equal(response.status, 200)
+        assert.equal(calls(), 1)
+    })
+
+    it('starting a deploy does not refresh: it answers before the registry write, which lands minutes later', async () => {
+        const { handler: h, calls } = refreshableHandler()
+        const response = await requestVia(h, '/projects/acme/live/deploy', { method: 'POST', actor: 'admin' })
+        assert.equal(response.status, 200)
+        assert.equal(calls(), 0)
+    })
+
+    it('starting a rollback does not refresh, for the same reason as a deploy', async () => {
+        const { handler: h, calls } = refreshableHandler()
+        const response = await requestVia(h, '/projects/acme/test/rollback', { method: 'POST', actor: 'admin' })
+        assert.equal(response.status, 200)
+        assert.equal(calls(), 0)
+    })
+
+    it('writing an env file does not refresh: it never touches the registry', async () => {
+        agent.reply = () => ({ ok: true, output: '.env was written' })
+        const { handler: h, calls } = refreshableHandler()
+        const response = await requestVia(h, '/projects/acme/live/env/.env', { method: 'PUT', actor: 'admin', body: { text: 'SECRET=shh' } })
+        assert.equal(response.status, 200)
+        assert.equal(calls(), 0)
+    })
+
+    it('a refusal never refreshes, whether it is caught before the agent or comes back from it', async () => {
+        const { handler: h, calls } = refreshableHandler()
+
+        // Caught before the agent is ever called: a malformed settings body.
+        const badBody = await requestVia(h, '/projects/acme/settings', { method: 'PUT', actor: 'admin', body: { nonsense: 1 } })
+        assert.equal(badBody.status, 400)
+        assert.equal(calls(), 0)
+
+        // The agent itself refuses the write.
+        agent.reply = () => ({ ok: false, code: 'bad-request', message: 'nope' })
+        const agentRefused = await requestVia(h, '/projects/acme/settings', { method: 'PUT', actor: 'admin', body: { capabilities: ['lifecycle'] } })
+        assert.equal(agentRefused.status, 400)
+        assert.equal(calls(), 0)
+    })
+
+    it('a refresh that fails does not turn a successful write into an error answer', async () => {
+        agent.reply = () => ({ ok: true, output: 'configured' })
+        const failing = createHandler({
+            token: TOKEN,
+            registry: () => registry,
+            refreshRegistry: async () => { throw new Error('registry disappeared mid-refresh') },
+            agent, audit, domains, verifier, keepaliveMs: 60_000,
+        })
+        const response = await requestVia(failing, '/projects/acme/settings', { method: 'PUT', actor: 'admin', body: { capabilities: ['lifecycle'] } })
+        assert.equal(response.status, 200)
+        assert.deepEqual(await response.json(), { ok: true, output: 'configured' })
     })
 })
 

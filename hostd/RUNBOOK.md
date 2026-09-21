@@ -108,9 +108,11 @@ If a container exits, its log names the failed check on a `FATAL` line.
 
 ## Calling the API from the dedi
 
-The portal does not exist yet, so the checks below call the API from a throwaway container on the
-`hostd` network. Define this helper in the shell, from `hostd/`. It reads the token from `.env` inside
-the throwaway container, so the token never appears in the host's process list:
+The checks below call the API directly, from a throwaway container on the `hostd` network, rather than
+through the portal: they are the operator's own way to exercise hostd itself, including things the portal
+never asks for (the storage guard, the capability switch, the network boundary), so they stay a hand call
+even now that the portal exists. Define this helper in the shell, from `hostd/`. It reads the token from
+`.env` inside the throwaway container, so the token never appears in the host's process list:
 
 ```bash
 hc() {
@@ -294,6 +296,11 @@ Then remove the `hostd-test` entry from `registry/projects.yaml`.
 
 5. Wait ten seconds, then run `hc http://hostd-api:8080/projects` and confirm `"valid":true`.
 
+6. The rest of the setup is in the portal now, from the site's Settings tab: capabilities, `repo`, and
+   `live`'s `branch`. Nothing there checks that `repo` and a `branch` are both set before `deploy` is
+   ticked on; if either is missing the project simply never deploys, the same as one enrolled by hand
+   with no repo at all (see **Deploying**).
+
 ## Creating a site
 
 `create` only clones the repo and notices which services the compose file resolves: each one is guessed
@@ -360,8 +367,17 @@ instead of starting a separate test stack.
 ## Deploying
 
 A project gets deploys by having a `repo`, a `branch` on the environment, and `deploy` in its
-`capabilities`. Nothing else switches it on, and a project enrolled by hand with no repo simply never
-deploys.
+`capabilities`. All three are set from the site's Settings tab in the portal now, operator only: the same
+save also converts a project still in the live-only shape (`dir` plus `upstream` at the top level, no
+`environments` block) into the environments shape the first time a branch is set on it, taking `live`'s
+port from `upstream`. A project enrolled by hand with no repo simply never deploys.
+
+The portal's Settings tab still cannot touch `services`, `storage`, `limits`, `compose`, or an
+environment's `domain`, `port` and `certificate`: all of those stay hand-edited in
+`hostd/registry/projects.yaml`. Nor can it touch `client` or `dir`, and that is permanent rather than a
+gap to fill in later: `client` would move a site into a different person's portal, and `dir` would
+re-point hostd at another tree while the containers already running stay where they are, so a later stop
+or deploy acts on the wrong one.
 
 **How one happens.** Every 2 minutes the agent asks GitHub for the tip of each deploying environment's
 branch. A tip different from the entry's `deployed` starts a deploy: fetch, check the commit out into

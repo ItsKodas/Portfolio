@@ -4,7 +4,7 @@
 
 import { PROJECT_ID, SERVICE_NAME, isRecord } from './formats.ts'
 import {
-    isComposeService, environmentOf, ENVIRONMENTS, CERTIFICATE_MODES, GIT_REF,
+    isComposeService, environmentOf, ENVIRONMENTS, CAPABILITIES, CERTIFICATE_MODES, GIT_REF,
     type Capability, type CertificateMode, type EnvironmentName, type ProjectEntry, type Registry,
 } from './registry.ts'
 import { normaliseHostname } from './hostnames.ts'
@@ -115,7 +115,22 @@ export type AdoptPreview = {
     }
 }
 
-export type ProjectRequest = StatusRequest | LifecycleRequest | LogsRequest | ProvisionOnProjectRequest | EnvRequest | DeployRequest | DomainsRequest
+// Editing the registry entry itself: capabilities, repo and each environment's branch. Absent fields are
+// left alone, and a null repo or branch clears that key.
+export type ConfigureArgs = {
+    capabilities?: Capability[]
+    repo?: string | null
+    branches?: Partial<Record<EnvironmentName, string | null>>
+}
+export type ConfigureRequest = { verb: 'configure', project: string, args: ConfigureArgs }
+
+// A project's own repo, read for the portal's Settings form to offer branches from. No environment: repo
+// is a project-level field and both environments draw from the one list.
+export type BranchesRequest = { verb: 'branches', project: string }
+
+export type ProjectRequest =
+    | StatusRequest | LifecycleRequest | LogsRequest | ProvisionOnProjectRequest | EnvRequest | DeployRequest
+    | DomainsRequest | ConfigureRequest | BranchesRequest
 export type AgentRequest = HealthRequest | StatusesRequest | ProvisionCreateRequest | ProjectRequest
 export type Verb = AgentRequest['verb']
 
@@ -172,10 +187,12 @@ export type DeployHistoryReply = {
     deploys: DeployRecord[]
 }
 export type DeployCommitsReply = { ok: true, commits: Commit[] }
+export type BranchesReply = { ok: true, branches: string[] }
 export type StreamHeader = { ok: true, stream: true }
 export type AgentReply =
     | HealthReply | StatusReply | StatusesReply | LifecycleReply | ProvisionReply | EnvListReply | EnvReadReply
-    | DeployStartedReply | DeployHistoryReply | DeployCommitsReply | DomainsWritten | AdoptPreview | Refusal
+    | DeployStartedReply | DeployHistoryReply | DeployCommitsReply | BranchesReply
+    | DomainsWritten | AdoptPreview | Refusal
 export type LogLine = { stream: 'stdout' | 'stderr', ts: string | null, text: string, truncated: boolean }
 
 // Status is visible to anyone who may see the project at all; everything else needs its capability.
@@ -191,6 +208,14 @@ export const VERB_CAPABILITY: Record<Verb, Capability | null> = {
     // where that split lives, because only api knows who is asking.
     deploy: 'deploy',
     domains: 'domains',
+    // Null, and this is load bearing. Gating the verb that edits capabilities on a capability would mean
+    // a project with none could never be given any, which is exactly the project that needs this. What
+    // guards it is api's policy, where it is admin-only.
+    configure: null,
+    // Null for the same reason: the list exists to fill the Settings form's branch field, and requiring a
+    // capability would leave it empty on exactly the site an operator is setting deploys up on. Guarded
+    // the same way configure is, by api's policy rather than by a capability.
+    branches: null,
 }
 
 type Parsed = { ok: true, request: AgentRequest } | Refusal
@@ -428,6 +453,49 @@ export function parseDomainsArgs(args: unknown): { ok: true, args: DomainsArgs }
     }
 }
 
+// Shapes and grammar both: api's route reuses this rather than checking the shape a second time, so a
+// body it could not read is refused in exactly one place. See policy.ts and routes.ts in api for how the
+// route bridges this Refusal shape onto its own parsers' { ok: false, message }.
+export function parseConfigureArgs(raw: unknown): ConfigureArgs | Refusal {
+    if (!isRecord(raw) || !onlyKeys(raw, ['capabilities', 'repo', 'branches'])) {
+        return refuse('bad-request', 'configure takes only capabilities, repo and branches')
+    }
+
+    let capabilities: Capability[] | undefined
+    if (raw.capabilities !== undefined) {
+        if (!Array.isArray(raw.capabilities) || !raw.capabilities.every(value => typeof value === 'string' && (CAPABILITIES as readonly string[]).includes(value))) {
+            return refuse('bad-request', 'capabilities must be a list of known capabilities')
+        }
+        capabilities = raw.capabilities as Capability[]
+    }
+
+    let repo: string | null | undefined
+    if (raw.repo !== undefined) {
+        if (raw.repo !== null && typeof raw.repo !== 'string') return refuse('bad-request', 'repo is malformed')
+        repo = raw.repo as string | null
+    }
+
+    let branches: Partial<Record<EnvironmentName, string | null>> | undefined
+    if (raw.branches !== undefined) {
+        if (!isRecord(raw.branches)) return refuse('bad-request', 'branches is malformed')
+        const parsed: Partial<Record<EnvironmentName, string | null>> = {}
+        for (const [name, branch] of Object.entries(raw.branches)) {
+            if (!(ENVIRONMENTS as readonly string[]).includes(name)) return refuse('bad-request', `${name} is not an environment`)
+            if (branch !== null && (typeof branch !== 'string' || !GIT_REF.test(branch))) {
+                return refuse('bad-request', `${name} branch must be null or a plain branch name`)
+            }
+            parsed[name as EnvironmentName] = branch
+        }
+        branches = parsed
+    }
+
+    return {
+        ...(capabilities !== undefined ? { capabilities } : {}),
+        ...(repo !== undefined ? { repo } : {}),
+        ...(branches !== undefined ? { branches } : {}),
+    }
+}
+
 export function parseAgentRequest(line: string): Parsed {
     if (Buffer.byteLength(line) > MAX_REQUEST_BYTES) return refuse('bad-request', 'request is too large')
     let raw: unknown
@@ -513,6 +581,22 @@ export function parseAgentRequest(line: string): Parsed {
             const parsed = parseDomainsArgs(raw.args)
             if (!parsed.ok) return parsed
             return { ok: true, request: { verb: 'domains', project, args: parsed.args } }
+        }
+
+        case 'configure': {
+            if (!onlyKeys(raw, ['verb', 'project', 'args'])) return refuse('bad-request', 'configure takes only project and args')
+            const project = projectOf(raw)
+            if (!project) return refuse('bad-request', 'project is malformed')
+            const args = parseConfigureArgs(raw.args)
+            if ('ok' in args) return args
+            return { ok: true, request: { verb: 'configure', project, args } }
+        }
+
+        case 'branches': {
+            if (!onlyKeys(raw, ['verb', 'project'])) return refuse('bad-request', 'branches takes only project')
+            const project = projectOf(raw)
+            if (!project) return refuse('bad-request', 'project is malformed')
+            return { ok: true, request: { verb: 'branches', project } }
         }
 
         default:

@@ -8,11 +8,12 @@
 // LogsArgs). The filter decides which of them are open: a container nobody is looking at is a connection
 // nobody is paying for, and hostd allows only four followers per container.
 
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 
 import { Button } from '@/ui/Button/Button'
 import { Callout } from '@/ui/Callout/Callout'
 import { LogPane } from '@/ui/LogPane/LogPane'
+import { useSettling } from './settling'
 import styles from './site.module.css'
 
 // What ui/LogPane takes, plus the instant the line was written. The instant is for ordering and never
@@ -42,6 +43,11 @@ const RETRY_MS = 3000
 // by their timestamps instead, the first screen reads as what actually happened, in order. The window is
 // bounded because this runs for every line of a live stream.
 const REORDER = 400
+
+// What the line beside the filter says instead of counting streams, while the containers are being taken
+// away or brought back. Neither of these is a problem, so neither is coloured as one.
+const COMING_BACK = 'Waiting for the containers to come back.'
+const GOING_AWAY = 'Stopping. The streams close with the containers.'
 
 // Joins a list of container names into one value a hook can compare. A newline, because a compose service
 // name cannot contain one and a comma or a space is not worth betting on.
@@ -104,6 +110,19 @@ export function SiteLogs({ id, services }: { id: string, services: string[] }) {
     const [problems, setProblems] = useState<Record<string, string>>({})
     // Bumped to reopen the streams by hand after a refusal, which is the only thing Try again does
     const [attempt, setAttempt] = useState(0)
+
+    // Whether the operator has asked the site to do something and it has not finished. While they have,
+    // a container that is not there is the middle of that rather than news.
+    const { settling } = useSettling()
+    const waiting = settling ? (settling.action === 'stop' ? GOING_AWAY : COMING_BACK) : null
+
+    // Read inside the stream handlers rather than closed over by the effect below. Closing over it would
+    // put it in that effect's dependencies, and the streams would be torn down and the pane emptied the
+    // moment somebody pressed Restart, which is the one moment the log is worth reading.
+    const settlingRef = useRef(false)
+    useEffect(() => {
+        settlingRef.current = settling !== null
+    }, [settling])
 
     // The containers can change underneath this: starting a stopped site gives it the containers it had
     // none of a moment ago, and the page refreshes rather than remounting. A selection made against the
@@ -228,7 +247,11 @@ export function SiteLogs({ id, services }: { id: string, services: string[] }) {
                     }
 
                     // Never opened means the request was refused, not dropped: retrying on a loop would
-                    // only ask to be refused again, so it says so and waits to be asked.
+                    // only ask to be refused again, so it says so and waits to be asked. Unless the site
+                    // is mid-operation, where the refusal is a container that is not back yet and the
+                    // thing to do about it is exactly to ask again in a moment.
+                    if (!opened && settlingRef.current) return later()
+
                     if (!opened) {
                         void explain().then(message => {
                             if (stopped) return
@@ -260,7 +283,7 @@ export function SiteLogs({ id, services }: { id: string, services: string[] }) {
     // A statement rather than an alarm. A site with nothing running has nothing to follow, which is not
     // itself a problem, and when it is one the page already carries the reason above this.
     if (!services.length) {
-        return <p className={styles.empty}>Nothing is running, so there is nothing to follow.</p>
+        return <p className={styles.empty}>{waiting ?? 'Nothing is running, so there is nothing to follow.'}</p>
     }
 
     function toggle(service: string) {
@@ -271,11 +294,15 @@ export function SiteLogs({ id, services }: { id: string, services: string[] }) {
             : services.filter(name => name === service || previous.includes(name)))
     }
 
-    const said = summarise(chosen.map(service => states[service] ?? 'connecting'))
+    // What is being asked of the site outranks what its streams are doing: half of them being down is
+    // the restart happening, and counting them as a shortfall says the opposite.
+    const said = waiting ? { text: waiting, bad: false } : summarise(chosen.map(service => states[service] ?? 'connecting'))
     // Follow the bottom while anything is arriving, not only when every stream is up: one container
     // reconnecting must not freeze the pane against the one that is still talking.
     const following = chosen.some(service => states[service] === 'live')
-    const refused = Object.entries(problems)
+    // Held back rather than cleared, so a stream that was genuinely refused before any of this says so
+    // again the moment the operation is over.
+    const refused = waiting ? [] : Object.entries(problems)
 
     return (
         <>

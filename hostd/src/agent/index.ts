@@ -270,12 +270,22 @@ async function main(): Promise<void> {
         // apiece, and a figure the portal draws as live should not be a minute old.
         system: () => readSystemUsage(source, SYSTEM_DISK_PATH),
         recheck: project => guard.check(project),
+        // The same writer instance provision and deploy already use above: configure needs nothing from
+        // the fetcher socket, so unlike those two it is never gated behind fetcherProblem/'unavailable'.
+        writer,
+        // The same reload provision and deploy pass themselves, so a configure write is visible to the
+        // next request rather than waiting on the store's own timer.
+        refreshRegistry: async () => { await store.refresh() },
         provision,
         deploys: { runner: deployRunner, store: deployStore, deps: deployDeps },
         domains: domainsDeps,
         // An age, which is what /health compares against its staleness threshold, not the timestamp the
         // rail records: the two are one line apart here and the whole alarm depends on which is which.
         railAge: () => rail.ageOfLastSuccess(),
+        // The same client provision and deploy already hold: branches needs nothing else from it, so it
+        // is never gated behind fetcherProblem/'unavailable' any more than configure is behind the
+        // registry writer above.
+        fetcher,
     })
 
     await rm(SOCKET_PATH, { force: true })

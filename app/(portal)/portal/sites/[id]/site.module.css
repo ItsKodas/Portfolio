@@ -82,6 +82,44 @@
 
 .mono { font-family: var(--font-mono), monospace; }
 
+/* The settings form: capabilities, repo and each environment's branch. Narrower than the panel it sits
+   in, because a checkbox list and two short fields do not need the full log-column width. */
+.settings { margin-top: 4px; display: flex; flex-direction: column; gap: 6px; max-width: 480px; }
+
+.capabilities {
+    border: 0;
+    margin: 0;
+    padding: 0;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 10px 18px;
+}
+.capabilities legend { font-size: 13px; margin-bottom: 8px; padding: 0; color: var(--ink-2); }
+
+.capability {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 13px;
+    color: var(--ink);
+    cursor: pointer;
+}
+.capability input { accent-color: var(--lake); width: 15px; height: 15px; cursor: pointer; }
+
+/* Designed but not built: still tickable (the registry already accepts them), just dimmed so the eye
+   does not read a tick here the same way it reads one next to lifecycle or deploy. */
+.capabilityOff { color: var(--ink-3); }
+
+.envSettings {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    padding: 14px 0;
+    border-top: 1px solid var(--rule);
+}
+.envSettings:first-child { border-top: 0; padding-top: 4px; }
+.envName { font-size: 13px; color: var(--ink); margin: 0; }
+
 .note { color: var(--ink-3); font-size: 12px; line-height: 1.7; margin: 10px 0 0; }
 .empty { color: var(--ink-3); font-size: 12.5px; }
 
@@ -242,4 +280,38 @@
     color: var(--ink-2);
     white-space: pre-wrap;
     word-break: break-word;
+}
+
+/* The waiting, under the sentence that says what is being waited for. Indeterminate by nature: hostd
+   answers a lifecycle call when it has taken the job and never reports a fraction of it done, so a bar
+   that filled would be drawing a number nobody has. */
+.bar {
+    display: block;
+    position: relative;
+    overflow: hidden;
+    height: 2px;
+    margin-top: 11px;
+    border-radius: 2px;
+    background: var(--rule-hi);
+}
+
+.barRun {
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    width: 36%;
+    border-radius: 2px;
+    background: var(--lake);
+    animation: run 1.5s ease-in-out infinite;
+}
+
+@keyframes run {
+    from { left: -36%; }
+    to { left: 100%; }
+}
+
+/* The movement is the whole of what this says, so with movement turned off it says it by being there:
+   a dim band across the track rather than a track with nothing in it. */
+@media (prefers-reduced-motion: reduce) {
+    .barRun { animation: none; left: 0; width: 100%; opacity: .4; }
 }

@@ -11,7 +11,7 @@ import { parseRegistry, type ProjectEntry, type Registry } from '../shared/regis
 import { emptyDeploys, type DeployRecord, type EnvironmentDeploys } from '../shared/deploys.ts'
 import type { Change } from '../shared/registry-write.ts'
 import type { FetchReply, FetchRequest } from '../shared/fetch-protocol.ts'
-import type { AgentRequest, DeployArgs, LogLine } from '../shared/protocol.ts'
+import type { AgentRequest, ConfigureArgs, DeployArgs, LogLine } from '../shared/protocol.ts'
 import type { SystemUsage } from '../shared/system.ts'
 
 const registry = parseRegistry(`
@@ -77,6 +77,7 @@ function setup(options: SetupOptions = {}) {
     const { runResult, guardInvalid, containers, allContainers, ...overrides } = options
     const runs: Array<{ command: string, args: string[] }> = []
     let listedAll = 0
+    let refreshes = 0
     const rechecked: string[] = []
     const logStreams: PassThrough[] = []
     const runner: Runner = async (command, args) => {
@@ -109,9 +110,13 @@ function setup(options: SetupOptions = {}) {
             rechecked.push(project.id)
             return null
         },
+        // A harmless default so every test that never touches configure need not supply one, exactly like
+        // recheck above; the configure tests below override it to record or refuse.
+        writer: { write: async () => ({ ok: true as const }) },
+        refreshRegistry: async () => { refreshes += 1 },
         ...overrides,
     }
-    return { agent: new Agent(deps), runs, rechecked, logStreams, listedAll: () => listedAll }
+    return { agent: new Agent(deps), runs, rechecked, logStreams, listedAll: () => listedAll, refreshes: () => refreshes }
 }
 
 function replyOf(outcome: Outcome) {
@@ -624,6 +629,39 @@ function fakeDeploys(options: {
     return { deploys: deploys as unknown as AgentDeps['deploys'], started, fetched, changes }
 }
 
+describe('the branches verb', () => {
+    const branches = (project = 'acme'): AgentRequest => ({ verb: 'branches', project })
+
+    it('refuses when the fetcher is not configured', async () => {
+        const { agent } = setup({ registry: () => deployRegistry })
+        const reply = replyOf(await agent.handle(branches()))
+        assert.deepEqual(reply, { ok: false, code: 'unavailable', message: 'the fetcher is not configured' })
+    })
+
+    it('refuses a project with no repo, naming it', async () => {
+        const fetcher = { call: async () => { throw new Error('must not be called') } }
+        const { agent } = setup({ registry: () => deployRegistry, fetcher })
+        const reply = replyOf(await agent.handle(branches('quiet')))
+        assert.deepEqual(reply, { ok: false, code: 'bad-request', message: 'quiet has no repo to list branches from' })
+    })
+
+    it('asks the fetcher for the project\'s own repo, taken from the registry entry rather than the caller', async () => {
+        const fetched: FetchRequest[] = []
+        const fetcher = { call: async (request: FetchRequest) => { fetched.push(request); return { ok: true as const, branches: ['main', 'develop'] } } }
+        const { agent } = setup({ registry: () => deployRegistry, fetcher })
+        const reply = replyOf(await agent.handle(branches('acme')))
+        assert.deepEqual(reply, { ok: true, branches: ['main', 'develop'] })
+        assert.deepEqual(fetched, [{ verb: 'branches', repo: 'git@github.com:ItsKodas/acme.git' }])
+    })
+
+    it('passes a fetcher failure through as a refusal', async () => {
+        const fetcher = { call: async () => ({ ok: false as const, code: 'failed' as const, message: 'repository not found' }) }
+        const { agent } = setup({ registry: () => deployRegistry, fetcher })
+        const reply = replyOf(await agent.handle(branches('acme')))
+        assert.deepEqual(reply, { ok: false, code: 'failed', message: 'repository not found' })
+    })
+})
+
 describe('the deploy verb', () => {
     const deploy = (args: DeployArgs, project = 'acme'): AgentRequest => ({ verb: 'deploy', project, args })
 
@@ -916,5 +954,61 @@ projects:
         const reply = replyOf(await agent.handle({ verb: 'provision', project: 'acme', args: { action: 'remove', environment: null } }))
         assert.equal(reply?.ok, true)
         assert.deepEqual(sent, [])
+    })
+})
+
+describe('configure', () => {
+    const configure = (args: ConfigureArgs, project = 'acme'): AgentRequest => ({ verb: 'configure', project, args })
+
+    it('writes what it was given and says so', async () => {
+        const written: Change[] = []
+        const { agent } = setup({ writer: { write: async (change: Change) => { written.push(change); return { ok: true as const } } } })
+
+        const reply = replyOf(await agent.handle(configure({ capabilities: ['lifecycle', 'logs'], repo: null, branches: { live: 'main' } })))
+
+        assert.equal(reply?.ok, true)
+        assert.deepEqual(written, [{
+            kind: 'configure', id: 'acme', capabilities: ['lifecycle', 'logs'], repo: null, branches: { live: 'main' },
+        }])
+    })
+
+    // The store reloads on its own ten second timer otherwise, so the very next request would answer from
+    // the entry this write replaced: a capability just granted would still read as absent.
+    it('reloads the registry once the write lands', async () => {
+        const { agent, refreshes } = setup()
+        assert.equal(replyOf(await agent.handle(configure({ capabilities: ['lifecycle'] })))?.ok, true)
+        assert.equal(refreshes(), 1)
+    })
+
+    it('does not reload the registry when the write was refused', async () => {
+        const { agent, refreshes } = setup({ writer: { write: async () => ({ ok: false as const, problem: 'repo is malformed' }) } })
+        assert.equal(replyOf(await agent.handle(configure({ repo: 'not a url' })))?.ok, false)
+        assert.equal(refreshes(), 0)
+    })
+
+    // bad-request, not failed: the writer's problem is the registry validator's words about what the
+    // operator typed, which is the same class of refusal set-branch answers bad-request for. failed
+    // reaches the portal as a 502 and is audited as hostd having failed.
+    it('passes the writer\'s own refusal back as a bad request rather than a failure', async () => {
+        const { agent } = setup({ writer: { write: async () => ({ ok: false as const, problem: 'acme has no test environment' }) } })
+        const reply = replyOf(await agent.handle(configure({ branches: { test: 'x' } })))
+        assert.equal(reply?.ok, false)
+        assert.equal(reply?.ok === false && reply.code, 'bad-request')
+        assert.match(reply?.ok === false ? reply.message : '', /no test environment/)
+    })
+
+    // checkStructure runs first, exactly as it does for every other verb: a project the guard has marked
+    // invalid is refused before configure ever reaches the writer, even though configure's own capability
+    // gate is null. Uses the storage guard (rather than a registry.invalid entry) because 'acme' must stay
+    // a project registry.projects actually holds for the writer path above to mean anything either way.
+    it('refuses a project the structural check already rejected, without writing anything', async () => {
+        const written: Change[] = []
+        const { agent } = setup({
+            guardInvalid: new Map([['acme', 'storage media overlaps a database service\'s mount']]),
+            writer: { write: async (change: Change) => { written.push(change); return { ok: true as const } } },
+        })
+        const reply = replyOf(await agent.handle(configure({ capabilities: [] })))
+        assert.equal(reply?.ok, false)
+        assert.deepEqual(written, [])
     })
 })

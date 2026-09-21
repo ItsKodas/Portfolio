@@ -15,6 +15,9 @@ function describe(request: FetchRequest): string {
         case 'checkout': return `checkout ${request.dir} ${request.commit}`
         case 'log': return `log ${request.dir} ${request.branch}`
         case 'tip': return `tip ${request.dir} ${request.branch}`
+        // No dir to log it by, unlike every other verb here: branches has none. The repo is safe to log,
+        // never a credential, because GIT_REPO (checked before this is ever reached) admits no userinfo.
+        case 'branches': return `branches ${request.repo}`
     }
 }
 

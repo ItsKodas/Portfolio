@@ -70,6 +70,18 @@ describe('handleConnection', () => {
         assert.deepEqual(agent.requests, [{ verb: 'health' }])
     })
 
+    it('logs a branches request by its project, the same as every other project verb', async () => {
+        const agent = stubAgent(async () => ({ kind: 'reply', reply: { ok: true, branches: ['main'] } }))
+        const [client, server] = duplexPair()
+        const logged: string[] = []
+        const done = handleConnection(server, agent, message => logged.push(message))
+        client.end('{"verb":"branches","project":"acme"}\n')
+        client.setEncoding('utf8')
+        for await (const _chunk of client) { /* drain */ }
+        await done
+        assert.deepEqual(logged, ['branches acme ok'])
+    })
+
     it('refuses a malformed request without calling the agent', async () => {
         const agent = stubAgent(async () => { throw new Error('must not be called') })
         const [reply] = await exchange(agent, '{"verb":"exec","project":"acme"}\n')

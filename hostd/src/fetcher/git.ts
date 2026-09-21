@@ -14,6 +14,10 @@ export const GIT_TIMEOUT_MS = 300_000
 // Bytes that cannot appear in a subject, author name or timestamp, so splitting on them is unambiguous.
 const FIELD = '\x1f'
 const RECORD = '\x1e'
+// A bound on how many branch names a branches request answers, the same kind of cap MAX_LOG_LIMIT puts on
+// a log request in fetch-protocol.ts: this is output from something outside this machine (the remote's
+// own refs), and ls-remote has no --max-count of its own to ask it for fewer up front.
+export const MAX_BRANCHES = 500
 
 export const cloneArgv = (repo: string, dir: string, branch: string) =>
     ['clone', '--branch', branch, '--single-branch', '--', repo, dir]
@@ -31,12 +35,29 @@ export const logArgv = (dir: string, branch: string, limit: number) =>
     ['-C', dir, 'log', `--max-count=${limit}`, `--format=%h${FIELD}%s${FIELD}%an${FIELD}%aI${RECORD}`, `origin/${branch}`, '--']
 export const tipArgv = (dir: string, branch: string) => ['-C', dir, 'rev-parse', `origin/${branch}`, '--']
 const headArgv = (dir: string) => ['-C', dir, 'rev-parse', 'HEAD', '--']
+// No dir: this asks the remote directly, so it needs nothing cloned yet. Reads the same way a clone or a
+// fetch does (the token already lives in git's global credential.helper, set once at fetcher boot), so an
+// ssh-style or an https repo both work exactly as they do for those verbs.
+export const branchesArgv = (repo: string) => ['ls-remote', '--heads', '--', repo]
 
 export function parseLog(stdout: string): Commit[] {
     return stdout.split(RECORD).map(record => record.trim()).filter(Boolean).map(record => {
         const [commit, subject, author, at] = record.split(FIELD)
         return { commit: commit ?? '', subject: subject ?? '', author: author ?? '', at: at ?? '' }
     })
+}
+
+// `git ls-remote --heads` answers one line per ref: a sha, a tab, then refs/heads/<name>. Only that shape
+// is read as a branch; anything else (a blank line, a tag someone still matched) is skipped rather than
+// guessed at. Capped at MAX_BRANCHES, because this is the remote's own output, not this machine's.
+export function parseBranches(stdout: string): string[] {
+    const names: string[] = []
+    for (const line of stdout.split('\n')) {
+        if (names.length >= MAX_BRANCHES) break
+        const match = /^\S+\trefs\/heads\/(.+)$/.exec(line.trim())
+        if (match) names.push(match[1]!)
+    }
+    return names
 }
 
 // Strips anything that could carry a credential: a userinfo section in a URL, or a bare token, so a
@@ -55,6 +76,7 @@ function argvFor(request: FetchRequest): string[] {
         case 'checkout': return checkoutArgv(request.dir, request.worktree, request.commit)
         case 'log': return logArgv(request.dir, request.branch, request.limit)
         case 'tip': return tipArgv(request.dir, request.branch)
+        case 'branches': return branchesArgv(request.repo)
     }
 }
 
@@ -79,5 +101,7 @@ export async function runGit(request: FetchRequest, run: Runner): Promise<FetchR
             return { ok: true, commits: parseLog(result.stdout) }
         case 'fetch':
             return { ok: true }
+        case 'branches':
+            return { ok: true, branches: parseBranches(result.stdout) }
     }
 }

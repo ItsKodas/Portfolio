@@ -104,4 +104,13 @@ describe('handleFetchConnection', () => {
         assert.deepEqual(logged, ['clone /var/www/acme main failed'])
         assert.ok(!logged.join('\n').includes('ghp_'))
     })
+
+    it('answers a branches request and logs it by repo, having no dir to log it by', async () => {
+        const logged: string[] = []
+        const stub = stubRun(async () => ({ ok: true, branches: ['main', 'develop'] }))
+        const lines = await exchange(stub.run, '{"verb":"branches","repo":"git@github.com:acme/site.git"}\n', message => logged.push(message))
+        assert.deepEqual(lines, ['{"ok":true,"branches":["main","develop"]}'])
+        assert.deepEqual(stub.requests, [{ verb: 'branches', repo: 'git@github.com:acme/site.git' }])
+        assert.deepEqual(logged, ['branches git@github.com:acme/site.git ok'])
+    })
 })
