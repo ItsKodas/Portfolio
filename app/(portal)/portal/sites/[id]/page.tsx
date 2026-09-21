@@ -10,6 +10,7 @@ import { Row } from '@/ui/Row/Row'
 import { Shell } from '@/ui/Shell/Shell'
 import { StatStrip } from '@/ui/StatStrip/StatStrip'
 import { StatusDot } from '@/ui/StatusDot/StatusDot'
+import { EnvPanel } from './env'
 import { Lifecycle } from './lifecycle'
 import { SiteLogs } from './logs'
 import { gatherSite } from './site'
@@ -199,7 +200,7 @@ export default async function SitePage({ params, searchParams }: Props) {
 
                 {selected === 'logs' && <SiteLogs id={view.id} services={view.services.map(service => service.service)} />}
 
-                {selected === 'env' && <p className={styles.empty}>The env files are next.</p>}
+                {selected === 'env' && <EnvPanel id={view.id} file={one(search.file)} />}
             </div>
         </Shell>
     )
