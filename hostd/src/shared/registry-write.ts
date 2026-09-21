@@ -45,6 +45,7 @@ export type Change =
     | { kind: 'add-project', id: string, project: ProjectDraft }
     | { kind: 'add-environment', id: string, environment: EnvironmentDraft }
     | { kind: 'set-deployed', id: string, environment: EnvironmentName, commit: string }
+    | { kind: 'set-branch', id: string, environment: EnvironmentName, branch: string }
     | { kind: 'remove-project', id: string }
     | { kind: 'remove-environment', id: string, environment: EnvironmentName }
 
@@ -93,6 +94,15 @@ function edit(doc: Document, change: Change): EditResult {
                 return { problem: `${change.id} has no ${change.environment} environment` }
             }
             doc.setIn(['projects', change.id, 'environments', change.environment, 'deployed'], change.commit)
+            return null
+        case 'set-branch':
+            if (!doc.hasIn(['projects', change.id, 'environments', change.environment])) {
+                return { problem: `${change.id} has no ${change.environment} environment` }
+            }
+            // No grammar check here on purpose: applyChange re-parses the whole document with
+            // parseRegistry below, which refuses a branch name that is not a plain one, so there is one
+            // rule about what a branch may be rather than two that could drift.
+            doc.setIn(['projects', change.id, 'environments', change.environment, 'branch'], change.branch)
             return null
         case 'remove-project':
             if (!has(change.id)) return { problem: `${change.id} is not registered` }

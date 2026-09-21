@@ -4,7 +4,7 @@
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import { PROJECT_ID, CLIENT_ID, SERVICE_NAME, isRecord, describeError } from '../shared/formats.ts'
 import {
-    LIFECYCLE_ACTIONS, MAX_TAIL, DEFAULT_TAIL, MAX_REQUEST_BYTES,
+    LIFECYCLE_ACTIONS, MAX_TAIL, DEFAULT_TAIL, MAX_REQUEST_BYTES, MAX_COMMITS, DEFAULT_COMMITS,
     type AgentReply, type AgentRequest, type LifecycleAction, type LogsArgs, type ProjectStatus, type RefusalCode,
     type ProvisionCreateArgs, type ProvisionAddEnvironmentArgs,
 } from '../shared/protocol.ts'
@@ -42,6 +42,11 @@ export type Route =
     | { verb: 'remove-environment', project: string, environment: EnvironmentName }
     | { verb: 'env-list', project: string, environment: EnvironmentName }
     | { verb: 'env-file', project: string, environment: EnvironmentName, path: string }
+    | { verb: 'deploy', project: string, environment: EnvironmentName }
+    | { verb: 'rollback', project: string, environment: EnvironmentName }
+    | { verb: 'branch', project: string, environment: EnvironmentName }
+    | { verb: 'deploys', project: string, environment: EnvironmentName }
+    | { verb: 'commits', project: string, environment: EnvironmentName }
     | { verb: 'not-found' }
     | { verb: 'method-not-allowed' }
 
@@ -99,11 +104,21 @@ export function matchRoute(method: string, pathname: string): Route {
         return only('DELETE', { verb: 'remove-environment', project, environment: environment as EnvironmentName })
     }
 
-    // /projects/:id/:env/env, and /projects/:id/:env/env/<path...> for one file inside it.
+    // Everything under one environment: the deploy actions, and /env with a path inside it.
     if ((ENVIRONMENTS as readonly string[]).includes(segment)) {
         const environment = segment as EnvironmentName
+        if (parts.length === 4) {
+            switch (parts[3]) {
+                case 'env': return only('GET', { verb: 'env-list', project, environment })
+                case 'deploy': return only('POST', { verb: 'deploy', project, environment })
+                case 'rollback': return only('POST', { verb: 'rollback', project, environment })
+                case 'branch': return only('PUT', { verb: 'branch', project, environment })
+                case 'deploys': return only('GET', { verb: 'deploys', project, environment })
+                case 'commits': return only('GET', { verb: 'commits', project, environment })
+                default: return { verb: 'not-found' }
+            }
+        }
         if (parts[3] !== 'env') return { verb: 'not-found' }
-        if (parts.length === 4) return only('GET', { verb: 'env-list', project, environment })
         if (method !== 'GET' && method !== 'PUT') return { verb: 'method-not-allowed' }
         return { verb: 'env-file', project, environment, path: parts.slice(4).join('/') }
     }
@@ -255,6 +270,22 @@ function parseConfirmBody(value: Record<string, unknown>): { ok: true, name: str
     return { ok: true, name: value.name }
 }
 
+function parseBranchBody(value: Record<string, unknown>): { ok: true, branch: string } | { ok: false, message: string } {
+    if (!onlyKeys(value, ['branch'])) return { ok: false, message: 'switching branch takes only branch' }
+    // The grammar itself is checked by the agent and again by the registry writer, which is where the one
+    // rule about what a branch may be lives; this only refuses a shape the agent could not read.
+    if (typeof value.branch !== 'string') return { ok: false, message: 'branch is malformed' }
+    return { ok: true, branch: value.branch }
+}
+
+// Bounded far below the audit log's own limit: this is a page of a commit list, not an export.
+function parseCommitsLimit(params: URLSearchParams): number | null {
+    const raw = params.get('limit')
+    if (raw === null) return DEFAULT_COMMITS
+    const limit = /^\d{1,4}$/.test(raw) ? Number(raw) : 0
+    return limit >= 1 && limit <= MAX_COMMITS ? limit : null
+}
+
 function parseEnvWriteBody(value: Record<string, unknown>): { ok: true, text: string } | { ok: false, message: string } {
     if (!onlyKeys(value, ['text'])) return { ok: false, message: 'writing an env file takes only text' }
     if (typeof value.text !== 'string') return { ok: false, message: 'text is malformed' }
@@ -348,7 +379,7 @@ export function createHandler(deps: ApiDeps): (req: IncomingMessage, res: Server
         // refused. Neither ever puts the agent's reply body itself into the audit entry, only the
         // target and (on a refusal) the code or message, so an env file's text can only ever reach the
         // caller's own response, never the audit trail.
-        const respondAgentAction = async (verb: 'provision' | 'env', reply: AgentReply, project: string, target: string) => {
+        const respondAgentAction = async (verb: 'provision' | 'env' | 'deploy', reply: AgentReply, project: string, target: string) => {
             if (reply.ok) {
                 await audit(who, { project, verb, target, outcome: 'ok' })
                 return sendJson(res, 200, reply)
@@ -377,6 +408,31 @@ export function createHandler(deps: ApiDeps): (req: IncomingMessage, res: Server
             const reply = await callAgentAudited({ verb: 'provision', project, args: { action: 'remove', environment } }, project, 'provision', target)
             if (!reply) return
             return respondAgentAction('provision', reply, project, target)
+        }
+
+        // Deploy, rollback and branch all start work on the operator's behalf, so all three are
+        // admin-only (the 'deploy' policy verb) and all three are audited, refusals included. The
+        // target says which environment, because live and test are different sites.
+        const startDeploy = async (
+            project: string, target: string, args: Extract<AgentRequest, { verb: 'deploy' }>['args'],
+        ): Promise<void> => {
+            const entry = await authorizeProject(project, 'deploy', target)
+            if (!entry) return
+            const reply = await callAgentAudited({ verb: 'deploy', project, args }, project, 'deploy', target)
+            if (!reply) return
+            return respondAgentAction('deploy', reply, project, target)
+        }
+
+        // The history and the commit list are plain reads, and the owner may make them: audited only
+        // when they are refused, exactly like status.
+        const readDeploy = async (
+            project: string, target: string, args: Extract<AgentRequest, { verb: 'deploy' }>['args'],
+        ): Promise<void> => {
+            if (!(await decide(project, 'deploy-read', target))) return
+            const reply = await callAgent({ verb: 'deploy', project, args })
+            if (!reply) return
+            if (!reply.ok) return refuseRoute(AGENT_STATUS[reply.code], reply.code, reply.message, project, 'deploy', target)
+            return sendJson(res, 200, reply)
         }
 
         switch (route.verb) {
@@ -569,6 +625,43 @@ export function createHandler(deps: ApiDeps): (req: IncomingMessage, res: Server
                 )
                 if (!reply) return
                 return respondAgentAction('env', reply, route.project, target)
+            }
+
+            case 'deploy':
+                return startDeploy(route.project, `${route.environment} deploy`, { action: 'deploy', environment: route.environment })
+
+            case 'rollback':
+                return startDeploy(route.project, `${route.environment} rollback`, { action: 'rollback', environment: route.environment })
+
+            case 'branch': {
+                const target = `${route.environment} branch`
+                const entry = await authorizeProject(route.project, 'deploy', target)
+                if (!entry) return
+
+                const body = await readJsonBody(req, MAX_REQUEST_BYTES)
+                if (!body.ok) return refuseRoute(400, 'bad-request', body.message, route.project, 'deploy', target)
+                const parsed = parseBranchBody(body.value)
+                if (!parsed.ok) return refuseRoute(400, 'bad-request', parsed.message, route.project, 'deploy', target)
+
+                // The branch is in the target from here on: this is the audit trail for what a site
+                // tracks, and "branch" alone would not say what it was changed to.
+                const named = `${target} ${parsed.branch}`.slice(0, 200)
+                const reply = await callAgentAudited(
+                    { verb: 'deploy', project: route.project, args: { action: 'set-branch', environment: route.environment, branch: parsed.branch } },
+                    route.project, 'deploy', named,
+                )
+                if (!reply) return
+                return respondAgentAction('deploy', reply, route.project, named)
+            }
+
+            case 'deploys':
+                return readDeploy(route.project, `${route.environment} deploys`, { action: 'history', environment: route.environment })
+
+            case 'commits': {
+                const target = `${route.environment} commits`
+                const limit = parseCommitsLimit(url.searchParams)
+                if (limit === null) return refuseRoute(400, 'bad-request', `limit must be a whole number from 1 to ${MAX_COMMITS}`, route.project, 'deploy', target)
+                return readDeploy(route.project, target, { action: 'commits', environment: route.environment, limit })
             }
 
             case 'lifecycle': {

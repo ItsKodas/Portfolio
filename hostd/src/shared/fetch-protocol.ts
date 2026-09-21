@@ -12,7 +12,7 @@ const MAX_LOG_LIMIT = 500
 
 export type FetchRequest =
     | { verb: 'clone', repo: string, dir: string, branch: string }
-    | { verb: 'fetch', dir: string }
+    | { verb: 'fetch', dir: string, branch: string | null }
     | { verb: 'checkout', dir: string, worktree: string, commit: string }
     | { verb: 'log', dir: string, branch: string, limit: number }
     | { verb: 'tip', dir: string, branch: string }
@@ -71,10 +71,17 @@ export function parseFetchRequest(line: string): Parsed {
         }
 
         case 'fetch': {
-            if (!onlyKeys(raw, ['verb', 'dir'])) return refuse('fetch takes only dir')
+            if (!onlyKeys(raw, ['verb', 'dir', 'branch'])) return refuse('fetch takes only dir and branch')
             const dir = dirOf(raw, 'dir')
             if (!dir) return refuse('dir must be a folder directly under /var/www')
-            return { ok: true, request: { verb: 'fetch', dir } }
+            // Optional: without a branch this is an ordinary fetch of whatever the clone already tracks.
+            // With one it becomes an explicit refspec in git.ts, because cloneArgv clones
+            // --single-branch, which writes a refspec covering that one branch only: after a branch
+            // switch a plain fetch would never create the remote-tracking ref the new tip is read from.
+            if (raw.branch === undefined || raw.branch === null) return { ok: true, request: { verb: 'fetch', dir, branch: null } }
+            const branch = branchOf(raw)
+            if (!branch) return branchRefusal(raw)
+            return { ok: true, request: { verb: 'fetch', dir, branch } }
         }
 
         case 'checkout': {

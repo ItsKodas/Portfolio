@@ -17,7 +17,14 @@ const RECORD = '\x1e'
 
 export const cloneArgv = (repo: string, dir: string, branch: string) =>
     ['clone', '--branch', branch, '--single-branch', '--', repo, dir]
-export const fetchArgv = (dir: string) => ['-C', dir, 'fetch', '--prune', '--', 'origin']
+// A branch, when the caller names one, becomes an explicit refspec: a --single-branch clone (what
+// cloneArgv makes) configures a refspec for that one branch, so after a branch switch a plain fetch
+// would never create refs/remotes/origin/<new branch> and tipArgv below would fail on a ref that does
+// not exist. Naming it on the command line overrides the configured refspec for this run only.
+export const fetchArgv = (dir: string, branch: string | null) => [
+    '-C', dir, 'fetch', '--prune', '--', 'origin',
+    ...(branch ? [`+refs/heads/${branch}:refs/remotes/origin/${branch}`] : []),
+]
 export const checkoutArgv = (dir: string, worktree: string, commit: string) =>
     ['-C', dir, 'worktree', 'add', '--detach', '--force', worktree, commit]
 export const logArgv = (dir: string, branch: string, limit: number) =>
@@ -44,7 +51,7 @@ function redact(text: string): string {
 function argvFor(request: FetchRequest): string[] {
     switch (request.verb) {
         case 'clone': return cloneArgv(request.repo, request.dir, request.branch)
-        case 'fetch': return fetchArgv(request.dir)
+        case 'fetch': return fetchArgv(request.dir, request.branch)
         case 'checkout': return checkoutArgv(request.dir, request.worktree, request.commit)
         case 'log': return logArgv(request.dir, request.branch, request.limit)
         case 'tip': return tipArgv(request.dir, request.branch)

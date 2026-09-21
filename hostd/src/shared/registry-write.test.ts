@@ -65,6 +65,20 @@ describe('applyChange', () => {
         assert.equal(parseRegistry(result.text).projects.get('acme')!.environments.get('live')!.deployed, '9a1b2c3')
     })
 
+    it('sets a branch', () => {
+        const result = applyChange(BASE, { kind: 'set-branch', id: 'acme', environment: 'live', branch: 'develop' })
+        assert.ok(result.ok)
+        assert.equal(parseRegistry(result.text).projects.get('acme')!.environments.get('live')!.branch, 'develop')
+    })
+
+    it('refuses a branch on an environment that does not exist', () => {
+        assert.equal(applyChange(BASE, { kind: 'set-branch', id: 'acme', environment: 'test', branch: 'develop' }).ok, false)
+    })
+
+    it('refuses a branch the registry itself would not load', () => {
+        assert.equal(applyChange(BASE, { kind: 'set-branch', id: 'acme', environment: 'live', branch: '--upload-pack' }).ok, false)
+    })
+
     it('removes a project and an environment', () => {
         const gone = applyChange(BASE, { kind: 'remove-project', id: 'acme' })
         assert.ok(gone.ok)

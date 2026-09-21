@@ -6,8 +6,12 @@ import { lifecycleArgv, type Runner, type RunResult } from './compose.ts'
 import type { ContainerInspect, ContainerSummary, DockerApi } from './docker.ts'
 import type { EnvFs } from './env-files.ts'
 import type { ProvisionDeps } from './provision.ts'
+import type { DeployRequest } from './deploy.ts'
 import { parseRegistry, type ProjectEntry } from '../shared/registry.ts'
-import type { AgentRequest, LogLine } from '../shared/protocol.ts'
+import { emptyDeploys, type DeployRecord, type EnvironmentDeploys } from '../shared/deploys.ts'
+import type { Change } from '../shared/registry-write.ts'
+import type { FetchReply, FetchRequest } from '../shared/fetch-protocol.ts'
+import type { AgentRequest, DeployArgs, LogLine } from '../shared/protocol.ts'
 import type { SystemUsage } from '../shared/system.ts'
 
 const registry = parseRegistry(`
@@ -544,5 +548,172 @@ describe('provisioning and env', () => {
         }))
         assert.equal(reply?.ok, true)
         assert.ok(writes.some(write => write.path.startsWith('/var/www/acme-test/')))
+    })
+})
+
+const deployRegistry = parseRegistry(`
+projects:
+  acme:
+    client: cl_1
+    name: Acme
+    repo: git@github.com:ItsKodas/acme.git
+    services: { web: { role: site } }
+    capabilities: [deploy]
+    environments:
+      live:
+        dir: /var/www/acme
+        branch: main
+        port: 5010
+        deployed: abc1234
+  quiet:
+    client: cl_1
+    name: Quiet
+    dir: /var/www/quiet
+    upstream: 127.0.0.1:5011
+    services: { web: { role: site } }
+`)
+
+const deployRecord = (commit: string, outcome: DeployRecord['outcome']): DeployRecord => ({
+    commit, subject: null, actor: 'hostd', trigger: 'poll',
+    startedAt: '2026-09-21T00:00:00.000Z', durationMs: 5, outcome, reason: null, output: null,
+})
+
+// Only what the deploy verb itself touches: the runner is a recorder (the real one is covered by
+// deploy-runner.test.ts), the store is a plain map, and the deps carry the writer, the fetcher and the
+// one filesystem question commits asks.
+function fakeDeploys(options: {
+    state?: EnvironmentDeploys
+    writeProblem?: string
+    logReply?: FetchReply
+    repoExists?: boolean
+} = {}) {
+    const started: Array<{ id: string, environment: string, request: DeployRequest }> = []
+    const fetched: FetchRequest[] = []
+    const changes: Change[] = []
+    let registry = deployRegistry
+    const deploys = {
+        runner: {
+            start: (project: ProjectEntry, environment: { name: string }, request: DeployRequest) => {
+                started.push({ id: project.id, environment: environment.name, request })
+                return { ok: true as const, started: { environment: environment.name as 'live', trigger: request.trigger } }
+            },
+        },
+        store: {
+            get: () => options.state ?? emptyDeploys(),
+            resume: async () => {},
+        },
+        deps: {
+            registry: () => registry,
+            refreshRegistry: async () => { registry = deployRegistry },
+            writer: {
+                write: async (change: Change) => {
+                    changes.push(change)
+                    return options.writeProblem ? { ok: false as const, problem: options.writeProblem } : { ok: true as const }
+                },
+            },
+            fetcher: {
+                call: async (request: FetchRequest) => {
+                    fetched.push(request)
+                    return options.logReply ?? { ok: true, commits: [{ commit: 'abc1234', subject: 'Add the thing', author: 'Koda', at: '2026-09-21T00:00:00Z' }] }
+                },
+            },
+            fs: { exists: async () => options.repoExists ?? true },
+        },
+    }
+    return { deploys: deploys as unknown as AgentDeps['deploys'], started, fetched, changes }
+}
+
+describe('the deploy verb', () => {
+    const deploy = (args: DeployArgs, project = 'acme'): AgentRequest => ({ verb: 'deploy', project, args })
+
+    it('refuses every deploy action when deploys are not configured', async () => {
+        const { agent } = setup({ registry: () => deployRegistry })
+        const reply = replyOf(await agent.handle(deploy({ action: 'deploy', environment: 'live' })))
+        assert.deepEqual(reply, { ok: false, code: 'unavailable', message: 'deploys are not configured' })
+    })
+
+    it('refuses a project without the deploy capability', async () => {
+        const { deploys } = fakeDeploys()
+        const { agent } = setup({ registry: () => deployRegistry, deploys })
+        const reply = replyOf(await agent.handle(deploy({ action: 'deploy', environment: 'live' }, 'quiet')))
+        assert.equal(reply?.ok === false && reply.code, 'capability-disabled')
+    })
+
+    it('starts a manual deploy and answers at once', async () => {
+        const context = fakeDeploys()
+        const { agent } = setup({ registry: () => deployRegistry, deploys: context.deploys })
+        const reply = replyOf(await agent.handle(deploy({ action: 'deploy', environment: 'live' })))
+        assert.deepEqual(reply, { ok: true, started: { environment: 'live', trigger: 'manual' } })
+        assert.equal(context.started[0]!.request.trigger, 'manual')
+        assert.equal(context.started[0]!.request.actor, 'admin')
+        assert.equal(context.started[0]!.request.commit, undefined)
+    })
+
+    it('returns the history with the branch, the deployed commit and the pause', async () => {
+        const context = fakeDeploys({ state: { deploys: [deployRecord('abc1234', 'ok')], consecutiveFailures: 2, paused: true } })
+        const { agent } = setup({ registry: () => deployRegistry, deploys: context.deploys })
+        const reply = replyOf(await agent.handle(deploy({ action: 'history', environment: 'live' })))
+        assert.deepEqual(reply, {
+            ok: true, environment: 'live', branch: 'main', deployed: 'abc1234',
+            paused: true, consecutiveFailures: 2, deploys: [deployRecord('abc1234', 'ok')],
+        })
+    })
+
+    it('reads the commit list from the repository once a deploy has moved it out of the tree', async () => {
+        const context = fakeDeploys({ repoExists: true })
+        const { agent } = setup({ registry: () => deployRegistry, deploys: context.deploys })
+        const reply = replyOf(await agent.handle(deploy({ action: 'commits', environment: 'live', limit: 5 })))
+        assert.equal(reply?.ok, true)
+        assert.deepEqual(context.fetched[0], { verb: 'log', dir: '/var/www/acme.git', branch: 'main', limit: 5 })
+    })
+
+    it('reads it from the tree itself before that, which is where provisioning cloned it', async () => {
+        const context = fakeDeploys({ repoExists: false })
+        const { agent } = setup({ registry: () => deployRegistry, deploys: context.deploys })
+        await agent.handle(deploy({ action: 'commits', environment: 'live', limit: 5 }))
+        assert.deepEqual(context.fetched[0], { verb: 'log', dir: '/var/www/acme', branch: 'main', limit: 5 })
+    })
+
+    it('passes a commit list failure through as a refusal', async () => {
+        const context = fakeDeploys({ logReply: { ok: false, code: 'failed', message: 'not a git repository' } })
+        const { agent } = setup({ registry: () => deployRegistry, deploys: context.deploys })
+        const reply = replyOf(await agent.handle(deploy({ action: 'commits', environment: 'live', limit: 5 })))
+        assert.deepEqual(reply, { ok: false, code: 'failed', message: 'not a git repository' })
+    })
+
+    it('rolls back to the last commit recorded healthy, not to the one running now', async () => {
+        const context = fakeDeploys({
+            state: { deploys: [deployRecord('abc1234', 'ok'), deployRecord('9d8c7b6', 'ok')], consecutiveFailures: 0, paused: false },
+        })
+        const { agent } = setup({ registry: () => deployRegistry, deploys: context.deploys })
+        const reply = replyOf(await agent.handle(deploy({ action: 'rollback', environment: 'live' })))
+        assert.equal(reply?.ok, true)
+        assert.equal(context.started[0]!.request.trigger, 'rollback')
+        assert.equal(context.started[0]!.request.commit, '9d8c7b6')
+    })
+
+    it('refuses a rollback when nothing has ever deployed healthily', async () => {
+        const context = fakeDeploys({ state: { deploys: [deployRecord('abc1234', 'failed')], consecutiveFailures: 1, paused: false } })
+        const { agent } = setup({ registry: () => deployRegistry, deploys: context.deploys })
+        const reply = replyOf(await agent.handle(deploy({ action: 'rollback', environment: 'live' })))
+        assert.equal(reply?.ok === false && reply.code, 'bad-request')
+        assert.deepEqual(context.started, [])
+    })
+
+    it('writes the new branch, then deploys it', async () => {
+        const context = fakeDeploys()
+        const { agent } = setup({ registry: () => deployRegistry, deploys: context.deploys })
+        const reply = replyOf(await agent.handle(deploy({ action: 'set-branch', environment: 'live', branch: 'develop' })))
+        assert.equal(reply?.ok, true)
+        assert.deepEqual(context.changes, [{ kind: 'set-branch', id: 'acme', environment: 'live', branch: 'develop' }])
+        assert.equal(context.started[0]!.request.trigger, 'branch')
+    })
+
+    it('refuses a branch the registry would not take, and starts nothing', async () => {
+        const context = fakeDeploys({ writeProblem: 'environments.live.branch must be a plain branch name' })
+        const { agent } = setup({ registry: () => deployRegistry, deploys: context.deploys })
+        const reply = replyOf(await agent.handle(deploy({ action: 'set-branch', environment: 'live', branch: 'develop' })))
+        assert.equal(reply?.ok === false && reply.code, 'bad-request')
+        assert.deepEqual(context.started, [])
     })
 })
