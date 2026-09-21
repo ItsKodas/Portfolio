@@ -4,7 +4,7 @@
 
 import { PROJECT_ID, SERVICE_NAME, isRecord } from './formats.ts'
 import {
-    isComposeService, environmentOf, ENVIRONMENTS, CERTIFICATE_MODES, GIT_REF,
+    isComposeService, environmentOf, ENVIRONMENTS, CAPABILITIES, CERTIFICATE_MODES, GIT_REF,
     type Capability, type CertificateMode, type EnvironmentName, type ProjectEntry, type Registry,
 } from './registry.ts'
 import type { Commit } from './fetch-protocol.ts'
@@ -75,7 +75,16 @@ export type DeployCommitsArgs = { action: 'commits', environment: EnvironmentNam
 export type DeployArgs = DeployStartArgs | DeployRollbackArgs | DeployBranchArgs | DeployHistoryArgs | DeployCommitsArgs
 export type DeployRequest = { verb: 'deploy', project: string, args: DeployArgs }
 
-export type ProjectRequest = StatusRequest | LifecycleRequest | LogsRequest | ProvisionOnProjectRequest | EnvRequest | DeployRequest
+// Editing the registry entry itself: capabilities, repo and each environment's branch. Absent fields are
+// left alone, and a null repo or branch clears that key.
+export type ConfigureArgs = {
+    capabilities?: Capability[]
+    repo?: string | null
+    branches?: Partial<Record<EnvironmentName, string | null>>
+}
+export type ConfigureRequest = { verb: 'configure', project: string, args: ConfigureArgs }
+
+export type ProjectRequest = StatusRequest | LifecycleRequest | LogsRequest | ProvisionOnProjectRequest | EnvRequest | DeployRequest | ConfigureRequest
 export type AgentRequest = HealthRequest | StatusesRequest | ProvisionCreateRequest | ProjectRequest
 export type Verb = AgentRequest['verb']
 
@@ -145,6 +154,10 @@ export const VERB_CAPABILITY: Record<Verb, Capability | null> = {
     // Reading the history and the commit list is the half of this a client may use; api's policy is
     // where that split lives, because only api knows who is asking.
     deploy: 'deploy',
+    // Null, and this is load bearing. Gating the verb that edits capabilities on a capability would mean
+    // a project with none could never be given any, which is exactly the project that needs this. What
+    // guards it is api's policy, where it is admin-only.
+    configure: null,
 }
 
 type Parsed = { ok: true, request: AgentRequest } | Refusal
@@ -303,6 +316,46 @@ function parseDeployArgs(raw: unknown): DeployArgs | Refusal {
     return refuse('bad-request', 'action must be deploy, rollback, set-branch, history or commits')
 }
 
+function parseConfigureArgs(raw: unknown): ConfigureArgs | Refusal {
+    if (!isRecord(raw) || !onlyKeys(raw, ['capabilities', 'repo', 'branches'])) {
+        return refuse('bad-request', 'configure takes only capabilities, repo and branches')
+    }
+
+    let capabilities: Capability[] | undefined
+    if (raw.capabilities !== undefined) {
+        if (!Array.isArray(raw.capabilities) || !raw.capabilities.every(value => typeof value === 'string' && (CAPABILITIES as readonly string[]).includes(value))) {
+            return refuse('bad-request', 'capabilities must be a list of known capabilities')
+        }
+        capabilities = raw.capabilities as Capability[]
+    }
+
+    let repo: string | null | undefined
+    if (raw.repo !== undefined) {
+        if (raw.repo !== null && typeof raw.repo !== 'string') return refuse('bad-request', 'repo is malformed')
+        repo = raw.repo as string | null
+    }
+
+    let branches: Partial<Record<EnvironmentName, string | null>> | undefined
+    if (raw.branches !== undefined) {
+        if (!isRecord(raw.branches)) return refuse('bad-request', 'branches is malformed')
+        const parsed: Partial<Record<EnvironmentName, string | null>> = {}
+        for (const [name, branch] of Object.entries(raw.branches)) {
+            if (!(ENVIRONMENTS as readonly string[]).includes(name)) return refuse('bad-request', `${name} is not an environment`)
+            if (branch !== null && (typeof branch !== 'string' || !GIT_REF.test(branch))) {
+                return refuse('bad-request', `${name} branch must be null or a plain branch name`)
+            }
+            parsed[name as EnvironmentName] = branch
+        }
+        branches = parsed
+    }
+
+    return {
+        ...(capabilities !== undefined ? { capabilities } : {}),
+        ...(repo !== undefined ? { repo } : {}),
+        ...(branches !== undefined ? { branches } : {}),
+    }
+}
+
 export function parseAgentRequest(line: string): Parsed {
     if (Buffer.byteLength(line) > MAX_REQUEST_BYTES) return refuse('bad-request', 'request is too large')
     let raw: unknown
@@ -379,6 +432,15 @@ export function parseAgentRequest(line: string): Parsed {
             const args = parseDeployArgs(raw.args)
             if ('ok' in args) return args
             return { ok: true, request: { verb: 'deploy', project, args } }
+        }
+
+        case 'configure': {
+            if (!onlyKeys(raw, ['verb', 'project', 'args'])) return refuse('bad-request', 'configure takes only project and args')
+            const project = projectOf(raw)
+            if (!project) return refuse('bad-request', 'project is malformed')
+            const args = parseConfigureArgs(raw.args)
+            if ('ok' in args) return args
+            return { ok: true, request: { verb: 'configure', project, args } }
         }
 
         default:

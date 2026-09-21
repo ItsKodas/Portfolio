@@ -189,6 +189,9 @@ async function main(): Promise<void> {
         // apiece, and a figure the portal draws as live should not be a minute old.
         system: () => readSystemUsage(source, SYSTEM_DISK_PATH),
         recheck: project => guard.check(project),
+        // The same writer instance provision and deploy already use above: configure needs nothing from
+        // the fetcher socket, so unlike those two it is never gated behind fetcherProblem/'unavailable'.
+        writer,
         provision,
         deploys: { runner: deployRunner, store: deployStore, deps: deployDeps },
     })

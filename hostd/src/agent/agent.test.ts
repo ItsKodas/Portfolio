@@ -11,7 +11,7 @@ import { parseRegistry, type ProjectEntry } from '../shared/registry.ts'
 import { emptyDeploys, type DeployRecord, type EnvironmentDeploys } from '../shared/deploys.ts'
 import type { Change } from '../shared/registry-write.ts'
 import type { FetchReply, FetchRequest } from '../shared/fetch-protocol.ts'
-import type { AgentRequest, DeployArgs, LogLine } from '../shared/protocol.ts'
+import type { AgentRequest, ConfigureArgs, DeployArgs, LogLine } from '../shared/protocol.ts'
 import type { SystemUsage } from '../shared/system.ts'
 
 const registry = parseRegistry(`
@@ -108,6 +108,9 @@ function setup(options: SetupOptions = {}) {
             rechecked.push(project.id)
             return null
         },
+        // A harmless default so every test that never touches configure need not supply one, exactly like
+        // recheck above; the configure tests below override it to record or refuse.
+        writer: { write: async () => ({ ok: true as const }) },
         ...overrides,
     }
     return { agent: new Agent(deps), runs, rechecked, logStreams, listedAll: () => listedAll }
@@ -715,5 +718,44 @@ describe('the deploy verb', () => {
         const reply = replyOf(await agent.handle(deploy({ action: 'set-branch', environment: 'live', branch: 'develop' })))
         assert.equal(reply?.ok === false && reply.code, 'bad-request')
         assert.deepEqual(context.started, [])
+    })
+})
+
+describe('configure', () => {
+    const configure = (args: ConfigureArgs, project = 'acme'): AgentRequest => ({ verb: 'configure', project, args })
+
+    it('writes what it was given and says so', async () => {
+        const written: Change[] = []
+        const { agent } = setup({ writer: { write: async (change: Change) => { written.push(change); return { ok: true as const } } } })
+
+        const reply = replyOf(await agent.handle(configure({ capabilities: ['lifecycle', 'logs'], repo: null, branches: { live: 'main' } })))
+
+        assert.equal(reply?.ok, true)
+        assert.deepEqual(written, [{
+            kind: 'configure', id: 'acme', capabilities: ['lifecycle', 'logs'], repo: null, branches: { live: 'main' },
+        }])
+    })
+
+    it('passes the writer\'s own refusal back rather than a general one', async () => {
+        const { agent } = setup({ writer: { write: async () => ({ ok: false as const, problem: 'acme has no test environment' }) } })
+        const reply = replyOf(await agent.handle(configure({ branches: { test: 'x' } })))
+        assert.equal(reply?.ok, false)
+        assert.equal(reply?.ok === false && reply.code, 'failed')
+        assert.match(reply?.ok === false ? reply.message : '', /no test environment/)
+    })
+
+    // checkStructure runs first, exactly as it does for every other verb: a project the guard has marked
+    // invalid is refused before configure ever reaches the writer, even though configure's own capability
+    // gate is null. Uses the storage guard (rather than a registry.invalid entry) because 'acme' must stay
+    // a project registry.projects actually holds for the writer path above to mean anything either way.
+    it('refuses a project the structural check already rejected, without writing anything', async () => {
+        const written: Change[] = []
+        const { agent } = setup({
+            guardInvalid: new Map([['acme', 'storage media overlaps a database service\'s mount']]),
+            writer: { write: async (change: Change) => { written.push(change); return { ok: true as const } } },
+        })
+        const reply = replyOf(await agent.handle(configure({ capabilities: [] })))
+        assert.equal(reply?.ok, false)
+        assert.deepEqual(written, [])
     })
 })
