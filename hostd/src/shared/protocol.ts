@@ -7,6 +7,7 @@ import {
     isComposeService, environmentOf, ENVIRONMENTS, CERTIFICATE_MODES, GIT_REF,
     type Capability, type CertificateMode, type EnvironmentName, type ProjectEntry, type Registry,
 } from './registry.ts'
+import { normaliseHostname } from './hostnames.ts'
 import type { Commit } from './fetch-protocol.ts'
 import type { DeployRecord, DeployTrigger } from './deploys.ts'
 import type { EnvFileList } from './envfiles.ts'
@@ -75,7 +76,25 @@ export type DeployCommitsArgs = { action: 'commits', environment: EnvironmentNam
 export type DeployArgs = DeployStartArgs | DeployRollbackArgs | DeployBranchArgs | DeployHistoryArgs | DeployCommitsArgs
 export type DeployRequest = { verb: 'deploy', project: string, args: DeployArgs }
 
-export type ProjectRequest = StatusRequest | LifecycleRequest | LogsRequest | ProvisionOnProjectRequest | EnvRequest | DeployRequest
+// The registry's own ceiling on maxDomains. A list longer than this cannot be valid for any project, so
+// it is refused here before the registry is even read; the real per-project cap is checked in the agent,
+// which is what knows which project this is.
+export const MAX_ALIASES = 20
+
+export type DomainsWriteArgs = { action: 'write', environment: EnvironmentName, token: string }
+export type DomainsRemoveArgs = { action: 'remove', environment: EnvironmentName }
+export type DomainsPreviewArgs = { action: 'preview', environment: EnvironmentName }
+export type DomainsAdoptArgs = { action: 'adopt', environment: EnvironmentName, token: string, disable: string[] }
+// set-aliases is how an alias is added or removed. It carries the whole list the environment should end
+// up with rather than one hostname and a direction, because the agent writes the registry and then
+// rewrites the vhost from it: a list makes the pair idempotent, so a retry after a half-failure lands in
+// the same place instead of adding the alias twice. It carries the token too, because the vhost is
+// rewritten in the same call and the token has to survive that rewrite.
+export type DomainsSetAliasesArgs = { action: 'set-aliases', environment: EnvironmentName, aliases: string[], token: string }
+export type DomainsArgs = DomainsWriteArgs | DomainsRemoveArgs | DomainsPreviewArgs | DomainsAdoptArgs | DomainsSetAliasesArgs
+export type DomainsRequest = { verb: 'domains', project: string, args: DomainsArgs }
+
+export type ProjectRequest = StatusRequest | LifecycleRequest | LogsRequest | ProvisionOnProjectRequest | EnvRequest | DeployRequest | DomainsRequest
 export type AgentRequest = HealthRequest | StatusesRequest | ProvisionCreateRequest | ProjectRequest
 export type Verb = AgentRequest['verb']
 
@@ -145,6 +164,7 @@ export const VERB_CAPABILITY: Record<Verb, Capability | null> = {
     // Reading the history and the commit list is the half of this a client may use; api's policy is
     // where that split lives, because only api knows who is asking.
     deploy: 'deploy',
+    domains: 'domains',
 }
 
 type Parsed = { ok: true, request: AgentRequest } | Refusal
@@ -301,6 +321,78 @@ function parseDeployArgs(raw: unknown): DeployArgs | Refusal {
         return { action: 'commits', environment: name, limit }
     }
     return refuse('bad-request', 'action must be deploy, rollback, set-branch, history or commits')
+}
+
+// Hex only, and bounded. This string is interpolated into a <Location> and into a header value in the
+// vhost, so it is the one value from api that reaches Apache's configuration. Nothing that could be read
+// as a path, a quote or a directive is allowed to be a token.
+const DOMAIN_TOKEN = /^[0-9a-f]{6,64}$/
+// The only directory an adopt may disable a file in. Checked here as well as in the agent, because this
+// is where a value from api first becomes something a root process will act on.
+const SITES_ENABLED = '/etc/apache2/sites-enabled/'
+
+export function parseDomainsArgs(args: unknown): { ok: true, args: DomainsArgs } | Refusal {
+    if (!isRecord(args)) return refuse('bad-request', 'domains args must be an object')
+    const environment = args.environment
+    if (typeof environment !== 'string' || !(ENVIRONMENTS as readonly string[]).includes(environment)) {
+        return refuse('bad-request', `environment must be one of ${ENVIRONMENTS.join(', ')}`)
+    }
+    const name = environment as EnvironmentName
+
+    const token = (): string | null => (typeof args.token === 'string' && DOMAIN_TOKEN.test(args.token) ? args.token : null)
+
+    switch (args.action) {
+        case 'write': {
+            if (!onlyKeys(args, ['action', 'environment', 'token'])) return refuse('bad-request', 'write takes only environment and token')
+            const value = token()
+            if (value === null) return refuse('bad-request', 'token must be lowercase hex')
+            return { ok: true, args: { action: 'write', environment: name, token: value } }
+        }
+        case 'remove':
+            if (!onlyKeys(args, ['action', 'environment'])) return refuse('bad-request', 'remove takes only environment')
+            return { ok: true, args: { action: 'remove', environment: name } }
+        case 'preview':
+            if (!onlyKeys(args, ['action', 'environment'])) return refuse('bad-request', 'preview takes only environment')
+            return { ok: true, args: { action: 'preview', environment: name } }
+        case 'adopt': {
+            if (!onlyKeys(args, ['action', 'environment', 'token', 'disable'])) {
+                return refuse('bad-request', 'adopt takes only environment, token and disable')
+            }
+            const value = token()
+            if (value === null) return refuse('bad-request', 'token must be lowercase hex')
+            const disable = args.disable
+            if (!Array.isArray(disable) || disable.length === 0) return refuse('bad-request', 'adopt must name at least one file to disable')
+            for (const path of disable) {
+                if (typeof path !== 'string' || !path.startsWith(SITES_ENABLED) || path.includes('/..') || path.includes('/.')) {
+                    return refuse('bad-request', 'every disable entry must be a plain path inside sites-enabled')
+                }
+            }
+            return { ok: true, args: { action: 'adopt', environment: name, token: value, disable: disable as string[] } }
+        }
+        case 'set-aliases': {
+            if (!onlyKeys(args, ['action', 'environment', 'aliases', 'token'])) {
+                return refuse('bad-request', 'set-aliases takes only environment, aliases and token')
+            }
+            const value = token()
+            if (value === null) return refuse('bad-request', 'token must be lowercase hex')
+            const list = args.aliases
+            if (!Array.isArray(list)) return refuse('bad-request', 'aliases must be a list of hostnames')
+            // maxDomains caps at 20 per project, so a longer list cannot be valid for any project and is
+            // refused before the registry is even read. The real per-project cap is checked in the agent,
+            // which is what knows which project this is.
+            if (list.length > MAX_ALIASES) return refuse('bad-request', `at most ${MAX_ALIASES} aliases`)
+            const aliases: string[] = []
+            for (const entry of list) {
+                const host = normaliseHostname(entry)
+                if (host === null) return refuse('bad-request', 'every alias must be a hostname')
+                if (aliases.includes(host)) return refuse('bad-request', `${host} is listed twice`)
+                aliases.push(host)
+            }
+            return { ok: true, args: { action: 'set-aliases', environment: name, aliases, token: value } }
+        }
+        default:
+            return refuse('bad-request', 'domains action must be write, remove, preview, adopt or set-aliases')
+    }
 }
 
 export function parseAgentRequest(line: string): Parsed {

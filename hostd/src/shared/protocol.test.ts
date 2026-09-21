@@ -1,7 +1,7 @@
 import { describe, it } from 'node:test'
 import assert from 'node:assert/strict'
 import {
-    parseAgentRequest, checkStructure, VERB_CAPABILITY, MAX_REQUEST_BYTES, MAX_COMMITS, DEFAULT_COMMITS,
+    parseAgentRequest, checkStructure, parseDomainsArgs, VERB_CAPABILITY, MAX_REQUEST_BYTES, MAX_COMMITS, DEFAULT_COMMITS,
     type ProjectRequest,
 } from './protocol.ts'
 import { parseRegistry } from './registry.ts'
@@ -202,6 +202,82 @@ describe('parseAgentRequest', () => {
         assert.equal(refusalOf({ verb: 'deploy', project: 'acme', args: { action: 'set-branch', environment: 'live', branch: 'main..other' } }), 'bad-request: branch must be a plain branch name')
         assert.equal(refusalOf({ verb: 'deploy', project: 'acme', args: { action: 'commits', environment: 'live', limit: 100000 } }), `bad-request: limit must be a whole number from 1 to ${MAX_COMMITS}`)
         assert.equal(refusalOf({ verb: 'deploy', project: 'acme', args: { action: 'history' } }), 'bad-request: environment must be live or test')
+    })
+})
+
+describe('parseDomainsArgs', () => {
+    const ok = (args: unknown) => {
+        const parsed = parseDomainsArgs(args)
+        assert.equal(parsed.ok, true, JSON.stringify(parsed))
+        return parsed
+    }
+
+    it('accepts a write with an environment and a token', () => {
+        const parsed = ok({ action: 'write', environment: 'live', token: 'abc123' })
+        assert.deepEqual(parsed.ok && parsed.args, { action: 'write', environment: 'live', token: 'abc123' })
+    })
+
+    it('accepts a remove, a preview and an adopt', () => {
+        ok({ action: 'remove', environment: 'test' })
+        ok({ action: 'preview', environment: 'live' })
+        ok({ action: 'adopt', environment: 'live', token: 'abc123', disable: ['/etc/apache2/sites-enabled/acme.conf'] })
+    })
+
+    it('refuses an unknown action', () => {
+        assert.equal(parseDomainsArgs({ action: 'rewrite', environment: 'live' }).ok, false)
+    })
+
+    it('refuses an unknown environment', () => {
+        assert.equal(parseDomainsArgs({ action: 'remove', environment: 'staging' }).ok, false)
+    })
+
+    it('refuses an extra field, because the agent is root and ignores nothing', () => {
+        assert.equal(parseDomainsArgs({ action: 'remove', environment: 'live', force: true }).ok, false)
+    })
+
+    it('refuses a token that is not plain hex, so nothing shaped like a path reaches a Location', () => {
+        for (const bad of ['../x', 'a b', '', 'Z'.repeat(32)]) {
+            assert.equal(parseDomainsArgs({ action: 'write', environment: 'live', token: bad }).ok, false, bad)
+        }
+    })
+
+    it('refuses a disable entry that is not inside sites-enabled', () => {
+        const parsed = parseDomainsArgs({ action: 'adopt', environment: 'live', token: 'abc123', disable: ['/etc/passwd'] })
+        assert.equal(parsed.ok, false)
+    })
+
+    it('refuses a disable entry that climbs out with dot segments', () => {
+        const parsed = parseDomainsArgs({
+            action: 'adopt', environment: 'live', token: 'abc123',
+            disable: ['/etc/apache2/sites-enabled/../../passwd'],
+        })
+        assert.equal(parsed.ok, false)
+    })
+
+    it('accepts set-aliases with a list and a token', () => {
+        const parsed = ok({ action: 'set-aliases', environment: 'live', aliases: ['www.acme.com'], token: 'abc123' })
+        assert.deepEqual(parsed.ok && parsed.args.action === 'set-aliases' && parsed.args.aliases, ['www.acme.com'])
+    })
+
+    it('accepts an empty alias list, which is how the last one is removed', () => {
+        ok({ action: 'set-aliases', environment: 'live', aliases: [], token: 'abc123' })
+    })
+
+    it('refuses an alias that is not a hostname, before it can reach a ServerAlias', () => {
+        for (const bad of ['localhost', 'not a host', '../etc', 'https://acme.com']) {
+            const parsed = parseDomainsArgs({ action: 'set-aliases', environment: 'live', aliases: [bad], token: 'abc123' })
+            assert.equal(parsed.ok, false, bad)
+        }
+    })
+
+    it('normalises the aliases it accepts, so one spelling reaches the registry', () => {
+        const parsed = ok({ action: 'set-aliases', environment: 'live', aliases: ['WWW.Acme.com'], token: 'abc123' })
+        assert.deepEqual(parsed.ok && parsed.args.action === 'set-aliases' && parsed.args.aliases, ['www.acme.com'])
+    })
+
+    it('refuses a list longer than any project could allow, before the registry is read', () => {
+        const many = Array.from({ length: 21 }, (_, i) => `a${i}.acme.com`)
+        assert.equal(parseDomainsArgs({ action: 'set-aliases', environment: 'live', aliases: many, token: 'abc123' }).ok, false)
     })
 })
 

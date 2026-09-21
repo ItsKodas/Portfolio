@@ -102,6 +102,10 @@ export class Agent {
                 return reply(await this.env(checked.project, request.args))
             case 'deploy':
                 return reply(await this.deploy(checked.project, request.args))
+            // Wired up in a later task; the grammar accepts the verb before the handler exists so the
+            // two can land separately without either one compiling against a shape that isn't there yet.
+            case 'domains':
+                return reply(refuse('unavailable', 'domains is not yet available'))
         }
     }
 
