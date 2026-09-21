@@ -5,6 +5,7 @@ import { render, screen, within } from '@testing-library/react'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 const listProjects = vi.fn()
+const listDeploys = vi.fn()
 const getProject = vi.fn()
 const assertOwned = vi.fn()
 const callerFromSession = vi.fn()
@@ -25,7 +26,13 @@ vi.mock('@/server/hostd/projects', () => ({
 vi.mock('@/server/db', () => ({ getDb: () => ({ site: { findUnique: async () => null } }) }))
 // The server action is a round trip this page never makes while rendering, and importing it for real
 // would drag Prisma and next/cache into a jsdom test for nothing.
-vi.mock('./actions', () => ({ lifecycleAction: async () => ({ ok: true, message: 'ok' }) }))
+vi.mock('./actions', () => ({
+    lifecycleAction: async () => ({ ok: true, message: 'ok' }),
+    deployAction: async () => ({ ok: true, message: 'ok' }),
+    rollbackAction: async () => ({ ok: true, message: 'ok' }),
+    setBranchAction: async () => ({ ok: true, message: 'ok' }),
+}))
+vi.mock('@/server/hostd/deploys', () => ({ listDeploys: (...args: unknown[]) => listDeploys(...args) }))
 
 const { default: SitePage } = await import('./page')
 
@@ -142,10 +149,10 @@ describe('the site page', () => {
     })
 
     it('explains one of them rather than showing an empty panel', async () => {
-        render(await page({ tab: 'deploys' }))
+        render(await page({ tab: 'backups' }))
 
-        expect(screen.getByRole('tab', { name: 'Deploys' })).toHaveAttribute('aria-selected', 'true')
-        expect(screen.getByText(/roll back if it needs it/)).toBeInTheDocument()
+        expect(screen.getByRole('tab', { name: 'Backups' })).toHaveAttribute('aria-selected', 'true')
+        expect(screen.getByText(/ask for a copy/)).toBeInTheDocument()
     })
 
     it('says a restart count it could not read is not available, rather than zero', async () => {
@@ -202,5 +209,31 @@ describe('the site page', () => {
         // state, and then the two figures it has no reading for
         expect(screen.getByRole('link', { name: /ASOT/ })).toHaveTextContent('unknown')
         expect(screen.getAllByText('not available')).toHaveLength(2)
+    })
+})
+
+describe('the deploys tab', () => {
+    it('stays disabled, and says why, for a site hostd has no deploys for', async () => {
+        // The default listing above carries no deploy capability, so hostd would refuse every call the
+        // panel makes, the history included. A tab that opens onto a refusal is worse than a marked one.
+        render(await page({ tab: 'deploys' }))
+
+        expect(screen.getByRole('tab', { name: 'Deploys' })).toHaveAttribute('aria-disabled', 'true')
+        expect(screen.getByText(/not switched on for this site/)).toBeInTheDocument()
+        expect(listDeploys).not.toHaveBeenCalled()
+    })
+
+    it('becomes a working tab once the project has the capability', async () => {
+        // The panel itself is an async server component, which this renderer cannot resolve inside a
+        // tree; deployPanel.test.tsx renders it on its own. What belongs here is the decision this page
+        // makes, which is whether the tab is a tab at all.
+        listProjects.mockResolvedValue({
+            ok: true,
+            value: [{ id: 'asot', name: 'ASOT', valid: true, capabilities: ['lifecycle', 'logs', 'deploy'] }],
+        })
+
+        render(await page())
+
+        expect(screen.getByRole('tab', { name: 'Deploys' })).not.toHaveAttribute('aria-disabled')
     })
 })

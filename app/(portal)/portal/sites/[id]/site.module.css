@@ -147,3 +147,34 @@
 
 .state { color: var(--ink-3); font-size: 11.5px; }
 .stateBad { color: var(--warn); font-size: 11.5px; }
+
+/* One deploy in the history. A failure's reason and the tail of what it printed hang under the row
+   rather than inside it, so the list stays a list and the one row anybody opens is the one that broke.
+   The rule belongs to this wrapper rather than to the row inside it, or the detail would sit under a
+   line and read as the next deploy's. ui/Row draws a div when it has no onClick, which is every row
+   here; the day it takes one, this selector stops matching and the line moves, which is visible. */
+.deploy { border-bottom: 1px solid var(--rule); }
+.deploy > div { border-bottom: 0; }
+.deploy:last-child { border-bottom: 0; }
+.deploy .note { margin: 0 0 8px 11px; }
+
+.output { margin: 0 0 10px 11px; font-size: 11.5px; }
+.output summary { color: var(--ink-3); cursor: pointer; }
+.output summary:hover { color: var(--ink-2); }
+.output summary:focus-visible { outline: 2px solid var(--lake); outline-offset: 2px; }
+
+.output pre {
+    margin: 8px 0 0;
+    padding: 10px 12px;
+    background: var(--night);
+    border: 1px solid var(--rule);
+    border-radius: 6px;
+    max-height: 340px;
+    overflow: auto;
+    font-family: var(--font-mono), monospace;
+    font-size: 11px;
+    line-height: 1.7;
+    color: var(--ink-2);
+    white-space: pre-wrap;
+    word-break: break-word;
+}

@@ -8,7 +8,8 @@ import { revalidatePath } from 'next/cache'
 
 import { getDb } from '@/server/db'
 import { readHostd, type HostdConfig } from '@/server/hostd/config'
-import { writeEnvFile } from '@/server/hostd/env'
+import { rollback, setBranch, startDeploy } from '@/server/hostd/deploys'
+import { writeEnvFile, type EnvironmentName } from '@/server/hostd/env'
 import type { Caller } from '@/server/hostd/actor'
 import { forAdmin, forClient } from '@/server/hostd/errors'
 import { assertOwned, lifecycle } from '@/server/hostd/projects'
@@ -26,6 +27,10 @@ const SAID: Record<LifecycleAction, string> = {
     stop: 'Stopping. The site will show its holding page until it is started again.',
     restart: 'Restarting. The site is unavailable for a few seconds.',
 }
+
+// hostd's own ENVIRONMENTS (hostd/src/shared/registry.ts). Checked against the list rather than cast,
+// because this string arrives from a browser like every other argument here.
+const ENVIRONMENTS = ['live', 'test'] as const
 
 const SIGN_IN_AGAIN = 'Your session has expired. Sign in again.'
 const NOT_YOURS = 'This is not set up yet.'
@@ -97,4 +102,61 @@ export async function saveEnvAction(id: string, path: string, text: string): Pro
 
     revalidatePath(`/portal/sites/${id}`)
     return { ok: true, message: 'Saved. The containers are restarting, which takes about twenty seconds.' }
+}
+
+// Deploying, rolling back and switching branch are the operator's alone: hostd puts 'deploy' among its
+// admin-only policy verbs (hostd/src/api/policy.ts) ahead of ownership, and this is the same rule applied
+// a step earlier. Reading the history is not admin-only, and has no action here: the panel reads it while
+// it renders.
+//
+// All three answer as soon as the work has started, because a deploy is minutes of building and hostd's
+// own call timeout is 150 seconds. Nothing here waits for an outcome, and the message says so.
+function environmentOf(environment: string): EnvironmentName | null {
+    return (ENVIRONMENTS as readonly string[]).includes(environment) ? environment as EnvironmentName : null
+}
+
+export async function deployAction(id: string, environment: string): Promise<SiteActionResult> {
+    const name = environmentOf(environment)
+    if (!name) return { ok: false, error: 'That is not something this page can do.' }
+
+    const allowed = await allow(id, true)
+    if (!allowed.ok) return allowed
+
+    const result = await startDeploy(allowed.config, allowed.caller, id, name)
+    if (!result.ok) return refused(`deploy ${name} on ${id}`, allowed.isAdmin, result)
+
+    revalidatePath(`/portal/sites/${id}`)
+    return { ok: true, message: 'Deploying. It builds first and swaps over after, which usually takes a minute or two.' }
+}
+
+export async function rollbackAction(id: string, environment: string): Promise<SiteActionResult> {
+    const name = environmentOf(environment)
+    if (!name) return { ok: false, error: 'That is not something this page can do.' }
+
+    const allowed = await allow(id, true)
+    if (!allowed.ok) return allowed
+
+    // Which commit it goes back to is hostd's to decide, and the route takes none: the page names it
+    // beforehand from the same rule, but it is never sent.
+    const result = await rollback(allowed.config, allowed.caller, id, name)
+    if (!result.ok) return refused(`rollback ${name} on ${id}`, allowed.isAdmin, result)
+
+    revalidatePath(`/portal/sites/${id}`)
+    return { ok: true, message: 'Rolling back. The last version that worked is going up, which takes a minute or two.' }
+}
+
+export async function setBranchAction(id: string, environment: string, branch: string): Promise<SiteActionResult> {
+    const name = environmentOf(environment)
+    if (!name || typeof branch !== 'string') return { ok: false, error: 'That is not something this page can do.' }
+
+    const allowed = await allow(id, true)
+    if (!allowed.ok) return allowed
+
+    const result = await setBranch(allowed.config, allowed.caller, id, name, branch)
+    if (!result.ok) return refused(`branch ${name} on ${id}`, allowed.isAdmin, result)
+
+    revalidatePath(`/portal/sites/${id}`)
+    // Switching branch deploys its tip, and it is also what resumes an environment hostd has paused, so
+    // both are said here rather than leaving the second one to be discovered.
+    return { ok: true, message: `Now following ${branch}. A deploy of it has started.` }
 }
