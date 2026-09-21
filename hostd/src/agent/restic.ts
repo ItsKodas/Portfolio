@@ -1,0 +1,131 @@
+// Every restic command the agent runs, and the argv that builds them. Two adapters, for two reasons: most
+// commands produce a few kilobytes of JSON and go through Runner, which captures output as text, while a
+// dump is a tar of the whole snapshot and goes through SpawnStream, which never holds it in memory.
+//
+// RESTIC_PASSWORD is deliberately absent from every line here. restic reads it from the agent's own
+// environment, which a spawned child inherits, so it can never appear in an argv, a log or an error.
+
+import { spawn as nodeSpawn } from 'node:child_process'
+import { posix } from 'node:path'
+import type { Readable } from 'node:stream'
+
+import { tail, type Runner } from './compose.ts'
+import type { Keep } from '../shared/registry.ts'
+import type { BackupTag, Snapshot } from '../shared/backups.ts'
+
+// A backup of a large site is minutes, and a prune of a large repository can be longer. Nothing here is
+// on a request's critical path: the run was started, not awaited.
+export const RESTIC_TIMEOUT_MS = 60 * 60_000
+export const OUTPUT_TAIL = 500
+
+export const repoPath = (backupDir: string, id: string): string => posix.join(backupDir, id)
+export const stagingPath = (backupDir: string, id: string, run: string): string => posix.join(backupDir, '.staging', id, run)
+
+const base = (repo: string): string[] => ['-r', repo]
+
+export const initArgv = (repo: string): string[] => [...base(repo), 'init']
+export const backupArgv = (repo: string, paths: string[], tag: BackupTag): string[] =>
+    [...base(repo), 'backup', '--json', '--tag', tag, ...paths]
+export const snapshotsArgv = (repo: string): string[] => [...base(repo), 'snapshots', '--json']
+export const forgetArgv = (repo: string, snapshot: string): string[] => [...base(repo), 'forget', snapshot]
+// scheduled only: a manual snapshot is kept until the client deletes it, and retention must never take one.
+export const retentionArgv = (repo: string, keep: Keep): string[] => [
+    ...base(repo), 'forget', '--tag', 'scheduled',
+    '--keep-daily', String(keep.daily), '--keep-weekly', String(keep.weekly), '--keep-monthly', String(keep.monthly),
+]
+export const pruneArgv = (repo: string): string[] => [...base(repo), 'prune']
+export const dumpArgv = (repo: string, snapshot: string): string[] => [...base(repo), 'dump', '--archive', 'tar', snapshot, '/']
+
+export type StreamHandle = { stdout: Readable, exit: Promise<{ exitCode: number | null, stderr: string }> }
+export type SpawnStream = (command: string, args: string[]) => StreamHandle
+
+export function nodeSpawnStream(spawn: typeof nodeSpawn = nodeSpawn): SpawnStream {
+    return (command, args) => {
+        const child = spawn(command, args, { stdio: ['ignore', 'pipe', 'pipe'] })
+        let stderr = ''
+        child.stderr?.on('data', (chunk: Buffer) => { if (stderr.length < 4096) stderr += chunk.toString('utf8') })
+        const exit = new Promise<{ exitCode: number | null, stderr: string }>(resolve => {
+            child.on('close', code => resolve({ exitCode: code, stderr: stderr.trim() }))
+            child.on('error', error => resolve({ exitCode: null, stderr: error.message }))
+        })
+        return { stdout: child.stdout!, exit }
+    }
+}
+
+export type ResticFailure = { ok: false, reason: string, output: string }
+export type Restic = {
+    init(repo: string): Promise<{ ok: true } | ResticFailure>
+    backup(repo: string, paths: string[], tag: BackupTag): Promise<{ ok: true, snapshot: string, sizeBytes: number | null } | ResticFailure>
+    snapshots(repo: string): Promise<{ ok: true, snapshots: Snapshot[] } | ResticFailure>
+    forget(repo: string, snapshot: string): Promise<{ ok: true } | ResticFailure>
+    retention(repo: string, keep: Keep): Promise<{ ok: true } | ResticFailure>
+    prune(repo: string): Promise<{ ok: true } | ResticFailure>
+    dump(repo: string, snapshot: string): StreamHandle
+}
+
+type Summary = { message_type?: string, snapshot_id?: string, total_bytes_processed?: number }
+type ResticSnapshot = { short_id?: string, id?: string, time?: string, tags?: string[] }
+
+export function createRestic(run: Runner, spawnStream: SpawnStream): Restic {
+    // Every failure is returned, never thrown, and carries the tail of stderr so a broken repository is
+    // diagnosable from the portal. stderr from restic names paths and exit codes, never the password.
+    const failed = (what: string, result: { exitCode: number | null, stderr: string, timedOut: boolean }): ResticFailure => ({
+        ok: false,
+        reason: result.timedOut ? `restic ${what} timed out` : `restic ${what} exited with code ${result.exitCode}`,
+        output: tail(result.stderr.trim(), OUTPUT_TAIL),
+    })
+
+    async function simple(what: string, args: string[]): Promise<{ ok: true } | ResticFailure> {
+        const result = await run('restic', args, RESTIC_TIMEOUT_MS)
+        return result.exitCode === 0 && !result.timedOut ? { ok: true } : failed(what, result)
+    }
+
+    return {
+        init: repo => simple('init', initArgv(repo)),
+        forget: (repo, snapshot) => simple('forget', forgetArgv(repo, snapshot)),
+        retention: (repo, keep) => simple('forget', retentionArgv(repo, keep)),
+        prune: repo => simple('prune', pruneArgv(repo)),
+
+        async backup(repo, paths, tag) {
+            const result = await run('restic', backupArgv(repo, paths, tag), RESTIC_TIMEOUT_MS)
+            if (result.exitCode !== 0 || result.timedOut) return failed('backup', result)
+            // --json writes one object per line and ends with a summary. The summary is the only line that
+            // names the snapshot, so a run whose output we cannot read is a failed run: without an id there
+            // is nothing to record, delete or download.
+            for (const line of result.stdout.split('\n').reverse()) {
+                if (!line.trim()) continue
+                try {
+                    const parsed = JSON.parse(line) as Summary
+                    if (parsed.message_type === 'summary' && parsed.snapshot_id) {
+                        return { ok: true, snapshot: parsed.snapshot_id, sizeBytes: parsed.total_bytes_processed ?? null }
+                    }
+                } catch {
+                    // Not JSON: restic writes progress lines too. Keep looking.
+                }
+            }
+            return { ok: false, reason: 'restic backup did not report a snapshot id', output: tail(result.stdout.trim(), OUTPUT_TAIL) }
+        },
+
+        async snapshots(repo) {
+            const result = await run('restic', snapshotsArgv(repo), RESTIC_TIMEOUT_MS)
+            if (result.exitCode !== 0 || result.timedOut) return failed('snapshots', result)
+            try {
+                const parsed = JSON.parse(result.stdout) as ResticSnapshot[]
+                const snapshots = parsed
+                    .map(entry => ({
+                        id: entry.short_id ?? entry.id ?? '',
+                        at: new Date(entry.time ?? 0).toISOString(),
+                        tag: (entry.tags ?? []).includes('manual') ? 'manual' as const : 'scheduled' as const,
+                        sizeBytes: null,
+                    }))
+                    .filter(snapshot => snapshot.id !== '')
+                    .sort((a, b) => b.at.localeCompare(a.at))
+                return { ok: true, snapshots }
+            } catch {
+                return { ok: false, reason: 'restic snapshots returned unreadable output', output: '' }
+            }
+        },
+
+        dump: (repo, snapshot) => spawnStream('restic', dumpArgv(repo, snapshot)),
+    }
+}
