@@ -713,36 +713,55 @@ export function createHandler(deps: ApiDeps): (req: IncomingMessage, res: Server
         // hand-served site, "Check again" would do nothing (the verifier skips a record with no token),
         // and the operator's only way out would be the adopt button on a site with nothing to adopt.
         //
-        // reconcile first, then the records. Either order is correct, because reconcile adds what the
-        // registry names, deletes what it does not, and never touches a record that already exists: run
-        // after, it would leave what this wrote alone; run first, it puts the new hostname in as unmanaged
-        // for the loop below to fill in, and takes the old one away now instead of within ten seconds.
-        // The second is what makes the very next request tell the truth, which is the whole point here.
+        // EVERYTHING this needs out of the store is read BEFORE reconcile, and that ordering is the whole
+        // of it. reconcile deletes the records of hostnames the registry no longer names, which is exactly
+        // the address that just moved away, and on an environment with no aliases that record is the only
+        // place the environment's token lives. Read the token afterwards and it is already gone, so the
+        // moved hostname stays unmanaged with no token: the very fault this exists to prevent, in the one
+        // shape every site on this machine is in today. The same goes for which hostnames were already
+        // being served, which is decided from the records as they were before any of this ran.
+        //
+        // reconcile then runs before the records are written rather than after. Either order leaves the
+        // same records behind (it adds what the registry names, deletes what it does not, and never
+        // touches a record that already exists), but running it first takes the old hostname away now
+        // instead of ten seconds from now, so the very next request does not show two primaries.
         const recordConfigured = async (project: string, reply: AgentReply): Promise<void> => {
             if (!reply.ok) return
-            // reconcile on every configure that came back ok, not only one that wrote a vhost: an address
-            // that moved on an environment hostd does NOT serve still changes which hostnames should have
+            const rewritten = 'written' in reply && Array.isArray(reply.written) ? reply.written : []
+
+            // The token the environment already has, and never a fresh one, which is why tokenFor is not
+            // used here: the agent rewrote that file with the token it already carried, so minting another
+            // would leave the verifier probing for a value Apache does not serve and failing a site that
+            // is working perfectly well. An environment with no token to be found is left out below, since
+            // this process cannot prove anything about those names and saying so beats saying the wrong
+            // thing.
+            const tokens = new Map<EnvironmentName, string>()
+            // And which hostnames hostd was already serving. Anything else starts its 72 hour countdown;
+            // these do not, because the rewrite kept the token, so an alias that was answering a moment
+            // ago still is and has nothing new to prove. Making it pending would put "waiting for DNS" on
+            // a client's screen for a name that never stopped working.
+            const already = new Map<EnvironmentName, Set<string>>()
+            for (const wrote of rewritten) {
+                const records = deps.domains.forEnvironment(project, wrote.environment)
+                const token = records.find(record => record.token !== null)?.token
+                if (token != null) tokens.set(wrote.environment, token)
+                already.set(wrote.environment, new Set(
+                    records.filter(record => record.state !== 'unmanaged').map(record => record.hostname),
+                ))
+            }
+
+            // On every configure that came back ok, not only one that rewrote a vhost: an address that
+            // moved on an environment hostd does NOT serve still changes which hostnames should have
             // records, and it is worth being right about that now rather than within ten seconds. It
             // writes nothing when nothing changed, which is what a routine capability save is.
             await deps.domains.reconcile(deps.registry(), new Date(now()).toISOString())
-            if (!('written' in reply) || !Array.isArray(reply.written)) return
 
-            for (const wrote of reply.written) {
-                const records = deps.domains.forEnvironment(project, wrote.environment)
-                // The token the environment already has, and never a fresh one, which is why tokenFor is
-                // not used here: the agent rewrote that file with the token it already carried, so minting
-                // another would leave the store probing for a value Apache does not serve and failing a
-                // site that is working perfectly well. With no token to be found this process cannot prove
-                // anything about these names, and saying so (leaving them unmanaged) beats saying the
-                // wrong thing.
-                const token = records.find(record => record.token !== null)?.token
-                if (token == null) continue
-                // Only the names that were not already being served start their 72 hour countdown again.
-                // The rewrite kept the token, so an alias that was answering a moment ago still is and has
-                // nothing new to prove; making it pending would put "waiting for DNS" on a client's screen
-                // for a name that never stopped working.
-                const states = new Map(records.map(record => [record.hostname, record.state]))
-                const fresh = wrote.hostnames.filter(hostname => (states.get(hostname) ?? 'unmanaged') === 'unmanaged')
+            for (const wrote of rewritten) {
+                const token = tokens.get(wrote.environment)
+                if (token === undefined) continue
+                const served = already.get(wrote.environment) ?? new Set<string>()
+                const fresh = wrote.hostnames.filter(hostname => !served.has(hostname))
+                // The registry, which reconcile does not touch, so this one is safe to read here.
                 const entry = deps.registry().projects.get(project)?.environments.get(wrote.environment)
                 await recordWritten(project, wrote.environment, token, fresh, entry?.domain ?? null)
             }

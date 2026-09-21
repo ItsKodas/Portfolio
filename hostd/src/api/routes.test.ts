@@ -17,7 +17,7 @@ import { DomainStore, domainKey, newRecord, type DomainRecord } from './domain-s
 // The verifier's own scheduling rule, imported here so "the operator can re-check this name" is asserted
 // as the thing it actually is (a record the verifier will pick up) rather than as a state string.
 import { nextCheckAt } from './verifier.ts'
-import { parseRegistry } from '../shared/registry.ts'
+import { parseRegistry, type Registry } from '../shared/registry.ts'
 import { DOMAIN_TOKEN, type AgentReply, type AgentRequest, type LogLine } from '../shared/protocol.ts'
 import type { SystemUsage } from '../shared/system.ts'
 
@@ -1117,14 +1117,29 @@ projects:
       live: { dir: /var/www/acme, port: 5010, domain: shop.acme.example, aliases: [www.acme.example] }
 `)
 
+    // The same move on an environment with one address and nothing else, which is the shape every site on
+    // this machine is in today. It is worth its own registry because it is the case where the address
+    // that moved away held the ONLY copy of the environment's token: anything that reads the token after
+    // reconcile has deleted that record finds nothing at all.
+    const primaryOnlyRegistry = parseRegistry(`
+projects:
+  acme:
+    client: cl_1
+    name: Acme
+    services: { web: { role: site } }
+    capabilities: [domains]
+    environments:
+      live: { dir: /var/www/acme, port: 5010, domain: shop.acme.example }
+`)
+
     // A handler whose registry moves the way the real one does: the refresh that follows an ok configure
     // is what brings it level, exactly as RegistryStore.refresh does in production.
-    function movedHandler() {
+    function movedHandler(to: Registry) {
         let live = registry
         return createHandler({
             token: TOKEN,
             registry: () => live,
-            refreshRegistry: async () => { live = movedRegistry; return true },
+            refreshRegistry: async () => { live = to; return true },
             agent, audit, schedules, domains, verifier, keepaliveMs: 60_000,
         })
     }
@@ -1135,25 +1150,28 @@ projects:
         return request(path, options).finally(() => { handler = original })
     }
 
-    // The environment as it was: hostd serving it, both names proved and carrying the one token its
-    // vhost renders.
-    const seedServed = () => seedDomains([
+    // The environment as it was: hostd serving it, every name proved and carrying the one token its vhost
+    // renders. The aliases are named at each call site rather than baked in with a default, because a
+    // helper that always seeds one means no test in this file can ever exercise an environment without
+    // one, and that is the shape all five live sites are in. A default of "one alias" would hide exactly
+    // the case worth testing; spelling it out makes each test say which shape it is about.
+    const seedServed = (aliases: string[]) => seedDomains([
         domainRecord({ hostname: 'acme.example', primary: true, state: 'active', token: TOKEN_IN_PLACE }),
-        domainRecord({ hostname: 'www.acme.example', primary: false, state: 'active', token: TOKEN_IN_PLACE }),
+        ...aliases.map(hostname => domainRecord({ hostname, primary: false, state: 'active', token: TOKEN_IN_PLACE })),
     ])
 
     const move = (h: ReturnType<typeof createHandler>) =>
         via(h, '/projects/acme/settings', { method: 'PUT', actor: 'admin', body: { domains: { live: 'shop.acme.example' } } })
 
     it('leaves the new hostname pending, with the token that vhost already carried', async () => {
-        await seedServed()
+        await seedServed(['www.acme.example'])
         agent.reply = () => ({
             ok: true,
             output: 'done',
             written: [{ environment: 'live', hostnames: ['shop.acme.example', 'www.acme.example'], path: VHOST }],
         })
 
-        assert.equal((await move(movedHandler())).status, 200)
+        assert.equal((await move(movedHandler(movedRegistry))).status, 200)
 
         const moved = domains.get(domainKey('acme', 'live', 'shop.acme.example'))
         // pending and not unmanaged: hostd serves this name from a file it wrote a moment ago, and
@@ -1177,14 +1195,14 @@ projects:
     })
 
     it('takes the old address away and leaves the aliases alone', async () => {
-        await seedServed()
+        await seedServed(['www.acme.example'])
         agent.reply = () => ({
             ok: true,
             output: 'done',
             written: [{ environment: 'live', hostnames: ['shop.acme.example', 'www.acme.example'], path: VHOST }],
         })
 
-        assert.equal((await move(movedHandler())).status, 200)
+        assert.equal((await move(movedHandler(movedRegistry))).status, 200)
 
         // reconcile's own work, run here rather than waited for: the registry no longer names it.
         assert.equal(domains.get(domainKey('acme', 'live', 'acme.example')), undefined)
@@ -1193,13 +1211,34 @@ projects:
         assert.equal(domains.get(domainKey('acme', 'live', 'www.acme.example'))?.state, 'active')
     })
 
+    // The shape every site on this machine is in: one address and no aliases. The record for the address
+    // that moved away was the only place this environment's token lived, so reading it after reconcile
+    // has deleted that record finds nothing and leaves the moved hostname unmanaged forever. Read it
+    // first and it is there. Nothing about this test is exotic; it is the ordinary case.
+    it('keeps the token when the address that moved away was the only record holding it', async () => {
+        await seedServed([])
+        agent.reply = () => ({
+            ok: true,
+            output: 'done',
+            written: [{ environment: 'live', hostnames: ['shop.acme.example'], path: VHOST }],
+        })
+
+        assert.equal((await move(movedHandler(primaryOnlyRegistry))).status, 200)
+
+        const moved = domains.get(domainKey('acme', 'live', 'shop.acme.example'))
+        assert.equal(moved?.state, 'pending')
+        assert.equal(moved?.token, TOKEN_IN_PLACE)
+        assert.notEqual(nextCheckAt(moved!), null)
+        assert.equal(domains.get(domainKey('acme', 'live', 'acme.example')), undefined)
+    })
+
     it('leaves the new hostname unmanaged when hostd serves no vhost for that environment', async () => {
-        await seedServed()
+        await seedServed(['www.acme.example'])
         // The agent rewrote nothing, because there was no file of its own to rewrite. The site is still
         // served by a hand-written vhost, and unmanaged is exactly what that means.
         agent.reply = () => ({ ok: true, output: 'done', written: [] })
 
-        assert.equal((await move(movedHandler())).status, 200)
+        assert.equal((await move(movedHandler(movedRegistry))).status, 200)
 
         const moved = domains.get(domainKey('acme', 'live', 'shop.acme.example'))
         assert.equal(moved?.state, 'unmanaged')
