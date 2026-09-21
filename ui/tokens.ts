@@ -23,6 +23,7 @@ export const TOKENS: Record<string, string> = {
     'good': '#5fc98d',
     'warn': '#e0a84e',
     'crit': '#e4574c',
+    'crit-hi': '#ea6d63',
     'soft-red': '#ffb3ad',
 
     'radius-chip': '4px',

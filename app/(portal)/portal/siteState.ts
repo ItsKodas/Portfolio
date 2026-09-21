@@ -7,6 +7,7 @@
 // runs it directly.
 
 import type { Project, ServiceStatus } from '@/server/hostd/projects'
+import type { State as DotState } from '@/ui/StatusDot/StatusDot'
 
 export type SiteState = 'up' | 'down' | 'stopped' | 'unknown'
 
@@ -34,6 +35,18 @@ export function stateOfServices(services: ServiceStatus[] | 'unknown'): SiteStat
 
 export function stateOf(site: Project): SiteState {
     return stateOfServices(servicesOf(site))
+}
+
+// One container, in Docker's own words, mapped onto the states a dot can draw. Docker's list is longer
+// than the dot's and can grow, so anything unrecognised is unknown rather than guessed at: a container in
+// a state we have never seen is exactly the one not to draw a confident green dot for.
+export function serviceDot(state: string): DotState {
+    if (state === 'running') return 'up'
+    if (state === 'exited' || state === 'dead') return 'down'
+    if (state === 'paused') return 'paused'
+    if (state === 'restarting') return 'deploying'
+    if (state === 'created') return 'stopped'
+    return 'unknown'
 }
 
 // What the line under the heading says. It counted only the sites that were down, so five stopped sites

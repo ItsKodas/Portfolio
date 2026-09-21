@@ -1,13 +1,16 @@
 import styles from './StatusDot.module.css'
 
-type State = 'up' | 'down' | 'deploying' | 'stopped' | 'paused' | 'unknown'
+export type State = 'up' | 'down' | 'deploying' | 'stopped' | 'paused' | 'unknown'
 
-export function StatusDot({ state }: { state: State }) {
+// label says the word this dot is standing for when the caller has a more exact one: a container is
+// "running" or "exited" rather than up or down, and the site page's environment bar says so. The word is
+// still the meaning, which is the whole contract here; only its wording moves.
+export function StatusDot({ state, label }: { state: State, label?: string }) {
     // The word is the meaning; the dot is decoration and is hidden, so nothing depends on colour alone.
     return (
         <span className={styles.wrap}>
             <span className={[styles.dot, styles[state]].join(' ')} aria-hidden="true" />
-            <span>{state}</span>
+            <span>{label ?? state}</span>
         </span>
     )
 }

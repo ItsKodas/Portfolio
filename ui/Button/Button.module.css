@@ -41,6 +41,22 @@
     color: var(--night);
 }
 
+/* The one button on a screen that leaves something switched off behind it. It is filled rather than
+   outlined for the same reason primary is: the control that does the thing should not look like the two
+   beside it that undo or repeat it. */
+.danger {
+    background: var(--crit);
+    border-color: var(--crit);
+    color: var(--night);
+    font-weight: 600;
+}
+
+.danger:hover:not(:disabled) {
+    background: var(--crit-hi);
+    border-color: var(--crit-hi);
+    color: var(--night);
+}
+
 .quiet {
     border-color: transparent;
     color: var(--ink-3);

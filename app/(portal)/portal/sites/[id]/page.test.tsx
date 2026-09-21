@@ -1,7 +1,7 @@
 // gatherSite is tested on its own. This renders the real page component over the real ui/ components,
 // because a page that throws at request time passes every one of those tests.
 
-import { render, screen } from '@testing-library/react'
+import { render, screen, within } from '@testing-library/react'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 const listProjects = vi.fn()
@@ -63,8 +63,14 @@ describe('the site page', () => {
         render(await page())
 
         expect(screen.getByRole('heading', { level: 1 })).toHaveTextContent('ASOT')
-        expect(screen.getByText('asot-web')).toBeInTheDocument()
         expect(screen.getByRole('tab', { name: 'Overview' })).toHaveAttribute('aria-selected', 'true')
+
+        // The container is named twice on the Overview, and they are two different things: the bar
+        // beside the log says what the site is made of, and the toggle says whose log is being read.
+        const bar = within(screen.getByRole('complementary'))
+        expect(bar.getByText('asot-web')).toBeInTheDocument()
+        expect(bar.getByText('running')).toBeInTheDocument()
+        expect(screen.getByRole('button', { name: 'asot-web' })).toHaveAttribute('aria-pressed', 'true')
     })
 
     it('draws itself when the containers could not be read, rather than throwing', async () => {
