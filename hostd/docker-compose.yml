@@ -19,6 +19,8 @@ services:
       # The node user's group in the api image, so api can connect and nothing else can.
       HOSTD_SOCKET_GID: "1000"
       HOSTD_STATUS_FILE: /tmp/hostd-status.json
+      HOSTD_DEPLOY_STATE_FILE: /var/lib/hostd/deploys.json
+      HOSTD_MAINTENANCE_DIR: /run/hostd/maintenance
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
       # The same path inside as outside: compose hands bind mount sources to the daemon as host paths.
@@ -31,6 +33,14 @@ services:
       # provisioning writes it; api gets it read-only below.
       - ./registry:/etc/hostd/registry
       - hostd-sock:/run/hostd
+      # The deploy history and the pause state. Its own volume, not the socket one, because this has to
+      # survive a restart: an environment paused after three failed builds would otherwise come back
+      # rebuilding every two minutes.
+      - hostd-agent-state:/var/lib/hostd
+      # The maintenance flags, on the host's own /run so Apache can see them. Nested inside the volume
+      # above on purpose: the design names this exact path, and /run is a tmpfs, so a flag can never
+      # outlive the deploy that wrote it.
+      - /run/hostd/maintenance:/run/hostd/maintenance
       # Shared only with fetcher, never with api: api must never be able to reach the fetch protocol
       # directly, and fetcher must never be able to touch agent.sock (in hostd-sock) to impersonate the
       # agent to api. See fetcher's own volumes below for the other half of this.
@@ -106,5 +116,6 @@ networks:
 
 volumes:
   hostd-state:
+  hostd-agent-state:
   hostd-sock:
   hostd-fetch-sock:

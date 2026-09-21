@@ -351,11 +351,69 @@ Adding a test environment later is `POST /projects/acme-bakery/environments` wit
 correct any wrongly-guessed service role, set its capabilities, add its storage, list and fill its env
 files. **Do not run step 6 against it, and do not start it by hand either.** There is no per-environment
 lifecycle yet: every lifecycle verb, and the compose argv it builds, only ever resolves the project's
-`live` folder, so there is no supported way to start `test` today, and it stays inert until the deploy
-phase makes it startable. Starting it by hand is actively dangerous for exactly the repos step 1 above
+`live` folder. Start it with a deploy instead (see **Deploying**), which pins the compose project name to
+the test folder's own name. Starting it by hand is actively dangerous for exactly the repos step 1 above
 tells you to pin a `name:` into: running `docker compose up -d` in the test folder then resolves to that
 same fixed compose project name, which is also live's, and takes over live's already-running containers
 instead of starting a separate test stack.
+
+## Deploying
+
+A project gets deploys by having a `repo`, a `branch` on the environment, and `deploy` in its
+`capabilities`. Nothing else switches it on, and a project enrolled by hand with no repo simply never
+deploys.
+
+**How one happens.** Every 2 minutes the agent asks GitHub for the tip of each deploying environment's
+branch. A tip different from the entry's `deployed` starts a deploy: fetch, check the commit out into
+`<dir>.next`, carry the env files across from the running copy, `docker compose build` there, then the
+swap (maintenance flag up, `down`, `<dir>` becomes `<dir>.prev`, `<dir>.next` becomes `<dir>`, `up -d`,
+flag down), then the health check, then `deployed` is written to the registry. One deploy per environment
+at a time; a commit that lands mid-deploy is picked up by the next poll.
+
+**What the health check actually checks.** Every registered compose service has a running container, and
+any container that declares a healthcheck reports `healthy`, within 60 seconds. It is deliberately not an
+HTTP request to the site's port: the agent runs `network_mode: none` and has no network namespace to make
+one from. A repo that wants the stronger check declares a `healthcheck:` in its compose file.
+
+**When it fails.** A fetch, checkout, env-file copy or build that fails ends the deploy with the running
+site untouched, and the build output kept in the history. A failed health check (or a version that will
+not start at all) swaps straight back to `<dir>.prev`, confirms that copy is healthy, and records the
+deploy as `rolled-back` rather than failed. **Nothing is ever retried automatically**: the same commit
+fails the same way.
+
+**Three consecutive failures pause the environment.** Polling then stops until a person deploys, rolls
+back or switches branch. Otherwise a repo with a broken build rebuilds every few minutes for ever.
+
+**The trees on disk.** `<dir>` is the running copy, `<dir>.prev` the previous one (only ever one),
+`<dir>.git` the Git repository, and `<dir>.next` exists only during a deploy. The repository is moved out
+of `<dir>` into `<dir>.git` by the first deploy, once, because a swap renames `<dir>` and would otherwise
+carry the repository into `.prev` and delete it on the next deploy. A deploy refuses to start with less
+than 10 GB free.
+
+**The maintenance flag.** `/run/hostd/maintenance/<id>-<env>` exists from just before the swap until just
+after it. Apache's half of this (serving the holding page while that file exists, and when the upstream
+is unreachable) **is not built yet**, so today the flag is written and removed and nothing reads it. The
+site is briefly unreachable during a swap either way.
+
+The calls, all admin-only except the last two:
+
+```bash
+hc -X POST http://hostd-api:8080/projects/acme-bakery/live/deploy      # deploy the tip now, and resume a paused environment
+hc -X POST http://hostd-api:8080/projects/acme-bakery/live/rollback    # back to the last commit recorded healthy
+hc -X PUT  http://hostd-api:8080/projects/acme-bakery/live/branch -d '{"branch":"develop"}'
+hc http://hostd-api:8080/projects/acme-bakery/live/deploys             # history, and whether it is paused
+hc http://hostd-api:8080/projects/acme-bakery/live/commits?limit=20    # the branch's log
+```
+
+A deploy answers as soon as it has **started**, not when it finishes: a build is minutes and api's call
+timeout is 150 seconds. Read `/deploys` for the outcome. A rollback rebuilds the target commit rather
+than reusing the kept image, so it takes about as long as a deploy; only the automatic rollback after a
+failed health check uses the kept copy, which is what makes it seconds rather than minutes.
+
+Deploying is the supported way to start a `test` environment: it pins the compose project name to the
+environment's own folder name, so a repo whose compose file pins `name:` still gets a separate stack
+rather than taking over live's containers. Lifecycle (`start`, `stop`, `restart`) still only ever reaches
+`live`.
 
 ## What is deliberately not automatic
 
@@ -396,3 +454,12 @@ instead of starting a separate test stack.
 | A `create` or `add-environment` refusal naming a `docker compose config` error directly (a missing `env_file`, a syntax error) | hostd creates an empty file for any `.env.example` it finds with nothing real beside it yet, but only in the folders and depth a later env listing would itself reach; something the compose file needs still was not there. Fix the compose file or the repo, and try again. |
 | A `provision` or `env` refusal naming a registry problem (`"... could not be written"`, or `"... already exists"` for an add) | The write itself failed, or raced another one and lost. A folder left behind after a losing race is not that call's to remove; it is left for you to look at. |
 | A `provision remove` refusal `"could not stop ... before removing it: ..."` | The project's folder or compose file is gone (or otherwise broken), so `docker compose stop` cannot run, and removal refuses rather than unregister a project hostd can no longer control. There is no way to force this through hostd: take the entry out of `registry/projects.yaml` by hand instead. |
+| A deploy record with `outcome: failed` and a `build exited with code ...` reason | The repo's own build failed; the `output` field holds the tail of it. The running site was never touched, and nothing is retried: push a fix. |
+| A deploy record with `outcome: rolled-back` | The new version did not come up healthy within 60 seconds, or would not start at all, so hostd swapped back to the previous copy. The site is on the commit it started on. The reason names the service and the state it was in. |
+| A deploy record whose reason ends `the previous copy did not come back healthy either` | The rollback ran but the old copy did not come up. This is the one case that needs hands: look at `docker compose ps` in `<dir>`, and at the agent log, before pushing anything else. |
+| `/deploys` shows `"paused": true` | Three consecutive deploys failed. Polling has stopped. Fix the repo, then `POST .../deploy` (or `/rollback`, or a branch switch) to resume; nothing resumes on its own. |
+| Agent log `poll <id>:<env>: could not read the branch tip: ...` | The fetch failed (the remote was unreachable, the token cannot read the repo, or the branch does not exist). Nothing was deployed and no failure was counted, so this does not pause the environment. |
+| A deploy record `only N GB of free disk, and a deploy needs 10 GB` | The disk is too full to guarantee a swap can complete. Free space, starting with the `<dir>.prev` copies, which the next successful deploy would replace anyway. |
+| A deploy record `... has no git repository, so it cannot be deployed` | The environment folder was not created by hostd, so there is no `.git` in it and no `<dir>.git` beside it. Clone it properly, or deploy is not for this project. |
+| A deploy record `the running copy could not be stopped: ...` | `docker compose down` failed in the live tree, so nothing was moved and the site is still on the old version. Read the `output`, fix whatever it names, and deploy again. |
+| A deploy record `deployed, but the registry could not be updated: ...` | The new version is up and healthy, only `deployed` was not written. The next poll deploys the same commit again, harmlessly. Fix the registry file's permissions. |

@@ -2,7 +2,8 @@
 // the Docker socket, so it listens on nothing but a Unix socket shared with api.
 
 import { createServer, createConnection } from 'node:net'
-import { chmod, chown, mkdir, rm, stat } from 'node:fs/promises'
+import { chmod, chown, mkdir, rename, rm, stat, statfs, writeFile } from 'node:fs/promises'
+import { posix } from 'node:path'
 import { RegistryStore, explainRegistryError } from '../shared/registry-store.ts'
 import { RegistryWriter } from '../shared/registry-write.ts'
 import { choosePort } from '../shared/ports.ts'
@@ -15,6 +16,10 @@ import { GuardTracker } from './guard-tracker.ts'
 import { createFetchClient, socketConnect } from './fetch-client.ts'
 import { Agent } from './agent.ts'
 import type { ProvisionDeps } from './provision.ts'
+import { currentTip, type DeployDeps } from './deploy.ts'
+import { DeployStore } from './deploy-state.ts'
+import { DeployRunner } from './deploy-runner.ts'
+import { DeployPoller } from './deploy-poller.ts'
 import { handleConnection } from './server.ts'
 
 const REGISTRY_FILE = process.env.HOSTD_REGISTRY_FILE ?? '/etc/hostd/registry/projects.yaml'
@@ -25,6 +30,12 @@ const FETCH_SOCKET_PATH = process.env.HOSTD_FETCH_SOCKET ?? '/run/hostd-fetch/fe
 // Which filesystem health reports as the system disk. The default is the host's /var/www, bind-mounted
 // here at the same path, so the figure is the host's disk rather than this container's own overlay.
 const SYSTEM_DISK_PATH = process.env.HOSTD_SYSTEM_DISK_PATH ?? DEFAULT_SYSTEM_DISK_PATH
+// The deploy history and the pause state. On its own volume, because it has to survive a restart: an
+// environment paused after three failed builds would otherwise start rebuilding every two minutes again.
+const DEPLOY_STATE_FILE = process.env.HOSTD_DEPLOY_STATE_FILE ?? '/var/lib/hostd/deploys.json'
+// The flags Apache reads to serve the holding page. Bind-mounted from the host's own /run, which is a
+// tmpfs, so a reboot can never leave a site behind a maintenance page nobody remembers putting up.
+const MAINTENANCE_DIR = process.env.HOSTD_MAINTENANCE_DIR ?? '/run/hostd/maintenance'
 const WWW = '/var/www'
 const POLL_MS = 10_000
 // Compose files can change without the registry changing, so the guard also runs on a timer.
@@ -119,8 +130,49 @@ async function main(): Promise<void> {
         log,
     }
 
+    const deployStore = new DeployStore(DEPLOY_STATE_FILE, undefined, log)
+    await deployStore.load()
+    const deployDeps: DeployDeps = {
+        registry: () => store.current(),
+        refreshRegistry: async () => { await store.refresh() },
+        writer,
+        fetcher,
+        docker,
+        runner,
+        fs: {
+            exists,
+            mkdir: async dir => { await mkdir(dir, { recursive: true }) },
+            rmdir: dir => rm(dir, { recursive: true, force: true }),
+            move: (from, to) => rename(from, to),
+            // What df calls available: the blocks a deploy could actually use, excluding the ones the
+            // filesystem reserves for root.
+            freeBytes: async path => {
+                const info = await statfs(path)
+                return info.bavail * info.bsize
+            },
+            setMaintenance: async key => {
+                await mkdir(MAINTENANCE_DIR, { recursive: true })
+                await writeFile(posix.join(MAINTENANCE_DIR, key), '')
+            },
+            clearMaintenance: key => rm(posix.join(MAINTENANCE_DIR, key), { force: true }),
+        },
+        now: Date.now,
+        sleep: async ms => { await sleep(ms) },
+        log,
+    }
+    const deployRunner = new DeployRunner({ ...deployDeps, store: deployStore })
+    const deployPoller = new DeployPoller({
+        registry: () => store.current(),
+        store: deployStore,
+        runner: deployRunner,
+        tip: (project, environment) => currentTip(project, environment, deployDeps),
+        now: Date.now,
+        log,
+    })
+
     const warnings = () => [
         ...store.warnings(),
+        ...deployStore.warnings(),
         ...[...store.current().invalid].map(([id, problem]) => `project ${id} is invalid: ${problem}`),
         ...guard.warnings(),
         ...(fetcherProblem ? [fetcherProblem] : []),
@@ -138,6 +190,7 @@ async function main(): Promise<void> {
         system: () => readSystemUsage(source, SYSTEM_DISK_PATH),
         recheck: project => guard.check(project),
         provision,
+        deploys: { runner: deployRunner, store: deployStore, deps: deployDeps },
     })
 
     await rm(SOCKET_PATH, { force: true })
@@ -180,6 +233,9 @@ async function main(): Promise<void> {
             await guard.recheckInvalid(store.current())
             lastInvalidRun = Date.now()
         }
+        // Cheap when nothing is due: an environment is only asked about once its 2 minutes are up, and a
+        // deploy this starts is never awaited, so a build cannot hold up the loop or the other sites.
+        await deployPoller.tick()
     }
 }
 
