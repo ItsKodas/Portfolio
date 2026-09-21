@@ -70,7 +70,16 @@ export function SiteSettingsForm({ id, capabilities, repo, environments }: {
                 // Every field is sent every time, not only what changed: a present field means "set
                 // this" to hostd, the current value is what the form already holds, and sending it back
                 // is idempotent, so there is nothing a diff against the original would buy.
-                capabilities: CAPABILITIES.filter(cap => checked.has(cap.key)).map(cap => cap.key),
+                // The registry's own order first, then anything newly ticked: a hand-maintained
+                // [logs, lifecycle] comes back as it was written rather than sorted into this file's
+                // order. The first list also keeps any capability the registry holds that CAPABILITIES
+                // below does not know about (hostd owns that list, not this page): it has no checkbox,
+                // so it can never be unticked here, and dropping it silently on the first save of any
+                // site is not something the day hostd gains a ninth capability should cost.
+                capabilities: [
+                    ...capabilities.filter(key => checked.has(key)),
+                    ...CAPABILITIES.filter(cap => checked.has(cap.key) && !capabilities.includes(cap.key)).map(cap => cap.key),
+                ],
                 repo: repoValue.trim() === '' ? null : repoValue,
                 branches: Object.fromEntries(
                     environments.map(env => [env.name, blankToNull(branchValues[env.name])]),

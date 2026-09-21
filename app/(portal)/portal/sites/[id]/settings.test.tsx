@@ -51,6 +51,34 @@ describe('the settings form', () => {
         })
     })
 
+    // The destructive direction, and the one the two below would show up in: everything the form sends is
+    // what the entry becomes, so a capability dropped from this list is a capability taken away.
+    it('takes a capability away when one already on is unticked', async () => {
+        render(<SiteSettingsForm {...props} />)
+
+        await userEvent.click(screen.getByRole('checkbox', { name: /logs/ }))
+        await userEvent.click(screen.getByRole('button', { name: /save/i }))
+
+        expect(saveSettingsAction).toHaveBeenCalledWith('arbysauto', expect.objectContaining({ capabilities: ['lifecycle'] }))
+    })
+
+    it('keeps the order the registry holds them in rather than this page\'s', async () => {
+        render(<SiteSettingsForm {...props} capabilities={['logs', 'lifecycle']} />)
+        await userEvent.click(screen.getByRole('button', { name: /save/i }))
+        expect(saveSettingsAction).toHaveBeenCalledWith('arbysauto', expect.objectContaining({ capabilities: ['logs', 'lifecycle'] }))
+    })
+
+    // hostd owns the capability list, not this page. One it gains that this page has not been taught has
+    // no checkbox here, so a save must carry it back rather than strip it from the entry.
+    it('keeps a capability it does not know about instead of dropping it', async () => {
+        render(<SiteSettingsForm {...props} capabilities={['lifecycle', 'teleport']} />)
+        await userEvent.click(screen.getByRole('checkbox', { name: /deploy/ }))
+        await userEvent.click(screen.getByRole('button', { name: /save/i }))
+        expect(saveSettingsAction).toHaveBeenCalledWith('arbysauto', expect.objectContaining({
+            capabilities: ['lifecycle', 'teleport', 'deploy'],
+        }))
+    })
+
     it('sends a cleared repo as null rather than an empty string', async () => {
         render(<SiteSettingsForm {...props} repo="git@github.com:ItsKodas/a.git" />)
         await userEvent.clear(screen.getByLabelText(/repo/i))
