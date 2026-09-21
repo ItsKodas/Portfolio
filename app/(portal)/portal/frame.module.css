@@ -1,0 +1,110 @@
+/* The frame the operator pages draw themselves in: what MUI's Container, Paper and Typography gave them,
+   written once. The plan asked for a CSS module per page, and six near-copies of the same three rules is
+   how a set of pages stops looking like one product, so the shape they share lives here and a page keeps
+   its own module only for what is genuinely its own.
+
+   The widths match what each page asked Container for, so no page changes width: lg, md and sm.
+
+   Every colour here is a token or a neutral overlay, which is what ui/palette.test.ts asks of a stylesheet.
+   That test walks ui/ and does not reach this file, so the rule is kept here by hand. */
+
+.page {
+    max-width: 1200px;
+    margin: 0 auto;
+    padding: 0 24px 48px;
+}
+
+.md { max-width: 900px; }
+.sm { max-width: 600px; }
+
+@media (max-width: 600px) {
+    .page { padding-left: 16px; padding-right: 16px; }
+}
+
+/* A page's title line: the heading, with whatever sits on the same baseline beside it */
+.head {
+    display: flex;
+    align-items: baseline;
+    flex-wrap: wrap;
+    gap: 16px;
+    margin-bottom: 16px;
+}
+
+.headSpread { justify-content: space-between; }
+
+/* Where a chip or a button sits beside the heading, centred on it rather than on its baseline */
+.headCentred { align-items: center; }
+
+.title {
+    font-size: 21px;
+    letter-spacing: -.02em;
+    font-weight: 600;
+    margin: 0;
+}
+
+.sub {
+    color: var(--ink-2);
+    font-size: 13.5px;
+    margin: 0;
+}
+
+.subBlock { margin-bottom: 20px; }
+
+.panel {
+    border: 1px solid var(--rule);
+    border-radius: var(--radius-card);
+    background: var(--panel);
+    padding: 20px;
+    margin-bottom: 20px;
+}
+
+.section {
+    font-size: 13px;
+    font-weight: 600;
+    margin: 0 0 14px;
+}
+
+/* A line of controls that wraps rather than pushing the page sideways */
+.controls {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    align-items: flex-start;
+}
+
+.stack {
+    display: grid;
+    gap: 14px;
+}
+
+.empty {
+    color: var(--ink-3);
+    font-size: 12.5px;
+}
+
+.link {
+    color: var(--lake);
+    text-decoration: none;
+}
+
+.link:hover { text-decoration: underline; }
+
+/* A link that is the row's own subject rather than an aside: it reads as the text it sits in */
+.plainLink {
+    color: inherit;
+    text-decoration: none;
+    font-weight: 600;
+}
+
+.plainLink:hover { text-decoration: underline; }
+
+.mono {
+    font-family: var(--font-mono), monospace;
+    color: var(--ink-3);
+}
+
+.rule {
+    border: 0;
+    border-top: 1px solid var(--rule);
+    margin: 16px 0;
+}
