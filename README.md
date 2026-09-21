@@ -59,6 +59,29 @@ volume). New migrations apply when the site starts. It needs a `.env` beside `do
 To restore a dump: `docker compose exec db-backup pg_restore --clean --if-exists -d horizons /backups/horizons-YYYY-MM-DD.dump`
 (this replaces what's in the database).
 
+### All three stacks at once
+
+The dedi runs three separate compose projects: `hostd/`, `mail/` and the site at the repo root. They stay separate on
+purpose, so a rebuild of one cannot take the other two down and so their secrets and volumes never share a namespace.
+`scripts/stack.sh` drives all three from the repo root:
+
+```bash
+./scripts/stack.sh up            # all three, in order
+./scripts/stack.sh up --build    # rebuilding images first
+./scripts/stack.sh down          # all three, asks first
+./scripts/stack.sh up --build hostd   # just the one stack
+```
+
+Order matters and the script enforces it. The site joins hostd's network with `external: true`, so hostd has to be up
+before the site, and the site has to be down before hostd: Docker will not remove a network that still has containers
+attached. `up` therefore runs hostd, mail, site, and `down` runs the exact reverse.
+
+The flags it forwards are an allowlist (`--build`, `--force-recreate`, `--no-deps`, `--remove-orphans`, `--pull` on the
+way up, `--remove-orphans` on the way down), so `-v` and `--rmi` have no route through it and no named volume can be
+deleted by anything typed at it. `up` stops at the first failure; `down` runs all three and reports at the end, so a
+stack that is already down cannot strand the others. `down` asks for confirmation, skippable with `-y`, and refuses
+outright if it is running unattended with no way to ask. `--dry-run` prints the commands in order and runs nothing.
+
 ## Client accounts
 
 Clients get their own sign-in at `/portal`, separate from the admin area. From a client's page in the admin area
