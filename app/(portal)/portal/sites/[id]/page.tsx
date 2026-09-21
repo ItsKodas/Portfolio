@@ -6,7 +6,6 @@ import { readHostd } from '@/server/hostd/config'
 import { assertOwned, getProject, listProjects, type ServiceStatus } from '@/server/hostd/projects'
 import { callerFromSession } from '@/server/hostd/session'
 import { Callout } from '@/ui/Callout/Callout'
-import { Row } from '@/ui/Row/Row'
 import { Shell } from '@/ui/Shell/Shell'
 import { StatStrip } from '@/ui/StatStrip/StatStrip'
 import { StatusDot } from '@/ui/StatusDot/StatusDot'
@@ -15,7 +14,7 @@ import { Lifecycle } from './lifecycle'
 import { SiteLogs } from './logs'
 import { gatherSite } from './site'
 import { SiteTabs } from './tabs'
-import { stateOf, stateOfServices, type SiteState } from '../../siteState'
+import { serviceDot, stateOf, stateOfServices, type SiteState } from '../../siteState'
 import nav from '../../portal.module.css'
 import styles from './site.module.css'
 
@@ -73,27 +72,33 @@ function restartsOf(services: ServiceStatus[]): string {
     return String(counted.reduce((total, count) => total + count, 0))
 }
 
-// One environment's containers. Written as a component taking its own name and its own services, so the
-// day hostd answers a project's environments the second one is another call to this and not a rewrite.
+// One environment's containers, as a slim bar beside the log rather than a block under it: it is a
+// dozen words that change once a day, and the log is the thing being read. Written as a component taking
+// its own name and its own services, so the day hostd answers a project's environments the second one is
+// another call to this and not a rewrite.
 function Environment({ name, services, trouble }: { name: string, services: ServiceStatus[], trouble: string | null }) {
     return (
-        <section className={styles.block}>
-            <h2>{name}</h2>
+        <aside className={styles.env}>
+            <h2 className={styles.envName}>{name}</h2>
             {services.length === 0
                 ? <p className={styles.empty}>
                     {trouble ? 'Nothing to show while the containers cannot be read.' : 'Nothing is running.'}
                 </p>
-                : services.map(service => (
-                    <Row
-                        key={service.service}
-                        tone={service.state === 'running' ? undefined : 'crit'}
-                        title={<span className={styles.mono}>{service.service}</span>}
-                        sub={service.health ? `${service.role}, ${service.health}` : service.role}
-                        aside={service.state}
-                        meta={service.image ?? undefined}
-                    />
-                ))}
-        </section>
+                : <ul className={styles.envList}>
+                    {services.map(service => (
+                        <li className={styles.envItem} key={service.service}>
+                            <span className={styles.envService}>{service.service}</span>
+                            {/* Docker's own word for the container, over the dot that stands for it:
+                                "exited" and "dead" are both a red dot and are not the same news. */}
+                            <StatusDot state={serviceDot(service.state)} label={service.state} />
+                            <span className={styles.envMeta}>
+                                {service.health ? `${service.role}, ${service.health}` : service.role}
+                            </span>
+                            {service.image && <span className={styles.envImage}>{service.image}</span>}
+                        </li>
+                    ))}
+                </ul>}
+        </aside>
     )
 }
 
@@ -208,8 +213,18 @@ export default async function SitePage({ params, searchParams }: Props) {
                                 { key: 'restarts', value: view.trouble ? NOT_AVAILABLE : restartsOf(view.services) },
                             ]} />
                         </div>
-                        <Lifecycle id={view.id} enabled={view.capabilities.includes('lifecycle')} />
-                        <Environment name={LIVE} services={view.services} trouble={view.trouble} />
+
+                        <Lifecycle id={view.id} enabled={view.capabilities.includes('lifecycle')} state={current} />
+
+                        {/* What the site is doing right now, which is the log, with what it is made of
+                            beside it. The Logs tab is the same view given the whole panel, for when the
+                            thing being read is longer than a glance. */}
+                        <div className={styles.split}>
+                            <div className={styles.splitMain}>
+                                <SiteLogs id={view.id} services={view.services.map(service => service.service)} />
+                            </div>
+                            <Environment name={LIVE} services={view.services} trouble={view.trouble} />
+                        </div>
                     </>
                 )}
 

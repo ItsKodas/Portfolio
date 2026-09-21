@@ -24,6 +24,10 @@
 
 .line { display: flex; gap: 13px; }
 .time { color: var(--ink-3); flex: none; }
+/* The brightest of the three inks, against the dimmest for the time and the middle one for the line
+   itself: the name of the container is what an eye scans a merged log for. Not the accent, which belongs
+   to the things that can be clicked. */
+.source { color: var(--ink); flex: none; }
 .text { color: var(--ink-2); white-space: pre-wrap; word-break: break-word; }
 .err .text { color: var(--soft-red); }
 

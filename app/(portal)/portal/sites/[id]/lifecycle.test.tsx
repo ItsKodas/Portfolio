@@ -1,0 +1,103 @@
+// The two controls that change what a site is doing. What matters here is which one is offered: the pair
+// used to be three buttons, one of which could never do anything, and a start offered to a running site
+// is a button whose only outcome is a refusal from hostd.
+
+import { render, screen } from '@testing-library/react'
+import userEvent from '@testing-library/user-event'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
+
+const lifecycleAction = vi.fn()
+const refresh = vi.fn()
+
+vi.mock('next/navigation', () => ({ useRouter: () => ({ refresh: () => refresh() }) }))
+vi.mock('./actions', () => ({ lifecycleAction: (...args: unknown[]) => lifecycleAction(...args) }))
+
+const { Lifecycle } = await import('./lifecycle')
+
+beforeEach(() => {
+    vi.clearAllMocks()
+    lifecycleAction.mockResolvedValue({ ok: true, message: 'Asked.' })
+})
+
+describe('the lifecycle controls', () => {
+    it('offers to stop a site that is up', () => {
+        render(<Lifecycle id="asot" enabled state="up" />)
+
+        expect(screen.getByRole('button', { name: 'Stop' })).toBeEnabled()
+        expect(screen.queryByRole('button', { name: 'Start' })).toBeNull()
+    })
+
+    it('offers to start one that is not', () => {
+        render(<Lifecycle id="asot" enabled state="stopped" />)
+
+        expect(screen.getByRole('button', { name: 'Start' })).toBeEnabled()
+        expect(screen.queryByRole('button', { name: 'Stop' })).toBeNull()
+    })
+
+    it('starts a site down at the far end without asking twice', async () => {
+        // Down is exited rather than stopped, and the thing to do about it is still to start it
+        render(<Lifecycle id="asot" enabled state="down" />)
+
+        await userEvent.click(screen.getByRole('button', { name: 'Start' }))
+
+        expect(lifecycleAction).toHaveBeenCalledWith('asot', 'start')
+    })
+
+    // Stopping is the one control here that leaves the site switched off behind it, and it is one click
+    // away from a live client site.
+    it('asks before stopping, and stops nothing while the question is unanswered', async () => {
+        render(<Lifecycle id="asot" enabled state="up" />)
+
+        await userEvent.click(screen.getByRole('button', { name: 'Stop' }))
+
+        expect(screen.getByRole('heading', { name: /stop this site/i })).toBeInTheDocument()
+        expect(lifecycleAction).not.toHaveBeenCalled()
+    })
+
+    it('stops nothing at all when the question is cancelled', async () => {
+        render(<Lifecycle id="asot" enabled state="up" />)
+
+        await userEvent.click(screen.getByRole('button', { name: 'Stop' }))
+        await userEvent.click(screen.getByRole('button', { name: 'Cancel' }))
+
+        expect(lifecycleAction).not.toHaveBeenCalled()
+        expect(screen.queryByRole('heading', { name: /stop this site/i })).toBeNull()
+    })
+
+    it('stops it once the question is answered', async () => {
+        render(<Lifecycle id="asot" enabled state="up" />)
+
+        await userEvent.click(screen.getByRole('button', { name: 'Stop' }))
+        await userEvent.click(screen.getByRole('button', { name: 'Stop the site' }))
+
+        expect(lifecycleAction).toHaveBeenCalledWith('asot', 'stop')
+        // The states on the page were read before this, so they are now a guess until it is re-read
+        expect(refresh).toHaveBeenCalled()
+    })
+
+    it('acts on nothing while the containers could not be read', () => {
+        // Which of start and stop this site needs is exactly what an unreadable state does not say
+        render(<Lifecycle id="asot" enabled state="unknown" />)
+
+        expect(screen.getByRole('button', { name: 'Start' })).toBeDisabled()
+        expect(screen.getByRole('button', { name: 'Restart' })).toBeDisabled()
+        expect(screen.getByText(/could not be read/i)).toBeInTheDocument()
+    })
+
+    it('says why when hostd has lifecycle turned off for the project', () => {
+        render(<Lifecycle id="asot" enabled={false} state="up" />)
+
+        expect(screen.getByRole('button', { name: 'Stop' })).toBeDisabled()
+        expect(screen.getByText(/lifecycle turned off/i)).toBeInTheDocument()
+    })
+
+    it('says what hostd said when it refused', async () => {
+        lifecycleAction.mockResolvedValue({ ok: false, error: 'the agent is not answering' })
+        render(<Lifecycle id="asot" enabled state="stopped" />)
+
+        await userEvent.click(screen.getByRole('button', { name: 'Start' }))
+
+        expect(await screen.findByText(/not answering/)).toBeInTheDocument()
+        expect(refresh).not.toHaveBeenCalled()
+    })
+})

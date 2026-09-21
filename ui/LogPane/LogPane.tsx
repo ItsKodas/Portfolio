@@ -8,6 +8,9 @@ type Line = {
     time: string
     text: string
     stream?: 'out' | 'err'
+    // Which container the line came from, for a pane following more than one at once. Left out when
+    // there is only one, where a column repeating the same name 200 times says nothing.
+    source?: string
 }
 
 type Props = {
@@ -41,6 +44,7 @@ export function LogPane({ lines, label, following, fill }: Props) {
                 : lines.map((line, index) => (
                     <div className={[styles.line, line.stream === 'err' && styles.err].filter(Boolean).join(' ')} key={index}>
                         <span className={styles.time}>{line.time}</span>
+                        {line.source && <span className={styles.source}>{line.source}</span>}
                         <span className={styles.text}>{line.text}</span>
                     </div>
                 ))}

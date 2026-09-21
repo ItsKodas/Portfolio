@@ -27,17 +27,73 @@
 .block { margin-top: 22px; }
 .block h2 { font-size: 13px; margin: 0 0 10px; }
 
+/* The log and what is producing it, side by side, taking whatever height the panel has left. The log is
+   the thing being read, so it gets the room; the containers are a dozen words that change once a day and
+   get a bar. */
+.split {
+    margin-top: 22px;
+    flex: 1 0 auto;
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) 216px;
+    grid-template-rows: minmax(0, 1fr);
+    gap: 20px;
+}
+
+.splitMain {
+    display: flex;
+    flex-direction: column;
+    min-width: 0;
+}
+
+/* Narrow enough that two columns would leave the log unreadable, so the bar goes under it. Under rather
+   than over: what is being read stays where the eye already is. */
+@media (max-width: 900px) {
+    .split { grid-template-columns: minmax(0, 1fr); grid-template-rows: minmax(0, 1fr) auto; }
+}
+
+.env { border-left: 1px solid var(--rule); padding-left: 16px; min-width: 0; }
+.envName { font-size: 13px; margin: 0 0 12px; }
+.envList { list-style: none; margin: 0; padding: 0; }
+
+.envItem {
+    display: flex;
+    flex-direction: column;
+    gap: 3px;
+    font-size: 11.5px;
+    padding: 9px 0;
+    border-top: 1px solid var(--rule);
+}
+.envItem:first-child { border-top: 0; padding-top: 0; }
+
+.envService { font-family: var(--font-mono), monospace; color: var(--ink); font-size: 12px; }
+.envMeta { color: var(--ink-3); }
+/* An image name is longer than this column and there is nowhere else for it to go, so it wraps rather
+   than running under the log beside it. */
+.envImage {
+    font-family: var(--font-mono), monospace;
+    font-size: 10.5px;
+    color: var(--ink-3);
+    overflow-wrap: anywhere;
+}
+
+@media (max-width: 900px) {
+    .env { border-left: 0; border-top: 1px solid var(--rule); padding: 16px 0 0; }
+}
+
 .mono { font-family: var(--font-mono), monospace; }
 
 .note { color: var(--ink-3); font-size: 12px; line-height: 1.7; margin: 10px 0 0; }
 .empty { color: var(--ink-3); font-size: 12.5px; }
 
+/* The two controls that change what the site is doing. Full size rather than the small buttons the rest
+   of the page uses: these are the reason an operator opened the page, and they were the same size as a
+   filter chip. */
 .controls {
     display: flex;
     flex-wrap: wrap;
-    gap: 8px;
+    gap: 10px;
     align-items: center;
-    margin-bottom: 16px;
+    margin-bottom: 4px;
 }
 
 .said { margin-bottom: 16px; }
@@ -81,10 +137,13 @@
 .logHead {
     display: flex;
     flex-wrap: wrap;
-    gap: 6px;
+    gap: 10px;
     align-items: center;
     margin-bottom: 12px;
 }
+
+.filter { display: flex; flex-wrap: wrap; gap: 6px; }
+.filterLabel { color: var(--ink-3); font-size: 10.5px; }
 
 .state { color: var(--ink-3); font-size: 11.5px; }
 .stateBad { color: var(--warn); font-size: 11.5px; }
