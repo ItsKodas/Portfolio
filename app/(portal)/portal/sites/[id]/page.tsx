@@ -186,7 +186,7 @@ export default async function SitePage({ params, searchParams }: Props) {
                     href={`/portal/sites/${site.id}`}
                     aria-current={site.id === view.id ? 'page' : undefined}
                 >
-                    <StatusDot state={site.id === view.id ? current : stateOf(site)} />
+                    <StatusDot state={site.id === view.id ? current : stateOf(site)} bare />
                     <span className={nav.navName}>{site.name ?? site.id}</span>
                 </a>
             ))}
