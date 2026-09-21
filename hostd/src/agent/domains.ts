@@ -127,17 +127,36 @@ export async function setAliases(
         return refuse('bad-request', `${project.id} allows at most ${project.maxDomains} hostnames per environment`)
     }
 
-    // Only the names being added. parseRegistry's own uniqueness rule sees hostd's entries and nothing
-    // else, so it cannot know that a hand-written vhost in sites-enabled already serves this hostname;
-    // findClaims is what does. Two vhosts claiming one name is not an error Apache refuses: it warns
-    // about the overlap, starts anyway, and which one answers depends on the order the files loaded.
-    // The file is named, because the operator's next move is to adopt it or edit it, and neither is
-    // possible without knowing which one it is. Names already on the environment are not re-checked:
-    // they were accepted once, and refusing them again would make removing an unrelated alias
-    // impossible.
+    // parseRegistry's own uniqueness rule sees hostd's entries and nothing else, so it cannot know that a
+    // hand-written vhost in sites-enabled already serves one of these hostnames; findClaims is what does.
+    // Two vhosts claiming one name is not an error Apache refuses: it warns about the overlap, starts
+    // anyway, and which one answers depends on the order the files loaded. Every refusal here names the
+    // file, because the operator's next move is to adopt it or edit it, and neither is possible without
+    // knowing which one it is.
+    const sitesEnabled = await deps.listSitesEnabled()
+
+    // The primary first, and it is checked on every call rather than only when something is being added.
+    // This path does not merely register a name: it writes a whole vhost, and that vhost claims the
+    // primary too. A site that has never been adopted still has a hand-written file serving its primary,
+    // which is the state all five existing sites are in, so adding a first alias to one of them would
+    // put a second vhost on the same hostname and let include order decide which of the two answers. If
+    // hostd's won, the site would silently lose whatever the hand-written file carried, a custom
+    // rewrite, basic auth, a bespoke error page, which is exactly what adopt's preview exists to put in
+    // front of the operator before it happens.
+    const primaryClaim = findClaims(sitesEnabled, [environment.domain])[0]
+    if (primaryClaim) {
+        return refuse(
+            'bad-request',
+            `${environment.domain} is still served by ${primaryClaim.path}, so writing a vhost for it here would leave two claiming it; adopt ${project.id} ${environment.name} first, which moves that file aside in the same reload`,
+        )
+    }
+
+    // The aliases, and only the ones being added. Names already on the environment were accepted once,
+    // and re-checking them would make removing an unrelated alias impossible, since set-aliases carries
+    // the whole resulting list rather than one name and a direction.
     const added = aliases.filter(alias => !environment.aliases.includes(alias))
     if (added.length > 0) {
-        const claim = findClaims(await deps.listSitesEnabled(), added)[0]
+        const claim = findClaims(sitesEnabled, added)[0]
         if (claim) {
             const clashing = claim.names.filter(name => added.includes(name))
             return refuse('bad-request', `${clashing.join(', ')} is already served by ${claim.path}; adopt or edit that file first`)

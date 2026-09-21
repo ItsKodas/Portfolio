@@ -219,10 +219,29 @@ projects:
     it('does not re-check the names the environment already serves', async () => {
         const { deps, project, environment } = setup()
         deps.listSitesEnabled = async () => [
-            { path: '/etc/apache2/sites-enabled/acme.conf', text: 'ServerName acme.com\nServerAlias www.acme.com\n' },
+            { path: '/etc/apache2/sites-enabled/legacy.conf', text: 'ServerName www.acme.com\n' },
         ]
-        const result = await setAliases(deps, project, environment, ['www.acme.com'], 'abc123')
+        // Removing the alias that file claims, and adding nothing.
+        const result = await setAliases(deps, project, environment, [], 'abc123')
         assert.equal(result.ok, true)
+    })
+
+    // The state all five existing sites are in. Writing the vhost claims the primary as well as the
+    // aliases, so an alias added to a site nobody has adopted yet puts a second vhost on the primary
+    // and lets include order decide which of the two answers. If hostd's wins, the site loses whatever
+    // the hand-written file carried, which is the very thing adopt's preview exists to prevent.
+    it('refuses to write a vhost at all while a hand-written file still serves the primary', async () => {
+        const { deps, sent, project, environment } = setup()
+        deps.listSitesEnabled = async () => [
+            { path: '/etc/apache2/sites-enabled/acme.conf', text: 'ServerName acme.com\n' },
+        ]
+        const result = await setAliases(deps, project, environment, ['www.acme.com', 'shop.acme.com'], 'abc123')
+        assert.equal(result.ok, false)
+        const message = result.ok === false ? result.message : ''
+        assert.match(message, /acme\.com is still served by \/etc\/apache2\/sites-enabled\/acme\.conf/)
+        // Says what to do, not only no.
+        assert.match(message, /adopt acme live first/)
+        assert.equal(sent.length, 0)
     })
 
     it('renders the vhost from the reloaded entry, not from the arguments', async () => {
