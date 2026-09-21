@@ -5,9 +5,9 @@
 
 import { readFile, writeFile, rename, unlink } from 'node:fs/promises'
 import { randomBytes } from 'node:crypto'
-import { parseDocument, type Document } from 'yaml'
+import { parseDocument, isMap, isScalar, type Document } from 'yaml'
 
-import { parseRegistry, RegistryError, type CertificateMode, type EnvironmentName } from './registry.ts'
+import { parseRegistry, RegistryError, type Capability, type CertificateMode, type EnvironmentName } from './registry.ts'
 import { describeError, RESERVED_PROJECT_IDS, PROJECT_ID } from './formats.ts'
 
 export type RegistryWriteFs = {
@@ -46,6 +46,16 @@ export type Change =
     | { kind: 'add-environment', id: string, environment: EnvironmentDraft }
     | { kind: 'set-deployed', id: string, environment: EnvironmentName, commit: string }
     | { kind: 'set-branch', id: string, environment: EnvironmentName, branch: string }
+    // One kind rather than three, because a write takes one Change: three would be three reads, three
+    // validations, three files on disk and a half-applied save if the second failed. Absent fields are
+    // left alone; a null repo or branch deletes that key.
+    | {
+        kind: 'configure'
+        id: string
+        capabilities?: Capability[]
+        repo?: string | null
+        branches?: Partial<Record<EnvironmentName, string | null>>
+    }
     | { kind: 'remove-project', id: string }
     | { kind: 'remove-environment', id: string, environment: EnvironmentName }
 
@@ -63,6 +73,71 @@ const environmentNode = (draft: EnvironmentDraft) => ({
 // folder may not even be theirs any more) apart from every other failure (which is safe to roll back),
 // without depending on the exact wording of the message staying the same.
 type EditResult = { problem: string, conflict?: true } | null
+
+// A project written the live-only way keeps dir, compose and upstream at the top level and has no
+// environments node at all, so there is nothing for a branch to be set on: set-branch answers
+// "<id> has no live environment" and always did. This reshapes the entry into the one live environment
+// parseRegistry already synthesises for it, which is the same site described the other way round.
+//
+// upstream's host is not carried anywhere. There is no per-environment host field, and parseRegistry
+// answers 127.0.0.1 for an environments-shaped entry, so an entry whose upstream host was something else
+// is changed by this rather than merely reshaped. Every real entry uses the loopback address.
+function toEnvironments(doc: Document, id: string): EditResult {
+    const dir = doc.getIn(['projects', id, 'dir'])
+    if (typeof dir !== 'string') return { problem: `${id} has no dir to make an environment from` }
+
+    const upstream = doc.getIn(['projects', id, 'upstream'])
+    if (typeof upstream !== 'string') return { problem: `${id} has no upstream to take a port from` }
+    // Only the number is read here. Whether it is a usable port is parseRegistry's to say, below.
+    const port = Number(upstream.slice(upstream.lastIndexOf(':') + 1))
+
+    const live: Record<string, unknown> = { dir }
+    // compose is one file or several, and both spellings are carried across as they were written
+    const compose = doc.getIn(['projects', id, 'compose'])
+    if (compose !== undefined && compose !== null) {
+        live.compose = typeof compose === 'object' && 'toJSON' in compose
+            ? (compose as { toJSON: () => unknown }).toJSON()
+            : compose
+    }
+    live.port = port
+
+    // A hand-written note above dir, compose or upstream lives on that key's own node as commentBefore;
+    // deleteIn below would throw it away with the key. Carry whichever of the three the operator actually
+    // commented (there is normally at most one) onto the environments key that replaces all three.
+    const projectNode = doc.getIn(['projects', id], true)
+    let comment: string | null | undefined
+    if (isMap(projectNode)) {
+        for (const pair of projectNode.items) {
+            if (isScalar(pair.key) && (pair.key.value === 'dir' || pair.key.value === 'compose' || pair.key.value === 'upstream') && pair.key.commentBefore) {
+                comment = pair.key.commentBefore
+                break
+            }
+        }
+    }
+
+    // setIn does not deep-convert a plain nested object into YAML nodes: getIn(['environments']) would
+    // come back as a bare JS object, and hasIn(['environments', 'live']) would then answer false, because
+    // there is no YAMLMap there to walk into. createNode does the deep conversion; setIn does not need to.
+    doc.setIn(['projects', id, 'environments'], doc.createNode({ live }))
+    doc.deleteIn(['projects', id, 'dir'])
+    doc.deleteIn(['projects', id, 'compose'])
+    doc.deleteIn(['projects', id, 'upstream'])
+
+    if (comment) {
+        const updated = doc.getIn(['projects', id], true)
+        // setIn adding a brand new key stores it as a bare JS string, not a Scalar node, until stringify
+        // time, so there is nowhere on it yet to hang a comment: build the node ourselves to get one.
+        const environmentsPair = isMap(updated)
+            ? updated.items.find(pair => (isScalar(pair.key) ? pair.key.value : pair.key) === 'environments')
+            : undefined
+        if (environmentsPair) {
+            const key = doc.createNode('environments')
+            key.commentBefore = comment
+            environmentsPair.key = key
+        }
+    }
+    return null
+}
 
 function edit(doc: Document, change: Change): EditResult {
     const projects = doc.getIn(['projects'])
@@ -104,6 +179,41 @@ function edit(doc: Document, change: Change): EditResult {
             // rule about what a branch may be rather than two that could drift.
             doc.setIn(['projects', change.id, 'environments', change.environment, 'branch'], change.branch)
             return null
+        case 'configure': {
+            if (!has(change.id)) return { problem: `${change.id} is not registered` }
+
+            const branches = Object.entries(change.branches ?? {})
+            // A branch has nowhere to go on an entry written the live-only way, so the shape comes first
+            if (branches.length > 0 && !doc.hasIn(['projects', change.id, 'environments'])) {
+                const converted = toEnvironments(doc, change.id)
+                if (converted) return converted
+            }
+
+            // Flow style, because that is how the file writes it by hand and a write should not
+            // reformat a file a person maintains.
+            if (change.capabilities) {
+                const node = doc.createNode(change.capabilities)
+                node.flow = true
+                doc.setIn(['projects', change.id, 'capabilities'], node)
+            }
+
+            if (change.repo !== undefined) {
+                if (change.repo === null) doc.deleteIn(['projects', change.id, 'repo'])
+                else doc.setIn(['projects', change.id, 'repo'], change.repo)
+            }
+
+            for (const [name, branch] of branches) {
+                const path = ['projects', change.id, 'environments', name]
+                if (!doc.hasIn(path)) return { problem: `${change.id} has no ${name} environment` }
+                if (branch === null) doc.deleteIn([...path, 'branch'])
+                else doc.setIn([...path, 'branch'], branch)
+            }
+
+            // No grammar checked here on purpose: applyChange re-parses the whole document with
+            // parseRegistry below, which is the one place that decides what a capability, a repo and a
+            // branch may be. Two copies of that rule would drift.
+            return null
+        }
         case 'remove-project':
             if (!has(change.id)) return { problem: `${change.id} is not registered` }
             doc.deleteIn(['projects', change.id])
@@ -133,7 +243,13 @@ export function applyChange(text: string, change: Change): WriteResult {
     const edited = edit(doc, change)
     if (edited) return { ok: false, problem: edited.problem, ...(edited.conflict ? { conflict: edited.conflict } : {}) }
 
-    const next = doc.toString()
+    // yaml's default stringify options pad every flow collection ("[ a, b ]", "{ a: b }") whether or not
+    // its source had that padding, which would reformat the operator's own "[lifecycle, logs]" style on
+    // any write, not just one that touched it. There is no per-node override, only this whole-document
+    // one, so unpadded is the document-wide default: it matches how every flow sequence in the real
+    // registry is hand-written, at the cost of also flattening the padding on flow mappings like
+    // "{ role: site }", which the file does write padded. See registry-write.test.ts's flow-style case.
+    const next = doc.toString({ flowCollectionPadding: false })
     // The same validator that runs at load, so a write can never produce a file hostd would refuse
     let registry
     try {
