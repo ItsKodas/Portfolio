@@ -13,7 +13,7 @@ const record = (over: Partial<BackupRecord> = {}): BackupRecord => ({
     durationMs: 1000, outcome: 'ok', snapshot: 'deadbeef', reason: null, disruptive: false, ...over,
 })
 
-const snapshot = (id: string, tag: Snapshot['tag']): Snapshot => ({ id, at: new Date(AT).toISOString(), tag, sizeBytes: null })
+const snapshot = (id: string, tag: Snapshot['tag']): Snapshot => ({ id, at: new Date(AT).toISOString(), tag })
 
 describe('recordBackup', () => {
     it('keeps the newest records first and caps the history', () => {

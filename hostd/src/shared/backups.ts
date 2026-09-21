@@ -24,7 +24,10 @@ export const BACKUP_ACTORS = ['client', 'admin'] as const
 export type BackupActor = typeof BACKUP_ACTORS[number]
 
 // What restic knows about a snapshot, narrowed to what the portal shows. The id is restic's own short id.
-export type Snapshot = { id: string, at: string, tag: BackupTag, sizeBytes: number | null }
+// There is no size here: `restic snapshots --json` does not carry one, so a field for it could only ever
+// be null. Whoever builds the portal's Backups tab and wants a size gets it from `restic stats`, which is
+// its own command and its own call per snapshot.
+export type Snapshot = { id: string, at: string, tag: BackupTag }
 
 export type BackupRecord = {
     run: string

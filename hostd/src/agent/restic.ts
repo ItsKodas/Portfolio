@@ -138,7 +138,6 @@ export function createRestic(run: Runner, spawnStream: SpawnStream): Restic {
                         id: entry.short_id ?? entry.id ?? '',
                         at: new Date(entry.time ?? 0).toISOString(),
                         tag: (entry.tags ?? []).includes('manual') ? 'manual' as const : 'scheduled' as const,
-                        sizeBytes: null,
                     }))
                     .filter(snapshot => snapshot.id !== '')
                     .sort((a, b) => b.at.localeCompare(a.at))

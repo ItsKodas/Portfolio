@@ -826,7 +826,7 @@ describe('backup', () => {
     })
 
     it('lists the snapshots and the run history together', async () => {
-        const { backups } = backupsWiring({ snapshots: [{ id: 'deadbeef', at: '2026-09-21T02:00:00.000Z', tag: 'manual', sizeBytes: null }] })
+        const { backups } = backupsWiring({ snapshots: [{ id: 'deadbeef', at: '2026-09-21T02:00:00.000Z', tag: 'manual' }] })
         const { agent } = setup({ backups })
         const outcome = await agent.handle(backup({ action: 'list' }))
         assert.equal(outcome.kind === 'reply' && outcome.reply.ok && 'snapshots' in outcome.reply && outcome.reply.snapshots.length, 1)
@@ -858,7 +858,7 @@ describe('backup', () => {
     })
 
     it('refuses a sixth manual run itself, whatever api decided', async () => {
-        const snapshots = ['a1', 'a2', 'a3', 'a4', 'a5'].map(id => ({ id: id.padEnd(8, '0'), at: '2026-09-21T02:00:00.000Z', tag: 'manual' as const, sizeBytes: null }))
+        const snapshots = ['a1', 'a2', 'a3', 'a4', 'a5'].map(id => ({ id: id.padEnd(8, '0'), at: '2026-09-21T02:00:00.000Z', tag: 'manual' as const }))
         const { backups } = backupsWiring({ snapshots })
         const { agent } = setup({ backups })
         const outcome = await agent.handle(backup({ action: 'run', tag: 'manual' }))
@@ -883,7 +883,7 @@ describe('backup', () => {
 
     it('answers a download with bytes', async () => {
         const { backups } = backupsWiring({
-            snapshots: [{ id: 'deadbeef', at: '2026-09-21T02:00:00.000Z', tag: 'manual', sizeBytes: null }],
+            snapshots: [{ id: 'deadbeef', at: '2026-09-21T02:00:00.000Z', tag: 'manual' }],
             dump: { chunks: ['a whole tar'] },
         })
         const { agent } = setup({ backups })
@@ -900,7 +900,7 @@ describe('backup', () => {
         // the exit code every layer below reads that as a complete archive and answers 200 with a
         // truncated tar.gz the client only finds out about at restore time.
         const { backups } = backupsWiring({
-            snapshots: [{ id: 'deadbeef', at: '2026-09-21T02:00:00.000Z', tag: 'manual', sizeBytes: null }],
+            snapshots: [{ id: 'deadbeef', at: '2026-09-21T02:00:00.000Z', tag: 'manual' }],
             dump: { chunks: ['half a tar'], exitCode: 1, stderr: 'pack 1a2b3c4d not found in repository' },
         })
         const { agent } = setup({ backups })

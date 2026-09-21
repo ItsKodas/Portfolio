@@ -139,6 +139,19 @@ these same real paths, which means it exposes the dedi's own directory layout, i
 and the run id that produced the dump. The offsite phase and the portal's Backups tab should both read
 this correction, not the block above, as what a snapshot and a download actually contain.
 
+Putting the run id inside a captured path has one further consequence, found in review and fixed on the
+same branch: it is why `restic forget` has to be given `--group-by ''`. restic's default is
+`--group-by host,paths`, which partitions snapshots by host and by the exact path set captured before it
+applies the keep policy inside each group, so a staging path that is unique per run puts every snapshot in
+a group of one and the policy keeps all of them. The flag is load-bearing and must not be removed while
+the staging path carries the run id.
+
+**A snapshot has no size, as built.** The `Snapshot` type carried a `sizeBytes` that was always null:
+`restic snapshots --json` does not report a size, and nothing else populated it. The field is gone rather
+than shipped as a promise the Backups tab would design a column against. A size per snapshot needs
+`restic stats`, which is a separate command and a separate call per snapshot, so it belongs to whoever
+builds that tab and decides whether a figure is worth that many calls.
+
 The compose file, env files and source code are excluded. They are the operator's deployment, not the
 client's data, and a downloaded backup must not carry the operator's secrets.
 
@@ -209,9 +222,11 @@ Two policy verbs, both requiring the `backups` capability:
 - `backup-read`: the snapshot list, a run, and reading the schedule
 - `backup`: starting a run, deleting, downloading, and writing the schedule
 
-Admin bypasses ownership only, as everywhere else. A project that is not the caller's, and a project with
-the capability switched off, return the same 404, so the API never confirms that a project exists to
-someone who may not see it.
+Admin bypasses ownership only, as everywhere else. A project that is not the caller's returns 404, so the
+API never confirms that a project exists to someone who may not see it. A project the caller may see but
+whose capability is switched off returns 403 `capability-disabled`, which is what `policy.ts` has done for
+every verb since phase 1: the caller already knows the project exists, so there is nothing left to hide,
+and the portal needs to tell "not yours" apart from "not switched on".
 
 Every mutation and every download is audited, as phase 1 requires.
 
@@ -233,12 +248,11 @@ enforces that the project exists, is valid, and has the `backups` capability.
 | `src/agent/backup-state.ts` (new) | The run history on disk |
 | `src/agent/docker.ts` (modify) | exec |
 | `src/shared/protocol.ts` (modify) | The `backup` verb, its actions and replies |
-| `src/agent/agent.ts` (modify) | The verb handler |
+| `src/agent/agent.ts` (modify) | The verb handler, and the two new health signals: they need `AgentDeps` (the backup disk reader and the run history), which `src/shared/status.ts` has no access to, so they are composed into the health reply here rather than there |
 | `src/agent/index.ts` (modify) | Wiring, and the weekly prune |
 | `src/api/schedule.ts` (new) | Schedules in `/state`, the one-minute tick, catch-up at startup |
 | `src/api/policy.ts` (modify) | `backup` and `backup-read` |
 | `src/api/routes.ts` (modify) | The seven endpoints and the download relay |
-| `src/shared/status.ts` (modify) | The two new health signals |
 | `docker-compose.yml`, `Dockerfile`, `example.env.agent`, `RUNBOOK.md` (modify or new) | The backup mount, restic and sqlite in the image, `RESTIC_PASSWORD`, and how to operate and restore |
 
 ## Deployment changes
