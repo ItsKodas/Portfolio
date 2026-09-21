@@ -2,8 +2,7 @@
 
 import Image from 'next/image'
 import Link from 'next/link'
-import { Typography } from '@mui/material'
-import { SportsEsports, Language } from '@mui/icons-material'
+import { SportsEsports, Language } from '@/ui/icons'
 import { useEffect, useRef, useState } from 'react'
 import { useSpring, animated, to } from '@react-spring/web'
 
@@ -109,7 +108,9 @@ export default function AnimatedLogo() {
                         <animated.div style={{
                             clipPath: unroll.p.to(p => `inset(0 ${((1 - p) * 100).toFixed(2)}% 0 0)`),
                         }}>
-                            <Typography variant='h1' component='p' fontSize={'8rem'} letterSpacing={'10px'} fontWeight={700} className="text-nowrap">{SITE.name.toUpperCase()}</Typography>
+                            {/* Was Typography variant h1 as a p: its size, spacing and weight were already
+                                given here, so only the line height and the reset margin come from the variant */}
+                            <p className="text-nowrap" style={{ fontSize: '8rem', letterSpacing: '10px', fontWeight: 700, lineHeight: 1.167, margin: 0 }}>{SITE.name.toUpperCase()}</p>
                         </animated.div>
                         {/* Hidden above its own top edge (tucked under the title) and slides down into place */}
                         <div className="overflow-hidden" style={{ marginTop: -SUBTITLE_TUCK }}>
@@ -117,7 +118,9 @@ export default function AnimatedLogo() {
                                 transform: subtitle.p.to(p => `translateY(${((1 - p) * -100).toFixed(2)}%)`),
                                 opacity: subtitle.p,
                             }}>
-                                <Typography variant='h2' component='p' fontSize={'2.25rem'} letterSpacing={'11px'} className="pl-2 subtitle text-nowrap">{SITE.tagline}</Typography>
+                                {/* Was Typography variant h2 as a p. The weight is the variant's own light,
+                                    which nothing here overrode, so it is written out rather than lost. */}
+                                <p className="pl-2 subtitle text-nowrap" style={{ fontSize: '2.25rem', letterSpacing: '11px', fontWeight: 300, lineHeight: 1.2, margin: 0 }}>{SITE.tagline}</p>
                             </animated.div>
                         </div>
                     </animated.div>
@@ -138,7 +141,7 @@ export default function AnimatedLogo() {
                         const className = `flex items-center gap-3 whitespace-nowrap rounded-full border-2 px-8 py-3.5 text-[23px] font-semibold tracking-wide backdrop-blur-md transition-all duration-300 hover:-translate-y-1 focus-visible:outline-none focus-visible:ring-4 focus-visible:ring-white/50 ${primary
                             ? 'border-white/80 bg-white/90 text-[#27336b] hover:bg-white shadow-[0_10px_40px_-10px_rgba(255,255,255,0.45)]'
                             : 'border-white/60 bg-white/[0.08] text-white hover:bg-white/[0.18] hover:border-white'}`
-                        const body = <><Icon sx={{ fontSize: 28 }} />{label}</>
+                        const body = <><Icon size={28} />{label}</>
                         return external
                             ? <a key={label} href={href} target="_blank" rel="noopener noreferrer" className={className}>{body}</a>
                             : <Link key={label} href={href} className={className}>{body}</Link>

@@ -6,7 +6,7 @@
 // pinned in a corner of the screen, clear of the scene's parallax and zoom so it never slips off the edge.
 
 import { useRef } from 'react'
-import { MusicNote, Pause } from '@mui/icons-material'
+import { MusicNote, Pause } from '@/ui/icons'
 
 import { useNowPlaying, type NowPlaying as Track } from '../media'
 import { MUSIC_POSITIONS, useSettings } from '../settings'

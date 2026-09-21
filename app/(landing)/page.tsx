@@ -5,7 +5,7 @@
 
 import Link from 'next/link'
 import Image from 'next/image'
-import { GitHub, LinkedIn, YouTube, Instagram, NorthEast, ArrowForward } from '@mui/icons-material'
+import { GitHub, LinkedIn, YouTube, Instagram, NorthEast, ArrowForward } from '@/ui/icons'
 
 import PMPC_Group from '../../public/images/clients/pmpc.svg'
 import SpotOnDrones from '../../public/images/clients/spotondrones-mono.png'
@@ -32,7 +32,7 @@ function QuoteLink({ className = '' }: { className?: string }) {
         <Link href="/quote"
             className={`group inline-flex items-center gap-2 rounded-full border border-[#f19bb3]/35 bg-[#f19bb3]/[0.08] px-5 py-2.5 text-sm font-semibold text-[#f7c5d3] transition-colors hover:border-[#f19bb3]/60 hover:text-white ${className}`}>
             Get a quote
-            <ArrowForward sx={{ fontSize: 16 }} className="transition-transform group-hover:translate-x-0.5" />
+            <ArrowForward size={16} className="transition-transform group-hover:translate-x-0.5" />
         </Link>
     )
 }
@@ -143,9 +143,9 @@ export default function Landing() {
                         {socials.map(({ label, href, icon: Icon }) => (
                             <Link key={label} href={href} target="_blank" rel="me noopener noreferrer"
                                 className="group flex items-center gap-3 rounded-2xl px-3 py-2.5 text-[#b4c3dc] transition-colors hover:bg-white/[0.04] hover:text-white">
-                                <Icon sx={{ fontSize: 20 }} className="text-[#8fd4f5]/70 transition-colors group-hover:text-[#8fd4f5]" />
+                                <Icon size={20} className="text-[#8fd4f5]/70 transition-colors group-hover:text-[#8fd4f5]" />
                                 <span className="text-sm font-medium">{label}</span>
-                                <NorthEast sx={{ fontSize: 14 }} className="ml-auto opacity-30 transition-all group-hover:-translate-y-0.5 group-hover:translate-x-0.5 group-hover:opacity-80" />
+                                <NorthEast size={14} className="ml-auto opacity-30 transition-all group-hover:-translate-y-0.5 group-hover:translate-x-0.5 group-hover:opacity-80" />
                             </Link>
                         ))}
                     </div>
@@ -168,13 +168,13 @@ export default function Landing() {
                                     <Link href={p.website} target="_blank" rel="noopener noreferrer"
                                         className="group inline-flex items-center gap-1.5 rounded-full border border-[#8fd4f5]/20 bg-[#8fd4f5]/[0.06] px-4 py-2 text-sm font-medium text-[#bfe6fb] transition-colors hover:border-[#8fd4f5]/45 hover:text-white">
                                         Visit site
-                                        <NorthEast sx={{ fontSize: 14 }} className="opacity-60 transition-transform group-hover:-translate-y-0.5 group-hover:translate-x-0.5" />
+                                        <NorthEast size={14} className="opacity-60 transition-transform group-hover:-translate-y-0.5 group-hover:translate-x-0.5" />
                                     </Link>
                                 )}
                                 {p.github && (
                                     <Link href={p.github} target="_blank" rel="noopener noreferrer"
                                         className="group inline-flex items-center gap-1.5 rounded-full border border-[#b597cc]/25 bg-[#b597cc]/[0.07] px-4 py-2 text-sm font-medium text-[#d9c6ea] transition-colors hover:border-[#b597cc]/50 hover:text-white">
-                                        <GitHub sx={{ fontSize: 16 }} /> GitHub
+                                        <GitHub size={16} /> GitHub
                                     </Link>
                                 )}
                             </div>
@@ -206,7 +206,7 @@ export default function Landing() {
                     {socials.map(({ label, href, icon: Icon }) => (
                         <Link key={label} href={href} target="_blank" rel="me noopener noreferrer" aria-label={label}
                             className="flex h-12 w-12 items-center justify-center rounded-full border border-[#8fd4f5]/15 bg-[#111a38]/55 text-[#a9e0fc] backdrop-blur-md transition-all hover:-translate-y-0.5 hover:border-[#8fd4f5]/40 hover:text-white">
-                            <Icon sx={{ fontSize: 20 }} />
+                            <Icon size={20} />
                         </Link>
                     ))}
                 </div>

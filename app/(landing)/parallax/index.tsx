@@ -3,10 +3,8 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import Image from 'next/image'
 
-import { ThemeProvider } from '@mui/material'
 import { animated, config, useSpring } from '@react-spring/web'
 
-import DarkTheme from "@/themes/dark"
 import { useCoarsePointer, useScene } from '@/app/perf/usePerf'
 import { runScene } from '@/app/perf/climb'
 import { startCrashGuard } from '@/app/perf/crashGuard'
@@ -278,7 +276,7 @@ export default function ParallaxView({ children }: Readonly<{ children: React.Re
     }, [direct])
 
     return (
-        <ThemeProvider theme={DarkTheme}>
+        <>
             <ScrollbarTint />
             <PerfDebug />
             <WallpaperLink />
@@ -309,6 +307,6 @@ export default function ParallaxView({ children }: Readonly<{ children: React.Re
                 </ContentLayer>
 
             </div>
-        </ThemeProvider>
+        </>
     )
 }

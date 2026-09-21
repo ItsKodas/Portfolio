@@ -1,6 +1,6 @@
 'use client'
 
-import { ArrowBack, NorthEast } from '@mui/icons-material'
+import { ArrowBack, NorthEast } from '@/ui/icons'
 
 import styles from './siteLinks.module.css'
 

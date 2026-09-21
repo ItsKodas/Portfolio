@@ -4,7 +4,7 @@
 // server/quotes/submit.ts). On success it's replaced by a thank-you in place.
 
 import { useState } from 'react'
-import { Add, Close } from '@mui/icons-material'
+import { Add, Close } from '@/ui/icons'
 
 import { BUDGETS, BUDGET_LABELS, PROJECT_TYPES, PROJECT_TYPE_LABELS, TIMELINES, TIMELINE_LABELS } from '@/server/quotes/labels'
 import { MAX_REFERENCE_SITES, firstErrors, quoteSchema, type FieldErrors, type QuoteField } from '@/server/quotes/schema'
@@ -158,7 +158,7 @@ export default function QuoteForm({ siteKey }: { siteKey: string }) {
                             {values.referenceSites.length > 1 && (
                                 <button type="button" aria-label={`Remove example site ${index + 1}`} onClick={() => setValues(current => ({ ...current, referenceSites: current.referenceSites.filter((_, i) => i !== index) }))}
                                     className="shrink-0 rounded-2xl border border-[#8fd4f5]/15 px-3 text-[#8fa3c7] transition-colors hover:text-white">
-                                    <Close sx={{ fontSize: 18 }} />
+                                    <Close size={18} />
                                 </button>
                             )}
                         </div>
@@ -167,7 +167,7 @@ export default function QuoteForm({ siteKey }: { siteKey: string }) {
                 {values.referenceSites.length < MAX_REFERENCE_SITES && (
                     <button type="button" onClick={() => setValues(current => ({ ...current, referenceSites: [...current.referenceSites, ''] }))}
                         className="mt-3 inline-flex items-center gap-1 text-sm font-medium text-[#8fd4f5] transition-colors hover:text-white">
-                        <Add sx={{ fontSize: 18 }} /> Add another
+                        <Add size={18} /> Add another
                     </button>
                 )}
                 {errors.referenceSites && <p className="mt-2 text-sm text-[#f19bb3]">{errors.referenceSites}</p>}
