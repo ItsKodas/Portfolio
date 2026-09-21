@@ -6,7 +6,7 @@
 // the same gate saveEnvAction uses).
 
 import { useRouter } from 'next/navigation'
-import { useState } from 'react'
+import { useId, useState } from 'react'
 
 import { Button } from '@/ui/Button/Button'
 import { Callout } from '@/ui/Callout/Callout'
@@ -39,19 +39,30 @@ const NOT_BUILT = 'files, backups, domains and provision are designed but not bu
 const CANNOT_CHECK = 'A deploy needs a git repository already at the environment\'s dir (dir/.git). hostd '
     + 'only finds that out when it runs. This form cannot check that ahead of it.'
 
-export function SiteSettingsForm({ id, capabilities, repo, environments }: {
+export function SiteSettingsForm({ id, capabilities, repo, environments, branches = null, branchesError = null }: {
     id: string
     capabilities: string[]
     repo: string | null
     environments: Array<{ name: string, branch: string | null, dir?: string, port?: number }>
+    // The repository's branches, fetched for the repo as it stands saved, not for whatever is currently
+    // typed into the Repo field above: editing that field without saving leaves this offering the old
+    // repo's branches, which is the one thing left as it is rather than fixed, because re-fetching on
+    // every keystroke would be worse. null when there is no list to offer, whether that is no repo, an
+    // unreachable one, or hostd itself being unreachable; branchesError says which in hostd's own words.
+    branches?: string[] | null
+    branchesError?: string | null
 }) {
     const router = useRouter()
+    const branchListId = useId()
     const [checked, setChecked] = useState(() => new Set(capabilities))
     const [repoValue, setRepoValue] = useState(repo ?? '')
     const [branchValues, setBranchValues] = useState<Record<string, string>>(() =>
         Object.fromEntries(environments.map(env => [env.name, env.branch ?? ''])))
     const [pending, setPending] = useState(false)
     const [said, setSaid] = useState<SiteActionResult | null>(null)
+    // Set instead of said on a no-op save: said is what a call to hostd came back with, and a save that
+    // made no call has nothing of hostd's to report.
+    const [nothingChanged, setNothingChanged] = useState(false)
 
     function toggle(key: string) {
         setChecked(prev => {
@@ -63,28 +74,44 @@ export function SiteSettingsForm({ id, capabilities, repo, environments }: {
     }
 
     async function save() {
-        setPending(true)
         setSaid(null)
+        setNothingChanged(false)
+
+        // The registry's own order first, then anything newly ticked: a hand-maintained [logs, lifecycle]
+        // comes back as it was written rather than sorted into this file's order. The first list also
+        // keeps any capability the registry holds that CAPABILITIES below does not know about (hostd owns
+        // that list, not this page): it has no checkbox, so it can never be unticked here, and dropping it
+        // silently on the first save of any site is not something the day hostd gains a ninth capability
+        // should cost.
+        const nextCapabilities = [
+            ...capabilities.filter(key => checked.has(key)),
+            ...CAPABILITIES.filter(cap => checked.has(cap.key) && !capabilities.includes(cap.key)).map(cap => cap.key),
+        ]
+        const nextRepo = repoValue.trim() === '' ? null : repoValue
+        // Compared per environment, not as one object: a save that only touched live must never carry
+        // test's branch along, because a present key means "set this" to hostd and an untouched one taken
+        // from stale props would set it back to whatever this page happened to be rendered from. That is
+        // exactly how a repo got wiped from a live site: a page that read a stale registry copy sent every
+        // field back, including one the operator had never touched this session.
+        const changedBranches: Record<string, string | null> = {}
+        for (const env of environments) {
+            const nextBranch = blankToNull(branchValues[env.name])
+            if (nextBranch !== (env.branch ?? null)) changedBranches[env.name] = nextBranch
+        }
+
+        const payload: { capabilities?: string[], repo?: string | null, branches?: Record<string, string | null> } = {}
+        if (!sameList(nextCapabilities, capabilities)) payload.capabilities = nextCapabilities
+        if (nextRepo !== repo) payload.repo = nextRepo
+        if (Object.keys(changedBranches).length > 0) payload.branches = changedBranches
+
+        if (Object.keys(payload).length === 0) {
+            setNothingChanged(true)
+            return
+        }
+
+        setPending(true)
         try {
-            const result = await saveSettingsAction(id, {
-                // Every field is sent every time, not only what changed: a present field means "set
-                // this" to hostd, the current value is what the form already holds, and sending it back
-                // is idempotent, so there is nothing a diff against the original would buy.
-                // The registry's own order first, then anything newly ticked: a hand-maintained
-                // [logs, lifecycle] comes back as it was written rather than sorted into this file's
-                // order. The first list also keeps any capability the registry holds that CAPABILITIES
-                // below does not know about (hostd owns that list, not this page): it has no checkbox,
-                // so it can never be unticked here, and dropping it silently on the first save of any
-                // site is not something the day hostd gains a ninth capability should cost.
-                capabilities: [
-                    ...capabilities.filter(key => checked.has(key)),
-                    ...CAPABILITIES.filter(cap => checked.has(cap.key) && !capabilities.includes(cap.key)).map(cap => cap.key),
-                ],
-                repo: repoValue.trim() === '' ? null : repoValue,
-                branches: Object.fromEntries(
-                    environments.map(env => [env.name, blankToNull(branchValues[env.name])]),
-                ),
-            })
+            const result = await saveSettingsAction(id, payload)
             setSaid(result)
             // Capabilities gate which tabs this page shows, so a save that changed them leaves the page
             // showing the wrong set until it is re-read.
@@ -115,6 +142,17 @@ export function SiteSettingsForm({ id, capabilities, repo, environments }: {
             <Field label="Repo" value={repoValue} onChange={event => setRepoValue(event.target.value)} />
             <p className={styles.note}>{CANNOT_CHECK}</p>
 
+            {/* An <input list> rather than a <select>: it still offers a dropdown, but a branch pushed a
+                minute ago can still be typed, and with no list to offer (branches is null) the `list`
+                attribute below points at nothing, which degrades to exactly the plain text field this was
+                before. A <select> would need an "other" escape hatch beside it to avoid being a trap,
+                which is two controls where one does. */}
+            {branches && (
+                <datalist id={branchListId}>
+                    {branches.map(name => <option key={name} value={name} />)}
+                </datalist>
+            )}
+
             {environments.map(env => (
                 <div key={env.name} className={styles.envSettings}>
                     <p className={styles.envName}>{env.name}</p>
@@ -124,9 +162,14 @@ export function SiteSettingsForm({ id, capabilities, repo, environments }: {
                         label={`${env.name} branch`}
                         value={branchValues[env.name] ?? ''}
                         onChange={event => setBranchValues(prev => ({ ...prev, [env.name]: event.target.value }))}
+                        list={branchListId}
                     />
                 </div>
             ))}
+            {/* Never blocks the field and never reads as a validation error: hostd could not read the
+                list, not the operator did anything wrong. One line for both environments' fields, since
+                they share the one list. */}
+            {branchesError && <p className={styles.note}>{`The repository's branches could not be read: ${branchesError}`}</p>}
 
             <div className={styles.save}>
                 <Button variant="primary" disabled={pending} onClick={save}>
@@ -141,10 +184,20 @@ export function SiteSettingsForm({ id, capabilities, repo, environments }: {
                         : <Callout tone="crit" title="That was not saved">{said.error}</Callout>}
                 </div>
             )}
+
+            {nothingChanged && <p className={styles.note}>Nothing changed, so nothing was saved.</p>}
         </div>
     )
 }
 
 function blankToNull(value: string | undefined): string | null {
     return value === undefined || value.trim() === '' ? null : value
+}
+
+// Order matters here, not just membership: CAPABILITIES is rebuilt in the registry's own order (see the
+// comment in save() above), so a real reorder should still count as a change even though nothing else
+// noticed, but the everyday case (nothing ticked or unticked) always rebuilds the same order it started
+// from, which is what makes a plain positional compare the right one rather than a set compare.
+function sameList(a: string[], b: string[]): boolean {
+    return a.length === b.length && a.every((value, index) => value === b[index])
 }

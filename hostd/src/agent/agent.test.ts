@@ -628,6 +628,39 @@ function fakeDeploys(options: {
     return { deploys: deploys as unknown as AgentDeps['deploys'], started, fetched, changes }
 }
 
+describe('the branches verb', () => {
+    const branches = (project = 'acme'): AgentRequest => ({ verb: 'branches', project })
+
+    it('refuses when the fetcher is not configured', async () => {
+        const { agent } = setup({ registry: () => deployRegistry })
+        const reply = replyOf(await agent.handle(branches()))
+        assert.deepEqual(reply, { ok: false, code: 'unavailable', message: 'the fetcher is not configured' })
+    })
+
+    it('refuses a project with no repo, naming it', async () => {
+        const fetcher = { call: async () => { throw new Error('must not be called') } }
+        const { agent } = setup({ registry: () => deployRegistry, fetcher })
+        const reply = replyOf(await agent.handle(branches('quiet')))
+        assert.deepEqual(reply, { ok: false, code: 'bad-request', message: 'quiet has no repo to list branches from' })
+    })
+
+    it('asks the fetcher for the project\'s own repo, taken from the registry entry rather than the caller', async () => {
+        const fetched: FetchRequest[] = []
+        const fetcher = { call: async (request: FetchRequest) => { fetched.push(request); return { ok: true as const, branches: ['main', 'develop'] } } }
+        const { agent } = setup({ registry: () => deployRegistry, fetcher })
+        const reply = replyOf(await agent.handle(branches('acme')))
+        assert.deepEqual(reply, { ok: true, branches: ['main', 'develop'] })
+        assert.deepEqual(fetched, [{ verb: 'branches', repo: 'git@github.com:ItsKodas/acme.git' }])
+    })
+
+    it('passes a fetcher failure through as a refusal', async () => {
+        const fetcher = { call: async () => ({ ok: false as const, code: 'failed' as const, message: 'repository not found' }) }
+        const { agent } = setup({ registry: () => deployRegistry, fetcher })
+        const reply = replyOf(await agent.handle(branches('acme')))
+        assert.deepEqual(reply, { ok: false, code: 'failed', message: 'repository not found' })
+    })
+})
+
 describe('the deploy verb', () => {
     const deploy = (args: DeployArgs, project = 'acme'): AgentRequest => ({ verb: 'deploy', project, args })
 

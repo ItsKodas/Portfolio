@@ -16,11 +16,16 @@ export type FetchRequest =
     | { verb: 'checkout', dir: string, worktree: string, commit: string }
     | { verb: 'log', dir: string, branch: string, limit: number }
     | { verb: 'tip', dir: string, branch: string }
+    // No dir: this reads the remote directly (git ls-remote --heads), which needs nothing on disk. A
+    // project can have a repo and have never been deployed, so there may be no clone to read branches
+    // out of, and the remote's branches right now are also a better answer than whatever an old clone
+    // last fetched.
+    | { verb: 'branches', repo: string }
 
 export type Commit = { commit: string, subject: string, author: string, at: string }
 
 export type FetchReply =
-    | { ok: true, commit?: string, commits?: Commit[] }
+    | { ok: true, commit?: string, commits?: Commit[], branches?: string[] }
     | { ok: false, code: 'bad-request' | 'failed' | 'unavailable', message: string }
 
 type Parsed = { ok: true, request: FetchRequest } | FetchReply
@@ -114,6 +119,14 @@ export function parseFetchRequest(line: string): Parsed {
             const branch = branchOf(raw)
             if (!branch) return branchRefusal(raw)
             return { ok: true, request: { verb: 'tip', dir, branch } }
+        }
+
+        case 'branches': {
+            if (!onlyKeys(raw, ['verb', 'repo'])) return refuse('branches takes only repo')
+            // Validated exactly as clone's repo is: the same grammar, checked the same way, because this
+            // is the same value trusted the same distance, just without a dir to clone it into.
+            if (typeof raw.repo !== 'string' || !GIT_REPO.test(raw.repo)) return refuse('repo must be an ssh or https git URL')
+            return { ok: true, request: { verb: 'branches', repo: raw.repo } }
         }
 
         default:

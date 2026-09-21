@@ -68,6 +68,7 @@ function describe(request: AgentRequest): string {
         // the kind of edit this line exists to prove happened, but the edit's contents belong to the
         // registry diff, not to a log line api itself could have written.
         case 'configure': return `configure ${request.project}`
+        case 'branches': return `branches ${request.project}`
     }
 }
 

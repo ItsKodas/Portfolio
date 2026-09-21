@@ -2,6 +2,7 @@ import type { Metadata } from 'next'
 import { notFound, redirect } from 'next/navigation'
 
 import { getDb } from '@/server/db'
+import { listBranches } from '@/server/hostd/branches'
 import { readHostd } from '@/server/hostd/config'
 import { assertOwned, getProject, listProjects, type ServiceStatus } from '@/server/hostd/projects'
 import { callerFromSession } from '@/server/hostd/session'
@@ -191,6 +192,31 @@ export default async function SitePage({ params, searchParams }: Props) {
     // page asked hostd about this project on its own as well, and that answer is the better one.
     const current: SiteState = view.trouble ? 'unknown' : stateOfServices(view.services)
 
+    // Fetched only for the Settings tab, which is the only place either is used, and only once the
+    // registry entry itself is known to be readable: the form is not drawn otherwise, so there is nothing
+    // for a branch list to fill in. Read for the repo as it stands saved in the registry, hostd's own
+    // answer to git ls-remote --heads, so this is the state of the remote right now rather than whatever
+    // was last cloned. Failure here is ordinary, not exceptional (no repo, an unreachable one, hostd
+    // itself down): branches stays null, branchesError carries hostd's own words, and the form below still
+    // renders with a plain text field, exactly as it does when a container read fails elsewhere on this
+    // page. A save must never be blocked by a list that did not load.
+    let branches: string[] | null = null
+    let branchesError: string | null = null
+    if (view.isAdmin && selected === 'settings' && view.registryEntry === 'valid') {
+        const problems: string[] = []
+        const hostdConfig = readHostd(process.env, problems)
+        const who = problems.length === 0 ? await callerFromSession() : null
+        if (problems.length > 0) {
+            branchesError = problems.join('; ')
+        } else if (!who) {
+            branchesError = 'hostd could not be reached.'
+        } else {
+            const result = await listBranches(hostdConfig, who.caller, view.id)
+            if (result.ok) branches = result.value
+            else branchesError = result.message
+        }
+    }
+
     const navigation = (
         <>
             <a className={nav.nav} href="/portal">{view.isAdmin ? 'Dashboard' : 'Overview'}</a>
@@ -291,6 +317,8 @@ export default async function SitePage({ params, searchParams }: Props) {
                                     capabilities={view.capabilities}
                                     repo={view.repo}
                                     environments={view.environments}
+                                    branches={branches}
+                                    branchesError={branchesError}
                                 />
                             )
                             : (
