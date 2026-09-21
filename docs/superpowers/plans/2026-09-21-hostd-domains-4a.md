@@ -518,11 +518,75 @@ And in the commented `widget-shop` example, under `live:`, beneath `domain: widg
   #                                      # plus its aliases must not exceed maxDomains (default 3).
 ```
 
-- [ ] **Step 6: Commit**
+- [ ] **Step 6: Teach the registry writer to set aliases**
+
+Parsing `aliases` is only half of it. Task 14's "add an alias" endpoint has to persist one, and
+`hostd/src/shared/registry-write.ts` currently cannot express that: its `Change` union has no alias
+variant and `EnvironmentDraft` has no `aliases` field. Without this the endpoint has nowhere to write to.
+
+Add to `hostd/src/shared/registry-write.ts`:
+
+```ts
+export type Change =
+    | { kind: 'add-project', id: string, project: ProjectDraft }
+    | { kind: 'add-environment', id: string, environment: EnvironmentDraft }
+    | { kind: 'set-deployed', id: string, environment: EnvironmentName, commit: string }
+    | { kind: 'set-branch', id: string, environment: EnvironmentName, branch: string }
+    // The whole list, not one alias at a time. A read-modify-write of a list through two verbs would
+    // race with the operator's own editor; handing over the list that should be there makes the write
+    // idempotent and lets the existing conflict check do its job.
+    | { kind: 'set-aliases', id: string, environment: EnvironmentName, aliases: string[] }
+    | { kind: 'remove-project', id: string }
+    | { kind: 'remove-environment', id: string, environment: EnvironmentName }
+```
+
+Give `EnvironmentDraft` an `aliases: string[]`, and emit it from `environmentNode` only when it has
+entries, so an environment with none keeps the exact shape it has today:
+
+```ts
+    ...(draft.aliases.length ? { aliases: draft.aliases } : {}),
+```
+
+In `edit()`, handle `set-aliases` beside `set-branch`: refuse when the project or environment is absent,
+then `doc.setIn(['projects', id, 'environments', environment, 'aliases'], aliases)`, or
+`doc.deleteIn(...)` when the list is empty, so removing the last alias leaves no empty key behind.
+
+Add to `hostd/src/shared/registry-write.test.ts`:
+
+```ts
+describe('set-aliases', () => {
+    it('writes the list under the environment', () => {
+        const result = applyChange(REGISTRY, { kind: 'set-aliases', id: 'acme', environment: 'live', aliases: ['www.acme.com'] })
+        assert.equal(result.ok, true)
+        assert.match(result.ok ? result.text : '', /aliases:\s*\n?\s*- www\.acme\.com|aliases: \[ ?www\.acme\.com ?\]/)
+    })
+
+    it('removes the key entirely when the list is empty, rather than leaving aliases: []', () => {
+        const withOne = applyChange(REGISTRY, { kind: 'set-aliases', id: 'acme', environment: 'live', aliases: ['www.acme.com'] })
+        const result = applyChange(withOne.ok ? withOne.text : '', { kind: 'set-aliases', id: 'acme', environment: 'live', aliases: [] })
+        assert.doesNotMatch(result.ok ? result.text : '', /aliases/)
+    })
+
+    it('refuses an environment the project does not have', () => {
+        const result = applyChange(REGISTRY, { kind: 'set-aliases', id: 'acme', environment: 'test', aliases: [] })
+        assert.equal(result.ok, false)
+    })
+
+    it('leaves the rest of the entry untouched, comments included', () => {
+        const result = applyChange(REGISTRY, { kind: 'set-aliases', id: 'acme', environment: 'live', aliases: ['www.acme.com'] })
+        assert.match(result.ok ? result.text : '', /domain: acme\.com/)
+    })
+})
+```
+
+Reuse whatever `REGISTRY` fixture the existing tests in that file already define rather than adding
+another; if it has no `live` environment with a `domain`, extend that one fixture.
+
+- [ ] **Step 7: Commit**
 
 ```bash
 cd hostd && npm run typecheck && npm test
-git add hostd/src/shared/registry.ts hostd/src/shared/registry.test.ts hostd/registry/projects.example.yaml
+git add hostd/src/shared/registry.ts hostd/src/shared/registry.test.ts hostd/src/shared/registry-write.ts hostd/src/shared/registry-write.test.ts hostd/registry/projects.example.yaml
 git commit -m "Give an environment aliases, and the registry an allowed carve-out"
 ```
 
@@ -1380,7 +1444,9 @@ git commit -m "Give the agent its end of the Apache host rail"
   - `export type DomainsRemoveArgs = { action: 'remove', environment: EnvironmentName }`
   - `export type DomainsPreviewArgs = { action: 'preview', environment: EnvironmentName }`
   - `export type DomainsAdoptArgs = { action: 'adopt', environment: EnvironmentName, token: string, disable: string[] }`
-  - `export type DomainsArgs = DomainsWriteArgs | DomainsRemoveArgs | DomainsPreviewArgs | DomainsAdoptArgs`
+  - `export type DomainsSetAliasesArgs = { action: 'set-aliases', environment: EnvironmentName, aliases: string[], token: string }`
+  - `export type DomainsArgs = DomainsWriteArgs | DomainsRemoveArgs | DomainsPreviewArgs | DomainsAdoptArgs | DomainsSetAliasesArgs`
+    - `set-aliases` is how an alias is added or removed. It carries the whole list the environment should end up with rather than one hostname and a direction, because the agent writes the registry and then rewrites the vhost from it: a list makes the pair idempotent, so a retry after a half-failure lands in the same place instead of adding the alias twice. It carries the token too, because the vhost is rewritten in the same call and the token has to survive that rewrite.
   - `export type DomainsRequest = { verb: 'domains', project: string, args: DomainsArgs }`
   - `export function parseDomainsArgs(args: unknown): { ok: true, args: DomainsArgs } | Refusal`
   - The replies themselves are declared beside the code that builds them: `DomainsWritten` in Task 8 and `AdoptPreview` in Task 9, both in `src/agent/domains.ts`. Nothing in `protocol.ts` needs them, because the agent's server hands them straight to the socket.
@@ -1438,6 +1504,32 @@ describe('parseDomainsArgs', () => {
             disable: ['/etc/apache2/sites-enabled/../../passwd'],
         })
         assert.equal(parsed.ok, false)
+    })
+
+    it('accepts set-aliases with a list and a token', () => {
+        const parsed = ok({ action: 'set-aliases', environment: 'live', aliases: ['www.acme.com'], token: 'abc123' })
+        assert.deepEqual(parsed.ok && parsed.args.action === 'set-aliases' && parsed.args.aliases, ['www.acme.com'])
+    })
+
+    it('accepts an empty alias list, which is how the last one is removed', () => {
+        ok({ action: 'set-aliases', environment: 'live', aliases: [], token: 'abc123' })
+    })
+
+    it('refuses an alias that is not a hostname, before it can reach a ServerAlias', () => {
+        for (const bad of ['localhost', 'not a host', '../etc', 'https://acme.com']) {
+            const parsed = parseDomainsArgs({ action: 'set-aliases', environment: 'live', aliases: [bad], token: 'abc123' })
+            assert.equal(parsed.ok, false, bad)
+        }
+    })
+
+    it('normalises the aliases it accepts, so one spelling reaches the registry', () => {
+        const parsed = ok({ action: 'set-aliases', environment: 'live', aliases: ['WWW.Acme.com'], token: 'abc123' })
+        assert.deepEqual(parsed.ok && parsed.args.action === 'set-aliases' && parsed.args.aliases, ['www.acme.com'])
+    })
+
+    it('refuses a list longer than any project could allow, before the registry is read', () => {
+        const many = Array.from({ length: 21 }, (_, i) => `a${i}.acme.com`)
+        assert.equal(parseDomainsArgs({ action: 'set-aliases', environment: 'live', aliases: many, token: 'abc123' }).ok, false)
     })
 })
 ```
@@ -1498,11 +1590,36 @@ export function parseDomainsArgs(args: unknown): { ok: true, args: DomainsArgs }
             }
             return { ok: true, args: { action: 'adopt', environment: name, token: value, disable: disable as string[] } }
         }
+        case 'set-aliases': {
+            if (!onlyKeys(args, ['action', 'environment', 'aliases', 'token'])) {
+                return refuse('bad-request', 'set-aliases takes only environment, aliases and token')
+            }
+            const value = token()
+            if (value === null) return refuse('bad-request', 'token must be lowercase hex')
+            const list = args.aliases
+            if (!Array.isArray(list)) return refuse('bad-request', 'aliases must be a list of hostnames')
+            // maxDomains caps at 20 per project, so a longer list cannot be valid for any project and is
+            // refused before the registry is even read. The real per-project cap is checked in the agent,
+            // which is what knows which project this is.
+            if (list.length > MAX_ALIASES) return refuse('bad-request', `at most ${MAX_ALIASES} aliases`)
+            const aliases: string[] = []
+            for (const entry of list) {
+                const host = normaliseHostname(entry)
+                if (host === null) return refuse('bad-request', 'every alias must be a hostname')
+                if (aliases.includes(host)) return refuse('bad-request', `${host} is listed twice`)
+                aliases.push(host)
+            }
+            return { ok: true, args: { action: 'set-aliases', environment: name, aliases, token: value } }
+        }
         default:
-            return refuse('bad-request', 'domains action must be write, remove, preview or adopt')
+            return refuse('bad-request', 'domains action must be write, remove, preview, adopt or set-aliases')
     }
 }
 ```
+
+`MAX_ALIASES` is 20, matching the registry's own ceiling on `maxDomains`, and `normaliseHostname` is
+imported from `./hostnames.ts` (Task 1). Normalising here rather than only in the agent means one spelling
+of a hostname reaches the registry however it was typed in the portal.
 
 - [ ] **Step 4: Run the test to verify it passes**
 
@@ -1528,7 +1645,8 @@ git commit -m "Add the domains verb to the agent's grammar"
 - Consumes: `renderVhost`, `vhostPath` (Task 4), `ApacheRail` (Task 6), `hostnamesOf` (Task 2), `DomainsArgs` (Task 7)
 - Produces:
   - `export type DomainsDeps = { rail: Pick<ApacheRail, 'send'>, readFile(path: string): Promise<string | null>, listSitesEnabled(): Promise<VhostFile[]>, config: DomainsConfig }`
-  - `export type DomainsConfig = { includeDir: string, sitesEnabled: string, originCert: string, originKey: string, acmeWebroot: string, maintenanceRoot: string, maintenanceDir: string }`
+  - `export type DomainsConfig = { includeDir: string, sitesEnabled: string, originCert: string, originKey: string, acmeWebroot: string, maintenanceFlagDir: string, maintenancePageDir: string }`
+    - **The two maintenance paths are different things and the names must stay apart.** `maintenanceFlagDir` is where the deploy work already writes its per-environment flag files, `/run/hostd/maintenance`, from the agent's existing `HOSTD_MAINTENANCE_DIR`. `maintenancePageDir` is the holding page's DocumentRoot, `/var/www/hostd-maintenance`, from the new `HOSTD_MAINTENANCE_ROOT` that Task 6 adds. An earlier draft of this plan called the first one `maintenanceRoot`, which read as the second, and would have made every vhost test a flag path that never exists, so the holding page would never have appeared during a deploy.
   - `export async function writeVhost(deps: DomainsDeps, project: ProjectEntry, environment: EnvironmentEntry, token: string): Promise<DomainsWrittenReply | Refusal>`
   - `export async function removeVhost(deps: DomainsDeps, project: ProjectEntry, environment: EnvironmentEntry): Promise<DomainsWrittenReply | Refusal>`
 
@@ -1578,8 +1696,8 @@ function setup(options: { railOk?: boolean, existing?: string | null } = {}) {
             originCert: '/etc/ssl/hostd/origin.pem',
             originKey: '/etc/ssl/hostd/origin.key',
             acmeWebroot: '/var/www/hostd-acme',
-            maintenanceRoot: '/run/hostd/maintenance',
-            maintenanceDir: '/var/www/hostd-maintenance',
+            maintenanceFlagDir: '/run/hostd/maintenance',
+            maintenancePageDir: '/var/www/hostd-maintenance',
         },
     }
     const registry = parseRegistry(REGISTRY)
@@ -1685,8 +1803,8 @@ export type DomainsConfig = {
     originCert: string
     originKey: string
     acmeWebroot: string
-    maintenanceRoot: string
-    maintenanceDir: string
+    maintenanceFlagDir: string
+    maintenancePageDir: string
 }
 
 export type DomainsDeps = {
@@ -1709,8 +1827,8 @@ function render(deps: DomainsDeps, project: ProjectEntry, environment: Environme
         port: environment.port,
         token,
         certificate: { chain: deps.config.originCert, key: deps.config.originKey },
-        maintenanceDir: deps.config.maintenanceDir,
-        maintenanceFlag: posix.join(deps.config.maintenanceRoot, `${project.id}-${environment.name}`),
+        maintenanceDir: deps.config.maintenancePageDir,
+        maintenanceFlag: posix.join(deps.config.maintenanceFlagDir, `${project.id}-${environment.name}`),
         acmeWebroot: deps.config.acmeWebroot,
     })
 }
@@ -1771,10 +1889,133 @@ export async function removeVhost(
 Run: `cd hostd && npx tsx --test src/agent/domains.test.ts`
 Expected: PASS, all seven cases.
 
-- [ ] **Step 5: Commit**
+- [ ] **Step 5: Add the action that changes which hostnames an environment has**
+
+`writeVhost` renders whatever the registry says. Changing what it says is a second thing, and Task 14's
+add and remove endpoints need it. `DomainsDeps` gains a writer and a reload:
+
+```ts
+export type DomainsDeps = {
+    rail: Pick<ApacheRail, 'send'>
+    readFile(path: string): Promise<string | null>
+    listSitesEnabled(): Promise<VhostFile[]>
+    // The same RegistryWriter provisioning already uses, and a reload so the entry this just wrote is
+    // what the vhost is rendered from. Rendering from the arguments instead would let a write that was
+    // silently rejected still produce a vhost claiming the alias.
+    writeRegistry(change: Change): Promise<{ ok: true } | { ok: false, problem: string, conflict?: true }>
+    reloadRegistry(): Promise<Registry>
+    config: DomainsConfig
+}
+```
+
+Add the function:
+
+```ts
+// Add or remove an alias. The caller hands over the whole list the environment should end up with, so a
+// retry after a half-failure lands in the same place rather than adding the same alias twice.
+//
+// The order is registry first, then vhost, and it matters. The registry is the record of what this site
+// is entitled to serve; the vhost is a rendering of it. Writing the vhost first would mean a crash
+// between the two left Apache serving a hostname no entry claims, which is the one state nothing else in
+// hostd knows how to correct.
+export async function setAliases(
+    deps: DomainsDeps,
+    project: ProjectEntry,
+    environment: EnvironmentEntry,
+    aliases: string[],
+    token: string,
+): Promise<DomainsWritten | Refusal> {
+    if (environment.domain === null) {
+        return refuse('bad-request', `${project.id} ${environment.name} has no domain, so it cannot have aliases`)
+    }
+    if (aliases.includes(environment.domain)) {
+        return refuse('bad-request', `${environment.domain} is already this environment's domain`)
+    }
+    // The project's own cap, which the grammar's blanket ceiling could not know.
+    if (1 + aliases.length > project.maxDomains) {
+        return refuse('bad-request', `${project.id} allows at most ${project.maxDomains} hostnames per environment`)
+    }
+
+    const written = await deps.writeRegistry({
+        kind: 'set-aliases', id: project.id, environment: environment.name, aliases,
+    })
+    if (!written.ok) return refuse('failed', `the registry could not be updated: ${written.problem}`)
+
+    // Re-read rather than trusting the write: parseRegistry is what enforces reserved, the allowed
+    // carve-out and cross-project uniqueness, and a list that passed the grammar can still fail those.
+    const registry = await deps.reloadRegistry()
+    const fresh = registry.projects.get(project.id)?.environments.get(environment.name)
+    if (!fresh) {
+        return refuse('failed', `${project.id} ${environment.name} did not survive the change`)
+    }
+    return writeVhost(deps, registry.projects.get(project.id)!, fresh, token)
+}
+```
+
+And the tests:
+
+```ts
+describe('setAliases', () => {
+    it('writes the registry before it writes the vhost', async () => {
+        const order: string[] = []
+        const { deps, project, environment } = setup()
+        deps.writeRegistry = async () => { order.push('registry'); return { ok: true } }
+        deps.reloadRegistry = async () => { order.push('reload'); return reloaded(['www.acme.com']) }
+        const inner = deps.rail.send
+        deps.rail = { send: async (a, p) => { order.push('vhost'); return inner(a, p) } }
+        await setAliases(deps, project, environment, ['www.acme.com'], 'abc123')
+        assert.deepEqual(order, ['registry', 'reload', 'vhost'])
+    })
+
+    it('does not touch Apache when the registry write is refused', async () => {
+        const { deps, sent, project, environment } = setup()
+        deps.writeRegistry = async () => ({ ok: false, problem: 'someone else changed it' })
+        const result = await setAliases(deps, project, environment, ['www.acme.com'], 'abc123')
+        assert.equal(result.ok, false)
+        assert.equal(sent.length, 0)
+    })
+
+    it('refuses an alias equal to the primary', async () => {
+        const { deps, project, environment } = setup()
+        const result = await setAliases(deps, project, environment, ['acme.com'], 'abc123')
+        assert.equal(result.ok, false)
+        assert.match(result.ok === false ? result.message : '', /already this environment's domain/)
+    })
+
+    it('refuses more hostnames than the project allows, counting the primary', async () => {
+        const { deps, project, environment } = setup()
+        const capped = { ...project, maxDomains: 2 }
+        const result = await setAliases(deps, capped, environment, ['a.acme.com', 'b.acme.com'], 'abc123')
+        assert.equal(result.ok, false)
+        assert.match(result.ok === false ? result.message : '', /at most 2 hostnames/)
+    })
+
+    it('renders the vhost from the reloaded entry, not from the arguments', async () => {
+        const { deps, sent, project, environment } = setup()
+        // The registry accepted only one of the two: the second was already taken by another project.
+        deps.reloadRegistry = async () => reloaded(['www.acme.com'])
+        await setAliases(deps, project, environment, ['www.acme.com', 'taken.com'], 'abc123')
+        assert.doesNotMatch(sent[0]!.write?.text ?? '', /taken\.com/)
+    })
+
+    it('reports an entry that did not survive the change rather than writing a vhost for it', async () => {
+        const { deps, sent, project, environment } = setup()
+        deps.reloadRegistry = async () => parseRegistry('projects: {}')
+        const result = await setAliases(deps, project, environment, ['www.acme.com'], 'abc123')
+        assert.equal(result.ok, false)
+        assert.equal(sent.length, 0)
+    })
+})
+```
+
+Extend `setup()` with defaults for the two new deps, and add a `reloaded(aliases)` helper beside it that
+returns `parseRegistry` over the same fixture with the given aliases spliced in, so each test names only
+what it cares about.
+
+- [ ] **Step 6: Commit**
 
 ```bash
-cd hostd && npm run typecheck
+cd hostd && npm run typecheck && npm test
 git add hostd/src/agent/domains.ts hostd/src/agent/domains.test.ts
 git commit -m "Write and remove an environment's vhost, reverting when Apache refuses it"
 ```
@@ -2083,6 +2324,27 @@ Add to the boot gate in `main()`, beside the existing `/var/www` check:
 ```
 
 Build the `DomainsDeps` from `node:fs/promises` and pass them into the `Agent` constructor alongside the existing `ProvisionDeps` and `DeployDeps`. `readFile` returns `null` on `ENOENT` rather than throwing, and `listSitesEnabled` reads every `.conf` in `APACHE_SITES_ENABLED`.
+
+**The two maintenance paths are not the same path.** `index.ts` already has `MAINTENANCE_DIR`, read from `HOSTD_MAINTENANCE_DIR`, which is `/run/hostd/maintenance`: the flag files the deploy work writes. `MAINTENANCE_ROOT` above is the new one, `/var/www/hostd-maintenance`: the holding page Apache serves. Build the config with both, the right way round:
+
+```ts
+        maintenanceFlagDir: MAINTENANCE_DIR,
+        maintenancePageDir: MAINTENANCE_ROOT,
+```
+
+Getting these the wrong way round makes every vhost test a flag path that never exists, so the holding page never appears during a deploy, and nothing fails loudly enough to notice.
+
+**Report the rail's age in health, so a dead host unit is visible before somebody tries a domain action.** `Agent`'s deps gain `railAge: () => number | null`, wired in `index.ts` to `rail.lastSuccessAt()`, and `HealthReply` in `src/shared/protocol.ts` gains `railAge: number | null` which `Agent.health()` fills from it. Task 14 reads it off the health reply `api` already fetches. Without this there is no path from `ApacheRail.lastSuccessAt()` (inside the agent) to `api`, which is the only process that serves `/health`.
+
+Add one test for it beside the others:
+
+```ts
+    it('reports the rail\'s last answer in health, so a dead host unit is visible', async () => {
+        const { agent } = setup()
+        const health = await agent.handle({ verb: 'health' })
+        assert.ok('railAge' in health)
+    })
+```
 
 - [ ] **Step 4: Run the whole agent suite**
 
@@ -2752,8 +3014,8 @@ In `routes.ts`, extend `matchRoute`'s environment branch with the new paths, and
 | Route | What it does |
 | --- | --- |
 | `domains-list` | `store.forEnvironment(...)`, joining the environment's `certificate` mode onto each record (it lives in the registry, not in domain state, so there is one copy of it), with `vhost.output` omitted for a client |
-| `domain-add` | Normalise the hostname, refuse a duplicate or one over `maxDomains`, write it to the registry through the agent's provision path, mint a token, call the agent's `domains write`, record it `pending` |
-| `domain-remove` | Refuse the primary, remove from the registry, rewrite the vhost, drop the record |
+| `domain-add` | Read the environment's current aliases, append the new hostname, call the agent's `domains set-aliases` with the whole resulting list and the primary's token (Task 8 writes the registry and rewrites the vhost in that one call), then record the new hostname `pending` |
+| `domain-remove` | Refuse the primary, then `domains set-aliases` with the list minus that hostname, and drop its record |
 | `domain-verify` | `verifier.checkNow(key)` and answer the fresh record |
 | `adopt-preview` | Call the agent's `domains preview` and pass it through |
 | `adopt` | Check `confirm` equals the project name, then the agent's `domains adopt`, then record each hostname `pending` |
@@ -2772,9 +3034,32 @@ In the `/health` handler, add the four warnings:
     const waiting = environmentsAwaitingCertbot(registry)
     if (waiting.length) warnings.push(`waiting for Let's Encrypt support: ${waiting.join(', ')}`)
     // The rail not answering means no domain action can work at all, and every one of them will look
-    // like a hang rather than a failure until somebody tries one.
-    const railAge = await agent.railAge()
-    if (railAge === null || railAge > RAIL_STALE_MS) warnings.push('the Apache host unit has not answered since hostd started')
+    // like a hang rather than a failure until somebody tries one. railAge comes off the agent's health
+    // reply (Task 10), because lastSuccessAt lives in the agent and only api serves /health.
+    if (reply.railAge === null || reply.railAge > RAIL_STALE_MS) {
+        warnings.push('the Apache host unit has not answered; no domain change can take effect')
+    }
+```
+
+Both helpers this uses are defined here, not assumed:
+
+```ts
+// Ten minutes. Long enough that an idle hostd with nothing to change is not perpetually unhealthy, short
+// enough that a unit which died this morning is named before the day's first domain action hangs on it.
+const RAIL_STALE_MS = 10 * 60_000
+
+// Named once, listing the environments, rather than once per hostname: a site with three aliases would
+// otherwise produce three copies of the same sentence about the same certificate.
+function environmentsAwaitingCertbot(registry: Registry): string[] {
+    const waiting: string[] = []
+    for (const project of registry.projects.values()) {
+        if (!project.capabilities.has('domains')) continue
+        for (const environment of project.environments.values()) {
+            if (environment.certificate === 'letsencrypt') waiting.push(`${project.id} ${environment.name}`)
+        }
+    }
+    return waiting
+}
 ```
 
 - [ ] **Step 4: Run the whole api suite**
@@ -3257,7 +3542,9 @@ describe('DomainsPanel, for the operator', () => {
 
     it('keeps the environment selector, because a domain belongs to an environment', () => {
         render(<DomainsPanel {...props} />)
-        expect(screen.getByRole('link', { name: /test/i })).toBeInTheDocument()
+        // Whatever DeployPanel renders its strip with, not a second strip invented here: match its
+        // markup and assert the other environment is reachable, not which ARIA role it carries.
+        expect(screen.getByText(/test/i)).toBeInTheDocument()
     })
 })
 
