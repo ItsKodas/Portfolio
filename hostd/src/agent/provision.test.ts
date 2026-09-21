@@ -106,7 +106,10 @@ function setup(options: SetupOptions = {}) {
     const registryFiles = new Map<string, string>([[REGISTRY_PATH, yaml]])
     const registryFs: RegistryWriteFs = {
         readFile: async path => registryFiles.get(path) ?? Promise.reject(new Error('missing')),
+        stat: async () => ({ mode: 0o664, uid: 1000, gid: 1000 }),
         writeFile: async (path, text) => { registryFiles.set(path, text) },
+        chmod: async () => {},
+        chown: async () => {},
         rename: async (from, to) => {
             registryFiles.set(to, registryFiles.get(from)!)
             registryFiles.delete(from)
@@ -255,7 +258,10 @@ describe('createProject', () => {
         // any other reason applyChange might refuse.
         const brokenWriter = new RegistryWriter(REGISTRY_PATH, {
             readFile: async () => Promise.reject(new Error('the registry file is gone')),
+            stat: async () => ({ mode: 0o664, uid: 1000, gid: 1000 }),
             writeFile: async () => {},
+            chmod: async () => {},
+            chown: async () => {},
             rename: async () => {},
             unlink: async () => {},
         })

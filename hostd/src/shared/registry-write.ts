@@ -3,7 +3,7 @@
 // refuse to load. Editing the parsed YAML document rather than re-serialising the Registry keeps the
 // operator's comments and hand-written formatting intact.
 
-import { readFile, writeFile, rename, unlink } from 'node:fs/promises'
+import { readFile, writeFile, rename, unlink, stat, chmod, chown } from 'node:fs/promises'
 import { randomBytes } from 'node:crypto'
 import { parseDocument, isMap, isNode, isScalar, isSeq, type Document } from 'yaml'
 
@@ -12,14 +12,23 @@ import { describeError, RESERVED_PROJECT_IDS, PROJECT_ID } from './formats.ts'
 
 export type RegistryWriteFs = {
     readFile(path: string): Promise<string>
+    stat(path: string): Promise<{ mode: number, uid: number, gid: number }>
     writeFile(path: string, text: string, options?: { flag: string }): Promise<void>
+    chmod(path: string, mode: number): Promise<void>
+    chown(path: string, uid: number, gid: number): Promise<void>
     rename(from: string, to: string): Promise<void>
     unlink(path: string): Promise<void>
 }
 
 const nodeFs: RegistryWriteFs = {
     readFile: path => readFile(path, 'utf8'),
+    stat: async path => {
+        const info = await stat(path)
+        return { mode: info.mode, uid: info.uid, gid: info.gid }
+    },
     writeFile: (path, text, options) => writeFile(path, text, { encoding: 'utf8', flag: options?.flag }),
+    chmod: (path, mode) => chmod(path, mode),
+    chown: (path, uid, gid) => chown(path, uid, gid),
     rename: (from, to) => rename(from, to),
     unlink: path => unlink(path),
 }
@@ -310,6 +319,25 @@ export class RegistryWriter {
         const applied = applyChange(text, change)
         if (!applied.ok) return applied
 
+        // The file this write is about to replace already has an owner and a mode: the operator's own,
+        // or an earlier write's. This is read before the temp file is created so both can be carried
+        // across below. On the live dedi, the operator's file was -rw-rw-r-- 1000:1000; the writer, root,
+        // created its replacement with no explicit mode or ownership, which came out -rw-rw---- root:root
+        // (the process umask, not any deliberate choice). The api container (uid 1000, mounted read-only)
+        // could not open that file, so every reload failed EACCES, hostd kept serving the registry it had
+        // loaded at boot, and the portal showed the operator a registry that no longer existed. That was
+        // the first write this writer had ever made on that machine; provisioning and deploys share it,
+        // so either of those would have done the same. If the original cannot even be stat'd, there is no
+        // safe mode or ownership to copy and no way to know whether the write would repeat that outage,
+        // so this refuses rather than guess: the writer already refuses to write anything hostd would not
+        // load, and a file nothing else can read is that same failure by another door.
+        let original: { mode: number, uid: number, gid: number }
+        try {
+            original = await this.fs.stat(this.path)
+        } catch (error) {
+            return { ok: false, problem: `the registry's permissions could not be read: ${describeError(error)}` }
+        }
+
         // Same directory, so the rename is atomic: a crash leaves either the old file or the new one. A
         // random suffix, so the name cannot be guessed and pre-planted as a symlink by anything else that
         // can write into this directory, and 'wx' (O_CREAT | O_EXCL), which fails on anything already at
@@ -318,6 +346,21 @@ export class RegistryWriter {
         const temporary = this.path.replace(/([^/]+)$/, `.$1.${randomBytes(6).toString('hex')}.tmp`)
         try {
             await this.fs.writeFile(temporary, applied.text, { flag: 'wx' })
+            // Masked to the nine permission bits: stat can report more (the regular-file bit, a stray
+            // setuid bit), none of which belongs on a mode passed to chmod.
+            await this.fs.chmod(temporary, original.mode & 0o777)
+            try {
+                await this.fs.chown(temporary, original.uid, original.gid)
+            } catch (error) {
+                // This process is root on the live dedi, where chown always succeeds. Off it (a non-root
+                // dev run, or this test suite), the temp file was just created by this same process, so
+                // asking to chown it to the identity it already has is not a real change, and some
+                // platforms refuse even that confirmation to an unprivileged caller. That refusal is not
+                // a reason to fail a write whose content and mode already landed correctly; any other
+                // chown failure is real and must still fail the write.
+                const isNoop = process.getuid?.() === original.uid && process.getgid?.() === original.gid
+                if (!isNoop) throw error
+            }
             await this.fs.rename(temporary, this.path)
         } catch (error) {
             await this.fs.unlink(temporary).catch(() => {})
