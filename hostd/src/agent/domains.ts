@@ -10,7 +10,7 @@ import { hostnamesOf, type EnvironmentEntry, type ProjectEntry, type Registry } 
 import { refuse, type Refusal } from '../shared/protocol.ts'
 import type { Change } from '../shared/registry-write.ts'
 import type { ApacheRail } from './apache-rail.ts'
-import type { VhostFile } from './sites-enabled.ts'
+import { findClaims, type VhostFile } from './sites-enabled.ts'
 import { renderVhost, vhostPath } from './vhost.ts'
 
 export type DomainsConfig = {
@@ -142,4 +142,79 @@ export async function setAliases(
         return refuse('failed', `${project.id} ${environment.name} did not survive the change`)
     }
     return writeVhost(deps, registry.projects.get(project.id)!, fresh, token)
+}
+
+export type AdoptPreview = {
+    ok: true
+    preview: {
+        proposed: string
+        claims: { path: string, names: string[], unsupported: string | null }[]
+        extraNames: string[]
+        adoptable: boolean
+    }
+}
+
+// Reading only. Nothing here moves a file or reloads anything: an operator has to see what they are
+// replacing before any of it happens, and that is the whole reason adoption is two calls.
+export async function previewAdopt(
+    deps: DomainsDeps,
+    project: ProjectEntry,
+    environment: EnvironmentEntry,
+    token: string,
+): Promise<AdoptPreview | Refusal> {
+    if (environment.domain === null) {
+        return refuse('bad-request', `${project.id} ${environment.name} has no domain, so there is nothing to adopt`)
+    }
+    const hostnames = hostnamesOf(environment)
+    const claims = findClaims(await deps.listSitesEnabled(), hostnames)
+    // Names the old file serves that the registry has never heard of. Offered rather than taken: adopting
+    // without carrying these across would silently stop serving hostnames that work today, and adding
+    // them automatically would put hostnames in the registry nobody asked for.
+    const extraNames = [...new Set(claims.flatMap(claim => claim.names))].filter(name => !hostnames.includes(name))
+    return {
+        ok: true,
+        preview: {
+            proposed: render(deps, project, environment, token),
+            claims,
+            extraNames,
+            adoptable: claims.every(claim => claim.unsupported === null),
+        },
+    }
+}
+
+export async function adopt(
+    deps: DomainsDeps,
+    project: ProjectEntry,
+    environment: EnvironmentEntry,
+    token: string,
+    disable: string[],
+): Promise<DomainsWritten | Refusal> {
+    if (environment.domain === null) {
+        return refuse('bad-request', `${project.id} ${environment.name} has no domain, so there is nothing to adopt`)
+    }
+    const hostnames = hostnamesOf(environment)
+    const claims = findClaims(await deps.listSitesEnabled(), hostnames)
+
+    // Every named file has to be one this environment's hostnames actually reach. api chose these from a
+    // preview, and the preview could be minutes old, so the claim is re-established here against the
+    // files as they are now rather than trusted from the request.
+    for (const path of disable) {
+        const claim = claims.find(entry => entry.path === path)
+        if (!claim) return refuse('bad-request', `${path} does not serve any hostname of ${project.id} ${environment.name}`)
+        if (claim.unsupported) return refuse('bad-request', `${path} cannot be read well enough to adopt: ${claim.unsupported}`)
+    }
+
+    const path = vhostPath(deps.config.includeDir, project.id, environment.name)
+    const previous = await deps.readFile(path)
+    const text = render(deps, project, environment, token)
+
+    // One request, so the new file arrives and the old one leaves before the single configtest. Two
+    // requests would mean a moment with both files loaded, where Apache picks one by file order, or a
+    // moment with neither.
+    const result = await deps.rail.send('adopt', { write: { path, text }, remove: [], disable })
+    if (!result.ok) {
+        const also = await revert(deps, path, previous)
+        return refuse('failed', `Apache refused the configuration adopting ${project.id} ${environment.name}.${also}`, result.output)
+    }
+    return { ok: true, written: { hostnames, path } }
 }

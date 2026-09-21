@@ -2,7 +2,7 @@ import { describe, it } from 'node:test'
 import assert from 'node:assert/strict'
 
 import { parseRegistry } from '../shared/registry.ts'
-import { writeVhost, removeVhost, setAliases, type DomainsDeps } from './domains.ts'
+import { writeVhost, removeVhost, setAliases, previewAdopt, adopt, type DomainsDeps } from './domains.ts'
 
 const REGISTRY = `
 projects:
@@ -174,6 +174,32 @@ describe('setAliases', () => {
         assert.match(result.ok === false ? result.message : '', /at most 2 hostnames/)
     })
 
+    it('allows exactly the cap, counting the primary, which is the boundary an off-by-one would miss', async () => {
+        const { deps, project, environment } = setup()
+        const capped = { ...project, maxDomains: 2 }
+        deps.reloadRegistry = async () => reloaded(['a.acme.com'])
+        const result = await setAliases(deps, capped, environment, ['a.acme.com'], 'abc123')
+        assert.equal(result.ok, true)
+    })
+
+    it('refuses an environment with no domain rather than accepting aliases for it', async () => {
+        const registry = parseRegistry(`
+projects:
+  acme:
+    client: cl_1
+    name: Acme
+    capabilities: [domains]
+    services: { web: { role: site } }
+    environments:
+      live: { dir: /var/www/acme, port: 5010 }
+`)
+        const { deps } = setup()
+        const project = registry.projects.get('acme')!
+        const result = await setAliases(deps, project, project.environments.get('live')!, ['www.acme.com'], 'abc123')
+        assert.equal(result.ok, false)
+        assert.match(result.ok === false ? result.message : '', /no domain/)
+    })
+
     it('renders the vhost from the reloaded entry, not from the arguments', async () => {
         const { deps, sent, project, environment } = setup()
         // The registry accepted only one of the two: the second was already taken by another project.
@@ -188,5 +214,88 @@ describe('setAliases', () => {
         const result = await setAliases(deps, project, environment, ['www.acme.com'], 'abc123')
         assert.equal(result.ok, false)
         assert.equal(sent.length, 0)
+    })
+})
+
+describe('previewAdopt', () => {
+    const handWritten = {
+        path: '/etc/apache2/sites-enabled/acme.conf',
+        text: 'ServerName acme.com\nServerAlias www.acme.com legacy.acme.com\n',
+    }
+
+    it('shows the file that serves this site today and the one hostd proposes', async () => {
+        const { deps, project, environment } = setup()
+        deps.listSitesEnabled = async () => [handWritten]
+        const result = await previewAdopt(deps, project, environment, 'abc123')
+        assert.equal(result.ok, true)
+        assert.equal(result.ok && result.preview.claims[0]!.path, handWritten.path)
+        assert.match(result.ok ? result.preview.proposed : '', /ServerName acme\.com/)
+    })
+
+    it('lists hostnames the old file serves that the registry does not know about', async () => {
+        const { deps, project, environment } = setup()
+        deps.listSitesEnabled = async () => [handWritten]
+        const result = await previewAdopt(deps, project, environment, 'abc123')
+        assert.deepEqual(result.ok && result.preview.extraNames, ['legacy.acme.com'])
+    })
+
+    it('moves nothing and reloads nothing', async () => {
+        const { deps, sent, project, environment } = setup()
+        deps.listSitesEnabled = async () => [handWritten]
+        await previewAdopt(deps, project, environment, 'abc123')
+        assert.equal(sent.length, 0)
+    })
+
+    it('refuses to call a file adoptable when it uses Include', async () => {
+        const { deps, project, environment } = setup()
+        deps.listSitesEnabled = async () => [{ path: handWritten.path, text: 'ServerName acme.com\nInclude /etc/apache2/common.conf' }]
+        const result = await previewAdopt(deps, project, environment, 'abc123')
+        assert.equal(result.ok && result.preview.adoptable, false)
+    })
+
+    it('is adoptable with no claims at all, which is a site that has no hand-written vhost', async () => {
+        const { deps, project, environment } = setup()
+        const result = await previewAdopt(deps, project, environment, 'abc123')
+        assert.equal(result.ok && result.preview.adoptable, true)
+        assert.deepEqual(result.ok && result.preview.claims, [])
+    })
+})
+
+describe('adopt', () => {
+    const handWritten = { path: '/etc/apache2/sites-enabled/acme.conf', text: 'ServerName acme.com\n' }
+
+    it('writes the new file and disables the old one in a single request', async () => {
+        const { deps, sent, project, environment } = setup()
+        deps.listSitesEnabled = async () => [handWritten]
+        const result = await adopt(deps, project, environment, 'abc123', [handWritten.path])
+        assert.equal(result.ok, true)
+        assert.equal(sent.length, 1)
+        assert.equal(sent[0]!.action, 'adopt')
+        assert.deepEqual(sent[0]!.disable, [handWritten.path])
+        assert.match(sent[0]!.write?.text ?? '', /Generated by hostd/)
+    })
+
+    it('refuses a file that is not currently claiming one of this environment\'s hostnames', async () => {
+        const { deps, project, environment } = setup()
+        deps.listSitesEnabled = async () => [handWritten]
+        const result = await adopt(deps, project, environment, 'abc123', ['/etc/apache2/sites-enabled/other.conf'])
+        assert.equal(result.ok, false)
+        assert.match(result.ok === false ? result.message : '', /does not serve/)
+    })
+
+    it('refuses to adopt a file it could not fully read', async () => {
+        const { deps, project, environment } = setup()
+        deps.listSitesEnabled = async () => [{ path: handWritten.path, text: 'ServerName acme.com\nUse CommonSite acme' }]
+        const result = await adopt(deps, project, environment, 'abc123', [handWritten.path])
+        assert.equal(result.ok, false)
+        assert.match(result.ok === false ? result.message : '', /cannot be read/)
+    })
+
+    it('reverts when the configtest fails, so the old file comes back', async () => {
+        const { deps, sent, project, environment } = setup({ railOk: false })
+        deps.listSitesEnabled = async () => [handWritten]
+        const result = await adopt(deps, project, environment, 'abc123', [handWritten.path])
+        assert.equal(result.ok, false)
+        assert.equal(sent.length, 2)
     })
 })
