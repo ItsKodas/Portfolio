@@ -1,9 +1,11 @@
 import { describe, it } from 'node:test'
 import assert from 'node:assert/strict'
+import { EventEmitter } from 'node:events'
 import { PassThrough } from 'node:stream'
 
-import { backupArgv, createRestic, dumpArgv, repoPath, retentionArgv, snapshotsArgv, stagingPath, type SpawnStream } from './restic.ts'
+import { backupArgv, createRestic, dumpArgv, nodeSpawnStream, repoPath, RESTIC_ENV_KEYS, retentionArgv, snapshotsArgv, stagingPath, type SpawnStream } from './restic.ts'
 import type { Runner, RunResult } from './compose.ts'
+import { spawn as nodeSpawn } from 'node:child_process'
 
 const REPO = '/backups/acme'
 
@@ -79,5 +81,72 @@ describe('createRestic', () => {
         const stream = restic.dump(REPO, 'deadbeef')
         for await (const chunk of stream.stdout) chunks.push(chunk as Buffer)
         assert.equal(Buffer.concat(chunks).toString(), 'tar bytes')
+    })
+})
+
+describe('nodeSpawnStream environment', () => {
+    it('passes restic a child environment that contains RESTIC_PASSWORD and omits docker-specific keys', async () => {
+        const original = { ...process.env }
+        try {
+            process.env.PATH = '/usr/bin'
+            process.env.HOME = '/root'
+            process.env.TZ = 'UTC'
+            process.env.DOCKER_HOST = 'unix:///var/run/docker.sock'
+            process.env.DOCKER_CONFIG = '/root/.docker'
+            process.env.RESTIC_PASSWORD = 'super-secret'
+
+            const calls: Array<{ command: string, args: string[], options: Record<string, unknown> }> = []
+            const fakeSpawn = ((command: string, args: string[], options: Record<string, unknown>) => {
+                calls.push({ command, args, options })
+                const child = Object.assign(new EventEmitter(), {
+                    stdout: new PassThrough(),
+                    stderr: new PassThrough(),
+                })
+                setImmediate(() => child.emit('close', 0))
+                return child
+            }) as unknown as typeof nodeSpawn
+
+            const spawnStream = nodeSpawnStream(fakeSpawn)
+            const handle = spawnStream('restic', ['dump', 'snapshot', '/'])
+            await handle.exit
+
+            assert.equal(calls[0]?.options.shell, undefined)
+            assert.deepEqual(calls[0]?.options.env, {
+                PATH: '/usr/bin', HOME: '/root', TZ: 'UTC', RESTIC_PASSWORD: 'super-secret',
+            })
+        } finally {
+            process.env = original
+        }
+    })
+
+    it('omits RESTIC_PASSWORD when process.env does not set it', async () => {
+        const original = { ...process.env }
+        try {
+            process.env.PATH = '/usr/bin'
+            process.env.HOME = '/root'
+            delete process.env.TZ
+            delete process.env.RESTIC_PASSWORD
+
+            const calls: Array<{ command: string, args: string[], options: Record<string, unknown> }> = []
+            const fakeSpawn = ((command: string, args: string[], options: Record<string, unknown>) => {
+                calls.push({ command, args, options })
+                const child = Object.assign(new EventEmitter(), {
+                    stdout: new PassThrough(),
+                    stderr: new PassThrough(),
+                })
+                setImmediate(() => child.emit('close', 0))
+                return child
+            }) as unknown as typeof nodeSpawn
+
+            const spawnStream = nodeSpawnStream(fakeSpawn)
+            const handle = spawnStream('restic', ['dump', 'snapshot', '/'])
+            await handle.exit
+
+            assert.deepEqual(calls[0]?.options.env, {
+                PATH: '/usr/bin', HOME: '/root',
+            })
+        } finally {
+            process.env = original
+        }
     })
 })

@@ -2,16 +2,20 @@
 // commands produce a few kilobytes of JSON and go through Runner, which captures output as text, while a
 // dump is a tar of the whole snapshot and goes through SpawnStream, which never holds it in memory.
 //
-// RESTIC_PASSWORD is deliberately absent from every line here. restic reads it from the agent's own
-// environment, which a spawned child inherits, so it can never appear in an argv, a log or an error.
+// RESTIC_PASSWORD is never passed as an argument and never logged. restic reads it from a carefully
+// scoped child environment that includes only what restic needs, passed via childEnv(RESTIC_ENV_KEYS).
 
 import { spawn as nodeSpawn } from 'node:child_process'
 import { posix } from 'node:path'
 import type { Readable } from 'node:stream'
 
-import { tail, type Runner } from './compose.ts'
+import { childEnv, tail, type Runner } from './compose.ts'
 import type { Keep } from '../shared/registry.ts'
 import type { BackupTag, Snapshot } from '../shared/backups.ts'
+
+// restic needs its repository password and nothing docker-specific. It never runs compose, so
+// unlike the docker allowlist nothing here can be interpolated into a client's own compose file.
+export const RESTIC_ENV_KEYS = ['PATH', 'HOME', 'TZ', 'RESTIC_PASSWORD'] as const
 
 // A backup of a large site is minutes, and a prune of a large repository can be longer. Nothing here is
 // on a request's critical path: the run was started, not awaited.
@@ -41,7 +45,7 @@ export type SpawnStream = (command: string, args: string[]) => StreamHandle
 
 export function nodeSpawnStream(spawn: typeof nodeSpawn = nodeSpawn): SpawnStream {
     return (command, args) => {
-        const child = spawn(command, args, { stdio: ['ignore', 'pipe', 'pipe'] })
+        const child = spawn(command, args, { stdio: ['ignore', 'pipe', 'pipe'], env: childEnv(RESTIC_ENV_KEYS) })
         let stderr = ''
         child.stderr?.on('data', (chunk: Buffer) => { if (stderr.length < 4096) stderr += chunk.toString('utf8') })
         const exit = new Promise<{ exitCode: number | null, stderr: string }>(resolve => {
