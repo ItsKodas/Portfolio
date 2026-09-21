@@ -262,6 +262,10 @@ describe('parseRegistry, problems with one project', () => {
         assert.match(invalidReason(project({ capabilities: '[logs, logs]' })) ?? '', /capability logs is listed twice/)
     })
 
+    it('accepts the deploy capability, which is what polling and deploying are gated on', () => {
+        assert.equal(invalidReason(project({ capabilities: '[lifecycle, deploy]' })), undefined)
+    })
+
     it('refuses maxDomains outside 1 to 20', () => {
         assert.match(invalidReason(project({ maxDomains: '0' })) ?? '', /maxDomains must be a whole number from 1 to 20/)
     })

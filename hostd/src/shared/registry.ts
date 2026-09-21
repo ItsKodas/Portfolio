@@ -10,7 +10,7 @@ import {
     isRecord, relativePathProblem, overlaps,
 } from './formats.ts'
 
-export const CAPABILITIES = ['lifecycle', 'logs', 'files', 'backups', 'domains', 'provision', 'env'] as const
+export const CAPABILITIES = ['lifecycle', 'logs', 'files', 'backups', 'domains', 'provision', 'env', 'deploy'] as const
 export type Capability = typeof CAPABILITIES[number]
 export const ENGINES = ['postgres', 'mysql', 'mariadb', 'mongodb', 'sqlite', 'redis', 'generic'] as const
 export type Engine = typeof ENGINES[number]
