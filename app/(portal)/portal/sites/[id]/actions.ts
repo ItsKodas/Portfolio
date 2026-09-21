@@ -14,6 +14,7 @@ import type { Caller } from '@/server/hostd/actor'
 import { forAdmin, forClient } from '@/server/hostd/errors'
 import { assertOwned, lifecycle } from '@/server/hostd/projects'
 import { callerFromSession } from '@/server/hostd/session'
+import { writeSettings, type SiteSettings } from '@/server/hostd/settings'
 
 export type SiteActionResult = { ok: true, message: string } | { ok: false, error: string }
 
@@ -143,6 +144,19 @@ export async function rollbackAction(id: string, environment: string): Promise<S
 
     revalidatePath(`/portal/sites/${id}`)
     return { ok: true, message: 'Rolling back. The last version that worked is going up, which takes a minute or two.' }
+}
+
+// Editing the registry entry is the operator's alone. hostd refuses a client outright (configure is in
+// its ADMIN_ONLY list, ahead of ownership), and this is the same rule applied a step earlier.
+export async function saveSettingsAction(id: string, settings: SiteSettings): Promise<SiteActionResult> {
+    const allowed = await allow(id, true)
+    if (!allowed.ok) return allowed
+
+    const result = await writeSettings(allowed.config, allowed.caller, id, settings)
+    if (!result.ok) return refused(`settings on ${id}`, allowed.isAdmin, result)
+
+    revalidatePath(`/portal/sites/${id}`)
+    return { ok: true, message: 'Saved. Nothing was started or stopped: this only changes what the site is allowed to do.' }
 }
 
 export async function setBranchAction(id: string, environment: string, branch: string): Promise<SiteActionResult> {
