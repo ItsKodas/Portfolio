@@ -449,11 +449,32 @@ follow, because there is no per-environment lifecycle yet.
 
 ### Setting backups up
 
-1. Create the backup directory on the host, or point `HOSTD_BACKUP_DIR` at whichever disk you actually
-   want backups written to before the first `docker compose up`:
+1. Decide which disk backups live on, and create the directory. The default is `/srv/backups/hostd`:
 
    ```bash
    sudo mkdir -p /srv/backups/hostd
+   ```
+
+   To put them somewhere else, set `HOSTD_BACKUP_DIR` **in `hostd/.env`**, and create that directory
+   instead:
+
+   ```bash
+   echo 'HOSTD_BACKUP_DIR=/games/backups/hostd' >> hostd/.env
+   sudo mkdir -p /games/backups/hostd
+   ```
+
+   It has to be `hostd/.env` and not `hostd/.env.agent`. Compose interpolates `${HOSTD_BACKUP_DIR}` in
+   the bind mount from the shell or from `.env`, while `.env.agent` is an `env_file`, which only injects
+   variables into the running container. Put it in the wrong one and the mount quietly stays on the
+   default: backups land on the disk you were trying to avoid, and nothing says so. Check which one you
+   got with `docker compose config | grep backups`, which prints the host path compose actually resolved.
+
+   Set it before the first `docker compose up`, because moving it afterwards means moving the
+   repositories too. The rest of this runbook writes the host directory as `$BACKUPS`; set it in your
+   shell to whatever you chose, so the commands below can be pasted as they are:
+
+   ```bash
+   BACKUPS=/srv/backups/hostd   # or whatever you set HOSTD_BACKUP_DIR to
    ```
 
 2. Create `hostd/.env.agent` from `hostd/example.env.agent`, and generate the password on the dedi:
@@ -473,7 +494,7 @@ follow, because there is no per-environment lifecycle yet.
    works, because the agent image carries its own copy), but the day `hostd` itself is down, or the dedi
    is being rebuilt, there is no agent container to exec into, and the bind mount at `/backups` exists
    for exactly that day: it lets restic on the bare host reach the repository files directly off
-   `/srv/backups/hostd`, with no Docker involved at all. Install it now so it is already there when it is
+   `$BACKUPS`, with no Docker involved at all. Install it now so it is already there when it is
    needed (`apt-get install restic` on Debian/Ubuntu, or a static binary from restic's own releases).
 
 4. Bring the agent up (or recreate it) so it picks up the new mount and env file:
@@ -537,7 +558,7 @@ It does **not** capture the `test` environment, the compose file or its override
 `.env.fetcher`, the site's source tree, or any directory the project has not declared under `storage`.
 
 **Backups are local to this dedi until the offsite phase lands.** They live on this machine's own disk,
-under `/srv/backups/hostd` (or wherever `HOSTD_BACKUP_DIR` points). A dedi that is lost, destroyed or has
+under `$BACKUPS` (`/srv/backups/hostd` unless `HOSTD_BACKUP_DIR` says otherwise). A dedi that is lost, destroyed or has
 its disk fail loses every backup on it, exactly the way it loses everything else under `/var/www`. Nothing
 built so far protects against that. Only the offsite copy, not built in this phase, will.
 
@@ -556,12 +577,24 @@ itself is up:
   mounted inside it at `/backups`. Nothing extra to install; this is what you will do almost every time.
 - **The case the bind mount exists for: `hostd` itself is down, or the dedi is being rebuilt, so there is
   no agent container to exec into.** Use `restic` on the bare host instead, pointed at
-  `/srv/backups/hostd/<id>` directly, with no Docker involved. This only works if you installed `restic`
+  `$BACKUPS/<id>` directly, with no Docker involved. This only works if you installed `restic`
   on the dedi ahead of time (see **Setting backups up**, step 3) and can get `RESTIC_PASSWORD` from
   somewhere: `hostd/.env.agent` on the dedi if it survived, or your own off-dedi copy if it did not.
 
 Both reach the same repository and produce the same result; only how you reach it differs. The steps below
 show both, in the order you would try them: `docker exec` first, the host fallback under it.
+
+The host commands write the backup directory as `$BACKUPS`, which is whatever `HOSTD_BACKUP_DIR` points
+at, `/srv/backups/hostd` if it was never set. Set it in your shell before pasting anything:
+
+```bash
+BACKUPS=$(grep ^HOSTD_BACKUP_DIR= hostd/.env | cut -d= -f2)
+BACKUPS=${BACKUPS:-/srv/backups/hostd}
+echo "$BACKUPS"
+```
+
+The `docker exec` commands do not need it: inside the agent the repository is always at `/backups`,
+whichever host directory is mounted there.
 
 1. **Find the snapshot.** Each project has its own repository, named by its id.
 
@@ -577,7 +610,7 @@ show both, in the order you would try them: `docker exec` first, the host fallba
 
    ```bash
    export RESTIC_PASSWORD=$(grep ^RESTIC_PASSWORD= hostd/.env.agent | cut -d= -f2)
-   sudo env RESTIC_PASSWORD="$RESTIC_PASSWORD" restic -r /srv/backups/hostd/acme-bakery snapshots
+   sudo env RESTIC_PASSWORD="$RESTIC_PASSWORD" restic -r "$BACKUPS"/acme-bakery snapshots
    ```
 
    Either way, note the short id of the snapshot you want. `tags` says `manual` or `scheduled`; `time` is
@@ -586,7 +619,7 @@ show both, in the order you would try them: `docker exec` first, the host fallba
 2. **Restore it to a staging path, never straight over the live tree.**
 
    Ordinary case, restoring inside the agent container (its `/backups` is the same bind mount as the
-   host's `/srv/backups/hostd`, so the result appears at the same place on the host either way):
+   host's `$BACKUPS`, so the result appears at the same place on the host either way):
 
    ```bash
    docker exec hostd-agent restic -r /backups/acme-bakery restore \
@@ -596,17 +629,17 @@ show both, in the order you would try them: `docker exec` first, the host fallba
    Fallback, `hostd` is down:
 
    ```bash
-   sudo env RESTIC_PASSWORD="$RESTIC_PASSWORD" restic -r /srv/backups/hostd/acme-bakery restore \
-     <snapshot-id> --target /srv/backups/hostd/restore/acme-bakery
+   sudo env RESTIC_PASSWORD="$RESTIC_PASSWORD" restic -r "$BACKUPS"/acme-bakery restore \
+     <snapshot-id> --target "$BACKUPS"/restore/acme-bakery
    ```
 
-   Either way, the restored copy lands on the host at `/srv/backups/hostd/restore/acme-bakery/...`. restic
+   Either way, the restored copy lands on the host at `$BACKUPS/restore/acme-bakery/...`. restic
    recreates the absolute paths it captured, and it captured them from the agent container's own point of
    view. A database dump lands under
-   `/srv/backups/hostd/restore/acme-bakery/backups/.staging/acme-bakery/<run>/db/<service>/<file>`
+   `$BACKUPS/restore/acme-bakery/backups/.staging/acme-bakery/<run>/db/<service>/<file>`
    (`<run>` is whichever run produced that snapshot; the snapshot's own `paths` field, or just `ls` the
    restored `db/` directory, will show it). Each `storage` directory lands at its real host path, for
-   example `/srv/backups/hostd/restore/acme-bakery/var/www/acme-bakery/live/uploads/`, because `/var/www`
+   example `$BACKUPS/restore/acme-bakery/var/www/acme-bakery/live/uploads/`, because `/var/www`
    is the same bind mount on the host and in every container.
 
    The rest of this procedure is the same either way, and runs on the host regardless of which route you
@@ -624,7 +657,7 @@ show both, in the order you would try them: `docker exec` first, the host fallba
 
    ```bash
    sudo rsync -a --delete \
-     /srv/backups/hostd/restore/acme-bakery/var/www/acme-bakery/live/uploads/ \
+     "$BACKUPS"/restore/acme-bakery/var/www/acme-bakery/live/uploads/ \
      /var/www/acme-bakery/live/uploads/
    ```
 
@@ -654,7 +687,7 @@ show both, in the order you would try them: `docker exec` first, the host fallba
 
    ```bash
    SERVICE=<service>   # replace with this project's own database service name
-   DUMP=/srv/backups/hostd/restore/acme-bakery/backups/.staging/acme-bakery/<run>/db/$SERVICE
+   DUMP="$BACKUPS"/restore/acme-bakery/backups/.staging/acme-bakery/<run>/db/$SERVICE
    ```
 
    `psql`, `mysql`/`mariadb` and `mongorestore` all talk to a running server, so bring just that one
@@ -728,7 +761,7 @@ database on a timer.
 
 | Refusal | What to do |
 | --- | --- |
-| `the backup disk has less than 10% free` | Free space on `/srv/backups/hostd` (or wherever `HOSTD_BACKUP_DIR` points): delete manual snapshots you no longer need (below), and know that deleting a scheduled one only reclaims space once the weekly prune runs. |
+| `the backup disk has less than 10% free` | Free space on the backup disk (`$BACKUPS`): delete manual snapshots you no longer need (below), and know that deleting a scheduled one only reclaims space once the weekly prune runs. |
 | `there are already five manual backups; delete one before taking another` | `hc -X DELETE http://hostd-api:8080/projects/<id>/backups/<snapshot>` on one you no longer need, then try again. |
 | `a manual backup was taken less than 10 minutes ago; wait before taking another` | Wait; it clears itself ten minutes after the last manual run started. |
 | `another backup is running; only one runs on the dedi at a time` | Wait for it to finish. Only one backup runs across the whole dedi at once, on purpose, so a scheduled sweep across many projects can never saturate the disk together. |
