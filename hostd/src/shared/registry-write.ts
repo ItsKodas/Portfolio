@@ -5,7 +5,7 @@
 
 import { readFile, writeFile, rename, unlink } from 'node:fs/promises'
 import { randomBytes } from 'node:crypto'
-import { parseDocument, isMap, isScalar, type Document } from 'yaml'
+import { parseDocument, isMap, isNode, isScalar, isSeq, type Document } from 'yaml'
 
 import { parseRegistry, RegistryError, type Capability, type CertificateMode, type EnvironmentName } from './registry.ts'
 import { describeError, RESERVED_PROJECT_IDS, PROJECT_ID } from './formats.ts'
@@ -94,6 +94,11 @@ function toEnvironments(doc: Document, id: string): EditResult {
     const live: Record<string, unknown> = { dir }
     // compose is one file or several, and both spellings are carried across as they were written
     const compose = doc.getIn(['projects', id, 'compose'])
+    // Whether the operator wrote the list on one line. toJSON below unwraps the node to a plain array, and
+    // createNode then gives the new one the library's default block style, so the flag is read here and
+    // put back on the new node below. A write that was asked for a branch has no business reformatting
+    // the list beside it, any more than the capabilities case has (see the flow: true there).
+    const composeWasFlow = isSeq(compose) && compose.flow === true
     if (compose !== undefined && compose !== null) {
         live.compose = typeof compose === 'object' && 'toJSON' in compose
             ? (compose as { toJSON: () => unknown }).toJSON()
@@ -101,24 +106,33 @@ function toEnvironments(doc: Document, id: string): EditResult {
     }
     live.port = port
 
-    // A hand-written note above dir, compose or upstream lives on that key's own node as commentBefore;
-    // deleteIn below would throw it away with the key. Carry whichever of the three the operator actually
-    // commented (there is normally at most one) onto the environments key that replaces all three.
+    // A hand-written note about dir, compose or upstream lives in one of two places: on the key's own node
+    // as commentBefore when it sits on a line above, and on the value's node as comment when it trails the
+    // value on the same line. deleteIn below throws away the whole pair, so both go with it. Every note on
+    // any of the three is carried onto the environments key that replaces all three, in the order the file
+    // has them. A trailing note becomes a line of its own above environments: that is a move, and it is
+    // the one thing yaml can express here. Losing it is not.
     const projectNode = doc.getIn(['projects', id], true)
-    let comment: string | null | undefined
+    const notes: string[] = []
     if (isMap(projectNode)) {
         for (const pair of projectNode.items) {
-            if (isScalar(pair.key) && (pair.key.value === 'dir' || pair.key.value === 'compose' || pair.key.value === 'upstream') && pair.key.commentBefore) {
-                comment = pair.key.commentBefore
-                break
-            }
+            const key = isScalar(pair.key) ? pair.key.value : pair.key
+            if (key !== 'dir' && key !== 'compose' && key !== 'upstream') continue
+            if (isScalar(pair.key) && pair.key.commentBefore) notes.push(pair.key.commentBefore)
+            if (isNode(pair.value) && pair.value.comment) notes.push(pair.value.comment)
         }
     }
+    const comment = notes.join('\n')
 
     // setIn does not deep-convert a plain nested object into YAML nodes: getIn(['environments']) would
     // come back as a bare JS object, and hasIn(['environments', 'live']) would then answer false, because
     // there is no YAMLMap there to walk into. createNode does the deep conversion; setIn does not need to.
-    doc.setIn(['projects', id, 'environments'], doc.createNode({ live }))
+    const environments = doc.createNode({ live })
+    if (composeWasFlow && isMap(environments)) {
+        const written = environments.getIn(['live', 'compose'], true)
+        if (isSeq(written)) written.flow = true
+    }
+    doc.setIn(['projects', id, 'environments'], environments)
     doc.deleteIn(['projects', id, 'dir'])
     doc.deleteIn(['projects', id, 'compose'])
     doc.deleteIn(['projects', id, 'upstream'])
@@ -182,9 +196,17 @@ function edit(doc: Document, change: Change): EditResult {
         case 'configure': {
             if (!has(change.id)) return { problem: `${change.id} is not registered` }
 
-            const branches = Object.entries(change.branches ?? {})
+            const requested = Object.entries(change.branches ?? {})
+            const shaped = doc.hasIn(['projects', change.id, 'environments'])
+            // Only a branch actually being set is worth reshaping an entry for. The portal's form sends one
+            // entry per environment on every save and a blank branch field arrives as null, so an ordinary
+            // capability save on a live-only site carries branches: { live: null } with it. Clearing a
+            // branch an entry has no room for is a no-op, not a reason to rewrite the operator's file: the
+            // conversion is lossy on purpose (upstream's host does not survive it) and the spec sanctions
+            // that only for a deliberate branch save.
+            const branches = shaped || requested.some(([, branch]) => branch !== null) ? requested : []
             // A branch has nowhere to go on an entry written the live-only way, so the shape comes first
-            if (branches.length > 0 && !doc.hasIn(['projects', change.id, 'environments'])) {
+            if (branches.length > 0 && !shaped) {
                 const converted = toEnvironments(doc, change.id)
                 if (converted) return converted
             }

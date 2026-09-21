@@ -21,15 +21,18 @@ projects:
         certificate: letsencrypt
 `
 
+// The real entries on the dedi look like this: a note above a key and another trailing one on the same
+// line as the value, a compose list written on one line, and an upstream that is not the loopback address.
+// All three are things a write can silently destroy, so the fixture carries all three.
 const LIVE_ONLY = `reserved: [horizons.gg]
 projects:
   arbysauto:
     client: cl_1
     name: Arbys Auto Glass
     # the operator's own note, which must survive a write
-    dir: /var/www/arbysauto
+    dir: /var/www/arbysauto # port bumped 2025-03, do not reuse 5010
     compose: [docker-compose.yml, docker-compose.override.yml]
-    upstream: 127.0.0.1:5011
+    upstream: 10.0.0.5:5011
     services:
       web: { role: site }
     capabilities: [lifecycle, logs]
@@ -133,6 +136,33 @@ describe('applyChange', () => {
 })
 
 describe('configure', () => {
+    // The body the portal's form actually sends. It sends every field on every save, one branches entry
+    // per environment, and a blank branch field becomes null: a live-only entry has a synthesised live
+    // environment in the listing, so branches: { live: null } rides along with every save of one. Ticking
+    // a capability must not reshape the entry, which is a conversion that loses upstream's host, and must
+    // not touch anything else in the file either.
+    it('changes nothing but the capabilities when the save only ticked one', () => {
+        const result = applyChange(LIVE_ONLY, {
+            kind: 'configure',
+            id: 'arbysauto',
+            capabilities: ['lifecycle', 'logs', 'env'],
+            repo: null,
+            branches: { live: null },
+        })
+        assert.ok(result.ok)
+        assert.deepEqual([...parseRegistry(result.text).projects.get('arbysauto')!.capabilities], ['lifecycle', 'logs', 'env'])
+
+        // Every other line of the file, line for line: the entry keeps its shape, its trailing note, its
+        // one-line compose list and its own upstream host. Blind to one thing only, the space yaml's
+        // stringify puts inside every flow collection in the document on every write, which the writer
+        // takes on purpose rather than reformat the whole file to avoid (see the note by doc.toString).
+        const without = (text: string) => text.split('\n')
+            .filter(line => !line.includes('capabilities:'))
+            .map(line => line.replace(/\[ /g, '[').replace(/ \]/g, ']'))
+        assert.deepEqual(without(result.text), without(LIVE_ONLY))
+        assert.equal(parseRegistry(result.text).projects.get('arbysauto')!.upstream.host, '10.0.0.5')
+    })
+
     it('replaces the capability list wholesale', () => {
         const result = applyChange(LIVE_ONLY, { kind: 'configure', id: 'arbysauto', capabilities: ['lifecycle', 'logs', 'env', 'deploy'] })
         assert.ok(result.ok)
@@ -208,6 +238,32 @@ describe('configure', () => {
         assert.match(result.text, /the operator's own note/)
     })
 
+    it('carries every note the operator wrote on the three keys it deletes, trailing ones included', () => {
+        const result = applyChange(LIVE_ONLY, {
+            kind: 'configure',
+            id: 'arbysauto',
+            repo: 'git@github.com:ItsKodas/arbysauto.git',
+            branches: { live: 'main' },
+        })
+        assert.ok(result.ok)
+        // The note above dir and the one trailing its value: the pair carrying either is deleted by the
+        // conversion, so a note left on it is gone for good (the registry is gitignored and not backed up).
+        assert.match(result.text, /the operator's own note/)
+        assert.match(result.text, /port bumped 2025-03, do not reuse 5010/)
+    })
+
+    it('keeps a one-line compose list on one line when it converts', () => {
+        const result = applyChange(LIVE_ONLY, {
+            kind: 'configure',
+            id: 'arbysauto',
+            repo: 'git@github.com:ItsKodas/arbysauto.git',
+            branches: { live: 'main' },
+        })
+        assert.ok(result.ok)
+        assert.match(result.text, /compose: \[ ?docker-compose\.yml, docker-compose\.override\.yml ?\]/)
+        assert.doesNotMatch(result.text, /\n\s+- docker-compose\.yml/)
+    })
+
     it('carries the default compose across when the entry named none', () => {
         const bare = LIVE_ONLY.replace('    compose: [docker-compose.yml, docker-compose.override.yml]\n', '')
         const result = applyChange(bare, { kind: 'configure', id: 'arbysauto', repo: 'git@github.com:ItsKodas/a.git', branches: { live: 'main' } })
@@ -217,7 +273,7 @@ describe('configure', () => {
     })
 
     it('refuses to convert an entry with no upstream to take a port from', () => {
-        const bare = LIVE_ONLY.replace('    upstream: 127.0.0.1:5011\n', '')
+        const bare = LIVE_ONLY.replace('    upstream: 10.0.0.5:5011\n', '')
         const result = applyChange(bare, { kind: 'configure', id: 'arbysauto', repo: 'git@github.com:ItsKodas/a.git', branches: { live: 'main' } })
         assert.equal(result.ok, false)
         assert.match(result.problem, /upstream/)
