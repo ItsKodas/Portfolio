@@ -38,6 +38,37 @@ projects:
     capabilities: [lifecycle, logs]
 `
 
+// What every site on the dedi actually looks like: enrolled by hand, environments-shaped, and with no
+// domain key at all, which is the state set-domain exists for. acme is beside it so a name already taken
+// elsewhere is a name the re-parse can refuse.
+const NO_DOMAIN = `reserved: [horizons.gg]
+projects:
+  acme:
+    client: cl_1
+    name: Acme
+    repo: git@github.com:ItsKodas/acme.git
+    services:
+      web: { role: site }
+    environments:
+      live:
+        dir: /var/www/acme
+        branch: main
+        domain: acme.com
+        port: 5010
+  backroom:
+    client: cl_2
+    # enrolled by hand, 2024
+    name: Backroom
+    repo: git@github.com:ItsKodas/backroom.git
+    services:
+      web: { role: site }
+    environments:
+      live:
+        dir: /var/www/backroom
+        branch: main
+        port: 5012 # do not reuse this port
+`
+
 const addProject: Change = {
     kind: 'add-project',
     id: 'bakery',
@@ -94,6 +125,34 @@ describe('applyChange', () => {
 
     it('refuses a branch the registry itself would not load', () => {
         assert.equal(applyChange(BASE, { kind: 'set-branch', id: 'acme', environment: 'live', branch: '--upload-pack' }).ok, false)
+    })
+
+    // Every site on the dedi was enrolled by hand and has no domain key at all, so this is the shape the
+    // change was written for: a key that is not there yet, on an entry the operator maintains by hand.
+    it('sets a domain on an environment that has none, leaving the rest of the entry and its notes alone', () => {
+        const result = applyChange(NO_DOMAIN, { kind: 'set-domain', id: 'backroom', environment: 'live', domain: 'backroom.co.uk' })
+        assert.ok(result.ok)
+        const live = parseRegistry(result.text).projects.get('backroom')!.environments.get('live')!
+        assert.equal(live.domain, 'backroom.co.uk')
+        // and nothing beside it moved
+        assert.equal(live.branch, 'main')
+        assert.equal(live.port, 5012)
+        assert.equal(live.dir, '/var/www/backroom')
+        assert.match(result.text, /# enrolled by hand, 2024/)
+        assert.match(result.text, /# do not reuse this port/)
+    })
+
+    it('refuses a domain on an environment that does not exist', () => {
+        const result = applyChange(NO_DOMAIN, { kind: 'set-domain', id: 'backroom', environment: 'test', domain: 'test.backroom.co.uk' })
+        assert.deepEqual(result, { ok: false, problem: 'backroom has no test environment' })
+    })
+
+    // The writer checks no grammar of its own: parseRegistry's re-parse is the one rule about what a
+    // domain may be, and it refuses this because another environment already answers for that name.
+    it('refuses a domain the registry itself would not load', () => {
+        assert.equal(applyChange(NO_DOMAIN, { kind: 'set-domain', id: 'backroom', environment: 'live', domain: 'not a host' }).ok, false)
+        const taken = applyChange(NO_DOMAIN, { kind: 'set-domain', id: 'backroom', environment: 'live', domain: 'acme.com' })
+        assert.equal(taken.ok, false)
     })
 
     it('removes a project and an environment', () => {

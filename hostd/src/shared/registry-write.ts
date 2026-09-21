@@ -56,6 +56,10 @@ export type Change =
     | { kind: 'add-environment', id: string, environment: EnvironmentDraft }
     | { kind: 'set-deployed', id: string, environment: EnvironmentName, commit: string }
     | { kind: 'set-branch', id: string, environment: EnvironmentName, branch: string }
+    // Setting an address, never changing one: the caller (agent.ts's configure) refuses an environment
+    // that already has a domain before it ever gets here. This writes the key either way, because what
+    // may be set and when is a policy question and the writer only answers "would hostd load this".
+    | { kind: 'set-domain', id: string, environment: EnvironmentName, domain: string }
     // The whole list, not one alias at a time. A read-modify-write of a list through two verbs would
     // race with the operator's own editor; handing over the list that should be there makes the write
     // idempotent and lets the existing conflict check do its job.
@@ -207,6 +211,16 @@ function edit(doc: Document, change: Change): EditResult {
             // parseRegistry below, which refuses a branch name that is not a plain one, so there is one
             // rule about what a branch may be rather than two that could drift.
             doc.setIn(['projects', change.id, 'environments', change.environment, 'branch'], change.branch)
+            return null
+        case 'set-domain':
+            if (!doc.hasIn(['projects', change.id, 'environments', change.environment])) {
+                return { problem: `${change.id} has no ${change.environment} environment` }
+            }
+            // No grammar check here on purpose, exactly as set-branch above: applyChange re-parses the
+            // whole document with parseRegistry below, which refuses a hostname that is not one and
+            // refuses one already claimed elsewhere, so there is one rule about what a domain may be
+            // rather than two that could drift.
+            doc.setIn(['projects', change.id, 'environments', change.environment, 'domain'], change.domain)
             return null
         case 'set-aliases':
             if (!doc.hasIn(['projects', change.id, 'environments', change.environment])) {

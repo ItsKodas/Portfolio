@@ -12,7 +12,7 @@ vi.mock('@/server/hostd/config', () => ({ readHostd: () => ({ url: 'http://hostd
 vi.mock('@/server/hostd/session', () => ({ callerFromSession: () => callerFromSession() }))
 vi.mock('@/server/hostd/settings', () => ({ writeSettings: (...args: unknown[]) => writeSettings(...args) }))
 
-const { saveSettingsAction } = await import('./actions')
+const { saveSettingsAction, setPrimaryDomainAction } = await import('./actions')
 
 const CANNOT = { ok: false, error: 'That is not something this page can do.' }
 
@@ -62,5 +62,51 @@ describe('saveSettingsAction', () => {
 
         expect(result.ok).toBe(true)
         expect(result.ok && result.message).toMatch(/nothing was started or stopped/i)
+    })
+})
+
+// Setting the site's address goes through configure rather than the domains verb, because it edits the
+// registry entry rather than writing a vhost, so it reaches hostd through writeSettings like the
+// Settings form does.
+describe('setPrimaryDomainAction', () => {
+    it('refuses an environment or a hostname the page could not have sent, before the session is read', async () => {
+        expect(await setPrimaryDomainAction('acme', 'staging', 'acme.com')).toEqual(CANNOT)
+        expect(await setPrimaryDomainAction('acme', 'live', 5 as never)).toEqual(CANNOT)
+        expect(callerFromSession).not.toHaveBeenCalled()
+        expect(writeSettings).not.toHaveBeenCalled()
+    })
+
+    // The grammar hostd checks this against has no capital letters in it, and a pasted hostname often
+    // does, so the same lowercasing the domain actions do happens here.
+    it('sends the trimmed, lowercased hostname as that environment\'s domain', async () => {
+        callerFromSession.mockResolvedValue({ caller: { kind: 'admin' }, clientId: null })
+        writeSettings.mockResolvedValue({ ok: true, data: { ok: true } })
+
+        const result = await setPrimaryDomainAction('acme', 'live', '  ACME.com  ')
+
+        expect(result.ok).toBe(true)
+        expect(writeSettings).toHaveBeenCalledWith(
+            expect.anything(), expect.anything(), 'acme', { domains: { live: 'acme.com' } },
+        )
+    })
+
+    // Recording the address writes no vhost: the hand-written file still serving the site is displaced
+    // by adopting it, and an operator who is not told that will wonder why nothing changed.
+    it('says nothing is served from the address until the environment is adopted', async () => {
+        callerFromSession.mockResolvedValue({ caller: { kind: 'admin' }, clientId: null })
+        writeSettings.mockResolvedValue({ ok: true, data: { ok: true } })
+
+        const result = await setPrimaryDomainAction('acme', 'live', 'acme.com')
+
+        expect(result.ok && result.message).toMatch(/adopted/i)
+    })
+
+    // This pane is admin-only: hostd puts configure among its admin-only policy verbs ahead of
+    // ownership, and this is the same rule a step earlier.
+    it('refuses a client outright', async () => {
+        callerFromSession.mockResolvedValue({ caller: { kind: 'client' }, clientId: 'cl_1' })
+
+        expect(await setPrimaryDomainAction('acme', 'live', 'acme.com')).toEqual({ ok: false, error: 'This is not set up yet.' })
+        expect(writeSettings).not.toHaveBeenCalled()
     })
 })

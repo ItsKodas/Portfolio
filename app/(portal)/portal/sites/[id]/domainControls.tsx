@@ -14,7 +14,10 @@ import { Button } from '@/ui/Button/Button'
 import { Callout } from '@/ui/Callout/Callout'
 import { Dialog } from '@/ui/Dialog/Dialog'
 import { Field } from '@/ui/Field/Field'
-import { adoptAction, adoptPreviewAction, addDomainAction, removeDomainAction, verifyDomainAction, type SiteActionResult } from './actions'
+import {
+    adoptAction, adoptPreviewAction, addDomainAction, removeDomainAction, setPrimaryDomainAction,
+    verifyDomainAction, type SiteActionResult,
+} from './actions'
 import styles from './site.module.css'
 
 const BROKE = 'That did not work. Try reloading the page.'
@@ -69,6 +72,67 @@ export function AddDomain({ id, environment }: { id: string, environment: string
                 <Said said={said} />
             </div>
         </div>
+    )
+}
+
+// The environment has no address at all, which is every site that was enrolled by hand. Until one is
+// recorded there is nothing for an alias to redirect to and nothing to adopt, so this is the only
+// control the panel offers in that state.
+//
+// Set once. Changing an address afterwards rewrites the vhost and invalidates the verification of every
+// hostname on it, so hostd refuses it here and it stays an edit of the registry on the server. That is
+// why this box never appears again once an address exists.
+export function SetPrimaryDomain({ id, environment }: { id: string, environment: string }) {
+    const router = useRouter()
+    const [hostname, setHostname] = useState('')
+    const [pending, setPending] = useState(false)
+    const [said, setSaid] = useState<SiteActionResult | null>(null)
+
+    async function set() {
+        setPending(true)
+        setSaid(null)
+        try {
+            const result = await setPrimaryDomainAction(id, environment, hostname.trim())
+            setSaid(result)
+            if (result.ok) {
+                setHostname('')
+                router.refresh()
+            }
+        } catch {
+            setSaid({ ok: false, error: BROKE })
+        } finally {
+            setPending(false)
+        }
+    }
+
+    return (
+        <section className={styles.block}>
+            <h2>The site&apos;s address</h2>
+            <div className={styles.addDomain}>
+                <Field
+                    label="Address"
+                    value={hostname}
+                    spellCheck={false}
+                    autoComplete="off"
+                    placeholder="example.com"
+                    hint="The main name this environment answers to. Other names can be pointed at it afterwards."
+                    onChange={event => setHostname(event.target.value)}
+                />
+                <div className={styles.addAction}>
+                    <Button variant="primary" disabled={pending || !hostname.trim()} onClick={set}>
+                        {pending ? 'Saving...' : 'Set the address'}
+                    </Button>
+                    <Said said={said} />
+                </div>
+            </div>
+            <p className={styles.note}>
+                This records the address and changes nothing that is being served: whatever answers this
+                name today keeps answering it. The site is served from it once this environment is
+                adopted, which replaces the hand-written configuration in one reload. Set it carefully:
+                changing it later means editing projects.yaml on the server, because a change rewrites
+                the configuration and every name on it has to be checked again.
+            </p>
+        </section>
     )
 }
 

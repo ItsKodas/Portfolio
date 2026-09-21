@@ -1246,6 +1246,54 @@ describe('configure', () => {
         assert.match(reply?.ok === false ? reply.message : '', /no test environment/)
     })
 
+    // The registry above gives acme no domain, which is the state every site enrolled by hand is in.
+    // Recording it is all that happens: nothing writes a vhost, because the hand-written file still
+    // serving that site is displaced by adopting it rather than by this.
+    it('sets a first domain with a write of its own, and writes no vhost', async () => {
+        const written: Change[] = []
+        const { agent } = setup({ writer: { write: async (change: Change) => { written.push(change); return { ok: true as const } } } })
+
+        const reply = replyOf(await agent.handle(configure({ domains: { live: 'acme.com' } })))
+
+        assert.equal(reply?.ok, true)
+        // The registry write and nothing else: no vhost is rendered, no rail is asked to reload.
+        assert.deepEqual(written, [
+            { kind: 'configure', id: 'acme' },
+            { kind: 'set-domain', id: 'acme', environment: 'live', domain: 'acme.com' },
+        ])
+    })
+
+    // Changing an address rewrites the vhost, invalidates the verification of every hostname on it and
+    // leaves the old address answering nothing, so it is refused here and stays a hand-edit of the file.
+    it('refuses a domain on an environment that already has one, naming the current address, without writing', async () => {
+        const withDomain = parseRegistry(`
+projects:
+  acme:
+    client: cl_1
+    name: Acme
+    services: { web: { role: site } }
+    environments:
+      live:
+        dir: /var/www/acme
+        domain: acme.com
+        port: 5010
+`)
+        const written: Change[] = []
+        const { agent, refreshes } = setup({
+            registry: () => withDomain,
+            writer: { write: async (change: Change) => { written.push(change); return { ok: true as const } } },
+        })
+
+        const reply = replyOf(await agent.handle(configure({ domains: { live: 'shop.acme.com' } })))
+
+        assert.equal(reply?.ok, false)
+        assert.equal(reply?.ok === false && reply.code, 'bad-request')
+        assert.match(reply?.ok === false ? reply.message : '', /already at acme\.com/)
+        assert.match(reply?.ok === false ? reply.message : '', /projects\.yaml/)
+        assert.deepEqual(written, [])
+        assert.equal(refreshes(), 0)
+    })
+
     // checkStructure runs first, exactly as it does for every other verb: a project the guard has marked
     // invalid is refused before configure ever reaches the writer, even though configure's own capability
     // gate is null. Uses the storage guard (rather than a registry.invalid entry) because 'acme' must stay

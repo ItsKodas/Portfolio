@@ -12,10 +12,18 @@ export type SiteSettings = {
     capabilities?: string[]
     repo?: string | null
     branches?: Record<string, string | null>
+    // An environment's primary address. No null member, unlike branches: this gives an environment its
+    // first address and never clears one, and hostd refuses it outright for an environment that already
+    // has one, because changing an address rewrites the vhost.
+    domains?: Record<string, string>
 }
 
 // Matches hostd's registry id rule
 const PROJECT_ID = /^[a-z0-9][a-z0-9-]{1,30}$/
+
+// hostd's own HOSTNAME, from hostd/src/shared/formats.ts. Copied so the box on the page can refuse a
+// hostname immediately instead of after a round trip; hostd checks it again.
+const HOSTNAME = /^(?!-)[a-z0-9-]{1,63}(?<!-)(\.(?!-)[a-z0-9-]{1,63}(?<!-))+$/
 
 export async function writeSettings(
     config: HostdConfig,
@@ -25,6 +33,9 @@ export async function writeSettings(
     fetchImpl: typeof fetch = fetch,
 ): Promise<HostdResult<{ ok: boolean }>> {
     if (!PROJECT_ID.test(id)) return { ok: false, code: 'not-found', message: 'no such project' }
+    for (const domain of Object.values(settings.domains ?? {})) {
+        if (!HOSTNAME.test(domain)) return { ok: false, code: 'bad-request', message: 'hostname must be a plain domain name' }
+    }
     return hostdRequest<{ ok: boolean }>(
         config,
         caller,
