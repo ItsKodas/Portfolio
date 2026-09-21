@@ -21,9 +21,13 @@ describe('argv builders', () => {
         assert.equal(backupArgv(REPO, [], 'manual').join(' ').includes('password'), false)
     })
 
-    it('forgets scheduled snapshots only, by the client retention' , () => {
+    it('forgets scheduled snapshots only, by the client retention, in one group' , () => {
+        // --group-by '' is asserted here on purpose: restic's default of host,paths puts every snapshot in
+        // a group of its own, because each run's captured staging path carries that run's id, and a policy
+        // applied per group of one forgets nothing at all.
         assert.deepEqual(retentionArgv(REPO, { daily: 7, weekly: 4, monthly: 3 }), [
-            '-r', REPO, 'forget', '--tag', 'scheduled', '--keep-daily', '7', '--keep-weekly', '4', '--keep-monthly', '3',
+            '-r', REPO, 'forget', '--tag', 'scheduled', '--group-by', '',
+            '--keep-daily', '7', '--keep-weekly', '4', '--keep-monthly', '3',
         ])
     })
 })

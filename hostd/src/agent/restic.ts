@@ -45,6 +45,14 @@ export const forgetArgv = (repo: string, snapshot: string): string[] => [...base
 // scheduled only: a manual snapshot is kept until the client deletes it, and retention must never take one.
 export const retentionArgv = (repo: string, keep: Keep): string[] => [
     ...base(repo), 'forget', '--tag', 'scheduled',
+    // --group-by '' is load-bearing, not noise. restic's default is --group-by host,paths: it partitions
+    // snapshots by host and by the exact set of paths captured, then applies the keep policy inside each
+    // group. Every run captures its own staging directory, whose path carries that run's id, and the
+    // agent's hostname changes whenever its image is rebuilt, so with the default every snapshot lands in
+    // a group of one and the policy keeps it. Forgetting nothing, on a disk shared by every project, is
+    // not visible until backups are refused for everyone at 10% free. An empty group-by puts every
+    // scheduled snapshot of this repository in one group, which is the only way the policy applies.
+    '--group-by', '',
     '--keep-daily', String(keep.daily), '--keep-weekly', String(keep.weekly), '--keep-monthly', String(keep.monthly),
 ]
 export const pruneArgv = (repo: string): string[] => [...base(repo), 'prune']
