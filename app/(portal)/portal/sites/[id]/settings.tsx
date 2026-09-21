@@ -6,7 +6,7 @@
 // the same gate saveEnvAction uses).
 
 import { useRouter } from 'next/navigation'
-import { useId, useState } from 'react'
+import { useState } from 'react'
 
 import { Button } from '@/ui/Button/Button'
 import { Callout } from '@/ui/Callout/Callout'
@@ -53,7 +53,6 @@ export function SiteSettingsForm({ id, capabilities, repo, environments, branche
     branchesError?: string | null
 }) {
     const router = useRouter()
-    const branchListId = useId()
     const [checked, setChecked] = useState(() => new Set(capabilities))
     const [repoValue, setRepoValue] = useState(repo ?? '')
     const [branchValues, setBranchValues] = useState<Record<string, string>>(() =>
@@ -142,30 +141,56 @@ export function SiteSettingsForm({ id, capabilities, repo, environments, branche
             <Field label="Repo" value={repoValue} onChange={event => setRepoValue(event.target.value)} />
             <p className={styles.note}>{CANNOT_CHECK}</p>
 
-            {/* An <input list> rather than a <select>: it still offers a dropdown, but a branch pushed a
-                minute ago can still be typed, and with no list to offer (branches is null) the `list`
-                attribute below points at nothing, which degrades to exactly the plain text field this was
-                before. A <select> would need an "other" escape hatch beside it to avoid being a trap,
-                which is two controls where one does. */}
-            {branches && (
-                <datalist id={branchListId}>
-                    {branches.map(name => <option key={name} value={name} />)}
-                </datalist>
-            )}
+            {environments.map(env => {
+                const branchValue = branchValues[env.name] ?? ''
+                // The saved value can be a branch the repository does not have, exactly as `main` was on
+                // the live incident this change is for: an operator typed it into what looked like a text
+                // box, and nothing checked it against the repository before it went into the registry. A
+                // select must still show it rather than falling back to whatever option happens to be
+                // first, or the page would be lying about what is actually saved.
+                const onRepo = branches !== null && branchValue !== '' && branches.includes(branchValue)
+                const notOnRepo = branches !== null && branchValue !== '' && !onRepo
 
-            {environments.map(env => (
-                <div key={env.name} className={styles.envSettings}>
-                    <p className={styles.envName}>{env.name}</p>
-                    {env.dir && <p className={styles.mono}>{env.dir}</p>}
-                    {env.port !== undefined && <p className={styles.envMeta}>port {env.port}</p>}
-                    <Field
-                        label={`${env.name} branch`}
-                        value={branchValues[env.name] ?? ''}
-                        onChange={event => setBranchValues(prev => ({ ...prev, [env.name]: event.target.value }))}
-                        list={branchListId}
-                    />
-                </div>
-            ))}
+                return (
+                    <div key={env.name} className={styles.envSettings}>
+                        <p className={styles.envName}>{env.name}</p>
+                        {env.dir && <p className={styles.mono}>{env.dir}</p>}
+                        {env.port !== undefined && <p className={styles.envMeta}>port {env.port}</p>}
+                        {branches ? (
+                            // A <select>, not the <input list> this used to be: a datalist only offers its
+                            // options once the operator starts typing, so it read as a plain text field
+                            // rather than a dropdown, and that is exactly how a hand typed `main` reached
+                            // the registry of a repository with no branch by that name. A select cannot be
+                            // typed past.
+                            <Field
+                                as="select"
+                                label={`${env.name} branch`}
+                                value={branchValue}
+                                onChange={event => setBranchValues(prev => ({ ...prev, [env.name]: event.target.value }))}
+                            >
+                                {/* How an environment stops deploying, so there has to be a way back here. */}
+                                <option value="">No branch</option>
+                                {branches.map(name => <option key={name} value={name}>{name}</option>)}
+                                {/* The saved branch, kept even though it is not one of the options above: dropping it
+                                    or swapping it for something on the list would be this page rewriting the
+                                    operator's configuration by rendering a page. */}
+                                {notOnRepo && <option value={branchValue}>{branchValue}</option>}
+                            </Field>
+                        ) : (
+                            <Field
+                                label={`${env.name} branch`}
+                                value={branchValue}
+                                onChange={event => setBranchValues(prev => ({ ...prev, [env.name]: event.target.value }))}
+                            />
+                        )}
+                        {notOnRepo && (
+                            <p className={styles.note}>
+                                {`"${branchValue}" is not one of this repository's branches, so the next deploy on ${env.name} will fail until this is changed.`}
+                            </p>
+                        )}
+                    </div>
+                )
+            })}
             {/* Never blocks the field and never reads as a validation error: hostd could not read the
                 list, not the operator did anything wrong. One line for both environments' fields, since
                 they share the one list. */}

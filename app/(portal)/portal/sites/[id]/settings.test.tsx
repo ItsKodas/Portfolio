@@ -160,39 +160,17 @@ describe('the settings form', () => {
     })
 })
 
-describe('the branch datalist', () => {
-    // A <select> would need an "other" escape hatch beside it; an <input list> degrades to exactly the
-    // plain text field that was there before this, which is what a repo hostd could not read branches
-    // for, or a project with no branches list at all, should look like.
-    it('offers no datalist, and the field still takes any text, when there is no list', async () => {
+describe('the branch field, with no list to offer', () => {
+    // A repo hostd could not read branches for, or a project with no repo at all, must still let the
+    // operator set a branch by hand: this is the path that was already built and tested before the
+    // select existed, and it must not regress now that the happy path is a dropdown.
+    it('stays a plain text field, and still takes any text, when there is no list', async () => {
         render(<SiteSettingsForm {...props} branches={null} />)
-        // A `list` attribute pointing at nothing is exactly the degrade this is for: no datalist exists,
-        // so the browser treats the field as a plain input, which is the same field that was there before.
         expect(document.querySelector('datalist')).toBeNull()
         const branch = screen.getByLabelText(/branch/i)
+        expect(branch.tagName).toBe('INPUT')
         await userEvent.type(branch, 'whatever-was-just-pushed')
         expect(branch).toHaveValue('whatever-was-just-pushed')
-    })
-
-    it('wires the branch field to a datalist of the repository\'s branches', () => {
-        render(<SiteSettingsForm {...props} branches={['main', 'develop']} />)
-        const branch = screen.getByLabelText(/branch/i)
-        const listId = branch.getAttribute('list')
-        expect(listId).toBeTruthy()
-        const datalist = document.getElementById(listId!)
-        expect(datalist?.tagName).toBe('DATALIST')
-        expect(Array.from(datalist!.querySelectorAll('option')).map(option => option.getAttribute('value'))).toEqual(['main', 'develop'])
-    })
-
-    it('offers the same list to every environment\'s branch field, since they share one repo', () => {
-        const twoEnvironments = [
-            { name: 'live', branch: 'main', dir: '/var/www/arbysauto', port: 5011 },
-            { name: 'test', branch: 'develop', dir: '/var/www/arbysauto-test', port: 5012 },
-        ]
-        render(<SiteSettingsForm {...props} environments={twoEnvironments} branches={['main', 'develop']} />)
-        const liveList = screen.getByLabelText(/live branch/i).getAttribute('list')
-        const testList = screen.getByLabelText(/test branch/i).getAttribute('list')
-        expect(liveList).toBe(testList)
     })
 
     // Never blocks the field, and never a validation-style error: hostd could not read the list, not the
@@ -202,5 +180,76 @@ describe('the branch datalist', () => {
         expect(screen.getByText(/the fetcher is not configured/)).toBeInTheDocument()
         expect(screen.getByLabelText(/branch/i)).not.toBeDisabled()
         expect(screen.queryByRole('alert')).toBeNull()
+    })
+
+    it('still saves what was typed by hand', async () => {
+        render(<SiteSettingsForm {...props} branches={null} />)
+        await userEvent.type(screen.getByLabelText(/branch/i), 'main')
+        await userEvent.click(screen.getByRole('button', { name: /save/i }))
+        expect(saveSettingsAction).toHaveBeenCalledWith('arbysauto', { branches: { live: 'main' } })
+    })
+})
+
+describe('the branch select', () => {
+    // A datalist only offers its options once the operator starts typing, so it reads as a plain text
+    // box rather than a dropdown: that is how a live site ended up with `main` in its registry when the
+    // repository has no branch by that name. A select cannot be typed past like that.
+    it('is a select, offering the repository\'s branches, once there is a list to offer', () => {
+        render(<SiteSettingsForm {...props} branches={['master', 'develop']} />)
+        const branch = screen.getByLabelText(/branch/i)
+        expect(branch.tagName).toBe('SELECT')
+        const optionValues = Array.from(branch.querySelectorAll('option')).map(option => option.getAttribute('value'))
+        expect(optionValues).toEqual(expect.arrayContaining(['master', 'develop']))
+    })
+
+    it('offers the same options to every environment\'s branch field, since they share one repo', () => {
+        const twoEnvironments = [
+            { name: 'live', branch: 'master', dir: '/var/www/arbysauto', port: 5011 },
+            { name: 'test', branch: 'develop', dir: '/var/www/arbysauto-test', port: 5012 },
+        ]
+        render(<SiteSettingsForm {...props} environments={twoEnvironments} branches={['master', 'develop']} />)
+        const optionsOf = (label: RegExp) =>
+            Array.from(screen.getByLabelText(label).querySelectorAll('option')).map(option => option.getAttribute('value'))
+        expect(optionsOf(/live branch/i)).toEqual(optionsOf(/test branch/i))
+    })
+
+    // The incident this whole change is for: `main` was saved by hand and is not one of the repository's
+    // actual branches. A select must neither drop it nor silently swap in something else, because either
+    // one would be this page rewriting the operator's configuration on a render. It stays chosen, and it
+    // is visible why the deploy is failing without the operator having to go dig through logs.
+    it('keeps a saved branch selected, and says plainly that it is not on the repository, when it is not in the list', () => {
+        const environments = [{ name: 'live', branch: 'main', dir: '/var/www/arbysauto', port: 5011 }]
+        render(<SiteSettingsForm {...props} environments={environments} branches={['master', 'develop']} />)
+        const branch = screen.getByLabelText(/branch/i) as HTMLSelectElement
+        expect(branch.value).toBe('main')
+        expect(screen.getByText(/"main".*not.*branch/i)).toBeInTheDocument()
+    })
+
+    it('says nothing extra when the saved branch is one of the repository\'s branches', () => {
+        const environments = [{ name: 'live', branch: 'master', dir: '/var/www/arbysauto', port: 5011 }]
+        render(<SiteSettingsForm {...props} environments={environments} branches={['master', 'develop']} />)
+        expect(screen.queryByText(/not.*branch/i)).toBeNull()
+    })
+
+    // How an environment stops deploying: there must always be a way back to no branch at all, the same
+    // as typing an empty value into the old text field did.
+    it('can be set back to no branch at all', async () => {
+        const environments = [{ name: 'live', branch: 'master', dir: '/var/www/arbysauto', port: 5011 }]
+        render(<SiteSettingsForm {...props} environments={environments} branches={['master', 'develop']} />)
+
+        await userEvent.selectOptions(screen.getByLabelText(/branch/i), '')
+        await userEvent.click(screen.getByRole('button', { name: /save/i }))
+
+        expect(saveSettingsAction).toHaveBeenCalledWith('arbysauto', { branches: { live: null } })
+    })
+
+    it('saves a branch chosen from the list', async () => {
+        const environments = [{ name: 'live', branch: null, dir: '/var/www/arbysauto', port: 5011 }]
+        render(<SiteSettingsForm {...props} environments={environments} branches={['master', 'develop']} />)
+
+        await userEvent.selectOptions(screen.getByLabelText(/branch/i), 'develop')
+        await userEvent.click(screen.getByRole('button', { name: /save/i }))
+
+        expect(saveSettingsAction).toHaveBeenCalledWith('arbysauto', { branches: { live: 'develop' } })
     })
 })

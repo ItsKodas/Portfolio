@@ -268,8 +268,9 @@ describe('the settings tab', () => {
         render(await page({ tab: 'settings' }))
         expect(listBranches.mock.calls[0]?.[2]).toBe('asot')
         const branch = screen.getByLabelText(/branch/i)
-        const datalist = document.getElementById(branch.getAttribute('list') ?? '')
-        expect(Array.from(datalist?.querySelectorAll('option') ?? []).map(o => o.getAttribute('value'))).toEqual(['main', 'develop'])
+        expect(branch.tagName).toBe('SELECT')
+        const optionValues = Array.from(branch.querySelectorAll('option')).map(o => o.getAttribute('value'))
+        expect(optionValues).toEqual(expect.arrayContaining(['main', 'develop']))
     })
 
     it('never asks for the branch list on a tab other than Settings', async () => {
