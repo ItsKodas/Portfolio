@@ -309,6 +309,16 @@ else, including a database run from a renamed or custom image, becomes site). It
 a guarantee, and the result is registered with no capabilities at all. Steps 2 and 3 below must both
 happen, in that order, before anything past step 1 does anything useful.
 
+**Who a created site belongs to.** The clone runs as root inside `hostd-fetcher`, so everything it writes
+starts out root-owned. `create` fixes that before it registers anything, by giving the whole new tree the
+ownership and mode **`/var/www` itself** has; `add-environment` uses the project's own live folder
+instead, since the test tree sits beside it. Neither is guessed: both are read off the directory at the
+time. So if you want created sites to belong to you rather than to root, `/var/www` has to belong to you
+first (`stat -c '%U:%G %a' /var/www` to check). A site left root-owned still runs, but you cannot read or
+edit its files without `sudo`, which is the one thing that makes it behave differently from a site
+enrolled by hand. Deploys apply the same rule against `<dir>` from then on, so an already-deployed site is
+already correct whatever `create` left behind.
+
 1. Create the project:
 
    ```bash

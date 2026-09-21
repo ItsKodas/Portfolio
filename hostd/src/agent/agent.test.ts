@@ -449,6 +449,10 @@ function fakeProvisionDeps(overrides: Partial<ProvisionDeps> = {}): ProvisionDep
         mkdir: async () => {},
         rmdir: async () => {},
         exists: async () => false,
+        // The ownership a site directory has on the dedi, the same fixture deploy.test.ts uses: these
+        // two only have to succeed here, since what provisioning does with them is provision.test.ts's.
+        owner: async () => ({ uid: 1000, gid: 1000, mode: 0o775 }),
+        own: async () => {},
         resolve: async () => ({ ok: true, services: { web: { role: 'site' } } }),
         runner: async () => ({ exitCode: 0, stdout: '', stderr: '', timedOut: false }),
         log: () => {},

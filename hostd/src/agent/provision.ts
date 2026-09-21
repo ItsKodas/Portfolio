@@ -50,6 +50,11 @@ export type ProvisionDeps = {
     mkdir(dir: string): Promise<void>
     rmdir(dir: string): Promise<void>
     exists(dir: string): Promise<boolean>
+    // The same pair deploy.ts's DeployFs already defines, for the same reason and with the same
+    // implementations behind them (see own-tree.ts). `owner` reads an existing path's ownership and mode,
+    // never guesses one; `own` applies it to a whole tree this process just put on disk.
+    owner(path: string): Promise<{ uid: number, gid: number, mode: number }>
+    own(dir: string, like: { uid: number, gid: number, mode: number }): Promise<void>
     // expectedName is the folder's own basename (what an unpinned compose file resolves to): resolveNewProject
     // checks it against the compose file's own project name, the same guard the ongoing sweep runs, but
     // here before anything is written. collidesWith, only ever passed for a test environment, is the
@@ -172,6 +177,11 @@ type ProvisionAttempt = {
     // composeNameProblem in compose.ts). Absent for createProject, since live has no other environment to
     // collide with yet.
     collidesWith?: string
+    // The existing directory whose ownership and mode the freshly cloned tree should take. Read, never
+    // assumed, the same rule deploy.ts follows for a checkout and a repository directory. createProject
+    // names the parent, /var/www, because a brand new project has no directory of its own anywhere yet;
+    // addEnvironment names the project's live folder, which is the sibling the test tree is a copy of.
+    likeDir: string
     // Runs after a successful clone, before resolve. A no-op for create; addEnvironment copies and
     // rewrites env files here, using the composePath's directory as the freshly cloned test folder.
     afterClone: (composePath: string) => Promise<{ ok: true } | { ok: false, problem: string }>
@@ -227,6 +237,18 @@ async function provisionOnDisk(attempt: ProvisionAttempt, deps: ProvisionDeps): 
             await rollback('setup failed')
             return refuse('failed', after.problem)
         }
+
+        // Everything under `dir` is root's until here: the clone ran as root in the fetcher, and the env
+        // files afterClone just created or copied were written as root by this process, into a directory
+        // this process made under its own restrictive umask (see index.ts). Left like that, a site is
+        // created that the operator cannot read, edit or start by hand, unlike every hand-enrolled site
+        // beside it, and unlike what the first deploy would leave behind once deploy.ts does this same
+        // step. Owned after afterClone rather than straight after the clone, so the env files are covered
+        // too, and before resolve and the registry write, so nothing unusable is ever registered. A
+        // failure here throws into the catch below, which rolls the folder back, on the same reasoning as
+        // every other step: half-owned is not a state worth registering.
+        const like = await deps.owner(attempt.likeDir)
+        await deps.own(dir, like)
 
         // The expected compose project name is this environment's own folder basename, what an unpinned
         // compose file resolves to by default, not the registry id: those coincide for live
@@ -288,6 +310,11 @@ export async function createProject(args: ProvisionCreateArgs, deps: ProvisionDe
         dir,
         repo: args.repo,
         branch: args.branch,
+        // /var/www itself, the folder this project is being created inside: the only thing on disk that
+        // says who the operator is when the project has nothing of its own to read it from yet. If that
+        // directory belongs to root, so does the new site, which is no worse than today and stays
+        // consistent with its neighbours either way.
+        likeDir: posix.dirname(dir),
         // A repo usually commits an example beside a gitignored real file, and its compose file usually
         // declares env_file against the real one; resolve (just below, in provisionOnDisk) would
         // otherwise fail on a repo that has done nothing wrong, before the operator ever gets to fill
@@ -346,6 +373,10 @@ export async function addEnvironment(project: ProjectEntry, args: ProvisionAddEn
         // The live environment's own expected compose name: a test environment pinning it would share
         // one compose project with live, and starting test would take over live's running containers.
         collidesWith: project.id,
+        // The project's own folder, not /var/www: the test tree sits beside it and is a copy of it, so
+        // whatever the operator chose for live is what test should match, the same way deploy.ts patterns
+        // a checkout on <dir> rather than on anything further out.
+        likeDir: project.dir,
         afterClone: async composePath => {
             const live = project.environments.get('live')
             if (!live) return { ok: true }
