@@ -58,4 +58,18 @@ describe('parseFetchRequest', () => {
         assert.equal(refusalOf({ verb: 'log', dir: '/var/www/b', branch: 'feature/thing', limit: 10 }), null)
         assert.equal(refusalOf({ verb: 'tip', dir: '/var/www/b', branch: 'release-1.2.3' }), null)
     })
+
+    it('reads a branches request, which needs only the repo and no dir: there may be nothing on disk yet', () => {
+        const result = parseFetchRequest(JSON.stringify({ verb: 'branches', repo: 'git@github.com:a/b.git' }))
+        assert.deepEqual(result, { ok: true, request: { verb: 'branches', repo: 'git@github.com:a/b.git' } })
+    })
+
+    it('validates a branches repo exactly as clone does', () => {
+        assert.match(refusalOf({ verb: 'branches', repo: '--upload-pack=evil' })!, /repo/)
+        assert.equal(refusalOf({ verb: 'branches', repo: 'https://github.com/a/b.git' }), null)
+    })
+
+    it('refuses a branches request carrying an unknown field', () => {
+        assert.equal(refusalOf({ verb: 'branches', repo: 'git@github.com:a/b.git', dir: '/var/www/b' }), 'branches takes only repo')
+    })
 })

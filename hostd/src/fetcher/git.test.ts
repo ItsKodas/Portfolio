@@ -1,7 +1,7 @@
 import { describe, it } from 'node:test'
 import assert from 'node:assert/strict'
 
-import { cloneArgv, checkoutArgv, fetchArgv, parseLog, runGit } from './git.ts'
+import { branchesArgv, cloneArgv, checkoutArgv, fetchArgv, parseBranches, parseLog, runGit, MAX_BRANCHES } from './git.ts'
 import type { Runner, RunResult } from '../agent/compose.ts'
 
 const ok: RunResult = { exitCode: 0, stdout: '', stderr: '', timedOut: false }
@@ -45,6 +45,30 @@ describe('argv', () => {
     it('checks a commit out into a separate tree without touching the original', () => {
         assert.deepEqual(checkoutArgv('/var/www/b', '/var/www/b.next', 'a1b2c3d'),
             ['-C', '/var/www/b', 'worktree', 'add', '--detach', '--force', '/var/www/b.next', 'a1b2c3d'])
+    })
+
+    it('lists a remote\'s branches with no dir: this reads the remote directly, nothing on disk', () => {
+        assert.deepEqual(branchesArgv('git@github.com:a/b.git'), ['ls-remote', '--heads', '--', 'git@github.com:a/b.git'])
+    })
+})
+
+describe('parseBranches', () => {
+    it('reads the branch names out of ls-remote --heads, dropping the shas', () => {
+        const stdout = 'a1b2c3d4\trefs/heads/main\n9d8c7b6a\trefs/heads/feature/thing\n'
+        assert.deepEqual(parseBranches(stdout), ['main', 'feature/thing'])
+    })
+
+    it('returns nothing for empty output', () => {
+        assert.deepEqual(parseBranches(''), [])
+    })
+
+    it('ignores a line that is not a refs/heads ref', () => {
+        assert.deepEqual(parseBranches('a1b2c3d4\trefs/tags/v1\nb2c3d4e5\trefs/heads/main\n'), ['main'])
+    })
+
+    it('bounds how many names it returns: this is output from something outside this machine', () => {
+        const lines = Array.from({ length: MAX_BRANCHES + 50 }, (_, i) => `${'a'.repeat(8)}\trefs/heads/branch-${i}`)
+        assert.equal(parseBranches(lines.join('\n')).length, MAX_BRANCHES)
     })
 })
 
@@ -92,5 +116,19 @@ describe('runGit', () => {
         const { run } = recorder([{ exitCode: null, stdout: '', stderr: '', timedOut: true }])
         const reply = await runGit({ verb: 'fetch', dir: '/var/www/b', branch: null }, run)
         assert.deepEqual(reply, { ok: false, code: 'failed', message: 'git fetch timed out' })
+    })
+
+    it('answers the branch names for a branches request', async () => {
+        const { run, runs } = recorder([{ ...ok, stdout: 'a1b2c3d4\trefs/heads/main\nb2c3d4e5\trefs/heads/develop\n' }])
+        const reply = await runGit({ verb: 'branches', repo: 'git@github.com:a/b.git' }, run)
+        assert.deepEqual(reply, { ok: true, branches: ['main', 'develop'] })
+        assert.deepEqual(runs[0], ['git', 'ls-remote', '--heads', '--', 'git@github.com:a/b.git'])
+    })
+
+    it('reports a branches failure with git\'s message, not a stack, and never a credential', async () => {
+        const { run } = recorder([{ exitCode: 128, stdout: '', stderr: 'fatal: https://x-access-token:ghp_secret@github.com/a/b.git: not found', timedOut: false }])
+        const reply = await runGit({ verb: 'branches', repo: 'https://github.com/a/b.git' }, run)
+        assert.equal(reply.ok, false)
+        assert.ok(!JSON.stringify(reply).includes('ghp_secret'))
     })
 })
