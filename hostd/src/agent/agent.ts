@@ -8,7 +8,7 @@ import {
     type LifecycleReply, type LogLine, type LogsArgs, type ProjectStatus, type ProvisionAddEnvironmentArgs,
     type ProvisionCreateArgs, type ProvisionRemoveArgs, type Refusal, type ServiceStatus, type StatusesReply,
 } from '../shared/protocol.ts'
-import { environmentOf, type ProjectEntry, type Registry } from '../shared/registry.ts'
+import { environmentOf, type EnvironmentName, type ProjectEntry, type Registry } from '../shared/registry.ts'
 import { describeError } from '../shared/formats.ts'
 import { deployKey, lastHealthyCommit } from '../shared/deploys.ts'
 import type { SystemUsage } from '../shared/system.ts'
@@ -274,12 +274,42 @@ export class Agent {
         if (this.provisioningBusy) return refuse('busy', 'another provisioning action is in progress')
         this.provisioningBusy = true
         try {
-            return args.action === 'add-environment'
-                ? await addEnvironment(project, args, this.deps.provision, this.deps.envFs)
-                : await removeProject(project, args.environment, this.deps.provision)
+            if (args.action === 'add-environment') return await addEnvironment(project, args, this.deps.provision, this.deps.envFs)
+            const reply = await removeProject(project, args.environment, this.deps.provision)
+            if (!reply.ok) return reply
+            const note = await this.removeVhosts(project, args.environment)
+            if (note === '') return reply
+            return { ok: true, output: `${'output' in reply ? reply.output : ''}${note}` }
         } finally {
             this.provisioningBusy = false
         }
+    }
+
+    // Removing an environment has to take its vhost with it. Left behind, the file goes on claiming
+    // that environment's hostnames and goes on proxying to a port choosePort is free to hand to another
+    // project, which is one client's visitors reaching another client's application.
+    //
+    // After the registry write and never before, for the reason setAliases writes the registry first:
+    // the registry is the record of what a site may serve, and the vhost is a rendering of it. The entry
+    // is therefore already gone when this runs, so a failure here is reported in the output rather than
+    // returned as one, and a rail that never answers (which throws, after 30 seconds) must not turn a
+    // removal that did happen into an error the operator would retry.
+    private async removeVhosts(project: ProjectEntry, environment: EnvironmentName | null): Promise<string> {
+        // No capability means hostd never wrote a vhost for this project, and asking the rail to remove
+        // a file that was never there would cost an Apache reload per removal for nothing.
+        if (!this.deps.domains || !project.capabilities.has('domains')) return ''
+        const domains = this.deps.domains
+        const problems: string[] = []
+        for (const entry of project.environments.values()) {
+            if (environment !== null && entry.name !== environment) continue
+            try {
+                const result = await removeVhost(domains, project, entry)
+                if (!result.ok) problems.push(result.message)
+            } catch (error) {
+                problems.push(`the vhost for ${project.id} ${entry.name} could not be removed: ${describeError(error)}`)
+            }
+        }
+        return problems.length === 0 ? '' : ` ${problems.join(' ')}`
     }
 
     private async env(project: ProjectEntry, args: EnvArgs): Promise<AgentReply> {

@@ -842,3 +842,79 @@ describe('the domains verb', () => {
         assert.ok(health && 'railAge' in health)
     })
 })
+
+// Left behind, a vhost goes on claiming its hostnames and goes on proxying to a port choosePort may
+// hand to another project: one client's visitors reaching another client's application.
+describe('removing an environment takes its vhost with it', () => {
+    const twoEnvironments = parseRegistry(`
+projects:
+  acme:
+    client: cl_1
+    name: Acme
+    repo: git@github.com:ItsKodas/acme.git
+    services: { web: { role: site } }
+    capabilities: [lifecycle, provision, domains]
+    environments:
+      live: { dir: /var/www/acme, port: 5010, domain: acme.com }
+      test: { dir: /var/www/acme-test, port: 5011, domain: test.acme.com }
+`)
+
+    function setup(registry: Registry) {
+        const context = fakeDomains(registry)
+        const base = baseSetup({
+            registry: () => registry,
+            domains: context.domains,
+            provision: fakeProvisionDeps({ registry: () => registry }),
+        })
+        return { ...base, sent: context.sent }
+    }
+
+    it('removes only that environment\'s file', async () => {
+        const { agent, sent } = setup(twoEnvironments)
+        const reply = replyOf(await agent.handle({ verb: 'provision', project: 'acme', args: { action: 'remove', environment: 'test' } }))
+        assert.equal(reply?.ok, true)
+        assert.deepEqual(sent.map(request => request.remove), [['/etc/apache2/hostd/acme-test.conf']])
+    })
+
+    it('removes every environment\'s file when the whole project goes', async () => {
+        const { agent, sent } = setup(twoEnvironments)
+        const reply = replyOf(await agent.handle({ verb: 'provision', project: 'acme', args: { action: 'remove', environment: null } }))
+        assert.equal(reply?.ok, true)
+        assert.deepEqual(
+            sent.flatMap(request => request.remove).sort(),
+            ['/etc/apache2/hostd/acme-live.conf', '/etc/apache2/hostd/acme-test.conf'],
+        )
+    })
+
+    // The registry entry is already gone by then, so an operator who is told the removal failed would
+    // retry something that cannot happen twice. They are told which file is still there instead.
+    it('reports a vhost it could not remove rather than failing the removal that already happened', async () => {
+        const context = fakeDomains(twoEnvironments)
+        context.domains.rail = { send: async () => { throw new Error('the Apache host unit did not answer request 3') } }
+        const failing = baseSetup({
+            registry: () => twoEnvironments,
+            domains: context.domains,
+            provision: fakeProvisionDeps({ registry: () => twoEnvironments }),
+        })
+        const answer = replyOf(await failing.agent.handle({ verb: 'provision', project: 'acme', args: { action: 'remove', environment: 'test' } }))
+        assert.equal(answer?.ok, true)
+        assert.match(answer?.ok && 'output' in answer ? answer.output : '', /vhost for acme test could not be removed/)
+    })
+
+    it('leaves the rail alone for a project hostd never wrote a vhost for', async () => {
+        const noDomains = parseRegistry(`
+projects:
+  acme:
+    client: cl_1
+    name: Acme
+    dir: /var/www/acme
+    upstream: 127.0.0.1:5010
+    services: { web: { role: site } }
+    capabilities: [lifecycle, provision]
+`)
+        const { agent, sent } = setup(noDomains)
+        const reply = replyOf(await agent.handle({ verb: 'provision', project: 'acme', args: { action: 'remove', environment: null } }))
+        assert.equal(reply?.ok, true)
+        assert.deepEqual(sent, [])
+    })
+})

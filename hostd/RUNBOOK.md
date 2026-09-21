@@ -426,8 +426,13 @@ rather than taking over live's containers. Lifecycle (`start`, `stop`, `restart`
   unregisters a project that is still running, since nothing would then be able to stop it. Removing only
   the test environment does not stop anything (there is no per-environment lifecycle yet, so there is
   nothing safe for this to stop).
-- **Removing a project leaves its folder, volumes and databases in place.** `provision remove` only stops
-  and edits the registry; nothing under `/var/www` is deleted. Clean those up by hand once you are sure.
+- **Removing a project leaves its folder, volumes and databases in place.** `provision remove` stops it,
+  edits the registry, and takes hostd's own vhost for each environment it removed off the host; nothing
+  under `/var/www` is deleted. The vhost goes because a file left behind would go on claiming those
+  hostnames and proxying to a port `choosePort` is then free to give another project. A hand-written
+  vhost that was adopted stays in `/etc/apache2/hostd-adopted/`, as it always does. If the rail cannot
+  be reached the removal still succeeds and the reply names the file that is still there. Clean the rest
+  up by hand once you are sure.
 
 ## Domains
 
