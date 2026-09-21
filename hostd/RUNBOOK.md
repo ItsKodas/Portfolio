@@ -633,27 +633,39 @@ show both, in the order you would try them: `docker exec` first, the host fallba
 
    `psql`, `mysql`/`mariadb` and `mongorestore` all talk to a running server, so bring just that one
    database service back up first (the site's other services can stay down; nothing else needs to be
-   writing to it yet):
+   writing to it yet). Each command below reads its credentials from the same variable names
+   `backup-dumps.ts` used to take the dump; if this project's registry entry overrides any of them with
+   `dump.userEnv` or `dump.passwordEnv`, replace the name shown with the one the registry gives instead,
+   in that same command, or the restore reads a variable the container never set:
 
    ```bash
    sudo docker compose start "$SERVICE"
 
-   # postgres, using the same user pg_dumpall ran as (POSTGRES_USER by default, or whatever the
-   # registry's dump.userEnv names). $POSTGRES_USER is the container's own, so it stays inside sh -c:
+   # postgres: reads the user from $POSTGRES_USER by default. If this project's registry entry sets
+   # dump.userEnv, replace POSTGRES_USER below with that name. $POSTGRES_USER is the container's own, so
+   # it stays inside sh -c:
    sudo cat "$DUMP/dump.sql" | sudo docker compose exec -T "$SERVICE" sh -c 'psql -U "$POSTGRES_USER"'
 
-   # mysql (mariadb: swap mysql for mariadb, and MYSQL_ROOT_PASSWORD for MARIADB_ROOT_PASSWORD, or
-   # whatever the registry's dump.passwordEnv/userEnv name instead):
+   # mysql (mariadb: swap mysql for mariadb, and MYSQL_ROOT_PASSWORD for MARIADB_ROOT_PASSWORD): reads
+   # the password from that variable and connects as root by default. If this project's registry entry
+   # sets dump.passwordEnv, replace MYSQL_ROOT_PASSWORD below with that name; if it sets dump.userEnv,
+   # replace "-u root" with -u "$<that name>" the same way:
    sudo cat "$DUMP/dump.sql" | sudo docker compose exec -T "$SERVICE" sh -c 'MYSQL_PWD="$MYSQL_ROOT_PASSWORD" mysql -u root'
 
-   # mongodb (the ${VAR:+...} expands only when the image actually sets credentials, same as the dump did):
+   # mongodb (the ${VAR:+...} expands only when the image actually sets credentials, same as the dump
+   # did): reads MONGO_INITDB_ROOT_USERNAME and MONGO_INITDB_ROOT_PASSWORD by default. If this project's
+   # registry entry sets dump.userEnv or dump.passwordEnv, replace those two names below with the ones it
+   # gives instead:
    sudo cat "$DUMP/dump.archive.gz" | sudo docker compose exec -T "$SERVICE" sh -c \
      'mongorestore --archive --gzip ${MONGO_INITDB_ROOT_USERNAME:+-u "$MONGO_INITDB_ROOT_USERNAME" -p "$MONGO_INITDB_ROOT_PASSWORD" --authenticationDatabase admin}'
    ```
 
    sqlite, redis and generic are filesystem copies instead, and never need their service started first;
    `docker cp` and a plain file copy both work against a stopped container. They still read `$SERVICE` and
-   `$DUMP` from just above, so set those first even if you skip the block above:
+   `$DUMP` from just above, so set those first even if you skip the block above. Neither redis nor generic
+   reads a `dump.userEnv` or `dump.passwordEnv` at all (redis's own dump needs no login, and generic just
+   stops, copies and starts), so nothing in either command below is registry-configurable, and sqlite has
+   no credential to begin with:
 
    ```bash
    # sqlite: copy the file to the path named by that service's file: in the registry, under the live
