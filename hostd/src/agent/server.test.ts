@@ -8,7 +8,7 @@ import { MAX_BODY_FRAME_BYTES, MAX_REQUEST_BYTES } from '../shared/protocol.ts'
 const DOWNLOAD_REQUEST = '{"verb":"backup","project":"acme","args":{"action":"download","snapshot":"deadbeef"}}\n'
 const line: LogLine = { stream: 'stdout', ts: null, text: 'hello', truncated: false }
 // Any reply will do for a transport test; health is the smallest real one.
-const health: HealthReply = { ok: true, warnings: [], invalid: {}, system: { memory: null, cpu: null, disk: null, problems: [] } }
+const health: HealthReply = { ok: true, warnings: [], invalid: {}, system: { memory: null, cpu: null, disk: null, problems: [] }, railAge: null }
 
 function stubAgent(handle: AgentHandler['handle']): AgentHandler & { requests: AgentRequest[] } {
     const requests: AgentRequest[] = []
@@ -81,6 +81,18 @@ describe('handleConnection', () => {
         const agent = stubAgent(async () => ({ kind: 'reply', reply: health }))
         assert.deepEqual(await exchange(agent, '{"verb":"health"}\n'), [JSON.stringify(health)])
         assert.deepEqual(agent.requests, [{ verb: 'health' }])
+    })
+
+    it('logs a branches request by its project, the same as every other project verb', async () => {
+        const agent = stubAgent(async () => ({ kind: 'reply', reply: { ok: true, branches: ['main'] } }))
+        const [client, server] = duplexPair()
+        const logged: string[] = []
+        const done = handleConnection(server, agent, message => logged.push(message))
+        client.end('{"verb":"branches","project":"acme"}\n')
+        client.setEncoding('utf8')
+        for await (const _chunk of client) { /* drain */ }
+        await done
+        assert.deepEqual(logged, ['branches acme ok'])
     })
 
     it('refuses a malformed request without calling the agent', async () => {

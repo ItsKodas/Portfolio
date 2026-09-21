@@ -9,13 +9,22 @@ import { revalidatePath } from 'next/cache'
 import { getDb } from '@/server/db'
 import { readHostd, type HostdConfig } from '@/server/hostd/config'
 import { rollback, setBranch, startDeploy } from '@/server/hostd/deploys'
+import {
+    addDomain, adoptSite, previewAdopt, removeDomain, verifyDomain, type AdoptPreview,
+} from '@/server/hostd/domains'
 import { writeEnvFile, type EnvironmentName } from '@/server/hostd/env'
 import type { Caller } from '@/server/hostd/actor'
 import { forAdmin, forClient } from '@/server/hostd/errors'
 import { assertOwned, lifecycle } from '@/server/hostd/projects'
 import { callerFromSession } from '@/server/hostd/session'
+import { writeSettings, type SiteSettings } from '@/server/hostd/settings'
+import { stateWord } from './domains'
 
 export type SiteActionResult = { ok: true, message: string } | { ok: false, error: string }
+
+// The one read among these. It answers a value rather than a sentence, because the dialog it feeds shows
+// the file being replaced beside the one that would replace it, and neither is a message.
+export type AdoptPreviewResult = { ok: true, preview: AdoptPreview } | { ok: false, error: string }
 
 const LIFECYCLE = ['start', 'stop', 'restart'] as const
 type LifecycleAction = typeof LIFECYCLE[number]
@@ -145,6 +154,39 @@ export async function rollbackAction(id: string, environment: string): Promise<S
     return { ok: true, message: 'Rolling back. The last version that worked is going up, which takes a minute or two.' }
 }
 
+// A server action's arguments arrive off the wire like any other request body, so the SiteSettings type on
+// the one below is a claim the compiler checks and nothing else checks. This is the shape check every
+// other action here makes of its own arguments, mirroring hostd's parseConfigureArgs (which checks it
+// again, and has the last word on what a capability, a repo and a branch may actually be).
+function isSettings(value: unknown): value is SiteSettings {
+    if (typeof value !== 'object' || value === null) return false
+    const { capabilities, repo, branches, ...rest } = value as Record<string, unknown>
+    if (Object.keys(rest).length > 0) return false
+    if (capabilities !== undefined && !(Array.isArray(capabilities) && capabilities.every(one => typeof one === 'string'))) return false
+    if (repo !== undefined && repo !== null && typeof repo !== 'string') return false
+    if (branches === undefined) return true
+    if (typeof branches !== 'object' || branches === null || Array.isArray(branches)) return false
+    return Object.values(branches).every(branch => branch === null || typeof branch === 'string')
+}
+
+// Editing the registry entry is the operator's alone. hostd refuses a client outright (configure is in
+// its ADMIN_ONLY list, ahead of ownership), and this is the same rule applied a step earlier.
+export async function saveSettingsAction(id: string, settings: SiteSettings): Promise<SiteActionResult> {
+    if (!isSettings(settings)) return { ok: false, error: 'That is not something this page can do.' }
+
+    const allowed = await allow(id, true)
+    if (!allowed.ok) return allowed
+
+    const result = await writeSettings(allowed.config, allowed.caller, id, settings)
+    if (!result.ok) return refused(`settings on ${id}`, allowed.isAdmin, result)
+
+    revalidatePath(`/portal/sites/${id}`)
+    return {
+        ok: true,
+        message: 'Saved. Nothing was started or stopped: this only changes what the site is allowed to do.',
+    }
+}
+
 export async function setBranchAction(id: string, environment: string, branch: string): Promise<SiteActionResult> {
     const name = environmentOf(environment)
     if (!name || typeof branch !== 'string') return { ok: false, error: 'That is not something this page can do.' }
@@ -159,4 +201,98 @@ export async function setBranchAction(id: string, environment: string, branch: s
     // Switching branch deploys its tip, and it is also what resumes an environment hostd has paused, so
     // both are said here rather than leaving the second one to be discovered.
     return { ok: true, message: `Now following ${branch}. A deploy of it has started.` }
+}
+
+// Domains. Every one of these is the operator's alone: hostd keeps 'domains' among its admin-only policy
+// verbs (hostd/src/api/policy.ts) and leaves only 'domains-read' to an owner, so the client-readable half
+// of this tab has no action at all and each of these applies that same rule a step earlier. Verifying is
+// among them on purpose: re-checking a hostname makes hostd go out and look, and writes down what it
+// found, which is not a read whatever it is called.
+//
+// A hostname arrives from a browser like every other argument here. server/hostd/domains.ts holds the
+// copy of hostd's own HOSTNAME grammar and refuses a bad one before the round trip; hostd checks it again.
+
+export async function addDomainAction(id: string, environment: string, hostname: string): Promise<SiteActionResult> {
+    const name = environmentOf(environment)
+    if (!name || typeof hostname !== 'string') return { ok: false, error: 'That is not something this page can do.' }
+
+    const allowed = await allow(id, true)
+    if (!allowed.ok) return allowed
+
+    // Lowercased here rather than left to hostd, because the grammar it is checked against has no capital
+    // letters in it and a pasted hostname often does.
+    const wanted = hostname.trim().toLowerCase()
+    const result = await addDomain(allowed.config, allowed.caller, id, name, wanted)
+    if (!result.ok) return refused(`add domain ${wanted} on ${id}`, allowed.isAdmin, result)
+
+    revalidatePath(`/portal/sites/${id}`)
+    return { ok: true, message: `${wanted} is added. hostd checks its DNS before it starts serving it.` }
+}
+
+export async function removeDomainAction(id: string, environment: string, hostname: string): Promise<SiteActionResult> {
+    const name = environmentOf(environment)
+    if (!name || typeof hostname !== 'string') return { ok: false, error: 'That is not something this page can do.' }
+
+    const allowed = await allow(id, true)
+    if (!allowed.ok) return allowed
+
+    const wanted = hostname.trim().toLowerCase()
+    const result = await removeDomain(allowed.config, allowed.caller, id, name, wanted)
+    if (!result.ok) return refused(`remove domain ${wanted} on ${id}`, allowed.isAdmin, result)
+
+    revalidatePath(`/portal/sites/${id}`)
+    return { ok: true, message: `${wanted} is gone. The configuration reloads in a few seconds.` }
+}
+
+export async function verifyDomainAction(id: string, environment: string, hostname: string): Promise<SiteActionResult> {
+    const name = environmentOf(environment)
+    if (!name || typeof hostname !== 'string') return { ok: false, error: 'That is not something this page can do.' }
+
+    const allowed = await allow(id, true)
+    if (!allowed.ok) return allowed
+
+    const wanted = hostname.trim().toLowerCase()
+    const result = await verifyDomain(allowed.config, allowed.caller, id, name, wanted)
+    if (!result.ok) return refused(`verify domain ${wanted} on ${id}`, allowed.isAdmin, result)
+
+    revalidatePath(`/portal/sites/${id}`)
+    // This one answers the record it just re-checked, so the outcome is said rather than the asking
+    return { ok: true, message: `${wanted} is ${stateWord(result.value.state)}.` }
+}
+
+// Reading only, and the one thing here that does not revalidate: nothing has changed yet. It is what the
+// adopt dialog shows before anything does.
+export async function adoptPreviewAction(id: string, environment: string): Promise<AdoptPreviewResult> {
+    const name = environmentOf(environment)
+    if (!name) return { ok: false, error: 'That is not something this page can do.' }
+
+    const allowed = await allow(id, true)
+    if (!allowed.ok) return allowed
+
+    const result = await previewAdopt(allowed.config, allowed.caller, id, name)
+    if (!result.ok) {
+        console.error(`[portal] adopt preview ${name} on ${id} failed: ${forAdmin(result.code, result.message)}`)
+        return { ok: false, error: allowed.isAdmin ? forAdmin(result.code, result.message) : forClient(result.code) }
+    }
+
+    return { ok: true, preview: result.value }
+}
+
+export async function adoptAction(id: string, environment: string, confirm: string): Promise<SiteActionResult> {
+    const name = environmentOf(environment)
+    if (!name || typeof confirm !== 'string') return { ok: false, error: 'That is not something this page can do.' }
+
+    const allowed = await allow(id, true)
+    if (!allowed.ok) return allowed
+
+    // Sent as typed. hostd compares it with the project's own name and refuses anything else, and that
+    // check is the whole point of it: softening it here would throw away the confirmation.
+    const result = await adoptSite(allowed.config, allowed.caller, id, name, confirm)
+    if (!result.ok) return refused(`adopt ${name} on ${id}`, allowed.isAdmin, result)
+
+    revalidatePath(`/portal/sites/${id}`)
+    return {
+        ok: true,
+        message: 'Done. hostd owns this site\'s configuration now, and the hand-written one is switched off.',
+    }
 }

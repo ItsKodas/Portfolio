@@ -82,6 +82,44 @@
 
 .mono { font-family: var(--font-mono), monospace; }
 
+/* The settings form: capabilities, repo and each environment's branch. Narrower than the panel it sits
+   in, because a checkbox list and two short fields do not need the full log-column width. */
+.settings { margin-top: 4px; display: flex; flex-direction: column; gap: 6px; max-width: 480px; }
+
+.capabilities {
+    border: 0;
+    margin: 0;
+    padding: 0;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 10px 18px;
+}
+.capabilities legend { font-size: 13px; margin-bottom: 8px; padding: 0; color: var(--ink-2); }
+
+.capability {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 13px;
+    color: var(--ink);
+    cursor: pointer;
+}
+.capability input { accent-color: var(--lake); width: 15px; height: 15px; cursor: pointer; }
+
+/* Designed but not built: still tickable (the registry already accepts them), just dimmed so the eye
+   does not read a tick here the same way it reads one next to lifecycle or deploy. */
+.capabilityOff { color: var(--ink-3); }
+
+.envSettings {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    padding: 14px 0;
+    border-top: 1px solid var(--rule);
+}
+.envSettings:first-child { border-top: 0; padding-top: 4px; }
+.envName { font-size: 13px; color: var(--ink); margin: 0; }
+
 .note { color: var(--ink-3); font-size: 12px; line-height: 1.7; margin: 10px 0 0; }
 .empty { color: var(--ink-3); font-size: 12.5px; }
 
@@ -177,4 +215,103 @@
     color: var(--ink-2);
     white-space: pre-wrap;
     word-break: break-word;
+}
+
+/* The Domains tab.
+
+   The add box sits above the table, and its button lines up with the input rather than under it: the
+   field is one short line and a button on its own row below reads as belonging to the table instead. */
+.addDomain {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: flex-start;
+    gap: 12px;
+    margin-bottom: 4px;
+}
+.addDomain > :first-child { flex: 1 1 260px; max-width: 360px; }
+
+/* Nudged down so the button meets the input, not the label above it */
+.addAction { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; padding-top: 21px; }
+
+/* The controls inside a table cell. Small buttons here, unlike the lifecycle ones: these are one row's
+   worth of a list, not the reason the page was opened. */
+.rowActions { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+
+/* What a client is told, which is their own address and one sentence about it. No table: a client with
+   one domain would be reading a one-row spreadsheet. */
+.address { padding: 12px 0; border-top: 1px solid var(--rule); }
+.address:first-of-type { border-top: 0; padding-top: 0; }
+.address p { margin: 0; }
+.address p + p { margin-top: 4px; color: var(--ink-2); font-size: 13.5px; }
+.addressName { font-family: var(--font-mono), monospace; font-size: 13px; color: var(--ink); }
+
+/* The adopt dialog: what is being replaced beside what would replace it. Side by side because the
+   question the operator is answering is which of the two is on the server tomorrow, and that is a
+   comparison. It stacks on a narrow window rather than shrinking both to nothing. */
+.sideBySide {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+    gap: 16px;
+    margin-bottom: 16px;
+}
+
+@media (max-width: 720px) {
+    .sideBySide { grid-template-columns: minmax(0, 1fr); }
+}
+
+.pane { min-width: 0; }
+.paneHead { font-size: 11px; text-transform: uppercase; letter-spacing: .08em; color: var(--ink-3); margin: 0 0 8px; }
+
+.claim { margin-bottom: 10px; }
+.claim p { margin: 0; overflow-wrap: anywhere; }
+.claim .note { margin-top: 2px; }
+
+.vhost {
+    margin: 0;
+    padding: 10px 12px;
+    background: var(--night);
+    border: 1px solid var(--rule);
+    border-radius: 6px;
+    max-height: 300px;
+    overflow: auto;
+    font-family: var(--font-mono), monospace;
+    font-size: 11px;
+    line-height: 1.7;
+    color: var(--ink-2);
+    white-space: pre-wrap;
+    word-break: break-word;
+}
+
+/* The waiting, under the sentence that says what is being waited for. Indeterminate by nature: hostd
+   answers a lifecycle call when it has taken the job and never reports a fraction of it done, so a bar
+   that filled would be drawing a number nobody has. */
+.bar {
+    display: block;
+    position: relative;
+    overflow: hidden;
+    height: 2px;
+    margin-top: 11px;
+    border-radius: 2px;
+    background: var(--rule-hi);
+}
+
+.barRun {
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    width: 36%;
+    border-radius: 2px;
+    background: var(--lake);
+    animation: run 1.5s ease-in-out infinite;
+}
+
+@keyframes run {
+    from { left: -36%; }
+    to { left: 100%; }
+}
+
+/* The movement is the whole of what this says, so with movement turned off it says it by being there:
+   a dim band across the track rather than a track with nothing in it. */
+@media (prefers-reduced-motion: reduce) {
+    .barRun { animation: none; left: 0; width: 100%; opacity: .4; }
 }

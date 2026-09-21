@@ -210,7 +210,7 @@ export default async function PortalHome() {
                 now, and a project whose id happened to be one of them would be unreachable. */}
             {view.sites.map(site => (
                 <a className={styles.nav} key={site.id} href={`/portal/sites/${site.id}`}>
-                    <StatusDot state={stateOf(site)} />
+                    <StatusDot state={stateOf(site)} bare />
                     <span className={styles.navName}>{site.name ?? site.id}</span>
                 </a>
             ))}
@@ -245,7 +245,7 @@ export default async function PortalHome() {
                         <Row
                             key={site.id}
                             tone={stateOf(site) === 'down' ? 'crit' : undefined}
-                            lead={<StatusDot state={stateOf(site)} />}
+                            lead={<StatusDot state={stateOf(site)} bare />}
                             title={site.name ?? site.id}
                             sub={site.id}
                             aside={asideFor(site)}

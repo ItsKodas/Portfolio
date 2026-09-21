@@ -10,7 +10,7 @@ import { MAX_BODY_FRAME_BYTES } from '../shared/protocol.ts'
 import type { HealthReply, LogLine } from '../shared/protocol.ts'
 
 const line: LogLine = { stream: 'stdout', ts: '2026-09-20T00:00:00Z', text: 'hello', truncated: false }
-const health: HealthReply = { ok: true, warnings: [], invalid: {}, system: { memory: null, cpu: null, disk: null, problems: [] } }
+const health: HealthReply = { ok: true, warnings: [], invalid: {}, system: { memory: null, cpu: null, disk: null, problems: [] }, railAge: null }
 
 // Each connect() gets a fresh socket pair whose far end is served by the real agent server.
 function connectTo(agent: AgentHandler): Connect {

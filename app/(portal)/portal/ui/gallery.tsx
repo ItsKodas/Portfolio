@@ -149,6 +149,14 @@ export default function Gallery() {
                 {STATES.map(state => <StatusDot key={state} state={state} />)}
             </Section>
 
+            <Section title="StatusDot, bare" note="Hover one for the word. Tab to the link and the word comes back inline.">
+                {STATES.map(state => <StatusDot key={state} state={state} bare />)}
+                <a className={styles.bareLink} href="#bare">
+                    <StatusDot state="down" bare />
+                    <span>a dot inside a link, for the focus behaviour</span>
+                </a>
+            </Section>
+
             <Section title="Row" note="The severity rail is the left border. Tab to the clickable one and press Enter.">
                 <Wide>
                     <Row title="asot-db" aside="up, mongodb 7.0" meta="14d" />

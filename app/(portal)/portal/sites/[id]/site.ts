@@ -40,6 +40,20 @@ export type SiteView =
         // every listing (hostd/src/api/routes.ts, environmentsFor), so the page no longer has to assume
         // there is exactly one and call it live.
         environments: Environment[]
+        // Answered for the operator alone, absent rather than null for a client; folded to null here since
+        // a client never reaches the Settings panel this feeds.
+        repo: string | null
+        // Whether the registry entry itself was actually read, which the Settings panel has to know before
+        // it draws anything: rendering the form over capabilities nobody read would show eight unticked
+        // boxes over a site that may have every one of them on, and its Save button would mean "take
+        // everything away". 'unread' is the two early returns below, where hostd was never reached or the
+        // listing itself failed: nothing about the project is known. 'invalid' is an entry hostd's own
+        // registry could not parse (configure would be refused the same way every other verb is). 'valid'
+        // is an entry read normally. Note this is not the same question as view.trouble, which stays set
+        // when only the container read failed on an entry that was read fine.
+        registryEntry: 'unread' | 'invalid' | 'valid'
+        // hostd's reason an entry is invalid, carried alongside registryEntry so the panel can show it
+        reason: string | null
         services: ServiceStatus[]
         // Every site this caller may see, for the nav the dashboard draws. It is hostd's own listing,
         // which is already scoped to the caller, so this is never wider than what they could see there.
@@ -80,6 +94,9 @@ export async function gatherSite(deps: SiteDeps, id: string): Promise<SiteView> 
             isAdmin,
             capabilities: [],
             environments: [],
+            repo: null,
+            registryEntry: 'unread',
+            reason: null,
             services: [],
             sites: [],
             trouble: troubleFor(isAdmin, config),
@@ -97,6 +114,9 @@ export async function gatherSite(deps: SiteDeps, id: string): Promise<SiteView> 
             isAdmin,
             capabilities: [],
             environments: [],
+            repo: null,
+            registryEntry: 'unread',
+            reason: null,
             services: [],
             sites: [],
             trouble: troubleFor(isAdmin, projects),
@@ -125,6 +145,9 @@ export async function gatherSite(deps: SiteDeps, id: string): Promise<SiteView> 
         isAdmin,
         capabilities: project.capabilities ?? [],
         environments: project.environments ?? [],
+        repo: project.repo ?? null,
+        registryEntry: project.valid ? 'valid' : 'invalid',
+        reason: project.reason ?? null,
         services: status.ok ? status.value : [],
         sites,
         trouble: status.ok ? null : troubleFor(isAdmin, status),

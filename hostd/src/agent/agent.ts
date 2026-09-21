@@ -3,21 +3,24 @@
 
 import {
     checkStructure, refuse,
-    type AgentReply, type AgentRequest, type BackupArgs, type DeployArgs, type EnvArgs, type HealthReply,
-    type LifecycleAction, type LifecycleReply, type LogLine, type LogsArgs, type ProjectStatus,
-    type ProvisionAddEnvironmentArgs, type ProvisionCreateArgs, type ProvisionRemoveArgs, type Refusal,
-    type ServiceStatus, type StatusesReply,
+    type AdoptPreview, type AgentReply, type AgentRequest, type BackupArgs, type ConfigureArgs, type DeployArgs,
+    type DomainsRequest, type DomainsWritten, type EnvArgs, type HealthReply, type LifecycleAction,
+    type LifecycleReply, type LogLine, type LogsArgs, type ProjectStatus, type ProvisionAddEnvironmentArgs,
+    type ProvisionCreateArgs, type ProvisionRemoveArgs, type Refusal, type ServiceStatus, type StatusesReply,
 } from '../shared/protocol.ts'
-import { environmentOf, type ProjectEntry, type Registry } from '../shared/registry.ts'
+import { environmentOf, type EnvironmentName, type ProjectEntry, type Registry } from '../shared/registry.ts'
 import { describeError } from '../shared/formats.ts'
 import { deployKey, lastHealthyCommit } from '../shared/deploys.ts'
 import { diskProblem, manualProblem } from '../shared/backups.ts'
+import type { RegistryWriter } from '../shared/registry-write.ts'
 import type { DiskUsage, SystemUsage } from '../shared/system.ts'
 import { runLifecycle, type Runner } from './compose.ts'
 import { deployTrees } from './deploy-compose.ts'
 import type { DeployDeps } from './deploy.ts'
 import type { DeployRunner } from './deploy-runner.ts'
 import type { DeployStore } from './deploy-state.ts'
+import { adopt, previewAdopt, removeVhost, setAliases, writeVhost, type DomainsDeps } from './domains.ts'
+import type { FetchClient } from './fetch-client.ts'
 import { buildServiceStatuses, groupByProject, pickPerService, type ContainerInspect, type ContainerSummary, type DockerApi } from './docker.ts'
 import { createLogDecoder } from './logframes.ts'
 import { listEnvFiles, readEnvFile, writeEnvFile, type EnvFs } from './env-files.ts'
@@ -40,6 +43,15 @@ export type AgentDeps = {
     system: () => Promise<SystemUsage>
     // Re-runs the storage guard for one project: its problem, or null when it passes.
     recheck: (project: ProjectEntry) => Promise<string | null>
+    // The one writer that edits the registry, shared with provision and deploy below. Unlike those two,
+    // configure needs nothing from the fetcher socket, so it is never gated behind 'unavailable': whatever
+    // wires this agent up always has a registry path to write to. Pick<..., 'write'>, not the class itself,
+    // so a test can stand in for it with a plain object instead of a real RegistryWriter.
+    writer: Pick<RegistryWriter, 'write'>
+    // Reloads the registry from disk after a write, so the next request answers from the entry that was
+    // just written rather than one up to a poll old. Every other writer-using path does this already
+    // (set-branch below, both provisioning paths in provision.ts), through deps of its own.
+    refreshRegistry: () => Promise<void>
     followMaxMs?: number
     // Absent until the production entrypoint wires a fetcher socket and a registry path to write:
     // provision and env then refuse unavailable instead of crashing.
@@ -65,6 +77,20 @@ export type AgentDeps = {
         newRunId: () => string
         backupDisk: () => Promise<DiskUsage | null>
     }
+    // Absent until the production entrypoint wires the Apache rail, the registry writer and the vhost
+    // configuration: the domains verb then refuses unavailable instead of crashing, exactly like
+    // provision and deploy do.
+    domains?: DomainsDeps
+    // How long ago the rail last got an answer, read fresh on every health request exactly like system
+    // is. An age in milliseconds, never a timestamp: api compares it against a staleness threshold.
+    // Required rather than optional, unlike domains itself: health must always answer with a railAge,
+    // even one that stayed null because nothing ever configured the rail, so no caller can forget it.
+    railAge: () => number | null
+    // Absent exactly like provision and deploys until the production entrypoint wires the fetcher socket:
+    // the branches verb then refuses unavailable instead of crashing. Separate from provision's and
+    // deploys' own copies of the same FetchClient (they need it for a lot more than this one call), and
+    // Pick<..., 'call'> rather than the class itself, so a test can hand this a plain object.
+    fetcher?: Pick<FetchClient, 'call'>
 }
 
 export type Outcome =
@@ -124,6 +150,14 @@ export class Agent {
                 return reply(await this.deploy(checked.project, request.args))
             case 'backup':
                 return this.backup(checked.project, request.args)
+            // domains re-checks the registry, the guard and the capability itself, from a freshly
+            // reloaded registry rather than the checked snapshot above: see domains() for why.
+            case 'domains':
+                return reply(await this.domains(request))
+            case 'configure':
+                return reply(await this.configure(checked.project, request.args))
+            case 'branches':
+                return reply(await this.branches(checked.project))
         }
     }
 
@@ -230,6 +264,49 @@ export class Agent {
         }
     }
 
+    // Public, unlike env/deploy/lifecycle, because writing a vhost is dangerous enough that nothing here
+    // may act on a registry any staler than the moment this runs. It re-reads the registry, checks
+    // structure and the capability itself against that fresh read, rather than trusting the checked
+    // project handle() already produced from its own (merely per-connection) registry() snapshot.
+    async domains(request: DomainsRequest): Promise<DomainsWritten | AdoptPreview | Refusal> {
+        if (!this.deps.domains) return refuse('unavailable', 'domains is not configured')
+        const domains = this.deps.domains
+        const registry = await domains.reloadRegistry()
+        const checked = checkStructure(registry, request, this.deps.guardInvalid())
+        if (!checked.ok) return checked
+        // checkStructure only enforces environment presence for env and deploy; domains checks it here
+        // instead, against the project entry the fresh reload just produced.
+        const environment = environmentOf(checked.project, request.args.environment)
+        if (!environment) return refuse('unknown-environment', `${checked.project.id} has no ${request.args.environment} environment`)
+
+        switch (request.args.action) {
+            case 'write':
+                return writeVhost(domains, checked.project, environment, request.args.token)
+            case 'remove':
+                return removeVhost(domains, checked.project, environment)
+            case 'preview':
+                return previewAdopt(domains, checked.project, environment, request.args.token)
+            case 'adopt':
+                return adopt(domains, checked.project, environment, request.args.token, request.args.disable)
+            case 'set-aliases':
+                return setAliases(domains, checked.project, environment, request.args.aliases, request.args.token)
+        }
+    }
+
+    // The repo comes from the registry entry checkStructure just returned, never from the request: a
+    // caller names a project and that is all it is trusted with. Fills the portal's Settings form, so a
+    // project with nothing to list from is refused by name rather than asked of the fetcher for nothing.
+    private async branches(project: ProjectEntry): Promise<AgentReply> {
+        if (!project.repo) return refuse('bad-request', `${project.id} has no repo to list branches from`)
+        if (!this.deps.fetcher) return refuse('unavailable', 'the fetcher is not configured')
+        const result = await this.deps.fetcher.call({ verb: 'branches', repo: project.repo })
+        // Collapsed to bad-request or failed exactly as the deploy verb's own commits case collapses the
+        // fetcher's reply: bad-request is the fetcher itself refusing the shape of the request (which
+        // means a bug here, not something the caller did), and everything else reads as failed.
+        if (!result.ok) return refuse(result.code === 'bad-request' ? 'bad-request' : 'failed', result.message)
+        return { ok: true, branches: result.branches ?? [] }
+    }
+
     private async deploy(project: ProjectEntry, args: DeployArgs): Promise<AgentReply> {
         if (!this.deps.deploys) return refuse('unavailable', 'deploys are not configured')
         const { runner, store, deps } = this.deps.deploys
@@ -277,10 +354,42 @@ export class Agent {
         return runner.start(project, environment, { trigger: 'manual', actor: 'admin' })
     }
 
+    // No capability gate, no per-field validation beyond what parseAgentRequest already did on the way
+    // in: the registry writer (via applyChange's re-parse with parseRegistry) is the one place that
+    // decides what a capability, a repo and a branch may be, so nothing here duplicates that.
+    //
+    // Reply shape: AgentReply has no bare { ok: true } member, and adding one is a trap (it has no field
+    // of its own to distinguish it, so every existing `'x' in reply` narrowing elsewhere in the test suite
+    // widens to include it and stops compiling). { ok: true, output } is the shape the codebase already
+    // uses for "nothing else to carry" (see env()'s write case and provision.ts's removeProject above).
+    private async configure(project: ProjectEntry, args: ConfigureArgs): Promise<AgentReply> {
+        const written = await this.deps.writer.write({
+            kind: 'configure',
+            id: project.id,
+            ...(args.capabilities === undefined ? {} : { capabilities: args.capabilities }),
+            ...(args.repo === undefined ? {} : { repo: args.repo }),
+            ...(args.branches === undefined ? {} : { branches: args.branches }),
+        })
+        // The writer's problem is the registry validator's own words about what the operator asked for, so
+        // it is bad-request rather than failed, exactly as the set-branch case above answers the same
+        // refusal from the same writer. failed would reach the portal as a 502 and be audited as hostd
+        // having failed, for a repo URL the validator simply would not take.
+        if (!written.ok) return refuse('bad-request', written.problem)
+        // The registry store only reloads on its own ten second timer, so without this the next request
+        // answers from the entry this write has already replaced: the capability just granted would still
+        // look absent. set-branch and both provisioning paths refresh for the same reason.
+        await this.deps.refreshRegistry()
+        // No log call here: the Agent class never logs its own verbs (lifecycle, env and deploy above do
+        // not either). server.ts's handleConnection logs every reply generically, including this one, via
+        // its own describe()/log() after handle() returns.
+        return { ok: true, output: `${project.id}'s registry entry was updated` }
+    }
+
     private async health(): Promise<HealthReply> {
         const invalid = Object.fromEntries([...this.deps.registry().invalid, ...this.deps.guardInvalid()])
         // system is figures for the portal to draw, kept apart from warnings on purpose: nothing it
-        // reports, however alarming the number, may make this process unhealthy.
+        // reports, however alarming the number, may make this process unhealthy. railAge is the same
+        // idea: a stale rail is worth surfacing (Task 14 does), but it is not this process's own health.
         const warnings = this.deps.warnings()
         if (this.deps.backups) {
             // Two signals the design defers to the backups phase. Warnings, not failures: a full backup
@@ -292,7 +401,7 @@ export class Agent {
             if (problem) warnings.push(problem)
             warnings.push(...this.deps.backups.store.failures())
         }
-        return { ok: true, warnings, invalid, system: await this.deps.system() }
+        return { ok: true, warnings, invalid, system: await this.deps.system(), railAge: this.deps.railAge() }
     }
 
     private async status(project: ProjectEntry): Promise<ServiceStatus[]> {
@@ -365,12 +474,42 @@ export class Agent {
         if (this.provisioningBusy) return refuse('busy', 'another provisioning action is in progress')
         this.provisioningBusy = true
         try {
-            return args.action === 'add-environment'
-                ? await addEnvironment(project, args, this.deps.provision, this.deps.envFs)
-                : await removeProject(project, args.environment, this.deps.provision)
+            if (args.action === 'add-environment') return await addEnvironment(project, args, this.deps.provision, this.deps.envFs)
+            const reply = await removeProject(project, args.environment, this.deps.provision)
+            if (!reply.ok) return reply
+            const note = await this.removeVhosts(project, args.environment)
+            if (note === '') return reply
+            return { ok: true, output: `${'output' in reply ? reply.output : ''}${note}` }
         } finally {
             this.provisioningBusy = false
         }
+    }
+
+    // Removing an environment has to take its vhost with it. Left behind, the file goes on claiming
+    // that environment's hostnames and goes on proxying to a port choosePort is free to hand to another
+    // project, which is one client's visitors reaching another client's application.
+    //
+    // After the registry write and never before, for the reason setAliases writes the registry first:
+    // the registry is the record of what a site may serve, and the vhost is a rendering of it. The entry
+    // is therefore already gone when this runs, so a failure here is reported in the output rather than
+    // returned as one, and a rail that never answers (which throws, after 30 seconds) must not turn a
+    // removal that did happen into an error the operator would retry.
+    private async removeVhosts(project: ProjectEntry, environment: EnvironmentName | null): Promise<string> {
+        // No capability means hostd never wrote a vhost for this project, and asking the rail to remove
+        // a file that was never there would cost an Apache reload per removal for nothing.
+        if (!this.deps.domains || !project.capabilities.has('domains')) return ''
+        const domains = this.deps.domains
+        const problems: string[] = []
+        for (const entry of project.environments.values()) {
+            if (environment !== null && entry.name !== environment) continue
+            try {
+                const result = await removeVhost(domains, project, entry)
+                if (!result.ok) problems.push(result.message)
+            } catch (error) {
+                problems.push(`the vhost for ${project.id} ${entry.name} could not be removed: ${describeError(error)}`)
+            }
+        }
+        return problems.length === 0 ? '' : ` ${problems.join(' ')}`
     }
 
     private async env(project: ProjectEntry, args: EnvArgs): Promise<AgentReply> {

@@ -12,7 +12,7 @@ projects:
     dir: /var/www/acme
     upstream: 127.0.0.1:5010
     services: { web: { role: site } }
-    capabilities: [lifecycle, logs, provision, env]
+    capabilities: [lifecycle, logs, provision, env, domains]
   quiet:
     client: cl_1
     name: Quiet
@@ -182,6 +182,51 @@ projects:
         assert.equal(!theirs.ok && theirs.code, !missing.ok && missing.code)
         assert.equal(!theirs.ok ? theirs.message : '', 'no project acme')
         assert.equal(!missing.ok ? missing.message : '', 'no project nosuch')
+    })
+})
+
+describe('the domains verbs', () => {
+    const withoutDomains = parseRegistry(`
+projects:
+  acme:
+    client: cl_1
+    name: Acme
+    dir: /var/www/acme
+    upstream: 127.0.0.1:5010
+    services: { web: { role: site } }
+    capabilities: [lifecycle]
+`)
+
+    it('lets a client read their own site\'s domains', () => {
+        const decision = authorize(registry, { kind: 'client', client: 'cl_1' }, 'acme', 'domains-read')
+        assert.equal(decision.ok, true)
+    })
+
+    it('answers a client asking to add a domain exactly as it answers one asking about a stranger\'s site', () => {
+        const mine = authorize(registry, { kind: 'client', client: 'cl_1' }, 'acme', 'domains')
+        const theirs = authorize(registry, { kind: 'client', client: 'cl_1' }, 'someone-else', 'domains')
+        assert.equal(mine.ok, false)
+        assert.equal(mine.ok === false && mine.status, 404)
+        assert.equal(theirs.ok === false && theirs.status, 404)
+    })
+
+    it('refuses both verbs when the project has no domains capability', () => {
+        const decision = authorize(withoutDomains, { kind: 'admin' }, 'acme', 'domains-read')
+        assert.equal(decision.ok === false && decision.code, 'capability-disabled')
+    })
+})
+
+describe('authorize: configure is admin-only', () => {
+    it('refuses a client the configure verb outright, whatever the registry says', () => {
+        const decision = authorize(registry, owner, 'acme', 'configure')
+        assert.equal(decision.ok, false)
+        assert.equal(!decision.ok && decision.status, 404)
+    })
+
+    it('lets the admin configure a project with no capabilities at all', () => {
+        // The point of the null capability: a project with nothing enabled is exactly the one that needs it
+        const decision = authorize(registry, admin, 'quiet', 'configure')
+        assert.equal(decision.ok, true)
     })
 })
 

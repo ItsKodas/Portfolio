@@ -6,6 +6,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 const listProjects = vi.fn()
 const listDeploys = vi.fn()
+const listDomains = vi.fn()
 const getProject = vi.fn()
 const assertOwned = vi.fn()
 const callerFromSession = vi.fn()
@@ -31,8 +32,16 @@ vi.mock('./actions', () => ({
     deployAction: async () => ({ ok: true, message: 'ok' }),
     rollbackAction: async () => ({ ok: true, message: 'ok' }),
     setBranchAction: async () => ({ ok: true, message: 'ok' }),
+    addDomainAction: async () => ({ ok: true, message: 'ok' }),
+    removeDomainAction: async () => ({ ok: true, message: 'ok' }),
+    verifyDomainAction: async () => ({ ok: true, message: 'ok' }),
+    adoptAction: async () => ({ ok: true, message: 'ok' }),
+    adoptPreviewAction: async () => ({ ok: false, error: 'not asked in a test' }),
 }))
 vi.mock('@/server/hostd/deploys', () => ({ listDeploys: (...args: unknown[]) => listDeploys(...args) }))
+vi.mock('@/server/hostd/domains', () => ({ listDomains: (...args: unknown[]) => listDomains(...args) }))
+const listBranches = vi.fn()
+vi.mock('@/server/hostd/branches', () => ({ listBranches: (...args: unknown[]) => listBranches(...args) }))
 
 const { default: SitePage } = await import('./page')
 
@@ -62,7 +71,9 @@ beforeEach(() => {
     callerFromSession.mockResolvedValue({ caller: { actor: 'admin', user: 'koda@horizons.gg' }, clientId: null })
     listProjects.mockResolvedValue({ ok: true, value: [{ id: 'asot', name: 'ASOT', valid: true, capabilities: ['lifecycle', 'logs'] }] })
     getProject.mockResolvedValue({ ok: true, value: [service('running')] })
+    listDomains.mockResolvedValue({ ok: true, value: [] })
     assertOwned.mockResolvedValue(true)
+    listBranches.mockResolvedValue({ ok: true, value: [] })
 })
 
 describe('the site page', () => {
@@ -212,6 +223,95 @@ describe('the site page', () => {
     })
 })
 
+describe('the settings tab', () => {
+    it('gives the operator a Settings tab', async () => {
+        render(await page())
+        expect(screen.getByRole('tab', { name: 'Settings' })).toBeInTheDocument()
+    })
+
+    it('gives a client none, because what their site is allowed to do is not theirs to see', async () => {
+        callerFromSession.mockResolvedValue(client)
+        render(await page())
+        expect(screen.queryByRole('tab', { name: 'Settings' })).toBeNull()
+    })
+
+    it('lands a client asking for it on Overview', async () => {
+        callerFromSession.mockResolvedValue(client)
+        render(await page({ tab: 'settings' }))
+        expect(screen.getByRole('tab', { name: 'Overview' })).toHaveAttribute('aria-selected', 'true')
+    })
+
+    it('shows the form with the entry as it stands', async () => {
+        listProjects.mockResolvedValue({ ok: true, value: [
+            { id: 'asot', name: 'ASOT', valid: true, capabilities: ['lifecycle'], repo: 'git@github.com:ItsKodas/asot.git', environments: [{ name: 'live', branch: null }] },
+        ] })
+        render(await page({ tab: 'settings' }))
+        expect(screen.getByLabelText(/repo/i)).toHaveValue('git@github.com:ItsKodas/asot.git')
+    })
+
+    // configure runs the same checkStructure every verb does, so hostd would refuse it the same way
+    it('offers no form for an entry the registry could not parse', async () => {
+        listProjects.mockResolvedValue({ ok: true, value: [{ id: 'asot', valid: false, reason: 'dir must be /var/www/<one segment>', environments: [] }] })
+        render(await page({ tab: 'settings' }))
+        expect(screen.getByText(/dir must be/)).toBeInTheDocument()
+        expect(screen.queryByRole('button', { name: /save/i })).toBeNull()
+    })
+
+    // Rendering the form here would show eight unticked capability boxes over a site that may have every
+    // one of them on: nothing about the project is actually known when hostd could not be reached.
+    it('offers no form, only hostd\'s own trouble, when hostd could not be reached at all', async () => {
+        delete process.env.HOSTD_URL
+        render(await page({ tab: 'settings' }))
+        const panel = within(screen.getByRole('tabpanel'))
+        expect(panel.getByText(/HOSTD_URL/)).toBeInTheDocument()
+        expect(screen.queryByRole('button', { name: /save/i })).toBeNull()
+        expect(screen.queryByLabelText(/repo/i)).toBeNull()
+    })
+
+    it('reads the branch list for this project when the Settings tab renders', async () => {
+        listProjects.mockResolvedValue({ ok: true, value: [
+            { id: 'asot', name: 'ASOT', valid: true, capabilities: ['lifecycle'], environments: [{ name: 'live', branch: null }] },
+        ] })
+        listBranches.mockResolvedValue({ ok: true, value: ['main', 'develop'] })
+        render(await page({ tab: 'settings' }))
+        expect(listBranches.mock.calls[0]?.[2]).toBe('asot')
+        const branch = screen.getByLabelText(/branch/i)
+        expect(branch.tagName).toBe('SELECT')
+        const optionValues = Array.from(branch.querySelectorAll('option')).map(o => o.getAttribute('value'))
+        expect(optionValues).toEqual(expect.arrayContaining(['main', 'develop']))
+    })
+
+    it('never asks for the branch list on a tab other than Settings', async () => {
+        render(await page())
+        expect(listBranches).not.toHaveBeenCalled()
+    })
+
+    // Failure is not an error: the field stays a plain input and a line underneath says why, in hostd's
+    // own words. A save must never be blocked by a list that did not load, so the form still renders.
+    it('still renders the form, with the field degraded to plain text, when the branch list could not be read', async () => {
+        listBranches.mockResolvedValue({ ok: false, code: 'unavailable', message: 'hostd is not answering' })
+        render(await page({ tab: 'settings' }))
+        expect(screen.getByText(/hostd is not answering/)).toBeInTheDocument()
+        expect(screen.getByRole('button', { name: /save/i })).toBeInTheDocument()
+        expect(document.querySelector('datalist')).toBeNull()
+    })
+})
+
+describe('the environment tab', () => {
+    it('disables the Environment tab until the capability is on, and says where it is turned on', async () => {
+        listProjects.mockResolvedValue({ ok: true, value: [{ id: 'asot', name: 'ASOT', valid: true, capabilities: ['lifecycle'], environments: [] }] })
+        render(await page({ tab: 'env' }))
+        expect(screen.getByRole('tab', { name: 'Environment' })).toHaveAttribute('aria-disabled', 'true')
+        expect(screen.getByText(/Settings tab/)).toBeInTheDocument()
+    })
+
+    it('enables it once it is', async () => {
+        listProjects.mockResolvedValue({ ok: true, value: [{ id: 'asot', name: 'ASOT', valid: true, capabilities: ['lifecycle', 'env'], environments: [] }] })
+        render(await page())
+        expect(screen.getByRole('tab', { name: 'Environment' })).not.toHaveAttribute('aria-disabled')
+    })
+})
+
 describe('the deploys tab', () => {
     it('stays disabled, and says why, for a site hostd has no deploys for', async () => {
         // The default listing above carries no deploy capability, so hostd would refuse every call the
@@ -235,5 +335,38 @@ describe('the deploys tab', () => {
         render(await page())
 
         expect(screen.getByRole('tab', { name: 'Deploys' })).not.toHaveAttribute('aria-disabled')
+    })
+})
+
+describe('the domains tab', () => {
+    // It was built admin-only and disabled, on the reasoning that domains would never be a client's to
+    // read. hostd leaves 'domains-read' out of its admin-only verbs, so that reasoning is gone: a client
+    // reads their own site's addresses, and only acting on them is the operator's.
+    it('shows a client the Domains tab, which used to be hidden from them', async () => {
+        callerFromSession.mockResolvedValue(client)
+
+        render(await page())
+
+        expect(screen.getByRole('tab', { name: 'Domains' })).toBeInTheDocument()
+    })
+
+    // It used to be disabled for everyone, whatever the project could do. Now the capability is the only
+    // thing that disables it, exactly as it is for Deploys.
+    it('does not disable the Domains tab for a project hostd serves domains for', async () => {
+        listProjects.mockResolvedValue({
+            ok: true,
+            value: [{ id: 'asot', name: 'ASOT', valid: true, capabilities: ['lifecycle', 'logs', 'domains'] }],
+        })
+
+        render(await page())
+
+        expect(screen.getByRole('tab', { name: 'Domains' })).not.toHaveAttribute('aria-disabled')
+    })
+
+    it('never asks hostd for a list it would refuse, on a site with no domains capability', async () => {
+        render(await page({ tab: 'domains' }))
+
+        expect(listDomains).not.toHaveBeenCalled()
+        expect(screen.getByText(/not switched on for this site/)).toBeInTheDocument()
     })
 })

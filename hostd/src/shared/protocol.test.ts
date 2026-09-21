@@ -1,7 +1,7 @@
 import { describe, it } from 'node:test'
 import assert from 'node:assert/strict'
 import {
-    parseAgentRequest, checkStructure, VERB_CAPABILITY, MAX_REQUEST_BYTES, MAX_COMMITS, DEFAULT_COMMITS, SNAPSHOT_ID,
+    parseAgentRequest, checkStructure, parseDomainsArgs, VERB_CAPABILITY, MAX_REQUEST_BYTES, MAX_COMMITS, DEFAULT_COMMITS, SNAPSHOT_ID,
     type ProjectRequest,
 } from './protocol.ts'
 import { parseRegistry } from './registry.ts'
@@ -203,6 +203,144 @@ describe('parseAgentRequest', () => {
         assert.equal(refusalOf({ verb: 'deploy', project: 'acme', args: { action: 'commits', environment: 'live', limit: 100000 } }), `bad-request: limit must be a whole number from 1 to ${MAX_COMMITS}`)
         assert.equal(refusalOf({ verb: 'deploy', project: 'acme', args: { action: 'history' } }), 'bad-request: environment must be live or test')
     })
+
+    it('parses a configure request carrying all three fields', () => {
+        assert.deepEqual(
+            parsed({ verb: 'configure', project: 'acme', args: { capabilities: ['lifecycle', 'logs'], repo: null, branches: { live: 'main', test: null } } }),
+            { ok: true, request: { verb: 'configure', project: 'acme', args: { capabilities: ['lifecycle', 'logs'], repo: null, branches: { live: 'main', test: null } } } },
+        )
+    })
+
+    it('parses a configure request carrying only some fields, since absent means leave alone', () => {
+        assert.deepEqual(
+            parsed({ verb: 'configure', project: 'acme', args: { repo: 'git@github.com:x/acme.git' } }),
+            { ok: true, request: { verb: 'configure', project: 'acme', args: { repo: 'git@github.com:x/acme.git' } } },
+        )
+        assert.deepEqual(
+            parsed({ verb: 'configure', project: 'acme', args: {} }),
+            { ok: true, request: { verb: 'configure', project: 'acme', args: {} } },
+        )
+    })
+
+    it('refuses malformed configure requests', () => {
+        assert.equal(refusalOf({ verb: 'configure', project: 'acme', args: { capabilities: ['teleport'] } }), 'bad-request: capabilities must be a list of known capabilities')
+        assert.equal(refusalOf({ verb: 'configure', project: 'acme', args: { branches: { live: 'a branch' } } }), 'bad-request: live branch must be null or a plain branch name')
+        assert.equal(refusalOf({ verb: 'configure', project: 'acme', args: { branches: { staging: 'main' } } }), 'bad-request: staging is not an environment')
+        assert.equal(refusalOf({ verb: 'configure', project: 'acme', args: { capabilities: [], extra: true } }), 'bad-request: configure takes only capabilities, repo and branches')
+    })
+
+    it('parses a branches request', () => {
+        assert.deepEqual(parsed({ verb: 'branches', project: 'acme' }), { ok: true, request: { verb: 'branches', project: 'acme' } })
+    })
+
+    it('refuses a branches request with a malformed project or an extra field', () => {
+        assert.equal(refusalOf({ verb: 'branches', project: 'Not An Id' }), 'bad-request: project is malformed')
+        assert.equal(refusalOf({ verb: 'branches', project: 'acme', extra: true }), 'bad-request: branches takes only project')
+    })
+})
+
+describe('parseDomainsArgs', () => {
+    const ok = (args: unknown) => {
+        const parsed = parseDomainsArgs(args)
+        assert.equal(parsed.ok, true, JSON.stringify(parsed))
+        return parsed
+    }
+
+    it('accepts a write with an environment and a token', () => {
+        const parsed = ok({ action: 'write', environment: 'live', token: 'abc123' })
+        assert.deepEqual(parsed.ok && parsed.args, { action: 'write', environment: 'live', token: 'abc123' })
+    })
+
+    it('accepts a remove, a preview and an adopt', () => {
+        ok({ action: 'remove', environment: 'test' })
+        ok({ action: 'preview', environment: 'live', token: 'abc123' })
+        ok({ action: 'adopt', environment: 'live', token: 'abc123', disable: ['/etc/apache2/sites-enabled/acme.conf'] })
+    })
+
+    // A preview with no token would render a file that can never match what adopt actually writes,
+    // since api passes the very same token to both: a preview that always differs from the real thing
+    // teaches whoever reads it to expect and skim past a diff in exactly the security-relevant lines.
+    it('refuses a preview without a token', () => {
+        assert.equal(parseDomainsArgs({ action: 'preview', environment: 'live' }).ok, false)
+    })
+
+    it('refuses an unknown action', () => {
+        assert.equal(parseDomainsArgs({ action: 'rewrite', environment: 'live' }).ok, false)
+    })
+
+    it('refuses an unknown environment', () => {
+        assert.equal(parseDomainsArgs({ action: 'remove', environment: 'staging' }).ok, false)
+    })
+
+    it('refuses an extra field, because the agent is root and ignores nothing', () => {
+        assert.equal(parseDomainsArgs({ action: 'remove', environment: 'live', force: true }).ok, false)
+    })
+
+    it('refuses a token that is not plain hex, so nothing shaped like a path reaches a Location', () => {
+        for (const bad of ['../x', 'a b', '', 'Z'.repeat(32)]) {
+            assert.equal(parseDomainsArgs({ action: 'write', environment: 'live', token: bad }).ok, false, bad)
+        }
+    })
+
+    // An environment nothing currently serves has nothing to move aside, and adopt is the only route to
+    // a vhost hostd owns, so refusing an empty list would leave such a site with no way to get one.
+    it('accepts an adopt that disables nothing', () => {
+        const parsed = ok({ action: 'adopt', environment: 'live', token: 'abc123', disable: [] })
+        assert.deepEqual(parsed.ok && parsed.args, { action: 'adopt', environment: 'live', token: 'abc123', disable: [] })
+    })
+
+    it('still refuses a bad path inside a list that is not empty', () => {
+        for (const bad of ['/etc/passwd', '/etc/apache2/sites-enabled/../../passwd', '/etc/apache2/sites-enabled/.hidden']) {
+            const parsed = parseDomainsArgs({
+                action: 'adopt', environment: 'live', token: 'abc123',
+                disable: ['/etc/apache2/sites-enabled/acme.conf', bad],
+            })
+            assert.equal(parsed.ok, false, bad)
+        }
+    })
+
+    it('refuses a disable that is not a list at all', () => {
+        assert.equal(parseDomainsArgs({ action: 'adopt', environment: 'live', token: 'abc123', disable: '/etc/apache2/sites-enabled/acme.conf' }).ok, false)
+    })
+
+    it('refuses a disable entry that is not inside sites-enabled', () => {
+        const parsed = parseDomainsArgs({ action: 'adopt', environment: 'live', token: 'abc123', disable: ['/etc/passwd'] })
+        assert.equal(parsed.ok, false)
+    })
+
+    it('refuses a disable entry that climbs out with dot segments', () => {
+        const parsed = parseDomainsArgs({
+            action: 'adopt', environment: 'live', token: 'abc123',
+            disable: ['/etc/apache2/sites-enabled/../../passwd'],
+        })
+        assert.equal(parsed.ok, false)
+    })
+
+    it('accepts set-aliases with a list and a token', () => {
+        const parsed = ok({ action: 'set-aliases', environment: 'live', aliases: ['www.acme.com'], token: 'abc123' })
+        assert.deepEqual(parsed.ok && parsed.args.action === 'set-aliases' && parsed.args.aliases, ['www.acme.com'])
+    })
+
+    it('accepts an empty alias list, which is how the last one is removed', () => {
+        ok({ action: 'set-aliases', environment: 'live', aliases: [], token: 'abc123' })
+    })
+
+    it('refuses an alias that is not a hostname, before it can reach a ServerAlias', () => {
+        for (const bad of ['localhost', 'not a host', '../etc', 'https://acme.com']) {
+            const parsed = parseDomainsArgs({ action: 'set-aliases', environment: 'live', aliases: [bad], token: 'abc123' })
+            assert.equal(parsed.ok, false, bad)
+        }
+    })
+
+    it('normalises the aliases it accepts, so one spelling reaches the registry', () => {
+        const parsed = ok({ action: 'set-aliases', environment: 'live', aliases: ['WWW.Acme.com'], token: 'abc123' })
+        assert.deepEqual(parsed.ok && parsed.args.action === 'set-aliases' && parsed.args.aliases, ['www.acme.com'])
+    })
+
+    it('refuses a list longer than any project could allow, before the registry is read', () => {
+        const many = Array.from({ length: 21 }, (_, i) => `a${i}.acme.com`)
+        assert.equal(parseDomainsArgs({ action: 'set-aliases', environment: 'live', aliases: many, token: 'abc123' }).ok, false)
+    })
 })
 
 describe('the backup verb', () => {
@@ -388,5 +526,13 @@ projects:
         assert.equal(live.ok, true)
         const test = checkStructure(deployable, { verb: 'deploy', project: 'acme', args: { action: 'deploy', environment: 'test' } }, none)
         assert.deepEqual(test, { ok: false, code: 'unknown-environment', message: 'acme has no test environment' })
+    })
+
+    // Null, exactly like configure: gating the list on a capability would leave the dropdown empty on
+    // exactly the site an operator is setting deploys up on, which is the one place this list matters.
+    it('gates branches on no capability at all', () => {
+        assert.equal(VERB_CAPABILITY.branches, null)
+        const result = checkStructure(registry, { verb: 'branches', project: 'acme' }, none)
+        assert.equal(result.ok, true)
     })
 })

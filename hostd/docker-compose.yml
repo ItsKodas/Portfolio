@@ -26,6 +26,13 @@ services:
       HOSTD_MAINTENANCE_DIR: /run/hostd/maintenance
       HOSTD_BACKUP_DIR: /backups
       HOSTD_BACKUP_STATE_FILE: /var/lib/hostd/backups.json
+      HOSTD_APACHE_RAIL_DIR: /etc/hostd/apache
+      HOSTD_APACHE_INCLUDE_DIR: /etc/apache2/hostd
+      HOSTD_APACHE_SITES_ENABLED: /etc/apache2/sites-enabled
+      HOSTD_ORIGIN_CERT: /etc/ssl/hostd/origin.pem
+      HOSTD_ORIGIN_KEY: /etc/ssl/hostd/origin.key
+      HOSTD_ACME_WEBROOT: /var/www/hostd-acme
+      HOSTD_MAINTENANCE_ROOT: /var/www/hostd-maintenance
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
       # The same path inside as outside: compose hands bind mount sources to the daemon as host paths.
@@ -53,6 +60,19 @@ services:
       # The host's backup disk. Its own bind mount rather than a volume: the operator chooses which disk
       # this is, and a restore has to be able to reach these files without Docker.
       - ${HOSTD_BACKUP_DIR:-/srv/backups/hostd}:/backups
+      # The handshake with the host's systemd unit. A directory of its own holding nothing but
+      # request.json and result.json, so neither container can see anything else through it.
+      - /etc/hostd/apache:/etc/hostd/apache
+      # hostd's own include directory, which Apache is configured to IncludeOptional. Writable, because
+      # this is the whole point: hostd owns every file in here and no file anywhere else.
+      - /etc/apache2/hostd:/etc/apache2/hostd
+      # Read-only, and it stays read-only. The agent reads this to refuse a hostname another vhost
+      # already claims; moving a file out of it during an adoption is the host unit's job, precisely so
+      # that a compromised agent cannot disable every site on the machine.
+      - /etc/apache2/sites-enabled:/etc/apache2/sites-enabled:ro
+      # The Origin certificate the vhosts present. Read-only, and never named by anything that arrives
+      # over the wire.
+      - /etc/ssl/hostd:/etc/ssl/hostd:ro
     healthcheck:
       test: ["CMD", "node", "--import", "tsx", "src/shared/healthcheck.ts", "/tmp/hostd-status.json"]
       interval: 60s

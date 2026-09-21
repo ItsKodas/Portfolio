@@ -11,7 +11,15 @@ import type { Actor } from './auth.ts'
 // 'backup' and 'backup-read' both let the owning client act on and read their own backups. Unlike deploy,
 // which is admin-only, a client's backups belong to them: they keep them until they delete them, and choose
 // the schedule. The split exists so the audit log distinguishes reading from acting, not to gate one behind admin.
-export type PolicyVerb = 'status' | 'lifecycle' | 'logs' | 'audit' | 'provision' | 'env' | 'deploy' | 'deploy-read' | 'backup' | 'backup-read'
+//
+// 'domains' and 'domains-read' split the same way and for the same reason. Adding, removing, adopting
+// and re-checking a hostname all change what Apache serves, so they are the operator's; reading the
+// list is how a client watches their own DNS land, so that half is theirs. Re-checking is in the admin
+// half rather than the read one because it writes the record it checks.
+export type PolicyVerb =
+    | 'status' | 'lifecycle' | 'logs' | 'audit' | 'provision' | 'env' | 'deploy' | 'deploy-read'
+    | 'backup' | 'backup-read'
+    | 'domains' | 'domains-read' | 'configure'
 
 // Deliberately its own table rather than protocol.ts's VERB_CAPABILITY: that one is keyed by the agent's
 // verbs, and this one has two entries for the same verb, which is what the split above needs.
@@ -26,10 +34,17 @@ const POLICY_CAPABILITY: Record<PolicyVerb, Capability | null> = {
     'deploy-read': 'deploy',
     backup: 'backups',
     'backup-read': 'backups',
+    domains: 'domains',
+    'domains-read': 'domains',
+    // Null on purpose: gating the verb that edits capabilities on a capability would mean a project with
+    // none could never be given any, which is exactly the project that most needs it. What guards
+    // configure instead is ADMIN_ONLY below, not a capability. See VERB_CAPABILITY in protocol.ts, which
+    // is null here for the same reason, on the agent's own side of the boundary.
+    configure: null,
 }
 
 // What only the admin may ever do, whatever the registry says and whoever owns the project.
-const ADMIN_ONLY: PolicyVerb[] = ['provision', 'env', 'deploy']
+const ADMIN_ONLY: PolicyVerb[] = ['provision', 'env', 'deploy', 'domains', 'configure']
 export type Decision =
     | { ok: true, project: ProjectEntry }
     | { ok: false, status: 403 | 404 | 409, code: 'not-found' | 'capability-disabled' | 'invalid-project', message: string }

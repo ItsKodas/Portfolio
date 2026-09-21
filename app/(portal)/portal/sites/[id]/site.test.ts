@@ -119,6 +119,70 @@ describe('gatherSite', () => {
         if (view.kind === 'site') expect(view.name).toBe('asot')
     })
 
+    // Settings must never render its form over capabilities nobody actually read. registryEntry is how
+    // the page tells "hostd could not be reached at all" apart from "the entry was read and has nothing
+    // to say", which look identical if you only look at capabilities: [].
+    it('carries the repo hostd answered for the operator', async () => {
+        const view = await gatherSite(deps({
+            listProjects: async () => ({
+                ok: true as const,
+                value: [{ id: 'asot', name: 'ASOT', valid: true, capabilities: ['lifecycle'], repo: 'git@github.com:ItsKodas/asot.git' }],
+            }),
+        }), 'asot')
+        if (view.kind === 'site') expect(view.repo).toBe('git@github.com:ItsKodas/asot.git')
+    })
+
+    it('says no repo rather than throwing when hostd left it out, which it does for a client', async () => {
+        const view = await gatherSite(deps({
+            listProjects: async () => ({ ok: true as const, value: [{ id: 'asot', name: 'ASOT', valid: true, capabilities: [] }] }),
+        }), 'asot')
+        if (view.kind === 'site') expect(view.repo).toBeNull()
+    })
+
+    it('marks the entry read and valid when the listing found it', async () => {
+        const view = await gatherSite(deps(), 'asot')
+        if (view.kind === 'site') {
+            expect(view.registryEntry).toBe('valid')
+            expect(view.reason).toBeNull()
+        }
+    })
+
+    it('marks the entry read and invalid, carrying hostd\'s reason, for one the registry could not parse', async () => {
+        const view = await gatherSite(deps({
+            listProjects: async () => ({ ok: true as const, value: [{ id: 'asot', valid: false, reason: 'compose.yml is unparseable' }] }),
+        }), 'asot')
+        if (view.kind === 'site') {
+            expect(view.registryEntry).toBe('invalid')
+            expect(view.reason).toBe('compose.yml is unparseable')
+        }
+    })
+
+    it('marks the entry unread when hostd could not be reached, rather than reading as valid with nothing on it', async () => {
+        const view = await gatherSite(deps({
+            config: () => ({ ok: false as const, problems: ['HOSTD_API_TOKEN is not set'] }),
+        }), 'asot')
+        if (view.kind === 'site') expect(view.registryEntry).toBe('unread')
+    })
+
+    it('marks the entry unread when the listing itself failed', async () => {
+        const view = await gatherSite(deps({
+            listProjects: async () => ({ ok: false as const, code: 'failed', message: 'hostd did not answer' }),
+        }), 'asot')
+        if (view.kind === 'site') expect(view.registryEntry).toBe('unread')
+    })
+
+    // view.trouble is also set when only the container read failed, which is an entry that was read fine.
+    // registryEntry, not trouble, is what the settings panel must key off.
+    it('still marks the entry valid when only the container read failed', async () => {
+        const view = await gatherSite(deps({
+            getProject: async () => ({ ok: false as const, code: 'agent-unavailable', message: 'the agent is not answering' }),
+        }), 'asot')
+        if (view.kind === 'site') {
+            expect(view.registryEntry).toBe('valid')
+            expect(view.trouble).toBeTruthy()
+        }
+    })
+
     // The listing is already scoped to what this caller may see, so an id that is not in it is not theirs
     // and not there, and both have to read the same from outside.
     it('cannot be told apart from forbidden by what it fails to find', async () => {

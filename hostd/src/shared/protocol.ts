@@ -4,9 +4,10 @@
 
 import { PROJECT_ID, SERVICE_NAME, isRecord } from './formats.ts'
 import {
-    isComposeService, environmentOf, ENVIRONMENTS, CERTIFICATE_MODES, GIT_REF,
+    isComposeService, environmentOf, ENVIRONMENTS, CAPABILITIES, CERTIFICATE_MODES, GIT_REF,
     type Capability, type CertificateMode, type EnvironmentName, type Keep, type ProjectEntry, type Registry,
 } from './registry.ts'
+import { normaliseHostname } from './hostnames.ts'
 import type { Commit } from './fetch-protocol.ts'
 import type { DeployRecord, DeployTrigger } from './deploys.ts'
 import type { EnvFileList } from './envfiles.ts'
@@ -109,7 +110,61 @@ export type BackupStartedReply = { ok: true, started: { run: string, tag: Backup
 export type BackupListReply = { ok: true, snapshots: Snapshot[], runs: BackupRecord[], running: boolean }
 export type BackupRunReply = { ok: true, run: BackupRecord | null, running: boolean }
 
-export type ProjectRequest = StatusRequest | LifecycleRequest | LogsRequest | ProvisionOnProjectRequest | EnvRequest | DeployRequest | BackupRequest
+// The registry's own ceiling on maxDomains. A list longer than this cannot be valid for any project, so
+// it is refused here before the registry is even read; the real per-project cap is checked in the agent,
+// which is what knows which project this is.
+export const MAX_ALIASES = 20
+
+export type DomainsWriteArgs = { action: 'write', environment: EnvironmentName, token: string }
+export type DomainsRemoveArgs = { action: 'remove', environment: EnvironmentName }
+// Carries a token, exactly like write, because api mints and stores one token per hostname and passes
+// the SAME token to preview and to adopt: that is what makes the previewed file byte-accurate against
+// what adopt will actually write, rather than differing from it in every security-relevant line.
+export type DomainsPreviewArgs = { action: 'preview', environment: EnvironmentName, token: string }
+export type DomainsAdoptArgs = { action: 'adopt', environment: EnvironmentName, token: string, disable: string[] }
+// set-aliases is how an alias is added or removed. It carries the whole list the environment should end
+// up with rather than one hostname and a direction, because the agent writes the registry and then
+// rewrites the vhost from it: a list makes the pair idempotent, so a retry after a half-failure lands in
+// the same place instead of adding the alias twice. It carries the token too, because the vhost is
+// rewritten in the same call and the token has to survive that rewrite.
+export type DomainsSetAliasesArgs = { action: 'set-aliases', environment: EnvironmentName, aliases: string[], token: string }
+export type DomainsArgs = DomainsWriteArgs | DomainsRemoveArgs | DomainsPreviewArgs | DomainsAdoptArgs | DomainsSetAliasesArgs
+export type DomainsRequest = { verb: 'domains', project: string, args: DomainsArgs }
+
+// The domains verb's own replies. Defined here rather than in agent/domains.ts, which is what builds
+// them, because everything else this wire speaks lives here too, and shared/ must never import from
+// agent/: agent/domains.ts imports these back from this file instead.
+export type DomainsWritten = { ok: true, written: { hostnames: string[], path: string } }
+export type AdoptPreview = {
+    ok: true
+    preview: {
+        proposed: string
+        // text is the claiming file verbatim. The two directives this parser reads are not the whole of
+        // what a hand-written vhost does, and adoption replaces the file rather than merging with it, so
+        // the operator is shown all of it before they confirm. Spelled out here rather than imported,
+        // because shared/ must never import from agent/.
+        claims: { path: string, text: string, names: string[], unsupported: string | null }[]
+        extraNames: string[]
+        adoptable: boolean
+    }
+}
+
+// Editing the registry entry itself: capabilities, repo and each environment's branch. Absent fields are
+// left alone, and a null repo or branch clears that key.
+export type ConfigureArgs = {
+    capabilities?: Capability[]
+    repo?: string | null
+    branches?: Partial<Record<EnvironmentName, string | null>>
+}
+export type ConfigureRequest = { verb: 'configure', project: string, args: ConfigureArgs }
+
+// A project's own repo, read for the portal's Settings form to offer branches from. No environment: repo
+// is a project-level field and both environments draw from the one list.
+export type BranchesRequest = { verb: 'branches', project: string }
+
+export type ProjectRequest =
+    | StatusRequest | LifecycleRequest | LogsRequest | ProvisionOnProjectRequest | EnvRequest | DeployRequest
+    | BackupRequest | DomainsRequest | ConfigureRequest | BranchesRequest
 export type AgentRequest = HealthRequest | StatusesRequest | ProvisionCreateRequest | ProjectRequest
 export type Verb = AgentRequest['verb']
 
@@ -133,7 +188,12 @@ export type ServiceStatus = {
 }
 // system carries figures only. Nothing in it is a check, and none of its problems reach warnings, so a
 // busy machine never makes hostd unhealthy (see system.ts).
-export type HealthReply = { ok: true, warnings: string[], invalid: Record<string, string>, system: SystemUsage }
+// railAge is how long ago the rail last heard back from the Apache host unit, in milliseconds, carried
+// out of the agent process so api can serve it at /health. An age and never a timestamp: api compares it
+// against a staleness threshold, and a timestamp would be larger than any threshold, so the alarm would
+// fire forever. null means the rail has never once heard back, not that it recently failed. Task 14 uses this to warn when the host unit has gone quiet, which nothing else surfaces before
+// a domain action hangs for 30 seconds and then fails.
+export type HealthReply = { ok: true, warnings: string[], invalid: Record<string, string>, system: SystemUsage, railAge: number | null }
 export type StatusReply = { ok: true, services: ServiceStatus[] }
 // One project's status inside a statuses reply. A project the agent refuses (unregistered, invalid, or a
 // Docker read that failed) carries its refusal here instead of failing the whole batch: the dashboard
@@ -161,10 +221,13 @@ export type DeployHistoryReply = {
     deploys: DeployRecord[]
 }
 export type DeployCommitsReply = { ok: true, commits: Commit[] }
+export type BranchesReply = { ok: true, branches: string[] }
 export type StreamHeader = { ok: true, stream: true }
 export type AgentReply =
     | HealthReply | StatusReply | StatusesReply | LifecycleReply | ProvisionReply | EnvListReply | EnvReadReply
-    | DeployStartedReply | DeployHistoryReply | DeployCommitsReply | BackupStartedReply | BackupListReply | BackupRunReply | Refusal
+    | DeployStartedReply | DeployHistoryReply | DeployCommitsReply | BranchesReply
+    | BackupStartedReply | BackupListReply | BackupRunReply
+    | DomainsWritten | AdoptPreview | Refusal
 export type LogLine = { stream: 'stdout' | 'stderr', ts: string | null, text: string, truncated: boolean }
 
 // Status is visible to anyone who may see the project at all; everything else needs its capability.
@@ -180,6 +243,15 @@ export const VERB_CAPABILITY: Record<Verb, Capability | null> = {
     // where that split lives, because only api knows who is asking.
     deploy: 'deploy',
     backup: 'backups',
+    domains: 'domains',
+    // Null, and this is load bearing. Gating the verb that edits capabilities on a capability would mean
+    // a project with none could never be given any, which is exactly the project that needs this. What
+    // guards it is api's policy, where it is admin-only.
+    configure: null,
+    // Null for the same reason: the list exists to fill the Settings form's branch field, and requiring a
+    // capability would leave it empty on exactly the site an operator is setting deploys up on. Guarded
+    // the same way configure is, by api's policy rather than by a capability.
+    branches: null,
 }
 
 type Parsed = { ok: true, request: AgentRequest } | Refusal
@@ -383,6 +455,128 @@ function parseBackupArgs(raw: unknown): BackupArgs | Refusal {
     return refuse('bad-request', 'backup action must be run, list, get-run, delete or download')
 }
 
+// Hex only, and bounded. This string is interpolated into a <Location> and into a header value in the
+// vhost, so it is the one value from api that reaches Apache's configuration. Nothing that could be read
+// as a path, a quote or a directive is allowed to be a token.
+export const DOMAIN_TOKEN = /^[0-9a-f]{6,64}$/
+// The only directory an adopt may disable a file in. Checked here as well as in the agent, because this
+// is where a value from api first becomes something a root process will act on.
+const SITES_ENABLED = '/etc/apache2/sites-enabled/'
+
+export function parseDomainsArgs(args: unknown): { ok: true, args: DomainsArgs } | Refusal {
+    if (!isRecord(args)) return refuse('bad-request', 'domains args must be an object')
+    const environment = args.environment
+    if (typeof environment !== 'string' || !(ENVIRONMENTS as readonly string[]).includes(environment)) {
+        return refuse('bad-request', `environment must be one of ${ENVIRONMENTS.join(', ')}`)
+    }
+    const name = environment as EnvironmentName
+
+    const token = (): string | null => (typeof args.token === 'string' && DOMAIN_TOKEN.test(args.token) ? args.token : null)
+
+    switch (args.action) {
+        case 'write': {
+            if (!onlyKeys(args, ['action', 'environment', 'token'])) return refuse('bad-request', 'write takes only environment and token')
+            const value = token()
+            if (value === null) return refuse('bad-request', 'token must be lowercase hex')
+            return { ok: true, args: { action: 'write', environment: name, token: value } }
+        }
+        case 'remove':
+            if (!onlyKeys(args, ['action', 'environment'])) return refuse('bad-request', 'remove takes only environment')
+            return { ok: true, args: { action: 'remove', environment: name } }
+        case 'preview': {
+            if (!onlyKeys(args, ['action', 'environment', 'token'])) return refuse('bad-request', 'preview takes only environment and token')
+            const value = token()
+            if (value === null) return refuse('bad-request', 'token must be lowercase hex')
+            return { ok: true, args: { action: 'preview', environment: name, token: value } }
+        }
+        case 'adopt': {
+            if (!onlyKeys(args, ['action', 'environment', 'token', 'disable'])) {
+                return refuse('bad-request', 'adopt takes only environment, token and disable')
+            }
+            const value = token()
+            if (value === null) return refuse('bad-request', 'token must be lowercase hex')
+            const disable = args.disable
+            // An empty list is allowed, and deliberately so: adopt is the only route to a vhost hostd
+            // owns, and an environment nobody has hand-written a file for has nothing to displace. What
+            // adopt means is "hostd owns this environment's vhost from now on, moving aside whatever
+            // was in the way, if anything", not "there must have been something in the way".
+            if (!Array.isArray(disable)) return refuse('bad-request', 'disable must be a list of files to move aside')
+            for (const path of disable) {
+                if (typeof path !== 'string' || !path.startsWith(SITES_ENABLED) || path.includes('/..') || path.includes('/.')) {
+                    return refuse('bad-request', 'every disable entry must be a plain path inside sites-enabled')
+                }
+            }
+            return { ok: true, args: { action: 'adopt', environment: name, token: value, disable: disable as string[] } }
+        }
+        case 'set-aliases': {
+            if (!onlyKeys(args, ['action', 'environment', 'aliases', 'token'])) {
+                return refuse('bad-request', 'set-aliases takes only environment, aliases and token')
+            }
+            const value = token()
+            if (value === null) return refuse('bad-request', 'token must be lowercase hex')
+            const list = args.aliases
+            if (!Array.isArray(list)) return refuse('bad-request', 'aliases must be a list of hostnames')
+            // maxDomains caps at 20 per project, so a longer list cannot be valid for any project and is
+            // refused before the registry is even read. The real per-project cap is checked in the agent,
+            // which is what knows which project this is.
+            if (list.length > MAX_ALIASES) return refuse('bad-request', `at most ${MAX_ALIASES} aliases`)
+            const aliases: string[] = []
+            for (const entry of list) {
+                const host = normaliseHostname(entry)
+                if (host === null) return refuse('bad-request', 'every alias must be a hostname')
+                if (aliases.includes(host)) return refuse('bad-request', `${host} is listed twice`)
+                aliases.push(host)
+            }
+            return { ok: true, args: { action: 'set-aliases', environment: name, aliases, token: value } }
+        }
+        default:
+            return refuse('bad-request', 'domains action must be write, remove, preview, adopt or set-aliases')
+    }
+}
+
+// Shapes and grammar both: api's route reuses this rather than checking the shape a second time, so a
+// body it could not read is refused in exactly one place. See policy.ts and routes.ts in api for how the
+// route bridges this Refusal shape onto its own parsers' { ok: false, message }.
+export function parseConfigureArgs(raw: unknown): ConfigureArgs | Refusal {
+    if (!isRecord(raw) || !onlyKeys(raw, ['capabilities', 'repo', 'branches'])) {
+        return refuse('bad-request', 'configure takes only capabilities, repo and branches')
+    }
+
+    let capabilities: Capability[] | undefined
+    if (raw.capabilities !== undefined) {
+        if (!Array.isArray(raw.capabilities) || !raw.capabilities.every(value => typeof value === 'string' && (CAPABILITIES as readonly string[]).includes(value))) {
+            return refuse('bad-request', 'capabilities must be a list of known capabilities')
+        }
+        capabilities = raw.capabilities as Capability[]
+    }
+
+    let repo: string | null | undefined
+    if (raw.repo !== undefined) {
+        if (raw.repo !== null && typeof raw.repo !== 'string') return refuse('bad-request', 'repo is malformed')
+        repo = raw.repo as string | null
+    }
+
+    let branches: Partial<Record<EnvironmentName, string | null>> | undefined
+    if (raw.branches !== undefined) {
+        if (!isRecord(raw.branches)) return refuse('bad-request', 'branches is malformed')
+        const parsed: Partial<Record<EnvironmentName, string | null>> = {}
+        for (const [name, branch] of Object.entries(raw.branches)) {
+            if (!(ENVIRONMENTS as readonly string[]).includes(name)) return refuse('bad-request', `${name} is not an environment`)
+            if (branch !== null && (typeof branch !== 'string' || !GIT_REF.test(branch))) {
+                return refuse('bad-request', `${name} branch must be null or a plain branch name`)
+            }
+            parsed[name as EnvironmentName] = branch
+        }
+        branches = parsed
+    }
+
+    return {
+        ...(capabilities !== undefined ? { capabilities } : {}),
+        ...(repo !== undefined ? { repo } : {}),
+        ...(branches !== undefined ? { branches } : {}),
+    }
+}
+
 export function parseAgentRequest(line: string): Parsed {
     if (Buffer.byteLength(line) > MAX_REQUEST_BYTES) return refuse('bad-request', 'request is too large')
     let raw: unknown
@@ -468,6 +662,31 @@ export function parseAgentRequest(line: string): Parsed {
             const args = parseBackupArgs(raw.args)
             if ('ok' in args) return args
             return { ok: true, request: { verb: 'backup', project, args } }
+        }
+
+        case 'domains': {
+            if (!onlyKeys(raw, ['verb', 'project', 'args'])) return refuse('bad-request', 'domains takes only project and args')
+            const project = projectOf(raw)
+            if (!project) return refuse('bad-request', 'project is malformed')
+            const parsed = parseDomainsArgs(raw.args)
+            if (!parsed.ok) return parsed
+            return { ok: true, request: { verb: 'domains', project, args: parsed.args } }
+        }
+
+        case 'configure': {
+            if (!onlyKeys(raw, ['verb', 'project', 'args'])) return refuse('bad-request', 'configure takes only project and args')
+            const project = projectOf(raw)
+            if (!project) return refuse('bad-request', 'project is malformed')
+            const args = parseConfigureArgs(raw.args)
+            if ('ok' in args) return args
+            return { ok: true, request: { verb: 'configure', project, args } }
+        }
+
+        case 'branches': {
+            if (!onlyKeys(raw, ['verb', 'project'])) return refuse('bad-request', 'branches takes only project')
+            const project = projectOf(raw)
+            if (!project) return refuse('bad-request', 'project is malformed')
+            return { ok: true, request: { verb: 'branches', project } }
         }
 
         default:

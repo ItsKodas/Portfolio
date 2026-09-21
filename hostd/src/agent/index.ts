@@ -3,7 +3,7 @@
 
 import { createServer, createConnection } from 'node:net'
 import { createWriteStream } from 'node:fs'
-import { chmod, chown, cp, mkdir, rename, rm, stat, statfs, writeFile } from 'node:fs/promises'
+import { chmod, chown, cp, mkdir, readdir, readFile, rename, rm, stat, statfs, unlink, writeFile } from 'node:fs/promises'
 import { randomBytes } from 'node:crypto'
 import { posix } from 'node:path'
 import { RegistryStore, explainRegistryError } from '../shared/registry-store.ts'
@@ -29,6 +29,9 @@ import { BackupStore } from './backup-state.ts'
 import { BackupRunner, type BackupRunnerDeps } from './backup-runner.ts'
 import type { BackupFs } from './backup-run.ts'
 import { handleConnection } from './server.ts'
+import { ApacheRail, type RailFs } from './apache-rail.ts'
+import type { DomainsConfig, DomainsDeps } from './domains.ts'
+import type { VhostFile } from './sites-enabled.ts'
 
 const REGISTRY_FILE = process.env.HOSTD_REGISTRY_FILE ?? '/etc/hostd/registry/projects.yaml'
 const SOCKET_PATH = process.env.HOSTD_AGENT_SOCKET ?? '/run/hostd/agent.sock'
@@ -48,6 +51,22 @@ const MAINTENANCE_DIR = process.env.HOSTD_MAINTENANCE_DIR ?? '/run/hostd/mainten
 // reason the deploy state is: both have to survive a restart.
 const BACKUP_DIR = process.env.HOSTD_BACKUP_DIR ?? '/backups'
 const BACKUP_STATE_FILE = process.env.HOSTD_BACKUP_STATE_FILE ?? '/var/lib/hostd/backups.json'
+// Where the rail leaves its request and reads its result. Bind-mounted from the host, same as the
+// maintenance flags above: the systemd path unit that actually runs Apache commands lives there, not here.
+const APACHE_RAIL_DIR = process.env.HOSTD_APACHE_RAIL_DIR ?? '/etc/hostd/apache'
+// Where a written vhost lives, and where Apache's own sites-enabled already has whatever an operator
+// hand-wrote before hostd existed: adoption reads the latter, never writes it.
+const APACHE_INCLUDE_DIR = process.env.HOSTD_APACHE_INCLUDE_DIR ?? '/etc/apache2/hostd'
+const APACHE_SITES_ENABLED = process.env.HOSTD_APACHE_SITES_ENABLED ?? '/etc/apache2/sites-enabled'
+// The origin certificate every vhost's :443 block names. Not defaulted to a real path: a missing value is
+// caught by the boot gate below rather than silently producing a vhost Apache will refuse.
+const ORIGIN_CERT = process.env.HOSTD_ORIGIN_CERT ?? ''
+const ORIGIN_KEY = process.env.HOSTD_ORIGIN_KEY ?? ''
+const ACME_WEBROOT = process.env.HOSTD_ACME_WEBROOT ?? '/var/www/hostd-acme'
+// The holding page's DocumentRoot, which is NOT MAINTENANCE_DIR above: that one holds the per-environment
+// flag files a deploy writes and clears, this one holds the page Apache actually serves while a flag is
+// up. Crossing them makes the holding page silently never appear during a deploy.
+const MAINTENANCE_ROOT = process.env.HOSTD_MAINTENANCE_ROOT ?? '/var/www/hostd-maintenance'
 const WWW = '/var/www'
 const POLL_MS = 10_000
 // Once a week per repository. Prunes are expensive and take the repository lock, so they are worth
@@ -90,6 +109,20 @@ async function main(): Promise<void> {
     // is set is said here and nowhere else, and the value itself never reaches a log line.
     if ((process.env.RESTIC_PASSWORD ?? '') === '') {
         failures.push('RESTIC_PASSWORD is not set; copy example.env.agent to .env.agent and fill it in, or every backup fails at restic init')
+    }
+    // A vhost that names a certificate file which is not there fails Apache's configtest, so every
+    // domain action would fail at the last step with an error about SSL rather than about configuration.
+    // Better to refuse to start and say which file.
+    for (const [name, path] of [['HOSTD_ORIGIN_CERT', ORIGIN_CERT], ['HOSTD_ORIGIN_KEY', ORIGIN_KEY]]) {
+        if (!path) {
+            failures.push(`${name} is not set, and the domains capability needs it`)
+            continue
+        }
+        try {
+            if (!(await stat(path)).isFile()) failures.push(`${name} (${path}) is not a file`)
+        } catch {
+            failures.push(`${name} (${path}) does not exist`)
+        }
     }
     if (failures.length > 0) fail(failures)
 
@@ -230,6 +263,54 @@ async function main(): Promise<void> {
     }
     const backupRunner = new BackupRunner(backupDeps)
 
+    // The agent's end of the host rail: a file dropped for a systemd path unit on the host to pick up,
+    // since this process has no network namespace of its own to reach Apache through.
+    const railFs: RailFs = {
+        writeFile: (path, text) => writeFile(path, text, 'utf8'),
+        rename: (from, to) => rename(from, to),
+        readFile: path => readFile(path, 'utf8'),
+        unlink: path => unlink(path),
+    }
+    const rail = new ApacheRail(APACHE_RAIL_DIR, railFs)
+    const domainsConfig: DomainsConfig = {
+        includeDir: APACHE_INCLUDE_DIR,
+        sitesEnabled: APACHE_SITES_ENABLED,
+        originCert: ORIGIN_CERT,
+        originKey: ORIGIN_KEY,
+        acmeWebroot: ACME_WEBROOT,
+        // The right way round: the flag files a deploy writes, and the holding page Apache serves while
+        // one is up, are two different directories (see MAINTENANCE_DIR and MAINTENANCE_ROOT above).
+        maintenanceFlagDir: MAINTENANCE_DIR,
+        maintenancePageDir: MAINTENANCE_ROOT,
+    }
+    const domainsDeps: DomainsDeps = {
+        rail,
+        readFile: async path => {
+            try {
+                return await readFile(path, 'utf8')
+            } catch (error) {
+                // A first write has no previous file. That is the ordinary case, not an error.
+                if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null
+                throw error
+            }
+        },
+        listSitesEnabled: async () => {
+            const names = await readdir(APACHE_SITES_ENABLED).catch(() => [])
+            const files: VhostFile[] = []
+            for (const name of names) {
+                if (!name.endsWith('.conf')) continue
+                const path = posix.join(APACHE_SITES_ENABLED, name)
+                files.push({ path, text: await readFile(path, 'utf8') })
+            }
+            return files
+        },
+        // The same writer provisioning already uses, so a domain write and a provisioning write can
+        // never both read the registry text and lose one another's change.
+        writeRegistry: change => writer.write(change),
+        reloadRegistry: async () => { await store.refresh(); return store.current() },
+        config: domainsConfig,
+    }
+
     const warnings = () => [
         ...store.warnings(),
         ...deployStore.warnings(),
@@ -252,6 +333,12 @@ async function main(): Promise<void> {
         // apiece, and a figure the portal draws as live should not be a minute old.
         system: () => readSystemUsage(source, SYSTEM_DISK_PATH),
         recheck: project => guard.check(project),
+        // The same writer instance provision and deploy already use above: configure needs nothing from
+        // the fetcher socket, so unlike those two it is never gated behind fetcherProblem/'unavailable'.
+        writer,
+        // The same reload provision and deploy pass themselves, so a configure write is visible to the
+        // next request rather than waiting on the store's own timer.
+        refreshRegistry: async () => { await store.refresh() },
         provision,
         deploys: { runner: deployRunner, store: deployStore, deps: deployDeps },
         backups: {
@@ -263,6 +350,14 @@ async function main(): Promise<void> {
             newRunId: () => randomBytes(6).toString('hex'),
             backupDisk: async () => (await readSystemUsage(source, BACKUP_DIR)).disk,
         },
+        domains: domainsDeps,
+        // An age, which is what /health compares against its staleness threshold, not the timestamp the
+        // rail records: the two are one line apart here and the whole alarm depends on which is which.
+        railAge: () => rail.ageOfLastSuccess(),
+        // The same client provision and deploy already hold: branches needs nothing else from it, so it
+        // is never gated behind fetcherProblem/'unavailable' any more than configure is behind the
+        // registry writer above.
+        fetcher,
     })
 
     await rm(SOCKET_PATH, { force: true })
