@@ -121,6 +121,16 @@ describe('runBackup', () => {
         assert.deepEqual(retentions, [{ daily: 7, weekly: 4, monthly: 3 }])
     })
 
+    it('clamps a scheduled run\'s retention to the project\'s own registry ceiling, not whatever api sent', async () => {
+        const retentions: unknown[] = []
+        const { deps } = setup()
+        deps.restic.retention = async (_repo, keep) => { retentions.push(keep); return { ok: true } }
+        // The fixture project sets no backups.maxKeep, so it falls back to the registry default of
+        // { daily: 14, weekly: 8, monthly: 12 }; every figure here is asked above that ceiling.
+        await runBackup(project(), { tag: 'scheduled', actor: 'hostd', run: 'run1', keep: { daily: 30, weekly: 20, monthly: 20 } }, deps)
+        assert.deepEqual(retentions, [{ daily: 14, weekly: 8, monthly: 12 }])
+    })
+
     it('marks a generic dump disruptive and puts the service back up', async () => {
         const commands: string[][] = []
         const { deps } = setup({ runner: async (command, args) => { commands.push([command, ...args]); return { exitCode: 0, stdout: '{"name":"acme","services":{"db":{"volumes":[{"type":"bind","source":"/var/www/acme/dbdata"}]}}}', stderr: '', timedOut: false } } })

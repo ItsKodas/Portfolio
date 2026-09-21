@@ -7,7 +7,7 @@
 import { posix } from 'node:path'
 import type { Writable } from 'node:stream'
 
-import { diskProblem, type BackupRecord, type BackupTag } from '../shared/backups.ts'
+import { clampKeep, diskProblem, type BackupRecord, type BackupTag } from '../shared/backups.ts'
 import { describeError } from '../shared/formats.ts'
 import { environmentOf, type Keep, type ProjectEntry } from '../shared/registry.ts'
 import type { DiskUsage } from '../shared/system.ts'
@@ -92,7 +92,10 @@ export async function runBackup(project: ProjectEntry, request: BackupRequest, d
         // Retention is the client's, and applies to scheduled snapshots only. A manual snapshot is kept
         // until the client deletes it.
         if (request.tag === 'scheduled' && request.keep) {
-            const forgotten = await deps.restic.retention(repo, request.keep)
+            // The client's retention, bounded by the operator's registry ceiling. api clamps it too, but the
+            // agent never lets api's word stand in for its own: this is the only place it is applied.
+            const keep = clampKeep(request.keep, project.backups.maxKeep)
+            const forgotten = await deps.restic.retention(repo, keep)
             if (!forgotten.ok) deps.log(`WARN backup ${project.id}: retention failed: ${forgotten.reason}`)
         }
 

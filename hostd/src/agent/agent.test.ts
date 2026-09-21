@@ -13,7 +13,7 @@ import type { Change } from '../shared/registry-write.ts'
 import type { FetchReply, FetchRequest } from '../shared/fetch-protocol.ts'
 import type { AgentRequest, BackupArgs, DeployArgs, LogLine } from '../shared/protocol.ts'
 import type { SystemUsage } from '../shared/system.ts'
-import { emptyBackups, type Snapshot } from '../shared/backups.ts'
+import { emptyBackups, type BackupRecord, type Snapshot } from '../shared/backups.ts'
 import type { BackupRequest } from './backup-run.ts'
 import type { Restic } from './restic.ts'
 
@@ -725,7 +725,7 @@ describe('the deploy verb', () => {
 // Only what the backup verb itself touches: the runner is a recorder, the store answers a fixed history,
 // and restic's snapshots list is what stands in for the project's own repository. dump returns a
 // PassThrough that is never written to: the tests that reach it only check the outcome's kind.
-function backupsWiring(options: { snapshots?: Snapshot[] } = {}) {
+function backupsWiring(options: { snapshots?: Snapshot[], runs?: BackupRecord[], running?: boolean } = {}) {
     const started: Array<{ id: string, request: BackupRequest }> = []
     const restic: Restic = {
         init: async () => ({ ok: true }),
@@ -742,9 +742,9 @@ function backupsWiring(options: { snapshots?: Snapshot[] } = {}) {
                 started.push({ id: project.id, request })
                 return { ok: true as const, started: { run: 'run1', tag: 'manual' as const } }
             },
-            isRunning: () => false,
+            isRunning: () => options.running ?? false,
         },
-        store: { get: () => emptyBackups() },
+        store: { get: () => ({ ...emptyBackups(), runs: options.runs ?? [] }) },
         restic,
         backupDir: '/var/backups',
         newRunId: () => 'run1',
@@ -784,10 +784,45 @@ describe('backup', () => {
         assert.equal(outcome.kind === 'reply' && !outcome.reply.ok && outcome.reply.code, 'bad-request')
     })
 
+    it('refuses to download a snapshot that is not in this project\'s repository', async () => {
+        // The mirror of the delete refusal above: a regression that reordered or special-cased download
+        // ahead of the shared lookup would be caught here, not just inferred from the delete test.
+        const { backups } = backupsWiring({ snapshots: [] })
+        const { agent } = setup({ backups })
+        const outcome = await agent.handle(backup({ action: 'download', snapshot: 'deadbeef' }))
+        assert.equal(outcome.kind === 'reply' && !outcome.reply.ok && outcome.reply.code, 'bad-request')
+    })
+
     it('answers a download with bytes', async () => {
         const { backups } = backupsWiring({ snapshots: [{ id: 'deadbeef', at: '2026-09-21T02:00:00.000Z', tag: 'manual', sizeBytes: null }] })
         const { agent } = setup({ backups })
         const outcome = await agent.handle(backup({ action: 'download', snapshot: 'deadbeef' }))
         assert.equal(outcome.kind, 'bytes')
+    })
+
+    it('answers get-run with the matching record, null for an unknown run, and whether a run is in progress', async () => {
+        const record: BackupRecord = {
+            run: 'run1', tag: 'manual', actor: 'client', startedAt: '2026-09-21T02:00:00.000Z',
+            durationMs: 5000, outcome: 'ok', snapshot: 'deadbeef', reason: null, disruptive: false,
+        }
+        const { backups } = backupsWiring({ runs: [record], running: true })
+        const { agent } = setup({ backups })
+
+        const found = await agent.handle(backup({ action: 'get-run', run: 'run1' }))
+        assert.deepEqual(found, { kind: 'reply', reply: { ok: true, run: record, running: true } })
+
+        const missing = await agent.handle(backup({ action: 'get-run', run: 'deadbeef1' }))
+        assert.deepEqual(missing, { kind: 'reply', reply: { ok: true, run: null, running: true } })
+    })
+
+    it('starts a run and passes the tag, actor, generated run id and keep through to the runner', async () => {
+        const { backups, started } = backupsWiring({ snapshots: [] })
+        const { agent } = setup({ backups })
+        const keep = { daily: 7, weekly: 4, monthly: 3 }
+        const outcome = await agent.handle(backup({ action: 'run', tag: 'manual', keep }))
+        assert.equal(outcome.kind === 'reply' && outcome.reply.ok, true)
+        // The single assertion below is deliberately exhaustive: a wrong actor, a dropped keep or a run id
+        // that never reached newRunId() would each slip past a looser check.
+        assert.deepEqual(started, [{ id: 'acme', request: { tag: 'manual', actor: 'admin', run: 'run1', keep } }])
     })
 })
