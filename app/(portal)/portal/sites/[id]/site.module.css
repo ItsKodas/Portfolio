@@ -178,3 +178,37 @@
     white-space: pre-wrap;
     word-break: break-word;
 }
+
+/* The waiting, under the sentence that says what is being waited for. Indeterminate by nature: hostd
+   answers a lifecycle call when it has taken the job and never reports a fraction of it done, so a bar
+   that filled would be drawing a number nobody has. */
+.bar {
+    display: block;
+    position: relative;
+    overflow: hidden;
+    height: 2px;
+    margin-top: 11px;
+    border-radius: 2px;
+    background: var(--rule-hi);
+}
+
+.barRun {
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    width: 36%;
+    border-radius: 2px;
+    background: var(--lake);
+    animation: run 1.5s ease-in-out infinite;
+}
+
+@keyframes run {
+    from { left: -36%; }
+    to { left: 100%; }
+}
+
+/* The movement is the whole of what this says, so with movement turned off it says it by being there:
+   a dim band across the track rather than a track with nothing in it. */
+@media (prefers-reduced-motion: reduce) {
+    .barRun { animation: none; left: 0; width: 100%; opacity: .4; }
+}
