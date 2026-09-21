@@ -821,7 +821,11 @@ export function createHandler(deps: ApiDeps): (req: IncomingMessage, res: Server
                 const entry = await authorizeProject(route.project, 'backup', target)
                 if (!entry) return
                 const reply = await callAgentAudited(
-                    { verb: 'backup', project: route.project, args: { action: 'run', tag: 'manual' } },
+                    // The actor's kind, never the user: it labels the run in the history the portal draws
+                    // for the client, so their own backups are not all recorded as the operator's. The
+                    // agent makes no decision on it (see BackupRunArgs), and which user it was stays in
+                    // the audit entry this route writes.
+                    { verb: 'backup', project: route.project, args: { action: 'run', tag: 'manual', actor: caller.actor.kind } },
                     route.project, 'backup', target,
                 )
                 if (!reply) return
@@ -859,7 +863,11 @@ export function createHandler(deps: ApiDeps): (req: IncomingMessage, res: Server
 
             case 'backup-download': {
                 const target = route.snapshot
-                if (!(await decide(route.project, 'backup-read', target))) return
+                // `backup`, not `backup-read`, as the design's Endpoints section puts it: downloading is
+                // the one operation that moves an entire database off the dedi, and it is already audited
+                // as a mutation. Both verbs map to the same capability today, so this changes nothing
+                // until a read-only role exists, which is exactly when getting it wrong would bite.
+                if (!(await decide(route.project, 'backup', target))) return
 
                 let stream: Awaited<ReturnType<AgentClient['download']>>
                 try {

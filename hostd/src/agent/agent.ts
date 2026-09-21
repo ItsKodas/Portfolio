@@ -159,8 +159,17 @@ export class Agent {
                 const problem = manualProblem(listed.ok ? listed.snapshots : [], state.runs, Date.now())
                 if (problem) return reply(refuse('bad-request', problem))
             }
+            // The actor comes from api because the agent cannot tell a client's own backup from the
+            // operator's, and the design's central decision for this phase is that owners act on their
+            // own backups: without it every run a client takes is recorded as 'admin' in a history the
+            // portal draws for them. It is a label for that history and NOTHING else. No decision above
+            // or below this line reads it: the capability, the locks, the manual cap, the cooldown and
+            // the disk are all enforced by the agent for itself, whatever api says the actor was, so a
+            // compromised api can mislabel a record and change nothing else. A scheduled run is 'hostd'
+            // regardless of what arrived, since only api's own tick starts one. deploys.ts records the
+            // same limitation on its own actor field.
             return reply(runner.start(project, {
-                tag: args.tag, actor: args.tag === 'scheduled' ? 'hostd' : 'admin',
+                tag: args.tag, actor: args.tag === 'scheduled' ? 'hostd' : (args.actor ?? 'admin'),
                 run: newRunId(), keep: args.keep ?? null,
             }))
         }

@@ -835,9 +835,18 @@ describe('the backup endpoints', () => {
         const response = await request('/projects/acme/backups', { method: 'POST' })
         assert.equal(response.status, 202)
         assert.deepEqual(await response.json(), { ok: true, run: 'a1b2c3d4' })
-        assert.deepEqual(agent.calls, [{ verb: 'backup', project: 'acme', args: { action: 'run', tag: 'manual' } }])
+        // The actor's kind travels with the run, so the client's own backup is recorded as theirs in the
+        // history the portal draws for them rather than as the operator's. Which user it was stays here,
+        // in the audit entry, and never reaches the agent.
+        assert.deepEqual(agent.calls, [{ verb: 'backup', project: 'acme', args: { action: 'run', tag: 'manual', actor: 'client' } }])
         const [entry] = await audit.read({ limit: 1 })
         assert.deepEqual([entry?.verb, entry?.target, entry?.outcome], ['backup', 'run', 'ok'])
+    })
+
+    it('sends admin as the actor when the operator starts the run', async () => {
+        agent.reply = () => ({ ok: true, started: { run: 'a1b2c3d4', tag: 'manual' } })
+        await request('/projects/acme/backups', { method: 'POST', actor: 'admin' })
+        assert.deepEqual(agent.calls, [{ verb: 'backup', project: 'acme', args: { action: 'run', tag: 'manual', actor: 'admin' } }])
     })
 
     it('passes a refused run through with its status, audited as refused', async () => {

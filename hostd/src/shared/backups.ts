@@ -18,6 +18,10 @@ export const MIN_FREE_FRACTION = 0.1
 export const BACKUP_TAGS = ['manual', 'scheduled'] as const
 export type BackupTag = typeof BACKUP_TAGS[number]
 export type BackupOutcome = 'ok' | 'failed'
+// Who asked for a run, as far as a request can say. 'hostd' is not here because nothing may ask to be
+// recorded as hostd: the agent applies that itself to a scheduled run. See BackupRecord.actor below.
+export const BACKUP_ACTORS = ['client', 'admin'] as const
+export type BackupActor = typeof BACKUP_ACTORS[number]
 
 // What restic knows about a snapshot, narrowed to what the portal shows. The id is restic's own short id.
 export type Snapshot = { id: string, at: string, tag: BackupTag, sizeBytes: number | null }
@@ -25,8 +29,10 @@ export type Snapshot = { id: string, at: string, tag: BackupTag, sizeBytes: numb
 export type BackupRecord = {
     run: string
     tag: BackupTag
-    // 'client', 'admin' or 'hostd' for a scheduled run: the agent never learns which user that was, and
-    // the audit log in api is where that is recorded.
+    // 'client' or 'admin' for a run someone asked for, 'hostd' for a scheduled one. Which kind of caller
+    // it was travels with the request, because the agent cannot tell; which user it was never does, and
+    // the audit log in api is where that is recorded. A label for this history and nothing else: no
+    // decision anywhere is made on it.
     actor: string
     startedAt: string
     durationMs: number

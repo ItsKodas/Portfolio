@@ -940,4 +940,25 @@ describe('backup', () => {
         // that never reached newRunId() would each slip past a looser check.
         assert.deepEqual(started, [{ id: 'acme', request: { tag: 'manual', actor: 'admin', run: 'run1', keep } }])
     })
+
+    it('records the actor api sent, and hostd for a scheduled run whatever was sent', async () => {
+        // A client's own manual backup must not be recorded as the operator's: the portal draws this
+        // history for the client. The actor is a label only, so the one thing that is not taken on trust
+        // is 'hostd', which only a scheduled run may ever be.
+        const client = backupsWiring({ snapshots: [] })
+        const { agent } = setup({ backups: client.backups })
+        await agent.handle(backup({ action: 'run', tag: 'manual', actor: 'client' }))
+        assert.equal(client.started[0]?.request.actor, 'client')
+
+        const scheduled = backupsWiring({ snapshots: [] })
+        const scheduledAgent = setup({ backups: scheduled.backups }).agent
+        await scheduledAgent.handle(backup({ action: 'run', tag: 'scheduled', actor: 'client' }))
+        assert.equal(scheduled.started[0]?.request.actor, 'hostd')
+
+        // Nothing sent: the operator, as before, since only api's own routes carry an actor.
+        const bare = backupsWiring({ snapshots: [] })
+        const bareAgent = setup({ backups: bare.backups }).agent
+        await bareAgent.handle(backup({ action: 'run', tag: 'manual' }))
+        assert.equal(bare.started[0]?.request.actor, 'admin')
+    })
 })

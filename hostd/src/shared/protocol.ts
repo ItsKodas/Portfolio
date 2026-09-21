@@ -11,7 +11,7 @@ import type { Commit } from './fetch-protocol.ts'
 import type { DeployRecord, DeployTrigger } from './deploys.ts'
 import type { EnvFileList } from './envfiles.ts'
 import type { SystemUsage } from './system.ts'
-import { BACKUP_TAGS, type BackupRecord, type BackupTag, type Snapshot } from './backups.ts'
+import { BACKUP_ACTORS, BACKUP_TAGS, type BackupActor, type BackupRecord, type BackupTag, type Snapshot } from './backups.ts'
 
 export const MAX_REQUEST_BYTES = 64 * 1024
 export const MAX_TAIL = 5000
@@ -82,7 +82,11 @@ export const SNAPSHOT_ID = /^[0-9a-f]{8,64}$/
 // The agent's own run id, which it generates; validated on the way back in for the same reason.
 export const RUN_ID = /^[0-9a-f]{8,32}$/
 
-export type BackupRunArgs = { action: 'run', tag: BackupTag, keep?: Keep }
+// actor says which kind of caller asked, so a client's own backup is not recorded as the operator's. It
+// is a label for the run history and never a permission: the agent enforces the capability, the locks,
+// the manual cap, the cooldown and the disk for itself whatever arrives here, and a scheduled run is
+// recorded as hostd regardless of what was sent.
+export type BackupRunArgs = { action: 'run', tag: BackupTag, keep?: Keep, actor?: BackupActor }
 export type BackupListArgs = { action: 'list' }
 export type BackupGetRunArgs = { action: 'get-run', run: string }
 export type BackupDeleteArgs = { action: 'delete', snapshot: string }
@@ -335,12 +339,21 @@ function parseDeployArgs(raw: unknown): DeployArgs | Refusal {
 function parseBackupArgs(raw: unknown): BackupArgs | Refusal {
     if (!isRecord(raw)) return refuse('bad-request', 'backup needs args')
     if (raw.action === 'run') {
-        if (!onlyKeys(raw, ['action', 'tag', 'keep'])) return refuse('bad-request', 'run takes only action, tag and keep')
+        if (!onlyKeys(raw, ['action', 'tag', 'keep', 'actor'])) return refuse('bad-request', 'run takes only action, tag, keep and actor')
         if (!(BACKUP_TAGS as readonly unknown[]).includes(raw.tag)) return refuse('bad-request', 'backup run needs a tag of manual or scheduled')
         // keep is the client's retention, which api clamped to the registry ceiling before it ever got
         // here; the agent re-clamps when it applies it.
         if (raw.keep !== undefined && !isKeep(raw.keep)) return refuse('bad-request', 'keep must hold whole daily, weekly and monthly counts')
-        return { action: 'run', tag: raw.tag as BackupTag, ...(raw.keep !== undefined ? { keep: raw.keep as Keep } : {}) }
+        // Checked like every other field, even though nothing is decided on it, so only the two words the
+        // portal draws can ever reach a record the client reads back.
+        if (raw.actor !== undefined && !(BACKUP_ACTORS as readonly unknown[]).includes(raw.actor)) {
+            return refuse('bad-request', `actor must be one of ${BACKUP_ACTORS.join(', ')}`)
+        }
+        return {
+            action: 'run', tag: raw.tag as BackupTag,
+            ...(raw.keep !== undefined ? { keep: raw.keep as Keep } : {}),
+            ...(raw.actor !== undefined ? { actor: raw.actor as BackupActor } : {}),
+        }
     }
     if (raw.action === 'list') {
         if (!onlyKeys(raw, ['action'])) return refuse('bad-request', 'list takes only action')

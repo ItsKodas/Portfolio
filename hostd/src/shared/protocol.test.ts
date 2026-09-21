@@ -234,6 +234,17 @@ describe('the backup verb', () => {
         )
     })
 
+    it('carries an actor of client or admin through, and refuses anything else', () => {
+        assert.deepEqual(
+            parsed({ verb: 'backup', project: 'acme', args: { action: 'run', tag: 'manual', actor: 'client' } }),
+            { ok: true, request: { verb: 'backup', project: 'acme', args: { action: 'run', tag: 'manual', actor: 'client' } } },
+        )
+        // 'hostd' is not a word a request may use: the agent applies it itself to a scheduled run, so a
+        // caller cannot have its own run recorded as one hostd started.
+        assert.equal(refusalOf({ verb: 'backup', project: 'acme', args: { action: 'run', tag: 'manual', actor: 'hostd' } }), 'bad-request: actor must be one of client, admin')
+        assert.equal(refusalOf({ verb: 'backup', project: 'acme', args: { action: 'run', tag: 'manual', actor: 7 } }), 'bad-request: actor must be one of client, admin')
+    })
+
     it('refuses a snapshot id that is not hex', () => {
         for (const snapshot of ['../../etc/passwd', 'deadbeef; rm -rf /', '', 'g'.repeat(8)]) {
             const result = parseAgentRequest(JSON.stringify({ verb: 'backup', project: 'acme', args: { action: 'delete', snapshot } }))
@@ -255,7 +266,7 @@ describe('the backup verb', () => {
         assert.equal(refusalOf({ verb: 'backup', project: 'acme', args: { action: 'run', tag: 'manual', keep: { daily: 7, weekly: 4 } } }), 'bad-request: keep must hold whole daily, weekly and monthly counts')
         assert.equal(refusalOf({ verb: 'backup', project: 'acme', args: { action: 'run', tag: 'manual', keep: { daily: -1, weekly: 4, monthly: 3 } } }), 'bad-request: keep must hold whole daily, weekly and monthly counts')
         assert.equal(refusalOf({ verb: 'backup', project: 'acme', args: { action: 'list', extra: true } }), 'bad-request: list takes only action')
-        assert.equal(refusalOf({ verb: 'backup', project: 'acme', args: { action: 'run', tag: 'manual', extra: true } }), 'bad-request: run takes only action, tag and keep')
+        assert.equal(refusalOf({ verb: 'backup', project: 'acme', args: { action: 'run', tag: 'manual', extra: true } }), 'bad-request: run takes only action, tag, keep and actor')
         assert.equal(refusalOf({ verb: 'backup', project: 'acme', args: { action: 'get-run', run: 'a1b2c3d4', extra: true } }), 'bad-request: get-run takes only action and run')
         assert.equal(refusalOf({ verb: 'backup', project: 'acme', args: { action: 'delete', snapshot: 'deadbeef', extra: true } }), 'bad-request: delete takes only action and snapshot')
         assert.equal(refusalOf({ verb: 'backup', project: 'acme', args: { action: 'download', snapshot: 'deadbeef', extra: true } }), 'bad-request: download takes only action and snapshot')
