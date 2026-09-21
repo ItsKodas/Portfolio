@@ -1326,6 +1326,14 @@ projects:
         // parseRegistry's reserved names, allowed carve-out and uniqueness in front of Apache.
         assert.equal(reload.calls, 1)
         assert.match(outputOf(reply), /rewritten/)
+        // What api has no other way to learn: these names are served from a file hostd wrote a moment
+        // ago, so their records belong in pending with the environment's token rather than in unmanaged,
+        // which is what reconcile alone would leave behind.
+        assert.deepEqual(reply?.ok === true && 'written' in reply ? reply.written : null, [{
+            environment: 'live',
+            hostnames: ['shop.acme.com', 'www.acme.com'],
+            path: '/etc/apache2/hostd/acme-live.conf',
+        }])
     })
 
     // Every site enrolled by hand is in this state: the registry knows its address, but the file serving
@@ -1340,6 +1348,9 @@ projects:
         assert.equal(sent.length, 0)
         assert.equal(written.length, 2)
         assert.doesNotMatch(outputOf(reply), /rewritten/)
+        // An empty list rather than a missing field, and the emptiness is the message: hostd serves no
+        // vhost here, so api leaves the new hostname unmanaged, which is the truth about it.
+        assert.deepEqual(reply?.ok === true && 'written' in reply ? reply.written : null, [])
     })
 
     // The registry has already changed by then, so "it worked" would be a lie in the one direction that

@@ -14,6 +14,9 @@ import { AuditLog } from './audit.ts'
 import { AgentUnavailableError, type AgentClient } from './agent-client.ts'
 import { ScheduleStore, type ScheduleFs } from './schedule.ts'
 import { DomainStore, domainKey, newRecord, type DomainRecord } from './domain-state.ts'
+// The verifier's own scheduling rule, imported here so "the operator can re-check this name" is asserted
+// as the thing it actually is (a record the verifier will pick up) rather than as a state string.
+import { nextCheckAt } from './verifier.ts'
 import { parseRegistry } from '../shared/registry.ts'
 import { DOMAIN_TOKEN, type AgentReply, type AgentRequest, type LogLine } from '../shared/protocol.ts'
 import type { SystemUsage } from '../shared/system.ts'
@@ -1092,6 +1095,118 @@ describe('PUT /projects/:id/settings', () => {
         const response = await request('/projects/acme/settings', { method: 'PUT', body: { repo: 'git@example.com:acme/site.git' } })
         assert.equal(response.status, 404)
         assert.deepEqual(agent.calls, [])
+    })
+})
+
+// Moving an environment's primary address goes through configure, and what the operator sees afterwards
+// depends on something only the agent knows: whether hostd owns the vhost behind that environment. The
+// reply carries it, and these are the two answers it can carry.
+describe('PUT /projects/:id/settings, when the address moved', () => {
+    const VHOST = '/etc/apache2/hostd/acme-live.conf'
+
+    // acme live as the registry has it once the move has landed. api re-reads the registry before any of
+    // the bookkeeping below, so this is what reconcile and the records are decided against.
+    const movedRegistry = parseRegistry(`
+projects:
+  acme:
+    client: cl_1
+    name: Acme
+    services: { web: { role: site } }
+    capabilities: [domains]
+    environments:
+      live: { dir: /var/www/acme, port: 5010, domain: shop.acme.example, aliases: [www.acme.example] }
+`)
+
+    // A handler whose registry moves the way the real one does: the refresh that follows an ok configure
+    // is what brings it level, exactly as RegistryStore.refresh does in production.
+    function movedHandler() {
+        let live = registry
+        return createHandler({
+            token: TOKEN,
+            registry: () => live,
+            refreshRegistry: async () => { live = movedRegistry; return true },
+            agent, audit, schedules, domains, verifier, keepaliveMs: 60_000,
+        })
+    }
+
+    function via(h: ReturnType<typeof createHandler>, path: string, options?: Parameters<typeof request>[1]) {
+        const original = handler
+        handler = h
+        return request(path, options).finally(() => { handler = original })
+    }
+
+    // The environment as it was: hostd serving it, both names proved and carrying the one token its
+    // vhost renders.
+    const seedServed = () => seedDomains([
+        domainRecord({ hostname: 'acme.example', primary: true, state: 'active', token: TOKEN_IN_PLACE }),
+        domainRecord({ hostname: 'www.acme.example', primary: false, state: 'active', token: TOKEN_IN_PLACE }),
+    ])
+
+    const move = (h: ReturnType<typeof createHandler>) =>
+        via(h, '/projects/acme/settings', { method: 'PUT', actor: 'admin', body: { domains: { live: 'shop.acme.example' } } })
+
+    it('leaves the new hostname pending, with the token that vhost already carried', async () => {
+        await seedServed()
+        agent.reply = () => ({
+            ok: true,
+            output: 'done',
+            written: [{ environment: 'live', hostnames: ['shop.acme.example', 'www.acme.example'], path: VHOST }],
+        })
+
+        assert.equal((await move(movedHandler())).status, 200)
+
+        const moved = domains.get(domainKey('acme', 'live', 'shop.acme.example'))
+        // pending and not unmanaged: hostd serves this name from a file it wrote a moment ago, and
+        // unmanaged would say the opposite.
+        assert.equal(moved?.state, 'pending')
+        assert.equal(moved?.primary, true)
+        // The token already in the vhost, never a fresh one: the rewrite kept it, so a new one would be
+        // probing for a value Apache does not serve.
+        assert.equal(moved?.token, TOKEN_IN_PLACE)
+        // And that is what makes "Check again" mean something: the verifier schedules this record.
+        assert.notEqual(nextCheckAt(moved!), null)
+
+        // The poll comes round every ten seconds and must not undo any of it. reconcile only adds what
+        // the registry names and deletes what it does not, so a record that already exists is left
+        // exactly as the route left it. Asserted rather than assumed, because the whole answer above
+        // would quietly revert to unmanaged ten seconds later if it were not true.
+        await domains.reconcile(movedRegistry, '2026-09-22T00:00:00.000Z')
+        const after = domains.get(domainKey('acme', 'live', 'shop.acme.example'))
+        assert.equal(after?.state, 'pending')
+        assert.equal(after?.token, TOKEN_IN_PLACE)
+    })
+
+    it('takes the old address away and leaves the aliases alone', async () => {
+        await seedServed()
+        agent.reply = () => ({
+            ok: true,
+            output: 'done',
+            written: [{ environment: 'live', hostnames: ['shop.acme.example', 'www.acme.example'], path: VHOST }],
+        })
+
+        assert.equal((await move(movedHandler())).status, 200)
+
+        // reconcile's own work, run here rather than waited for: the registry no longer names it.
+        assert.equal(domains.get(domainKey('acme', 'live', 'acme.example')), undefined)
+        // The alias never stopped answering and the token did not change, so it has nothing to prove
+        // again. Putting it back to pending would start a 72 hour clock for a name that is working.
+        assert.equal(domains.get(domainKey('acme', 'live', 'www.acme.example'))?.state, 'active')
+    })
+
+    it('leaves the new hostname unmanaged when hostd serves no vhost for that environment', async () => {
+        await seedServed()
+        // The agent rewrote nothing, because there was no file of its own to rewrite. The site is still
+        // served by a hand-written vhost, and unmanaged is exactly what that means.
+        agent.reply = () => ({ ok: true, output: 'done', written: [] })
+
+        assert.equal((await move(movedHandler())).status, 200)
+
+        const moved = domains.get(domainKey('acme', 'live', 'shop.acme.example'))
+        assert.equal(moved?.state, 'unmanaged')
+        assert.equal(moved?.token, null)
+        // Nothing to re-check, and the tab says so rather than offering a button that does nothing.
+        assert.equal(nextCheckAt(moved!), null)
+        assert.equal(domains.get(domainKey('acme', 'live', 'acme.example')), undefined)
     })
 })
 

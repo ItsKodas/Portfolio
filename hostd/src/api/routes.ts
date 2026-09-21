@@ -34,6 +34,12 @@ export type DomainRoutesStore = {
     forEnvironment(project: string, environment: EnvironmentName): DomainRecord[]
     put(record: DomainRecord): Promise<void>
     remove(key: string): Promise<void>
+    // The boot loop runs this every ten seconds; the configure route runs it once more, straight after a
+    // write that moved a hostname, so the very next request answers about the names the registry holds
+    // now rather than the ones it held before. It adds what the registry names and deletes what it does
+    // not, and never touches a record that already exists, so an extra call is only ever early, never
+    // different.
+    reconcile(registry: Registry, now: string): Promise<void>
 }
 export type DomainVerifier = { checkNow(key: string): Promise<void> }
 
@@ -551,7 +557,16 @@ export function createHandler(deps: ApiDeps): (req: IncomingMessage, res: Server
         // than turned into an error response for a save that in fact succeeded.
         // backup is false for the same reason env is: a backup run or delete changes the repository on
         // the backup disk, never the registry file.
-        const respondAgentAction = async (verb: 'provision' | 'env' | 'deploy' | 'backup' | 'configure', reply: AgentReply, project: string, target: string, refreshRegistry: boolean) => {
+        //
+        // `after` is bookkeeping this process owns that has to happen on the ok path once the registry is
+        // level again, and only configure passes one (see the settings case). Swallowed and logged exactly
+        // like the refresh above and for the same reason: the write it follows has already happened, so
+        // failing the response would tell the caller a save did not happen when it did.
+        const respondAgentAction = async (
+            verb: 'provision' | 'env' | 'deploy' | 'backup' | 'configure',
+            reply: AgentReply, project: string, target: string, refreshRegistry: boolean,
+            after?: () => Promise<void>,
+        ) => {
             if (reply.ok) {
                 await audit(who, { project, verb, target, outcome: 'ok' })
                 if (refreshRegistry) {
@@ -559,6 +574,13 @@ export function createHandler(deps: ApiDeps): (req: IncomingMessage, res: Server
                         await deps.refreshRegistry()
                     } catch (error) {
                         console.error(`[api] ${new Date().toISOString()} registry refresh after ${verb} ${target} failed: ${describeError(error)}`)
+                    }
+                }
+                if (after) {
+                    try {
+                        await after()
+                    } catch (error) {
+                        console.error(`[api] ${new Date().toISOString()} domain state after ${verb} ${target} failed: ${describeError(error)}`)
                     }
                 }
                 return sendJson(res, 200, reply)
@@ -679,6 +701,50 @@ export function createHandler(deps: ApiDeps): (req: IncomingMessage, res: Server
             for (const record of existing.values()) {
                 if (record.token === token) continue
                 await deps.domains.put({ ...record, token })
+            }
+        }
+
+        // What configure did to Apache, written down here rather than left to be guessed at.
+        //
+        // When an environment's address moves onto a vhost hostd already owns, the agent rewrites that
+        // file and says which hostnames it now serves. Without this the moved hostname would only reach
+        // the store through reconcile, as an unmanaged record with no token, which is the store's way of
+        // saying "hostd has written no vhost for this name". It just did. The row would read as a
+        // hand-served site, "Check again" would do nothing (the verifier skips a record with no token),
+        // and the operator's only way out would be the adopt button on a site with nothing to adopt.
+        //
+        // reconcile first, then the records. Either order is correct, because reconcile adds what the
+        // registry names, deletes what it does not, and never touches a record that already exists: run
+        // after, it would leave what this wrote alone; run first, it puts the new hostname in as unmanaged
+        // for the loop below to fill in, and takes the old one away now instead of within ten seconds.
+        // The second is what makes the very next request tell the truth, which is the whole point here.
+        const recordConfigured = async (project: string, reply: AgentReply): Promise<void> => {
+            if (!reply.ok) return
+            // reconcile on every configure that came back ok, not only one that wrote a vhost: an address
+            // that moved on an environment hostd does NOT serve still changes which hostnames should have
+            // records, and it is worth being right about that now rather than within ten seconds. It
+            // writes nothing when nothing changed, which is what a routine capability save is.
+            await deps.domains.reconcile(deps.registry(), new Date(now()).toISOString())
+            if (!('written' in reply) || !Array.isArray(reply.written)) return
+
+            for (const wrote of reply.written) {
+                const records = deps.domains.forEnvironment(project, wrote.environment)
+                // The token the environment already has, and never a fresh one, which is why tokenFor is
+                // not used here: the agent rewrote that file with the token it already carried, so minting
+                // another would leave the store probing for a value Apache does not serve and failing a
+                // site that is working perfectly well. With no token to be found this process cannot prove
+                // anything about these names, and saying so (leaving them unmanaged) beats saying the
+                // wrong thing.
+                const token = records.find(record => record.token !== null)?.token
+                if (token == null) continue
+                // Only the names that were not already being served start their 72 hour countdown again.
+                // The rewrite kept the token, so an alias that was answering a moment ago still is and has
+                // nothing new to prove; making it pending would put "waiting for DNS" on a client's screen
+                // for a name that never stopped working.
+                const states = new Map(records.map(record => [record.hostname, record.state]))
+                const fresh = wrote.hostnames.filter(hostname => (states.get(hostname) ?? 'unmanaged') === 'unmanaged')
+                const entry = deps.registry().projects.get(project)?.environments.get(wrote.environment)
+                await recordWritten(project, wrote.environment, token, fresh, entry?.domain ?? null)
             }
         }
 
@@ -933,7 +999,10 @@ export function createHandler(deps: ApiDeps): (req: IncomingMessage, res: Server
 
                 const reply = await callAgentAudited({ verb: 'configure', project: route.project, args }, route.project, 'configure', target)
                 if (!reply) return
-                return respondAgentAction('configure', reply, route.project, target, true)
+                // After the registry refresh, because reconcile inside this reads the registry to decide
+                // which hostnames should have records at all.
+                return respondAgentAction('configure', reply, route.project, target, true,
+                    () => recordConfigured(route.project, reply))
             }
 
             case 'branches': {
@@ -1201,8 +1270,12 @@ export function createHandler(deps: ApiDeps): (req: IncomingMessage, res: Server
                 )
                 if (!reply) return
                 // The hostnames the agent says it wrote, rather than the registry's own copy: api polls
-                // the registry every ten seconds, and the reply is what the vhost actually carries.
-                const written = 'written' in reply ? reply.written.hostnames : hostnamesOf(environment)
+                // the registry every ten seconds, and the reply is what the vhost actually carries. The
+                // Array.isArray test is what tells this reply's single `written` apart from configure's
+                // list of them, which is the other member of AgentReply carrying a field of that name.
+                const written = 'written' in reply && !Array.isArray(reply.written)
+                    ? reply.written.hostnames
+                    : hostnamesOf(environment)
                 return respondDomains(reply, entry, environment, target, () =>
                     recordWritten(entry.id, environment.name, token, written, environment.domain))
             }

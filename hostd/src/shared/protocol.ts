@@ -226,10 +226,19 @@ export type DeployHistoryReply = {
 }
 export type DeployCommitsReply = { ok: true, commits: Commit[] }
 export type BranchesReply = { ok: true, branches: string[] }
+// What configure put on the host, one entry per environment whose address moved onto a vhost hostd
+// already owned. Deliberately the same hostnames-and-path shape DomainsWritten carries, with the
+// environment added because configure takes several at once: api turns both into the same records, so a
+// second spelling of the same fact would only give the two paths a way to drift.
+//
+// An empty list is the answer that matters most. It means hostd serves no vhost for that environment, so
+// nothing about what Apache is serving has changed and no hostname has anything new to prove.
+export type ConfigureWritten = { environment: EnvironmentName, hostnames: string[], path: string }
+export type ConfigureReply = { ok: true, output: string, written: ConfigureWritten[] }
 export type StreamHeader = { ok: true, stream: true }
 export type AgentReply =
     | HealthReply | StatusReply | StatusesReply | LifecycleReply | ProvisionReply | EnvListReply | EnvReadReply
-    | DeployStartedReply | DeployHistoryReply | DeployCommitsReply | BranchesReply
+    | DeployStartedReply | DeployHistoryReply | DeployCommitsReply | BranchesReply | ConfigureReply
     | BackupStartedReply | BackupListReply | BackupRunReply
     | DomainsWritten | AdoptPreview | Refusal
 export type LogLine = { stream: 'stdout' | 'stderr', ts: string | null, text: string, truncated: boolean }

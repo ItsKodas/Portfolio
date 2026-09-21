@@ -3,8 +3,9 @@
 
 import {
     checkStructure, refuse,
-    type AdoptPreview, type AgentReply, type AgentRequest, type BackupArgs, type ConfigureArgs, type DeployArgs,
-    type DomainsRequest, type DomainsWritten, type EnvArgs, type HealthReply, type LifecycleAction,
+    type AdoptPreview, type AgentReply, type AgentRequest, type BackupArgs, type ConfigureArgs,
+    type ConfigureWritten, type DeployArgs, type DomainsRequest, type DomainsWritten, type EnvArgs,
+    type HealthReply, type LifecycleAction,
     type LifecycleReply, type LogLine, type LogsArgs, type ProjectStatus, type ProvisionAddEnvironmentArgs,
     type ProvisionCreateArgs, type ProvisionRemoveArgs, type Refusal, type ServiceStatus, type StatusesReply,
 } from '../shared/protocol.ts'
@@ -417,11 +418,11 @@ export class Agent {
         // nothing else in hostd knows how to correct. After the registry write, never before, for the
         // reason setAliases writes the registry first.
         const problems: string[] = []
-        let rewrote = 0
+        const rewritten: ConfigureWritten[] = []
         for (const name of replacing) {
             const result = await this.rewriteMovedVhost(project.id, name)
             if (result.problem !== null) problems.push(result.problem)
-            else if (result.rewrote) rewrote += 1
+            else if (result.written !== null) rewritten.push(result.written)
         }
         // The registry has already changed by the time any of this ran, so a failed rewrite is not
         // "nothing happened": the two are now out of step and the operator has to be told which way.
@@ -435,9 +436,15 @@ export class Agent {
         // No log call here: the Agent class never logs its own verbs (lifecycle, env and deploy above do
         // not either). server.ts's handleConnection logs every reply generically, including this one, via
         // its own describe()/log() after handle() returns.
+        //
+        // written carries what Apache is now serving, because api keeps the verification state and has no
+        // other way to learn it: without this, the moved hostname would reach the store through
+        // reconcile, as an unmanaged record with no token, which says hostd serves that name by hand. It
+        // does not, and the operator would be left with a row they cannot even re-check.
         return {
             ok: true,
-            output: rewrote === 0
+            written: rewritten,
+            output: rewritten.length === 0
                 ? `${project.id}'s registry entry was updated`
                 : `${project.id}'s registry entry was updated and its Apache configuration was rewritten`,
         }
@@ -451,10 +458,10 @@ export class Agent {
     // Answers a problem rather than throwing one: the caller has already written the registry, and a rail
     // that never answers (which throws, after 30 seconds) must be reported as a disagreement rather than
     // crash the reply.
-    private async rewriteMovedVhost(id: string, name: EnvironmentName): Promise<{ rewrote: boolean, problem: string | null }> {
+    private async rewriteMovedVhost(id: string, name: EnvironmentName): Promise<{ written: ConfigureWritten | null, problem: string | null }> {
         // Nothing wired the rail up, so hostd has never written a vhost for anything and there is no file
         // of its own to bring level. removeVhosts reads an absent domains dep the same way.
-        if (!this.deps.domains) return { rewrote: false, problem: null }
+        if (!this.deps.domains) return { written: null, problem: null }
         const domains = this.deps.domains
 
         const path = vhostPath(domains.config.includeDir, id, name)
@@ -462,9 +469,9 @@ export class Agent {
         try {
             previous = await domains.readFile(path)
         } catch (error) {
-            return { rewrote: false, problem: `${path} could not be read: ${describeError(error)}.` }
+            return { written: null, problem: `${path} could not be read: ${describeError(error)}.` }
         }
-        if (previous === null) return { rewrote: false, problem: null }
+        if (previous === null) return { written: null, problem: null }
 
         // The token the file already carries, not a new one. Every hostname of the environment proves
         // itself against the one value in this file, so minting another would fail the aliases that were
@@ -473,7 +480,7 @@ export class Agent {
         // is left exactly as it is rather than rewritten with a value invented here.
         const token = tokenFromVhost(previous)
         if (token === null) {
-            return { rewrote: false, problem: `no verification token could be read out of ${path}, so it was left alone.` }
+            return { written: null, problem: `no verification token could be read out of ${path}, so it was left alone.` }
         }
 
         // Re-read rather than trusting the write, exactly as setAliases does: parseRegistry is what
@@ -484,19 +491,23 @@ export class Agent {
         try {
             registry = await domains.reloadRegistry()
         } catch (error) {
-            return { rewrote: false, problem: `the registry could not be re-read: ${describeError(error)}.` }
+            return { written: null, problem: `the registry could not be re-read: ${describeError(error)}.` }
         }
         const entry = registry.projects.get(id)
         const environment = entry === undefined ? null : environmentOf(entry, name)
         if (!entry || !environment) {
-            return { rewrote: false, problem: `${id} ${name} did not survive the change, so its configuration was left alone.` }
+            return { written: null, problem: `${id} ${name} did not survive the change, so its configuration was left alone.` }
         }
 
         try {
             const result = await writeVhost(domains, entry, environment, token)
-            return result.ok ? { rewrote: true, problem: null } : { rewrote: false, problem: `${result.message}` }
+            // The environment is carried alongside the hostnames and the path writeVhost answers with,
+            // because one configure can move several and api records them per environment.
+            return result.ok
+                ? { written: { environment: name, ...result.written }, problem: null }
+                : { written: null, problem: result.message }
         } catch (error) {
-            return { rewrote: false, problem: `${path} could not be rewritten: ${describeError(error)}.` }
+            return { written: null, problem: `${path} could not be rewritten: ${describeError(error)}.` }
         }
     }
 
