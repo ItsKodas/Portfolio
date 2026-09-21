@@ -146,6 +146,13 @@ async function main(): Promise<void> {
             return false
         }
     }
+    const ownerOf = async (path: string): Promise<{ uid: number, gid: number, mode: number }> => {
+        const info = await stat(path)
+        // Masked to the nine permission bits, the same reasoning registry-write.ts's own chmod carries:
+        // stat can report more than that (the regular-file bit, a stray setuid bit), none of which
+        // belongs on a mode this hands straight to chmod.
+        return { uid: info.uid, gid: info.gid, mode: info.mode & 0o777 }
+    }
     const provision: ProvisionDeps = {
         registry: () => store.current(),
         // provision.ts calls this itself, before it reads registry(), so the id, domain and port checks
@@ -159,6 +166,10 @@ async function main(): Promise<void> {
         mkdir: dir => mkdir(dir),
         rmdir: dir => rm(dir, { recursive: true, force: true }),
         exists,
+        // The same two implementations deploy's fs below is given, so a freshly provisioned tree and a
+        // freshly deployed one end up owned and moded by exactly the same rule.
+        owner: ownerOf,
+        own: (dir, like) => ownTree(dir, like),
         resolve: (expectedName, dir, composePath, collidesWith) => resolveNewProject({ dir, composePaths: [composePath] }, expectedName, runner, collidesWith),
         runner,
         log,
@@ -189,13 +200,7 @@ async function main(): Promise<void> {
                 await writeFile(posix.join(MAINTENANCE_DIR, key), '')
             },
             clearMaintenance: key => rm(posix.join(MAINTENANCE_DIR, key), { force: true }),
-            owner: async path => {
-                const info = await stat(path)
-                // Masked to the nine permission bits, the same reasoning registry-write.ts's own chmod
-                // carries: stat can report more than that (the regular-file bit, a stray setuid bit),
-                // none of which belongs on a mode this hands straight to chmod.
-                return { uid: info.uid, gid: info.gid, mode: info.mode & 0o777 }
-            },
+            owner: ownerOf,
             own: (dir, like) => ownTree(dir, like),
         },
         now: Date.now,

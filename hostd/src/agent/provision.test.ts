@@ -87,6 +87,7 @@ type SetupOptions = {
     existsPaths?: string[]
     envTree?: Record<string, string>
     runnerResult?: Partial<RunResult>
+    owners?: Record<string, { uid: number, gid: number, mode: number }>
 }
 
 // Every dependency is a plain recorder, in the style the rest of hostd's tests use: no mocking library,
@@ -102,6 +103,8 @@ function setup(options: SetupOptions = {}) {
     const logs: string[] = []
     const runnerCalls: Array<{ command: string, args: string[] }> = []
     const resolveCalls: Array<{ expectedName: string, dir: string, composePath: string, collidesWith?: string }> = []
+    const ownerPaths: string[] = []
+    const ownCalls: Array<{ dir: string, like: { uid: number, gid: number, mode: number } }> = []
 
     const registryFiles = new Map<string, string>([[REGISTRY_PATH, yaml]])
     const registryFs: RegistryWriteFs = {
@@ -120,6 +123,13 @@ function setup(options: SetupOptions = {}) {
     const writer = new RegistryWriter(REGISTRY_PATH, registryFs)
     const exists = new Set(options.existsPaths ?? [])
     const { fs: envFs, files: envFsFiles } = fakeEnvFs(options.envTree ?? {})
+    // What /var/www and an existing site directory under it are owned by and moded as before any of this
+    // runs: uid 1000, gid 1000, drwxrwxr-x, the same fixture deploy.test.ts uses for a site directory on
+    // the dedi. A test wanting a different owner (an operator who chose something else) overwrites the
+    // map by path.
+    const owners = new Map<string, { uid: number, gid: number, mode: number }>(
+        Object.entries(options.owners ?? { '/var/www': { uid: 1000, gid: 1000, mode: 0o775 }, '/var/www/acme': { uid: 1000, gid: 1000, mode: 0o775 } }),
+    )
 
     const deps: ProvisionDeps = {
         registry: () => registry,
@@ -141,6 +151,14 @@ function setup(options: SetupOptions = {}) {
         mkdir: async dir => { calls.push('mkdir'); mkdirs.push(dir) },
         rmdir: async dir => { calls.push('rmdir'); rmdirs.push(dir) },
         exists: async dir => { calls.push('exists'); return exists.has(dir) },
+        owner: async path => {
+            calls.push('owner')
+            ownerPaths.push(path)
+            const found = owners.get(path)
+            if (!found) throw new Error(`ENOENT: no such file or directory, stat '${path}'`)
+            return found
+        },
+        own: async (dir, like) => { calls.push('own'); ownCalls.push({ dir, like }) },
         resolve: async (expectedName, dir, composePath, collidesWith) => {
             calls.push('resolve')
             resolveCalls.push({ expectedName, dir, composePath, collidesWith })
@@ -153,7 +171,7 @@ function setup(options: SetupOptions = {}) {
         log: message => logs.push(message),
     }
 
-    return { deps, registry, calls, mkdirs, rmdirs, cloneRequests, logs, registryFiles, envFs, envFsFiles, runnerCalls, resolveCalls }
+    return { deps, registry, calls, mkdirs, rmdirs, cloneRequests, logs, registryFiles, envFs, envFsFiles, runnerCalls, resolveCalls, ownerPaths, ownCalls }
 }
 
 const createArgs = (overrides: Partial<ProvisionCreateArgs> = {}): ProvisionCreateArgs => ({
@@ -199,7 +217,48 @@ describe('createProject', () => {
     it('does those in order, so nothing is registered before it exists on disk', async () => {
         const { deps, calls } = setup()
         await createProject(createArgs(), deps)
-        assert.deepEqual(calls, ['exists', 'choosePort', 'mkdir', 'clone', 'resolve', 'write'])
+        assert.deepEqual(calls, ['exists', 'choosePort', 'mkdir', 'clone', 'owner', 'own', 'resolve', 'write'])
+    })
+
+    // The clone runs as root, in the fetcher, and the empty env files the step after it creates are
+    // written as root here, so everything under /var/www/bakery belongs to root until this runs. A brand
+    // new project has no sibling directory of its own to read an owner from, so the pattern is the
+    // parent, /var/www itself: the folder this one is being created inside, which already belongs to
+    // whoever the operator is. Read, never assumed, exactly as deploy.ts reads a site directory.
+    it('gives the cloned tree the ownership and mode /var/www itself has, not root\'s', async () => {
+        const { deps, ownerPaths, ownCalls } = setup()
+        const reply = await createProject(createArgs(), deps)
+        assert.equal(reply.ok, true)
+        assert.deepEqual(ownerPaths, ['/var/www'])
+        assert.deepEqual(ownCalls, [{ dir: '/var/www/bakery', like: { uid: 1000, gid: 1000, mode: 0o775 } }])
+    })
+
+    it('takes whatever ownership and mode /var/www actually has, rather than a fixed uid', async () => {
+        const { deps, ownCalls } = setup({ owners: { '/var/www': { uid: 33, gid: 33, mode: 0o750 } } })
+        const reply = await createProject(createArgs(), deps)
+        assert.equal(reply.ok, true)
+        assert.deepEqual(ownCalls, [{ dir: '/var/www/bakery', like: { uid: 33, gid: 33, mode: 0o750 } }])
+    })
+
+    // Before resolve and before the registry write: a tree nothing but root can read is not a project the
+    // operator can fill an env file in or start by hand, so registering it would record a site that looks
+    // created and is not usable.
+    it('owns the tree before it resolves the compose file or registers anything', async () => {
+        const { deps, calls } = setup()
+        await createProject(createArgs(), deps)
+        assert.ok(calls.includes('own'))
+        assert.ok(calls.indexOf('own') < calls.indexOf('resolve'))
+        assert.ok(calls.indexOf('own') < calls.indexOf('write'))
+    })
+
+    it('removes the folder and writes nothing when the cloned tree cannot be given that ownership', async () => {
+        const { deps, calls, rmdirs } = setup()
+        deps.own = async () => { throw new Error('operation not permitted') }
+        const reply = await createProject(createArgs(), deps)
+        assert.equal(reply.ok, false)
+        assert.match(reply.ok === false ? reply.message : '', /operation not permitted/)
+        assert.deepEqual(rmdirs, ['/var/www/bakery'])
+        assert.equal(calls.includes('write'), false)
     })
 
     // The store only reloads on its own 10 second timer, so a create issued right after another one could
@@ -269,7 +328,7 @@ describe('createProject', () => {
         assert.equal(reply.ok, false)
         assert.equal(reply.ok === false && reply.code, 'failed')
         assert.deepEqual(rmdirs, ['/var/www/bakery'])
-        assert.deepEqual(calls, ['exists', 'choosePort', 'mkdir', 'clone', 'resolve', 'rmdir'])
+        assert.deepEqual(calls, ['exists', 'choosePort', 'mkdir', 'clone', 'owner', 'own', 'resolve', 'rmdir'])
     })
 
     it('refuses an id that is taken, reserved or malformed, before touching the disk', async () => {
@@ -438,6 +497,39 @@ describe('addEnvironment', () => {
         assert.deepEqual(resolveCalls, [{
             expectedName: 'acme-test', dir: '/var/www/acme-test', composePath: '/var/www/acme-test/docker-compose.yml', collidesWith: 'acme',
         }])
+    })
+
+    // Unlike a create, this one does have a sibling to read: the live environment's own folder, which is
+    // the directory the new test tree sits beside and is a copy of. Same rule as deploy.ts's ensureRepo,
+    // which patterns the repository directory on <dir> itself.
+    it('gives the cloned test tree the ownership and mode of the live environment folder, not of /var/www', async () => {
+        const { deps, ownerPaths, ownCalls } = setup()
+        const reply = await addEnvironment(project(), args(), deps)
+        assert.equal(reply.ok, true)
+        assert.deepEqual(ownerPaths, ['/var/www/acme'])
+        assert.deepEqual(ownCalls, [{ dir: '/var/www/acme-test', like: { uid: 1000, gid: 1000, mode: 0o775 } }])
+    })
+
+    // The env files copied out of live are written by this process, as root, so they are part of what
+    // needs owning: owning before the copy would leave every one of them root-only.
+    it('owns the tree after the env files are copied across, and before it registers anything', async () => {
+        const { deps, calls, envFs, envFsFiles } = setup({ envTree: { '/var/www/acme/.env': 'DATABASE_URL=postgres://db/acme\n' } })
+        const reply = await addEnvironment(project(), args(), deps, envFs)
+        assert.equal(reply.ok, true)
+        assert.equal(envFsFiles.has('/var/www/acme-test/.env'), true)
+        assert.ok(calls.includes('own'))
+        assert.ok(calls.indexOf('clone') < calls.indexOf('own'))
+        assert.ok(calls.indexOf('own') < calls.indexOf('write'))
+    })
+
+    it('removes the folder and writes nothing when the cloned tree cannot be given that ownership', async () => {
+        const { deps, calls, rmdirs } = setup()
+        deps.own = async () => { throw new Error('operation not permitted') }
+        const reply = await addEnvironment(project(), args(), deps)
+        assert.equal(reply.ok, false)
+        assert.match(reply.ok === false ? reply.message : '', /operation not permitted/)
+        assert.deepEqual(rmdirs, ['/var/www/acme-test'])
+        assert.equal(calls.includes('write'), false)
     })
 
     it('copies live env files into a new test environment, pointing the site URL and database at test', async () => {
