@@ -5,6 +5,7 @@ import type { IncomingMessage, ServerResponse } from 'node:http'
 import { PROJECT_ID, CLIENT_ID, SERVICE_NAME, isRecord, describeError } from '../shared/formats.ts'
 import {
     LIFECYCLE_ACTIONS, MAX_TAIL, DEFAULT_TAIL, MAX_REQUEST_BYTES, MAX_COMMITS, DEFAULT_COMMITS,
+    parseConfigureArgs,
     type AgentReply, type AgentRequest, type LifecycleAction, type LogsArgs, type ProjectStatus, type RefusalCode,
     type ProvisionCreateArgs, type ProvisionAddEnvironmentArgs,
 } from '../shared/protocol.ts'
@@ -39,6 +40,7 @@ export type Route =
     | { verb: 'create' }
     | { verb: 'delete', project: string }
     | { verb: 'add-environment', project: string }
+    | { verb: 'settings', project: string }
     | { verb: 'remove-environment', project: string, environment: EnvironmentName }
     | { verb: 'env-list', project: string, environment: EnvironmentName }
     | { verb: 'env-file', project: string, environment: EnvironmentName, path: string }
@@ -94,6 +96,7 @@ export function matchRoute(method: string, pathname: string): Route {
         if (segment === 'logs') return only('GET', { verb: 'logs', project })
         if (segment === 'audit') return only('GET', { verb: 'audit', project })
         if (segment === 'environments') return only('POST', { verb: 'add-environment', project })
+        if (segment === 'settings') return only('PUT', { verb: 'settings', project })
         return { verb: 'not-found' }
     }
 
@@ -407,7 +410,7 @@ export function createHandler(deps: ApiDeps): (req: IncomingMessage, res: Server
         // refused. Neither ever puts the agent's reply body itself into the audit entry, only the
         // target and (on a refusal) the code or message, so an env file's text can only ever reach the
         // caller's own response, never the audit trail.
-        const respondAgentAction = async (verb: 'provision' | 'env' | 'deploy', reply: AgentReply, project: string, target: string) => {
+        const respondAgentAction = async (verb: 'provision' | 'env' | 'deploy' | 'configure', reply: AgentReply, project: string, target: string) => {
             if (reply.ok) {
                 await audit(who, { project, verb, target, outcome: 'ok' })
                 return sendJson(res, 200, reply)
@@ -608,6 +611,24 @@ export function createHandler(deps: ApiDeps): (req: IncomingMessage, res: Server
 
             case 'remove-environment':
                 return removeProject(route.project, route.environment)
+
+            case 'settings': {
+                const target = 'settings'
+                const entry = await authorizeProject(route.project, 'configure', target)
+                if (!entry) return
+
+                const body = await readJsonBody(req, MAX_REQUEST_BYTES)
+                if (!body.ok) return refuseRoute(400, 'bad-request', body.message, route.project, 'configure', target)
+                // Shapes and grammar both live in parseConfigureArgs, the agent's own body parser: this
+                // just bridges its Refusal onto the { ok: false, message } shape the other body parsers
+                // in this file use, so writing a second copy of the same checks is not needed here.
+                const args = parseConfigureArgs(body.value)
+                if ('ok' in args) return refuseRoute(400, 'bad-request', args.message, route.project, 'configure', target)
+
+                const reply = await callAgentAudited({ verb: 'configure', project: route.project, args }, route.project, 'configure', target)
+                if (!reply) return
+                return respondAgentAction('configure', reply, route.project, target)
+            }
 
             case 'env-list': {
                 const target = route.environment

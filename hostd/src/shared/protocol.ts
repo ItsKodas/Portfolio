@@ -316,7 +316,10 @@ function parseDeployArgs(raw: unknown): DeployArgs | Refusal {
     return refuse('bad-request', 'action must be deploy, rollback, set-branch, history or commits')
 }
 
-function parseConfigureArgs(raw: unknown): ConfigureArgs | Refusal {
+// Shapes and grammar both: api's route reuses this rather than checking the shape a second time, so a
+// body it could not read is refused in exactly one place. See policy.ts and routes.ts in api for how the
+// route bridges this Refusal shape onto its own parsers' { ok: false, message }.
+export function parseConfigureArgs(raw: unknown): ConfigureArgs | Refusal {
     if (!isRecord(raw) || !onlyKeys(raw, ['capabilities', 'repo', 'branches'])) {
         return refuse('bad-request', 'configure takes only capabilities, repo and branches')
     }

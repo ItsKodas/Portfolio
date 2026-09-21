@@ -139,6 +139,20 @@ projects:
     })
 })
 
+describe('authorize: configure is admin-only', () => {
+    it('refuses a client the configure verb outright, whatever the registry says', () => {
+        const decision = authorize(registry, owner, 'acme', 'configure')
+        assert.equal(decision.ok, false)
+        assert.equal(!decision.ok && decision.status, 404)
+    })
+
+    it('lets the admin configure a project with no capabilities at all', () => {
+        // The point of the null capability: a project with nothing enabled is exactly the one that needs it
+        const decision = authorize(registry, admin, 'quiet', 'configure')
+        assert.equal(decision.ok, true)
+    })
+})
+
 describe('visibleProjects', () => {
     it('shows a client only their own projects and the admin everything', () => {
         assert.deepEqual(visibleProjects(registry, owner).map(p => p.id), ['acme', 'quiet'])

@@ -763,6 +763,51 @@ describe('deploy routes', () => {
     })
 })
 
+describe('PUT /projects/:id/settings', () => {
+    it('routes a settings write, and allows only PUT there', () => {
+        assert.deepEqual(matchRoute('PUT', '/projects/acme/settings'), { verb: 'settings', project: 'acme' })
+        assert.equal(matchRoute('GET', '/projects/acme/settings').verb, 'method-not-allowed')
+    })
+
+    it('refuses a body with a field it does not recognise, without calling the agent', async () => {
+        const response = await request('/projects/acme/settings', { method: 'PUT', actor: 'admin', body: { nonsense: 1 } })
+        assert.equal(response.status, 400)
+        assert.deepEqual(agent.calls, [])
+    })
+
+    it('refuses capabilities that is not a list of strings', async () => {
+        const response = await request('/projects/acme/settings', { method: 'PUT', actor: 'admin', body: { capabilities: 'lifecycle' } })
+        assert.equal(response.status, 400)
+        assert.deepEqual(agent.calls, [])
+    })
+
+    it('refuses a branch keyed by something that is not a known environment, naming it', async () => {
+        const response = await request('/projects/acme/settings', { method: 'PUT', actor: 'admin', body: { branches: { staging: 'main' } } })
+        assert.equal(response.status, 400)
+        const body = await response.json() as { message: string }
+        assert.match(body.message, /staging/)
+        assert.deepEqual(agent.calls, [])
+    })
+
+    it('carries capabilities, repo and branches through to the agent, with repo: null included rather than dropped', async () => {
+        agent.reply = () => ({ ok: true, output: 'configured' })
+        const settingsBody = { capabilities: ['lifecycle', 'logs'], repo: null, branches: { live: 'main' } }
+        const response = await request('/projects/acme/settings', { method: 'PUT', actor: 'admin', body: settingsBody })
+        assert.equal(response.status, 200)
+        assert.deepEqual(agent.calls, [{ verb: 'configure', project: 'acme', args: settingsBody }])
+        const [entry] = await audit.read({ limit: 1 })
+        assert.deepEqual([entry?.verb, entry?.target, entry?.outcome], ['configure', 'settings', 'ok'])
+    })
+
+    // configure is in ADMIN_ONLY, so a client gets the same 404 every other admin-only route gives,
+    // not a 403: that is what makes a client's attempt indistinguishable from a project that is not theirs.
+    it('refuses a client with a 404, and never calls the agent', async () => {
+        const response = await request('/projects/acme/settings', { method: 'PUT', body: { repo: 'git@example.com:acme/site.git' } })
+        assert.equal(response.status, 404)
+        assert.deepEqual(agent.calls, [])
+    })
+})
+
 describe('provisioning and env routes refuse a client actor', () => {
     it('refuses every new route for a client actor, and audits the refusal', async () => {
         const attempts = [

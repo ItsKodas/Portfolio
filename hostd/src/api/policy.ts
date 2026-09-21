@@ -7,7 +7,7 @@ import type { Actor } from './auth.ts'
 // 'deploy' is deploying, rolling back and switching branch, which only the admin may do. 'deploy-read'
 // is the deploy history and the commit list, which a client may read for their own site: both need the
 // project's deploy capability, and the split lives here because only api knows who is asking.
-export type PolicyVerb = 'status' | 'lifecycle' | 'logs' | 'audit' | 'provision' | 'env' | 'deploy' | 'deploy-read'
+export type PolicyVerb = 'status' | 'lifecycle' | 'logs' | 'audit' | 'provision' | 'env' | 'deploy' | 'deploy-read' | 'configure'
 
 // Deliberately its own table rather than protocol.ts's VERB_CAPABILITY: that one is keyed by the agent's
 // verbs, and this one has two entries for the same verb, which is what the split above needs.
@@ -20,10 +20,15 @@ const POLICY_CAPABILITY: Record<PolicyVerb, Capability | null> = {
     env: 'env',
     deploy: 'deploy',
     'deploy-read': 'deploy',
+    // Null on purpose: gating the verb that edits capabilities on a capability would mean a project with
+    // none could never be given any, which is exactly the project that most needs it. What guards
+    // configure instead is ADMIN_ONLY below, not a capability. See VERB_CAPABILITY in protocol.ts, which
+    // is null here for the same reason, on the agent's own side of the boundary.
+    configure: null,
 }
 
 // What only the admin may ever do, whatever the registry says and whoever owns the project.
-const ADMIN_ONLY: PolicyVerb[] = ['provision', 'env', 'deploy']
+const ADMIN_ONLY: PolicyVerb[] = ['provision', 'env', 'deploy', 'configure']
 export type Decision =
     | { ok: true, project: ProjectEntry }
     | { ok: false, status: 403 | 404 | 409, code: 'not-found' | 'capability-disabled' | 'invalid-project', message: string }
