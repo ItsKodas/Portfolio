@@ -934,6 +934,39 @@ describe('POST /projects/:id/:env/domains', () => {
         assert.deepEqual(agent.calls, [])
     })
 
+    // The one thing that ever writes DomainRecord.vhost. Without it the design's rollback alarm, the
+    // operator's "what Apache said" pane and needsYou's vhost branch are all unreachable code.
+    it('records what Apache said about a write it refused, which is what raises the rollback alarm', async () => {
+        await seedDomains([
+            domainRecord({ token: TOKEN_IN_PLACE, state: 'active' }),
+            domainRecord({ hostname: 'www.acme.example', primary: false, token: TOKEN_IN_PLACE, state: 'active' }),
+        ])
+        const health = agent.reply
+        agent.reply = sent => sent.verb === 'domains'
+            ? { ok: false, code: 'failed', message: 'Apache refused the new configuration for acme live', output: 'AH00526: Syntax error on line 9' }
+            : health(sent)
+
+        const response = await request('/projects/acme/live/domains', { method: 'POST', actor: 'admin', body: { hostname: 'shop.acme.example' } })
+        assert.equal(response.status, 502)
+        for (const record of domains.forEnvironment('acme', 'live')) {
+            assert.deepEqual(record.vhost, { ok: false, output: 'AH00526: Syntax error on line 9' }, record.hostname)
+        }
+
+        // Once for the environment, not once per hostname of it.
+        const body = await (await request('/health', { actor: 'admin' })).json() as { warnings: string[] }
+        assert.deepEqual(body.warnings.filter(warning => warning.includes('rolled back')), ['the vhost for acme live was rolled back'])
+    })
+
+    it('clears it again once a write succeeds, so the alarm does not outlive the rollback', async () => {
+        await seedDomains([domainRecord({ token: TOKEN_IN_PLACE, vhost: { ok: false, output: 'AH00526' } })])
+        const health = agent.reply
+        agent.reply = sent => sent.verb === 'domains' ? WRITTEN : health(sent)
+        await request('/projects/acme/live/domains', { method: 'POST', actor: 'admin', body: { hostname: 'shop.acme.example' } })
+        assert.equal(domains.get(domainKey('acme', 'live', 'acme.example'))?.vhost, null)
+        const body = await (await request('/health', { actor: 'admin' })).json() as { warnings: string[] }
+        assert.deepEqual(body.warnings.filter(warning => warning.includes('rolled back')), [])
+    })
+
     it('writes no record when the agent refuses, and audits the failure', async () => {
         agent.reply = () => ({ ok: false, code: 'failed', message: 'Apache refused the new configuration for acme live' })
         const response = await request('/projects/acme/live/domains', { method: 'POST', actor: 'admin', body: { hostname: 'shop.acme.example' } })
@@ -1021,6 +1054,26 @@ describe('GET|POST /projects/:id/:env/adopt', () => {
         assert.deepEqual(agent.calls, [{
             verb: 'domains', project: 'acme', args: { action: 'preview', environment: 'live', token: TOKEN_IN_PLACE },
         }])
+    })
+
+    // The case that matters: all five live sites begin with no token at all, so this is the first
+    // adoption of each of them. A token minted for the preview and thrown away meant the file the
+    // operator read and confirmed differed from the file that was written, in every line carrying it.
+    it('persists a token it mints, so a first preview and the adopt that follows show one file', async () => {
+        await seedDomains([domainRecord(), domainRecord({ hostname: 'www.acme.example', primary: false })])
+        const tokenOf = (sent: AgentRequest | undefined): string =>
+            sent?.verb === 'domains' && 'token' in sent.args ? sent.args.token : ''
+
+        agent.reply = () => preview()
+        await request('/projects/acme/live/adopt', { actor: 'admin' })
+        const previewed = tokenOf(agent.calls[0])
+        assert.match(previewed, DOMAIN_TOKEN)
+        // Written to every record of the environment on the way out, which is what the second call reads.
+        for (const record of domains.forEnvironment('acme', 'live')) assert.equal(record.token, previewed, record.hostname)
+
+        await request('/projects/acme/live/adopt', { method: 'POST', actor: 'admin', body: { confirm: 'Acme' } })
+        assert.equal(tokenOf(agent.calls[1]), previewed, 'the adopt previewed a different file from the one it wrote')
+        assert.equal(tokenOf(agent.calls[2]), previewed)
     })
 
     it('refuses to adopt without the project\'s name typed back, and never its id', async () => {

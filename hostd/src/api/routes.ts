@@ -566,8 +566,20 @@ export function createHandler(deps: ApiDeps): (req: IncomingMessage, res: Server
         // a DNS fault and gets debugged in the wrong place. It is still stored per record, so the
         // verifier can read a token without a join. An existing one is reused rather than replaced:
         // rewriting the vhost with a fresh token would invalidate a verification already in flight.
-        const tokenFor = (project: string, environment: EnvironmentName): string =>
-            deps.domains.forEnvironment(project, environment).find(record => record.token !== null)?.token ?? newToken()
+        //
+        // A newly minted one is written to the store before it is returned, and that is what makes the
+        // adopt preview byte-accurate on a FIRST adoption, which is every one of the five live sites.
+        // Minting without persisting meant GET /adopt rendered the file with one token and POST /adopt
+        // wrote it with another, so the file the operator read and confirmed differed from the file that
+        // was put down, in all four of its security-relevant lines.
+        const tokenFor = async (project: string, environment: EnvironmentName): Promise<string> => {
+            const records = deps.domains.forEnvironment(project, environment)
+            const existing = records.find(record => record.token !== null)?.token
+            if (existing != null) return existing
+            const token = newToken()
+            for (const record of records) await deps.domains.put({ ...record, token })
+            return token
+        }
 
         // What a written vhost does to the records behind it. The hostnames named here start their 72
         // hour countdown; the rest only pick up the token, because rewriting the vhost proves nothing new
@@ -611,6 +623,19 @@ export function createHandler(deps: ApiDeps): (req: IncomingMessage, res: Server
                     : caller.actor.kind === 'admin' ? record.vhost : { ok: record.vhost.ok },
             }))
 
+        // What the last vhost write did to this environment, stamped on every record of it. The agent
+        // carries Apache's own words back on a refusal and then puts the previous file in place itself,
+        // so this is the only record anything keeps of a write that was rolled back: the /health alarm
+        // the design names, the operator's "what Apache said" pane, and needsYou's second branch all
+        // read it, and all three were unreachable while nothing ever wrote it. Cleared on the next write
+        // that succeeds, because the rollback is then over and the alarm should go with it.
+        const recordVhost = async (project: string, environment: EnvironmentName, vhost: DomainRecord['vhost']): Promise<void> => {
+            for (const record of deps.domains.forEnvironment(project, environment)) {
+                if (record.vhost === null && vhost === null) continue
+                await deps.domains.put({ ...record, vhost })
+            }
+        }
+
         const refuseDomains = async (reply: Refusal, project: string, target: string) => {
             const outcome: AuditOutcome = reply.code === 'failed' ? 'failed' : 'refused'
             await audit(who, { project, verb: 'domains', target, outcome, reason: outcome === 'failed' ? reply.message : reply.code })
@@ -624,8 +649,15 @@ export function createHandler(deps: ApiDeps): (req: IncomingMessage, res: Server
         const respondDomains = async (
             reply: AgentReply, entry: ProjectEntry, environment: EnvironmentEntry, target: string, record: () => Promise<void>,
         ) => {
-            if (!reply.ok) return refuseDomains(reply, entry.id, target)
+            if (!reply.ok) {
+                // Only 'failed' means the host was reached and Apache refused what it was given; every
+                // other code is a refusal before anything was written, and saying a vhost was rolled
+                // back about one of those would raise an alarm about a file nothing touched.
+                if (reply.code === 'failed') await recordVhost(entry.id, environment.name, { ok: false, output: reply.output ?? '' })
+                return refuseDomains(reply, entry.id, target)
+            }
             await record()
+            await recordVhost(entry.id, environment.name, null)
             await audit(who, { project: entry.id, verb: 'domains', target, outcome: 'ok' })
             return sendJson(res, 200, { ok: true, domains: domainsFor(entry, environment) })
         }
@@ -709,10 +741,16 @@ export function createHandler(deps: ApiDeps): (req: IncomingMessage, res: Server
                 // Everything the agent could not see. Domain state lives in api, so these four warnings
                 // can only be added here, on top of the agent's own.
                 const warnings = [...reply.warnings]
+                // A rolled-back vhost is recorded on every record of the environment, because the file
+                // is the environment's rather than any one hostname's. Collected and said once, for the
+                // same reason the Let's Encrypt line below is: a site with three aliases would
+                // otherwise repeat one sentence about one file three times.
+                const rolledBack = new Set<string>()
                 for (const record of deps.domains.all()) {
                     if (record.state === 'broken') warnings.push(`${record.hostname} stopped answering (${record.project} ${record.environment})`)
-                    if (record.vhost && !record.vhost.ok) warnings.push(`the vhost for ${record.project} ${record.environment} was rolled back`)
+                    if (record.vhost && !record.vhost.ok) rolledBack.add(`${record.project} ${record.environment}`)
                 }
+                for (const environment of rolledBack) warnings.push(`the vhost for ${environment} was rolled back`)
                 // An environment set to letsencrypt is serving the Origin certificate until 4b lands. Said once,
                 // naming the environments, rather than once per hostname.
                 const waiting = environmentsAwaitingCertbot(deps.registry())
@@ -911,7 +949,7 @@ export function createHandler(deps: ApiDeps): (req: IncomingMessage, res: Server
                 // there is nothing else to do here. The whole resulting list goes over rather than the
                 // one new name, which is what makes a retry after a half-failure land in the same place
                 // instead of adding the alias twice.
-                const token = tokenFor(entry.id, environment.name)
+                const token = await tokenFor(entry.id, environment.name)
                 const reply = await callAgentAudited(
                     {
                         verb: 'domains', project: entry.id,
@@ -945,7 +983,7 @@ export function createHandler(deps: ApiDeps): (req: IncomingMessage, res: Server
                     )
                 }
 
-                const token = tokenFor(entry.id, environment.name)
+                const token = await tokenFor(entry.id, environment.name)
                 const reply = await callAgentAudited(
                     {
                         verb: 'domains', project: entry.id,
@@ -988,7 +1026,7 @@ export function createHandler(deps: ApiDeps): (req: IncomingMessage, res: Server
                 // puts down rather than one differing from it in every security-relevant line.
                 const reply = await callAgent({
                     verb: 'domains', project: entry.id,
-                    args: { action: 'preview', environment: environment.name, token: tokenFor(entry.id, environment.name) },
+                    args: { action: 'preview', environment: environment.name, token: await tokenFor(entry.id, environment.name) },
                 })
                 if (!reply) return
                 if (!reply.ok) return refuseRoute(AGENT_STATUS[reply.code], reply.code, reply.message, entry.id, 'domains', route.environment)
@@ -1011,7 +1049,7 @@ export function createHandler(deps: ApiDeps): (req: IncomingMessage, res: Server
                     return refuseRoute(400, 'bad-request', 'confirm must match the project name to adopt this site', entry.id, 'domains', target)
                 }
 
-                const token = tokenFor(entry.id, environment.name)
+                const token = await tokenFor(entry.id, environment.name)
                 // adopt takes the files to disable rather than finding them itself, so the preview is
                 // what chooses them, with the token the adopt will carry. The agent re-establishes every
                 // claim against sites-enabled as it is before it moves anything, so a preview that has
