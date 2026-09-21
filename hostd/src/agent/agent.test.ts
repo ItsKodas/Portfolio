@@ -77,6 +77,7 @@ function setup(options: SetupOptions = {}) {
     const { runResult, guardInvalid, containers, allContainers, ...overrides } = options
     const runs: Array<{ command: string, args: string[] }> = []
     let listedAll = 0
+    let refreshes = 0
     const rechecked: string[] = []
     const logStreams: PassThrough[] = []
     const runner: Runner = async (command, args) => {
@@ -111,9 +112,10 @@ function setup(options: SetupOptions = {}) {
         // A harmless default so every test that never touches configure need not supply one, exactly like
         // recheck above; the configure tests below override it to record or refuse.
         writer: { write: async () => ({ ok: true as const }) },
+        refreshRegistry: async () => { refreshes += 1 },
         ...overrides,
     }
-    return { agent: new Agent(deps), runs, rechecked, logStreams, listedAll: () => listedAll }
+    return { agent: new Agent(deps), runs, rechecked, logStreams, listedAll: () => listedAll, refreshes: () => refreshes }
 }
 
 function replyOf(outcome: Outcome) {
@@ -736,11 +738,28 @@ describe('configure', () => {
         }])
     })
 
-    it('passes the writer\'s own refusal back rather than a general one', async () => {
+    // The store reloads on its own ten second timer otherwise, so the very next request would answer from
+    // the entry this write replaced: a capability just granted would still read as absent.
+    it('reloads the registry once the write lands', async () => {
+        const { agent, refreshes } = setup()
+        assert.equal(replyOf(await agent.handle(configure({ capabilities: ['lifecycle'] })))?.ok, true)
+        assert.equal(refreshes(), 1)
+    })
+
+    it('does not reload the registry when the write was refused', async () => {
+        const { agent, refreshes } = setup({ writer: { write: async () => ({ ok: false as const, problem: 'repo is malformed' }) } })
+        assert.equal(replyOf(await agent.handle(configure({ repo: 'not a url' })))?.ok, false)
+        assert.equal(refreshes(), 0)
+    })
+
+    // bad-request, not failed: the writer's problem is the registry validator's words about what the
+    // operator typed, which is the same class of refusal set-branch answers bad-request for. failed
+    // reaches the portal as a 502 and is audited as hostd having failed.
+    it('passes the writer\'s own refusal back as a bad request rather than a failure', async () => {
         const { agent } = setup({ writer: { write: async () => ({ ok: false as const, problem: 'acme has no test environment' }) } })
         const reply = replyOf(await agent.handle(configure({ branches: { test: 'x' } })))
         assert.equal(reply?.ok, false)
-        assert.equal(reply?.ok === false && reply.code, 'failed')
+        assert.equal(reply?.ok === false && reply.code, 'bad-request')
         assert.match(reply?.ok === false ? reply.message : '', /no test environment/)
     })
 

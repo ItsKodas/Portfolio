@@ -42,6 +42,10 @@ export type AgentDeps = {
     // wires this agent up always has a registry path to write to. Pick<..., 'write'>, not the class itself,
     // so a test can stand in for it with a plain object instead of a real RegistryWriter.
     writer: Pick<RegistryWriter, 'write'>
+    // Reloads the registry from disk after a write, so the next request answers from the entry that was
+    // just written rather than one up to a poll old. Every other writer-using path does this already
+    // (set-branch below, both provisioning paths in provision.ts), through deps of its own.
+    refreshRegistry: () => Promise<void>
     followMaxMs?: number
     // Absent until the production entrypoint wires a fetcher socket and a registry path to write:
     // provision and env then refuse unavailable instead of crashing.
@@ -177,8 +181,15 @@ export class Agent {
             ...(args.repo === undefined ? {} : { repo: args.repo }),
             ...(args.branches === undefined ? {} : { branches: args.branches }),
         })
-        // The writer's problem is the registry validator's own words, which is what the operator needs.
-        if (!written.ok) return refuse('failed', written.problem)
+        // The writer's problem is the registry validator's own words about what the operator asked for, so
+        // it is bad-request rather than failed, exactly as the set-branch case above answers the same
+        // refusal from the same writer. failed would reach the portal as a 502 and be audited as hostd
+        // having failed, for a repo URL the validator simply would not take.
+        if (!written.ok) return refuse('bad-request', written.problem)
+        // The registry store only reloads on its own ten second timer, so without this the next request
+        // answers from the entry this write has already replaced: the capability just granted would still
+        // look absent. set-branch and both provisioning paths refresh for the same reason.
+        await this.deps.refreshRegistry()
         // No log call here: the Agent class never logs its own verbs (lifecycle, env and deploy above do
         // not either). server.ts's handleConnection logs every reply generically, including this one, via
         // its own describe()/log() after handle() returns.

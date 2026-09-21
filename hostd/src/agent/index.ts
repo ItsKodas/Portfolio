@@ -192,6 +192,9 @@ async function main(): Promise<void> {
         // The same writer instance provision and deploy already use above: configure needs nothing from
         // the fetcher socket, so unlike those two it is never gated behind fetcherProblem/'unavailable'.
         writer,
+        // The same reload provision and deploy pass themselves, so a configure write is visible to the
+        // next request rather than waiting on the store's own timer.
+        refreshRegistry: async () => { await store.refresh() },
         provision,
         deploys: { runner: deployRunner, store: deployStore, deps: deployDeps },
     })
