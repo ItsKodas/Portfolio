@@ -147,4 +147,34 @@ describe('the site page', () => {
 
         expect(screen.getByText('not available')).toBeInTheDocument()
     })
+
+    // The listing here carries no status at all, which is what a list fetched without status=1 answers,
+    // and what an older hostd answers whatever it is asked. The page asked about this one project
+    // separately and was told it is running, so its own row in the list says so.
+    it('draws the open site from the reading it took of that site', async () => {
+        render(await page())
+
+        expect(screen.getByRole('link', { name: /ASOT/ })).toHaveTextContent('up')
+    })
+
+    it('says of the other sites that it could not read them, rather than calling them stopped', async () => {
+        listProjects.mockResolvedValue({ ok: true, value: [
+            { id: 'asot', name: 'ASOT', valid: true, capabilities: [] },
+            { id: 'pmpc-group', name: 'PMPC Group', valid: true, capabilities: [] },
+        ] })
+
+        render(await page())
+
+        expect(screen.getByRole('link', { name: /PMPC Group/ })).toHaveTextContent('unknown')
+    })
+
+    it('counts no services and no restarts when the containers could not be read', async () => {
+        getProject.mockResolvedValue({ ok: false, code: 'failed', message: 'the Docker API could not be read' })
+
+        render(await page())
+
+        // state, and then the two figures it has no reading for
+        expect(screen.getByRole('link', { name: /ASOT/ })).toHaveTextContent('unknown')
+        expect(screen.getAllByText('not available')).toHaveLength(2)
+    })
 })

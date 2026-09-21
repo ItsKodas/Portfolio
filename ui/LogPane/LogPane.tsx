@@ -14,9 +14,11 @@ type Props = {
     lines: Line[]
     label: string
     following?: boolean
+    // Take the height left over rather than the fixed box, for a page that has given this pane the room
+    fill?: boolean
 }
 
-export function LogPane({ lines, label, following }: Props) {
+export function LogPane({ lines, label, following, fill }: Props) {
     const ref = useRef<HTMLDivElement>(null)
 
     useEffect(() => {
@@ -28,7 +30,7 @@ export function LogPane({ lines, label, following }: Props) {
     return (
         <div
             ref={ref}
-            className={styles.pane}
+            className={[styles.pane, fill && styles.fill].filter(Boolean).join(' ')}
             role="region"
             aria-label={label}
             // A region that scrolls must be focusable, or a keyboard cannot scroll it

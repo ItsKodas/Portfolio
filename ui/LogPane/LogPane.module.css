@@ -9,6 +9,17 @@
     font-size: 11.5px;
     line-height: 1.75;
 }
+
+/* A pane that takes the height it is handed. Where nothing above it has a definite height (a phone, or a
+   page that scrolls as a document) a flex column has no free space to share out, the basis stands, and
+   this is the same box as the one above. Where the frame does fix the height, ui/Shell's fill, it grows
+   into what is left and scrolls inside itself rather than growing the page. */
+.fill {
+    height: auto;
+    flex: 1 1 290px;
+    min-height: 180px;
+}
+
 .pane:focus-visible { outline: 2px solid var(--lake); outline-offset: 2px; }
 
 .line { display: flex; gap: 13px; }

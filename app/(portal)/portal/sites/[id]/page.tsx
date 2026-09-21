@@ -3,7 +3,7 @@ import { notFound, redirect } from 'next/navigation'
 
 import { getDb } from '@/server/db'
 import { readHostd } from '@/server/hostd/config'
-import { assertOwned, getProject, listProjects, type Project, type ServiceStatus } from '@/server/hostd/projects'
+import { assertOwned, getProject, listProjects, type ServiceStatus } from '@/server/hostd/projects'
 import { callerFromSession } from '@/server/hostd/session'
 import { Callout } from '@/ui/Callout/Callout'
 import { Row } from '@/ui/Row/Row'
@@ -15,6 +15,7 @@ import { Lifecycle } from './lifecycle'
 import { SiteLogs } from './logs'
 import { gatherSite } from './site'
 import { SiteTabs } from './tabs'
+import { stateOf, stateOfServices, type SiteState } from '../../siteState'
 import nav from '../../portal.module.css'
 import styles from './site.module.css'
 
@@ -62,24 +63,6 @@ type Tab = { id: TabId, label: string, disabled?: boolean }
 function one(value: string | string[] | undefined): string | null {
     if (Array.isArray(value)) return value[0] ?? null
     return value ?? null
-}
-
-// The dashboard reads the same states from the same field, and this is its rule: one project's worst
-// service decides how the whole site reads. Duplicated rather than shared because the dashboard's copy
-// lives inside its page component; the two should meet in one place on the pass that converts the moved
-// admin pages.
-function stateOf(services: ServiceStatus[] | null): 'up' | 'down' | 'stopped' {
-    if (!services || !services.length) return 'stopped'
-    if (services.some(service => service.state === 'exited' || service.state === 'dead')) return 'down'
-    if (services.some(service => service.state !== 'running')) return 'stopped'
-    return 'up'
-}
-
-// What a list carries: hostd answers /projects?status=1 with a status object per project and puts its
-// refusal inside that object rather than failing the whole list, so both arms have to be handled.
-function servicesOf(site: Project): ServiceStatus[] | null {
-    if (site.status) return site.status.ok ? site.status.services : null
-    return site.services ?? null
 }
 
 // restartCount is explicitly null when hostd could not read it, which is not the same as a container that
@@ -166,7 +149,10 @@ export default async function SitePage({ params, searchParams }: Props) {
     const wanted = one(search.tab)
     const selected = tabs.some(tab => tab.id === wanted) ? wanted as TabId : 'overview'
 
-    const state = stateOf(view.services)
+    // What this one site is doing, taken from the single project read rather than from the listing. The
+    // listing is one call for every site and can come back with nothing to say about any of them; this
+    // page asked hostd about this project on its own as well, and that answer is the better one.
+    const current: SiteState = view.trouble ? 'unknown' : stateOfServices(view.services)
 
     const navigation = (
         <>
@@ -179,7 +165,7 @@ export default async function SitePage({ params, searchParams }: Props) {
                     href={`/portal/sites/${site.id}`}
                     aria-current={site.id === view.id ? 'page' : undefined}
                 >
-                    <StatusDot state={stateOf(servicesOf(site))} />
+                    <StatusDot state={site.id === view.id ? current : stateOf(site)} />
                     <span className={nav.navName}>{site.name ?? site.id}</span>
                 </a>
             ))}
@@ -187,7 +173,7 @@ export default async function SitePage({ params, searchParams }: Props) {
     )
 
     return (
-        <Shell brand="Horizons" nav={navigation} rail={null}>
+        <Shell brand="Horizons" nav={navigation} rail={null} fill>
             <div className={styles.hello}>
                 <h1>{view.name}</h1>
                 <p className={styles.mono}>{view.id}</p>
@@ -215,9 +201,11 @@ export default async function SitePage({ params, searchParams }: Props) {
                     <>
                         <div className={styles.strip}>
                             <StatStrip stats={[
-                                { key: 'state', value: state, tone: state === 'down' ? 'crit' : undefined },
-                                { key: 'services', value: String(view.services.length) },
-                                { key: 'restarts', value: restartsOf(view.services) },
+                                { key: 'state', value: current, tone: current === 'down' ? 'crit' : undefined },
+                                // Nothing was read, so nothing is counted: a zero here would be a figure
+                                // this page was never given, printed as though it had been.
+                                { key: 'services', value: view.trouble ? NOT_AVAILABLE : String(view.services.length) },
+                                { key: 'restarts', value: view.trouble ? NOT_AVAILABLE : restartsOf(view.services) },
                             ]} />
                         </div>
                         <Lifecycle id={view.id} enabled={view.capabilities.includes('lifecycle')} />

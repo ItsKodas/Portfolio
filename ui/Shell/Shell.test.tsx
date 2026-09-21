@@ -3,6 +3,8 @@ import userEvent from '@testing-library/user-event'
 import { describe, expect, it } from 'vitest'
 
 import { Shell } from './Shell'
+// The generated name, so the assertion below holds through a rename of the class itself
+import styles from './Shell.module.css'
 
 function setup() {
     return render(
@@ -59,5 +61,18 @@ describe('Shell', () => {
     it('omits the rail cleanly when a page has no context to show', () => {
         render(<Shell brand="Horizons" nav={<span />}><p>body</p></Shell>)
         expect(screen.queryByRole('complementary')).not.toBeInTheDocument()
+    })
+
+    // The three zones fill the window, so a page that is one panel rather than a column of blocks can
+    // hand that panel the height left over. jsdom lays nothing out, so what a test can hold is that the
+    // prop reaches the element that has to carry it; whether it then fills is a browser question.
+    it('gives the content column the leftover height only when the page asks for it', () => {
+        const { container } = render(<Shell brand="Horizons" nav={<span />} fill><p>body</p></Shell>)
+        expect(container.querySelector('main')).toHaveClass(styles.fill)
+    })
+
+    it('leaves a page that is a column of blocks alone', () => {
+        const { container } = render(<Shell brand="Horizons" nav={<span />}><p>body</p></Shell>)
+        expect(container.querySelector('main')).not.toHaveClass(styles.fill)
     })
 })

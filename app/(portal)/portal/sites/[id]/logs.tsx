@@ -210,7 +210,7 @@ export function SiteLogs({ id, services }: { id: string, services: string[] }) {
                 </div>
             )}
 
-            <LogPane lines={lines} label={`${service} logs`} following={status === 'live'} />
+            <LogPane lines={lines} label={`${service} logs`} following={status === 'live'} fill />
         </>
     )
 }

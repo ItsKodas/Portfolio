@@ -9,10 +9,14 @@ type Props = {
     bar?: ReactNode
     nav: ReactNode
     rail?: ReactNode
+    // For a page that is one panel rather than a column of blocks: the content column becomes a flex
+    // column, so the page's own panel can take the height left over instead of ending where its content
+    // does. Opt-in, because it changes how margins between blocks collapse on the pages that are blocks.
+    fill?: boolean
     children: ReactNode
 }
 
-export function Shell({ brand, bar, nav, rail, children }: Props) {
+export function Shell({ brand, bar, nav, rail, fill, children }: Props) {
     const [open, setOpen] = useState(false)
     const menuRef = useRef<HTMLButtonElement>(null)
     const navRef = useRef<HTMLElement>(null)
@@ -45,32 +49,34 @@ export function Shell({ brand, bar, nav, rail, children }: Props) {
 
     return (
         <>
-            <header className={styles.bar}>
-                <button
-                    ref={menuRef}
-                    type="button"
-                    className={styles.menu}
-                    aria-label="Open the site list"
-                    aria-expanded={open}
-                    onClick={() => (open ? close() : setOpen(true))}
-                >
-                    &#9776;
-                </button>
-                <span className={styles.brand}>{brand}</span>
-                {bar && <span className={styles.barExtra}>{bar}</span>}
-            </header>
+            <div className={styles.frame}>
+                <header className={styles.bar}>
+                    <button
+                        ref={menuRef}
+                        type="button"
+                        className={styles.menu}
+                        aria-label="Open the site list"
+                        aria-expanded={open}
+                        onClick={() => (open ? close() : setOpen(true))}
+                    >
+                        &#9776;
+                    </button>
+                    <span className={styles.brand}>{brand}</span>
+                    {bar && <span className={styles.barExtra}>{bar}</span>}
+                </header>
 
-            <div className={styles.shell}>
-                <nav
-                    ref={navRef}
-                    className={[styles.nav, open && styles.open].filter(Boolean).join(' ')}
-                    // Anything chosen in here has served its purpose, so the drawer closes behind it
-                    onClick={event => { if ((event.target as HTMLElement).closest('button, a')) close() }}
-                >
-                    {nav}
-                </nav>
-                <main className={styles.main}>{children}</main>
-                {rail && <aside className={styles.rail}>{rail}</aside>}
+                <div className={styles.shell}>
+                    <nav
+                        ref={navRef}
+                        className={[styles.nav, open && styles.open].filter(Boolean).join(' ')}
+                        // Anything chosen in here has served its purpose, so the drawer closes behind it
+                        onClick={event => { if ((event.target as HTMLElement).closest('button, a')) close() }}
+                    >
+                        {nav}
+                    </nav>
+                    <main className={[styles.main, fill && styles.fill].filter(Boolean).join(' ')}>{children}</main>
+                    {rail && <aside className={styles.rail}>{rail}</aside>}
+                </div>
             </div>
 
             {open && <div className={styles.scrim} onClick={close} />}
