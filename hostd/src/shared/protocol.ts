@@ -14,6 +14,17 @@ import type { SystemUsage } from './system.ts'
 import { BACKUP_ACTORS, BACKUP_TAGS, type BackupActor, type BackupRecord, type BackupTag, type Snapshot } from './backups.ts'
 
 export const MAX_REQUEST_BYTES = 64 * 1024
+// A download's body is framed: a decimal byte count on its own line, then exactly that many bytes, and a
+// final `0\n` terminator the agent writes only once its source has exited cleanly. The terminator is what
+// makes completeness something the reader is told rather than something it infers from a socket closing,
+// which on a Unix stream socket carries no failure information at all.
+//
+// The cap bounds what one frame may claim, for the same reason logframes.ts caps a Docker log frame: no
+// real chunk comes anywhere near it, so a larger length means the bytes are not what we think they are,
+// and buffering towards it would exhaust memory. The writer splits oversize chunks to respect it, so the
+// two sides can never disagree about what is sane.
+export const MAX_BODY_FRAME_BYTES = 16 * 1024 * 1024
+export const BODY_TERMINATOR = '0\n'
 export const MAX_TAIL = 5000
 export const DEFAULT_TAIL = 200
 // The bound on one statuses request. api only ever asks for the projects one actor can see, so this is

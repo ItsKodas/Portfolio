@@ -1,9 +1,12 @@
 // One request per connection on the agent's Unix socket: read a single JSON line, dispatch it, and write
-// either one JSON line or a header line followed by one JSON line per log line. Every verb the agent
-// executes is logged to stdout, a record api cannot reach or rewrite.
+// either one JSON line, or a header line followed by one JSON line per log line, or a header line followed
+// by a framed body. Every verb the agent executes is logged to stdout, a record api cannot reach or
+// rewrite.
 
 import type { Duplex, Readable } from 'node:stream'
-import { parseAgentRequest, refuse, MAX_REQUEST_BYTES, type AgentRequest } from '../shared/protocol.ts'
+import {
+    parseAgentRequest, refuse, BODY_TERMINATOR, MAX_BODY_FRAME_BYTES, MAX_REQUEST_BYTES, type AgentRequest,
+} from '../shared/protocol.ts'
 import { describeError } from '../shared/formats.ts'
 import type { Outcome } from './agent.ts'
 
@@ -157,9 +160,26 @@ export async function handleConnection(socket: Duplex, agent: AgentHandler, log:
             if (!socket.write(lineOf({ ok: true, stream: true }))) await waitForDrain(socket)
             for await (const chunk of bytes.body) {
                 if (closed) break
-                if (!socket.write(chunk)) await waitForDrain(socket)
+                // Each frame is a decimal byte count on its own line, then exactly that many bytes. A
+                // zero-length chunk is skipped rather than framed: `0\n` is the terminator, and an empty
+                // chunk carries nothing anyway. Oversize chunks are split so no frame can exceed the cap
+                // the reader enforces.
+                for (let offset = 0; offset < chunk.length; offset += MAX_BODY_FRAME_BYTES) {
+                    if (closed) break
+                    const frame = chunk.subarray(offset, offset + MAX_BODY_FRAME_BYTES)
+                    if (!socket.write(`${frame.length}\n`)) await waitForDrain(socket)
+                    if (closed) break
+                    if (!socket.write(frame)) await waitForDrain(socket)
+                }
             }
-            if (!closed) socket.end()
+            // The one positive statement that the body is whole. It is written here and nowhere else, so
+            // it can only reach the wire after the body iterator returned normally, which for a download
+            // means restic dump exited zero. A throw skips it, and the reader treats EOF without it as a
+            // truncated download rather than a short archive it would hand the client as complete.
+            if (!closed) {
+                if (!socket.write(BODY_TERMINATOR)) await waitForDrain(socket)
+                socket.end()
+            }
         } catch (error) {
             log(`${what} download failed: ${describeError(error)}`)
             socket.destroy()

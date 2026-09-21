@@ -70,9 +70,10 @@ export type AgentDeps = {
 export type Outcome =
     | { kind: 'reply', reply: AgentReply }
     | { kind: 'stream', lines: AsyncIterable<LogLine>, close: () => void }
-    // A backup download: the same header line as a stream, then raw bytes until the socket ends. Its own
-    // kind rather than a stream of lines because a tar.gz through NDJSON would need base64, which inflates
-    // a multi-gigabyte download by a third for nothing.
+    // A backup download: the same header line as a stream, then the body in length-prefixed frames ending
+    // in a terminator server.ts writes only once this iterator has returned normally. Its own kind rather
+    // than a stream of lines because a tar.gz through NDJSON would need base64, which inflates a
+    // multi-gigabyte download by a third for nothing.
     | { kind: 'bytes', body: AsyncIterable<Buffer>, close: () => void }
 
 const reply = (value: AgentReply): Outcome => ({ kind: 'reply', reply: value })
@@ -191,9 +192,11 @@ export class Agent {
         // a wrong password or a snapshot forgotten while the dump was running all end the stream early and
         // exit non-zero, and every layer below here (server.ts, api's relay, the HTTP response) reads a
         // clean EOF as a complete archive. So the exit code is the last thing the body yields to, and a
-        // non-zero one throws: server.ts destroys the socket when the body throws and routes.ts destroys
-        // the response, which is what makes a truncated dump arrive as a failed transfer rather than a
-        // short but perfectly valid tar.gz the client keeps as their backup.
+        // non-zero one throws. Returning normally is what lets server.ts write the body terminator, and
+        // that terminator is what api accepts as proof the archive is whole; a throw means no terminator,
+        // api fails the download, and routes.ts destroys the response. That chain is what makes a
+        // truncated dump arrive as a failed transfer rather than a short but perfectly valid tar.gz the
+        // client keeps as their backup.
         async function* body(): AsyncGenerator<Buffer> {
             for await (const chunk of handle.stdout) yield chunk as Buffer
             const exit = await handle.exit
