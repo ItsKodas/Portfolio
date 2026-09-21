@@ -801,11 +801,28 @@ actually say) belong to the provisioning design, not to this task:
 echo '<!doctype html><title>Maintenance</title><p>Back shortly.</p>' | sudo tee /var/www/hostd-maintenance/index.html >/dev/null
 ```
 
-Also confirm `/etc/ssl/hostd/origin.pem` and `/etc/ssl/hostd/origin.key` (the Cloudflare Origin CA cert
-already in use for the hand-written vhosts) are in place. They are mounted read-only into `hostd-agent`,
-and every vhost's `:443` block names them: without them the agent's own boot gate refuses to start at all
-(`FATAL HOSTD_ORIGIN_CERT ... does not exist`), which would make every step after this one fail for a
-reason that has nothing to do with what it says.
+Put the Cloudflare Origin CA certificate at `/etc/ssl/hostd/origin.pem` and its key at
+`/etc/ssl/hostd/origin.key`. This is an install step, not a check: do not assume the dedi already has one
+because its hand-written vhosts serve HTTPS. Those use Let's Encrypt, which is per hostname and issued on
+the host; hostd instead serves one Origin certificate to every vhost it renders, and nothing else on the
+machine needs it, so on a dedi that has never run hostd it will not exist.
+
+Issue it from the Cloudflare dashboard (SSL/TLS > Origin Server > Create Certificate) for the zone whose
+hostnames this dedi serves, then install both halves with `0600` root-owned permissions. An Origin
+certificate is per zone: a `*.example.com` one covers that zone's subdomains but not a client's own
+domain on a separate zone, which needs its own certificate and its own entry here.
+
+Both files are mounted read-only into `hostd-agent`, and every vhost's `:443` block names them. Without
+them the agent's boot gate refuses to start at all:
+
+```
+FATAL HOSTD_ORIGIN_CERT (/etc/ssl/hostd/origin.pem) does not exist
+FATAL HOSTD_ORIGIN_KEY (/etc/ssl/hostd/origin.key) does not exist
+```
+
+The agent then restarts forever, `agent.sock` never appears, `hostd-api` fails its own gate behind it, and
+the portal shows `hostd is not answering`. Note that Docker creates `/etc/ssl/hostd/` as an empty
+directory for the bind mount, so the path existing proves nothing: check for the two files themselves.
 
 Install the script and the units:
 
@@ -1094,6 +1111,7 @@ shows them.
 | `FATAL RESTIC_PASSWORD is not set` (agent) | `.env.agent` is missing, or it is the unfilled copy of `example.env.agent`. Fill it in (and keep a copy off the dedi), then start again. Without it every backup would fail at `restic init`. |
 | `FATAL the agent is not answering on /run/hostd/agent.sock` (api) | The agent is not running or failed its own gate. Read `docker compose logs agent`. |
 | `503` with `"code":"agent-unavailable"` | The same, after startup. |
+| `FATAL HOSTD_ORIGIN_CERT (/etc/ssl/hostd/origin.pem) does not exist` (agent) | The Origin certificate was never installed on this dedi, so the agent's boot gate refuses to start and restarts forever. `hostd-api` then fails its own gate behind it and the portal shows `hostd is not answering`, which points at the wrong service: always read `docker compose logs agent` before believing it. `/etc/ssl/hostd/` existing means nothing, because Docker creates it empty for the bind mount. See step 1 of **Host setup, done once**. |
 | A project is `"valid":false` with `compose resolves the project name ...` | See step 1 of Enrolling a real site. |
 | A project is `"valid":false` with `... does not exist on the dedi` | `dir` is wrong, or the directory was removed. |
 | `api` unhealthy with `the audit log could not be written` | The `hostd-state` volume is full or has the wrong owner. |
