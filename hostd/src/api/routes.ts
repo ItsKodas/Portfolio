@@ -911,7 +911,7 @@ export function createHandler(deps: ApiDeps): (req: IncomingMessage, res: Server
 
             case 'backup-schedule': {
                 if (!deps.schedules) {
-                    return refuseRoute(503, 'unavailable', 'backup schedules are not configured', route.project, route.write ? 'backup' : 'backup-read', 'schedule')
+                    return refuseRoute(503, 'unavailable', 'backup schedules are not configured', route.project, 'backup', 'schedule')
                 }
                 const target = 'schedule'
                 const entry = await authorizeProject(route.project, route.write ? 'backup' : 'backup-read', target)

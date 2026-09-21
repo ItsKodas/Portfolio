@@ -965,6 +965,31 @@ describe('the backup endpoints', () => {
         assert.deepEqual(agent.calls, [])
     })
 
+    // One representative test per distinct shape among the six endpoints besides the plain list above:
+    // a write that reaches the agent, the streaming/audited-read download, and the one write that never
+    // reaches the agent at all. Each checks that the refusal happened before anything downstream did.
+    it('refuses starting a run for another client\'s project, without ever reaching the agent', async () => {
+        const response = await request('/projects/other/backups', { method: 'POST' })
+        assert.equal(response.status, 404)
+        assert.deepEqual(agent.calls, [])
+    })
+
+    it('refuses a download for a project without the capability, before streaming anything', async () => {
+        const response = await request('/projects/quiet/backups/deadbeef/download')
+        assert.equal(response.status, 403)
+        assert.deepEqual(agent.calls, [])
+        assert.doesNotMatch(response.headers.get('content-type') ?? '', /gzip/)
+    })
+
+    it('refuses a schedule write for another client\'s project, without touching the store', async () => {
+        const response = await request('/projects/other/backups/schedule', {
+            method: 'PUT',
+            body: { mode: 'daily', hour: 2, minute: 0, weekday: 0, keep: { daily: 1, weekly: 1, monthly: 1 } },
+        })
+        assert.equal(response.status, 404)
+        assert.equal(schedules.get('other').mode, 'off')
+    })
+
     it('answers 503 for a schedule request when no schedule store is configured', async () => {
         // Swaps the shared server's handler for one built without schedules, rather than standing up a
         // second server just for this one case.
