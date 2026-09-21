@@ -997,8 +997,12 @@ describe('POST /projects/:id/:env/domains/:hostname/verify', () => {
 })
 
 describe('GET|POST /projects/:id/:env/adopt', () => {
-    const claim: { path: string, names: string[], unsupported: string | null } =
-        { path: '/etc/apache2/sites-enabled/acme.conf', names: ['acme.example'], unsupported: null }
+    const claim: { path: string, text: string, names: string[], unsupported: string | null } = {
+        path: '/etc/apache2/sites-enabled/acme.conf',
+        text: '<VirtualHost *:443>\n    ServerName acme.example\n</VirtualHost>\n',
+        names: ['acme.example'],
+        unsupported: null,
+    }
     const preview = (over: Partial<{ claims: typeof claim[], adoptable: boolean }> = {}): AgentReply => ({
         ok: true,
         preview: { proposed: '<VirtualHost *:443>', claims: over.claims ?? [claim], extraNames: [], adoptable: over.adoptable ?? true },

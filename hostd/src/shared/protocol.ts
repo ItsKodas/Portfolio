@@ -105,7 +105,11 @@ export type AdoptPreview = {
     ok: true
     preview: {
         proposed: string
-        claims: { path: string, names: string[], unsupported: string | null }[]
+        // text is the claiming file verbatim. The two directives this parser reads are not the whole of
+        // what a hand-written vhost does, and adoption replaces the file rather than merging with it, so
+        // the operator is shown all of it before they confirm. Spelled out here rather than imported,
+        // because shared/ must never import from agent/.
+        claims: { path: string, text: string, names: string[], unsupported: string | null }[]
         extraNames: string[]
         adoptable: boolean
     }

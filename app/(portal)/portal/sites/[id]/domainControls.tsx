@@ -275,6 +275,12 @@ export function AdoptSite({ id, environment, projectName }: AdoptProps) {
                                             {claim.unsupported && (
                                                 <p className={styles.stateBad}>{claim.unsupported}</p>
                                             )}
+                                            {/* The file itself, whole and unedited. hostd reads two
+                                                directives out of it and this replaces all of them, so a
+                                                rewrite, a basic auth block or a bespoke error page is
+                                                only ever visible here. It is the reason the pane
+                                                exists, not a detail under the path. */}
+                                            <pre className={styles.vhost}>{claim.text}</pre>
                                         </div>
                                     ))}
                             </section>

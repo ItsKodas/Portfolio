@@ -2,8 +2,10 @@
 // asking hostd itself: the operator's table and the client's sentences are both worth rendering without a
 // network in the way.
 
-import { describe, expect, it, vi } from 'vitest'
-import { render, screen } from '@testing-library/react'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { fireEvent, render, screen } from '@testing-library/react'
+
+const { adoptPreview } = vi.hoisted(() => ({ adoptPreview: vi.fn() }))
 
 // The panel is a server component, but its controls are the client half, and importing those for real
 // drags Prisma and next/cache into a jsdom test for nothing. useRouter needs a mounted app router, which
@@ -13,11 +15,11 @@ vi.mock('./actions', () => ({
     removeDomainAction: async () => ({ ok: true, message: 'ok' }),
     verifyDomainAction: async () => ({ ok: true, message: 'ok' }),
     adoptAction: async () => ({ ok: true, message: 'ok' }),
-    adoptPreviewAction: async () => ({ ok: false, error: 'not asked in a test' }),
+    adoptPreviewAction: (...args: unknown[]) => adoptPreview(...args),
 }))
 vi.mock('next/navigation', () => ({ useRouter: () => ({ push: () => {}, refresh: () => {} }) }))
 
-import type { Domain } from '@/server/hostd/domains'
+import type { AdoptPreview, Domain } from '@/server/hostd/domains'
 import { DomainsPanel } from './domainsPanel'
 
 const domain = (over: Partial<Domain> = {}): Domain => ({
@@ -30,6 +32,38 @@ const props = {
     environments: [{ name: 'live' as const }, { name: 'test' as const }],
     domains: [domain()], isAdmin: true, trouble: null,
 }
+
+// A hand-written vhost that does more than the two directives hostd's parser reads: the rewrite and the
+// basic auth block are exactly what is lost if the preview shows a path instead of a file.
+const HAND_WRITTEN = `<VirtualHost *:443>
+    ServerName acme.com
+    RewriteEngine On
+    RewriteRule ^/old/(.*)$ /shop/$1 [R=301,L]
+    <Location /admin>
+        AuthType Basic
+        AuthUserFile /etc/apache2/acme.htpasswd
+        Require valid-user
+    </Location>
+</VirtualHost>
+`
+
+const preview = (over: Partial<AdoptPreview> = {}): AdoptPreview => ({
+    proposed: '<VirtualHost *:443>\n    ServerName acme.com\n</VirtualHost>\n',
+    claims: [{
+        path: '/etc/apache2/sites-enabled/acme.conf',
+        text: HAND_WRITTEN,
+        names: ['acme.com'],
+        unsupported: null,
+    }],
+    extraNames: [],
+    adoptable: true,
+    ...over,
+})
+
+beforeEach(() => {
+    vi.clearAllMocks()
+    adoptPreview.mockResolvedValue({ ok: true, preview: preview() })
+})
 
 describe('DomainsPanel, for the operator', () => {
     it('lists every hostname with its state', () => {
@@ -57,6 +91,41 @@ describe('DomainsPanel, for the operator', () => {
     it('says so plainly when the list could not be read at all', () => {
         render(<DomainsPanel {...props} domains={[]} trouble="hostd did not answer" />)
         expect(screen.getByText(/did not answer/)).toBeInTheDocument()
+    })
+
+    // Adoption is a single-shot overwrite of the Apache configuration a live site is being served from,
+    // and the confirmation asks the operator to name the project back. Naming the file is not showing it:
+    // what hostd's parser reads out of a hand-written vhost is two directives, and everything else it
+    // does survives only as the text. If this ever goes back to a path and a hostname list, this fails.
+    it('shows the whole file it would replace, verbatim, before the operator confirms', async () => {
+        render(<DomainsPanel {...props} domains={[domain({ state: 'unmanaged' })]} />)
+        fireEvent.click(screen.getByRole('button', { name: /adopt/i }))
+
+        const shown = await screen.findByText(/RewriteRule/)
+        expect(shown).toHaveTextContent('AuthUserFile /etc/apache2/acme.htpasswd')
+        expect(shown.textContent).toBe(HAND_WRITTEN)
+        expect(screen.getByText('/etc/apache2/sites-enabled/acme.conf')).toBeInTheDocument()
+    })
+
+    it('shows the file even when it is one hostd refuses to adopt, which is when it matters most', async () => {
+        adoptPreview.mockResolvedValue({
+            ok: true,
+            preview: preview({
+                adoptable: false,
+                claims: [{
+                    path: '/etc/apache2/sites-enabled/acme.conf',
+                    text: HAND_WRITTEN,
+                    names: ['acme.com'],
+                    unsupported: 'Use is used, so the hostnames this file serves cannot be read here',
+                }],
+            }),
+        })
+
+        render(<DomainsPanel {...props} domains={[domain({ state: 'unmanaged' })]} />)
+        fireEvent.click(screen.getByRole('button', { name: /adopt/i }))
+
+        expect((await screen.findByText(/RewriteRule/)).textContent).toBe(HAND_WRITTEN)
+        expect(screen.getByText(/cannot be read here/)).toBeInTheDocument()
     })
 
     it('keeps the environment selector, because a domain belongs to an environment', () => {

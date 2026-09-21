@@ -63,4 +63,18 @@ describe('findClaims', () => {
     it('returns nothing when no file claims the hostname', () => {
         assert.deepEqual(findClaims(files, ['nobody.com']), [])
     })
+
+    // Adoption switches this file off and writes hostd's own in its place, and the two directives above
+    // are all this parser understands of it. Anything else it does, a rewrite, a basic auth block, a
+    // bespoke error page, is only ever visible as the text, so the text has to survive this function.
+    it('carries the file itself, not only what it managed to read out of it', () => {
+        assert.equal(findClaims(files, ['acme.com'])[0]!.text, files[0]!.text)
+    })
+
+    it('carries the text of a file it refuses to call adoptable too, which is when it matters most', () => {
+        const awkward = [{ path: '/etc/apache2/sites-enabled/macro.conf', text: 'ServerName acme.com\nUse CommonSite acme.com' }]
+        const claim = findClaims(awkward, ['acme.com'])[0]!
+        assert.match(claim.unsupported ?? '', /Use/)
+        assert.equal(claim.text, awkward[0]!.text)
+    })
 })

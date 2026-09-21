@@ -31,7 +31,10 @@ export type Domain = {
 
 export type AdoptPreview = {
     proposed: string
-    claims: { path: string, names: string[], unsupported: string | null }[]
+    // text is the claiming file verbatim, and it is the point of the preview rather than a detail of it:
+    // adoption switches this file off and puts hostd's own in its place on a site serving somebody right
+    // now, and the two directives hostd's parser reads are not the whole of what the file does.
+    claims: { path: string, text: string, names: string[], unsupported: string | null }[]
     extraNames: string[]
     adoptable: boolean
 }

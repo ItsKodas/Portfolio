@@ -40,15 +40,20 @@ export function parseServerNames(text: string): ServerNames {
     return { names, unsupported }
 }
 
-export function findClaims(
-    files: VhostFile[],
-    hostnames: string[],
-): { path: string, names: string[], unsupported: string | null }[] {
-    const claims: { path: string, names: string[], unsupported: string | null }[] = []
+// The file itself is carried, not only what was understood of it. Adoption switches this file off and
+// puts hostd's own in its place, in one reload, on a site that is serving somebody right now, and what
+// this parser reads is two directives out of however many the file has. A custom rewrite, basic auth or
+// a bespoke error page is invisible to everything above except the text, so the text travels with the
+// claim and the operator sees the whole of what they are replacing before they confirm it. It is their
+// own server's configuration, and every route that can reach it is admin-only.
+export type Claim = { path: string, text: string, names: string[], unsupported: string | null }
+
+export function findClaims(files: VhostFile[], hostnames: string[]): Claim[] {
+    const claims: Claim[] = []
     for (const file of files) {
         const parsed = parseServerNames(file.text)
         if (!parsed.names.some(name => hostnames.includes(name))) continue
-        claims.push({ path: file.path, names: parsed.names, unsupported: parsed.unsupported })
+        claims.push({ path: file.path, text: file.text, names: parsed.names, unsupported: parsed.unsupported })
     }
     return claims
 }

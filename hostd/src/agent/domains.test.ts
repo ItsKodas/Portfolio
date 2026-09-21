@@ -232,6 +232,15 @@ describe('previewAdopt', () => {
         assert.match(result.ok ? result.preview.proposed : '', /ServerName acme\.com/)
     })
 
+    // Both files, whole. Naming the one being replaced is not showing it, and the operator is about to
+    // confirm an overwrite of a configuration serving a live site on the strength of this screen.
+    it('carries the old file verbatim, not merely its path and the names it was understood to serve', async () => {
+        const { deps, project, environment } = setup()
+        deps.listSitesEnabled = async () => [handWritten]
+        const result = await previewAdopt(deps, project, environment, 'abc123')
+        assert.equal(result.ok && result.preview.claims[0]!.text, handWritten.text)
+    })
+
     it('lists hostnames the old file serves that the registry does not know about', async () => {
         const { deps, project, environment } = setup()
         deps.listSitesEnabled = async () => [handWritten]
