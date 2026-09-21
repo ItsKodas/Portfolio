@@ -17,6 +17,7 @@ import { createFetchClient, socketConnect } from './fetch-client.ts'
 import { Agent } from './agent.ts'
 import type { ProvisionDeps } from './provision.ts'
 import { currentTip, type DeployDeps } from './deploy.ts'
+import { ownTree } from './own-tree.ts'
 import { DeployStore } from './deploy-state.ts'
 import { DeployRunner } from './deploy-runner.ts'
 import { DeployPoller } from './deploy-poller.ts'
@@ -188,6 +189,14 @@ async function main(): Promise<void> {
                 await writeFile(posix.join(MAINTENANCE_DIR, key), '')
             },
             clearMaintenance: key => rm(posix.join(MAINTENANCE_DIR, key), { force: true }),
+            owner: async path => {
+                const info = await stat(path)
+                // Masked to the nine permission bits, the same reasoning registry-write.ts's own chmod
+                // carries: stat can report more than that (the regular-file bit, a stray setuid bit),
+                // none of which belongs on a mode this hands straight to chmod.
+                return { uid: info.uid, gid: info.gid, mode: info.mode & 0o777 }
+            },
+            own: (dir, like) => ownTree(dir, like),
         },
         now: Date.now,
         sleep: async ms => { await sleep(ms) },

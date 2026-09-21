@@ -35,6 +35,7 @@ type SetupOptions = {
     fetchReplies?: Partial<Record<FetchRequest['verb'], FetchReply>>
     existsPaths?: string[]
     freeBytes?: number
+    owners?: Record<string, { uid: number, gid: number, mode: number }>
     envTree?: Record<string, string>
     // Keyed by the compose subcommand: 'build', 'up', 'down'.
     composeResults?: Record<string, Partial<RunResult>>
@@ -104,6 +105,12 @@ function setup(options: SetupOptions = {}) {
     }
 
     let rolledBack = false
+    // What /var/www/acme itself is owned by and moded as, before the deploy touches anything: uid 1000,
+    // gid 1000, drwxrwxr-x, exactly the RUNBOOK's own description of a site directory on the dedi. A test
+    // that wants a different owner (an operator who chose something else) can overwrite this map by id.
+    const owners = new Map<string, { uid: number, gid: number, mode: number }>(
+        Object.entries(options.owners ?? { '/var/www/acme': { uid: 1000, gid: 1000, mode: 0o775 } }),
+    )
     const fs: DeployFs = {
         exists: async path => exists.has(path),
         mkdir: async dir => { calls.push(`mkdir ${dir}`); exists.add(dir) },
@@ -117,6 +124,13 @@ function setup(options: SetupOptions = {}) {
         freeBytes: async () => options.freeBytes ?? MIN_FREE_BYTES * 2,
         setMaintenance: async key => { calls.push('maintenance on'); maintenance.add(key) },
         clearMaintenance: async key => { calls.push('maintenance off'); maintenance.delete(key) },
+        owner: async path => {
+            calls.push(`owner ${path}`)
+            const found = owners.get(path)
+            if (!found) throw new Error(`ENOENT: no such file, stat '${path}'`)
+            return found
+        },
+        own: async (dir, like) => { calls.push(`own ${dir} ${like.uid}:${like.gid} ${like.mode.toString(8)}`) },
     }
 
     const frameNow = () => (rolledBack ? options.afterRollback ?? { state: 'running' } : options.containerState ?? { state: 'running' })
@@ -193,6 +207,25 @@ describe('currentTip', () => {
         assert.equal(context.calls.some(call => call.startsWith('move')), false)
     })
 
+    it('gives the freshly made repository directory the site directory\'s ownership and mode, not root\'s', async () => {
+        const context = setup()
+        await currentTip(context.project(), context.environment(), context.deps)
+        assert.ok(context.calls.includes('owner /var/www/acme'))
+        const mkdirAt = context.calls.indexOf('mkdir /var/www/acme.git')
+        const ownAt = context.calls.indexOf('own /var/www/acme.git 1000:1000 775')
+        const moveAt = context.calls.indexOf('move /var/www/acme/.git /var/www/acme.git/.git')
+        assert.ok(mkdirAt !== -1 && ownAt !== -1 && moveAt !== -1)
+        // Owned and moded before the .git that was inside the operator's checkout moves into it, so
+        // there is never a moment where the repository directory sits there root-only.
+        assert.ok(mkdirAt < ownAt && ownAt < moveAt)
+    })
+
+    it('does not touch ownership again once the repository directory already exists', async () => {
+        const context = setup({ existsPaths: ['/var/www/acme.git'] })
+        await currentTip(context.project(), context.environment(), context.deps)
+        assert.equal(context.calls.some(call => call.startsWith('own ') || call.startsWith('owner ')), false)
+    })
+
     it('says so when there is no git repository at all', async () => {
         const context = setup({ existsPaths: [] })
         const result = await currentTip(context.project(), context.environment(), context.deps)
@@ -254,6 +287,29 @@ describe('runDeploy, before the swap', () => {
         const context = setup()
         const record = await runDeploy(context.project(), context.environment(), { ...request, commit: TIP }, context.deps)
         assert.equal(record.subject, 'Make it faster')
+    })
+
+    it('gives the checked-out tree the site directory\'s ownership and mode before it is built or swapped in', async () => {
+        const context = setup()
+        await runDeploy(context.project(), context.environment(), { ...request, commit: TIP }, context.deps)
+        const ownAt = context.calls.indexOf('own /var/www/acme.next 1000:1000 775')
+        const carriedEnv = context.calls.indexOf('fetcher checkout')
+        const build = context.calls.indexOf('compose build')
+        assert.ok(ownAt !== -1)
+        // After the checkout (which is what needs fixing) and before the build or the swap: the checkout
+        // ran as root, in the fetcher, so everything in .next is root-owned until this runs, whatever
+        // mode git itself left individual files at, and a build or a swap must never see that unfixed.
+        assert.ok(carriedEnv < ownAt && ownAt < build)
+    })
+
+    it('fails the deploy, without building or swapping, if the checked-out tree cannot be made usable', async () => {
+        const context = setup()
+        context.deps.fs.own = async () => { throw new Error('operation not permitted') }
+        const record = await runDeploy(context.project(), context.environment(), { ...request, commit: TIP }, context.deps)
+        assert.equal(record.outcome, 'failed')
+        assert.match(record.reason ?? '', /operation not permitted/)
+        assert.equal(context.calls.includes('compose build'), false)
+        assert.equal(context.calls.some(call => call.startsWith('move /var/www/acme ')), false)
     })
 
     it('builds in the new tree under the environment\'s own compose project name', async () => {
@@ -379,6 +435,12 @@ describe('runDeploy, when the new version is not healthy', () => {
         ])
         // The tree that failed is not kept: it is a checkout of a commit git still has.
         assert.ok(context.calls.lastIndexOf('rmdir /var/www/acme.next') > context.calls.indexOf('move /var/www/acme.prev /var/www/acme'))
+        // A rollback swaps .prev straight back into place; .prev already carries the ownership and mode
+        // a live site has, untouched by any checkout, so there is nothing here for `own` to fix again.
+        // Exactly two `own` calls happen in the whole deploy: once for the repository directory made the
+        // first time (ensureRepo), once for the checked-out tree before the swap that then failed. The
+        // rollback itself adds none.
+        assert.equal(context.calls.filter(call => call.startsWith('own ')).length, 2)
     })
 
     it('leaves the site on the commit it started on', async () => {

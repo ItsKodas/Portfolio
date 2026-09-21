@@ -77,9 +77,13 @@ async function main(): Promise<void> {
     await writeCredentials(token as string, runner)
 
     await rm(SOCKET_PATH, { force: true })
-    // The socket is created 0600 rather than chmodded afterwards, so there is no moment when it is wider.
-    // Owned by root, group root: this socket now lives in a volume shared only with the agent (never with
-    // api), so there is no group to widen it for the way agent.sock widens for api's gid.
+    // Restrictive for exactly as long as it takes to create and chmod the socket, and no longer. bind()
+    // honours the process umask, so a normal one here would leave a moment where the socket exists wider
+    // than the chmod below narrows it to; this is what closes that window, not what protects the
+    // credential file above (that one is written with an explicit mode and chmod'd again right after, so
+    // whatever umask was in effect when it happened was never load-bearing either way). Owned by root,
+    // group root: this socket now lives in a volume shared only with the agent (never with api), so
+    // there is no group to widen it for the way agent.sock widens for api's gid.
     process.umask(0o177)
     const server = createServer(socket => {
         handleFetchConnection(socket, request => runGit(request, runner), log)
@@ -91,6 +95,15 @@ async function main(): Promise<void> {
     })
     await chown(SOCKET_PATH, 0, 0)
     await chmod(SOCKET_PATH, 0o600)
+    // A normal umask for the rest of this process's life, because everything from here on is git,
+    // checking a commit out into a tree under /var/www. A restrictive umask left in place would silently
+    // strip the executable bit git itself is trying to set on the checkout: tested against the live
+    // machine, the same commit's same file, recorded 100755 in the repository's own index, came out
+    // -rw------- under 0177 and -rwxr-xr-x under 0022. deploy.ts still normalises ownership and the rest
+    // of the mode once a checkout is done (see own/ownTree in agent/own-tree.ts), but it can only carry
+    // forward whatever bit git was actually allowed to set here; it has no way to recover one this umask
+    // already erased before deploy.ts ever saw the file.
+    process.umask(0o022)
     log(`listening on ${SOCKET_PATH}`)
 
     for (;;) {
