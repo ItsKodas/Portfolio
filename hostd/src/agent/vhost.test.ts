@@ -7,7 +7,10 @@ const input = (over: Partial<VhostInput> = {}): VhostInput => ({
     id: 'acme',
     environment: 'live',
     primary: 'acme.com',
-    aliases: ['www.acme.com'],
+    // Two aliases throughout, not one: a single alias renders identically whether the block declares one
+    // ServerName or one per alias, so a one-alias fixture cannot see the difference between a vhost that
+    // claims all of its names and one that claims only the last.
+    aliases: ['www.acme.com', 'shop.acme.com'],
     port: 5010,
     token: 'abc123',
     certificate: { chain: '/etc/ssl/hostd/origin.pem', key: '/etc/ssl/hostd/origin.key' },
@@ -16,6 +19,25 @@ const input = (over: Partial<VhostInput> = {}): VhostInput => ({
     acmeWebroot: '/var/www/hostd-acme',
     ...over,
 })
+
+// Every hostname a block claims, read back out of the rendered text rather than taken from the input,
+// together with how many ServerName directives it used to claim them. Apache keeps only the LAST
+// ServerName in a container, so that count is the difference between a block that answers for all of its
+// names and one that answers for exactly one of them while configtest reports no problem at all.
+function claimedBy(block: string): { names: string[], serverNames: number } {
+    const names: string[] = []
+    let serverNames = 0
+    for (const line of block.split('\n')) {
+        const match = line.match(/^\s*Server(Name|Alias)\s+(.+?)\s*$/)
+        if (!match) continue
+        if (match[1] === 'Name') serverNames += 1
+        for (const name of match[2]!.split(/\s+/)) names.push(name)
+    }
+    return { names, serverNames }
+}
+
+const blocksOf = (text: string, port: 80 | 443): string[] =>
+    [...text.matchAll(new RegExp(`<VirtualHost \\*:${port}>([\\s\\S]*?)</VirtualHost>`, 'g'))].map(match => match[1] ?? '')
 
 describe('vhostPath', () => {
     it('names the file after the project and the environment', () => {
@@ -94,19 +116,60 @@ describe('renderVhost', () => {
 
     it('never declares the same hostname in more than one 443 block, so every block stays reachable', () => {
         const text = renderVhost(input())
-        const blocks = [...text.matchAll(/<VirtualHost \*:443>([\s\S]*?)<\/VirtualHost>/g)].map(match => match[1] ?? '')
         const blockCounts = new Map<string, number>()
-        for (const block of blocks) {
-            const names = new Set<string>()
-            for (const line of block.split('\n')) {
-                const match = line.match(/^\s*Server(?:Name|Alias)\s+(.+)$/)
-                if (match) for (const name of match[1]!.trim().split(/\s+/)) names.add(name)
-            }
-            for (const name of names) blockCounts.set(name, (blockCounts.get(name) ?? 0) + 1)
+        for (const block of blocksOf(text, 443)) {
+            for (const name of new Set(claimedBy(block).names)) blockCounts.set(name, (blockCounts.get(name) ?? 0) + 1)
         }
         for (const [name, count] of blockCounts) {
             assert.equal(count, 1, `${name} is declared in ${count} separate 443 blocks`)
         }
+    })
+
+    // The alias block used to render one ServerName per alias, which configtest accepts and Apache then
+    // reads as the last one only: every other alias matched no vhost at all and was served by whichever
+    // *:443 block loaded first, which on the dedi is another client's site.
+    it('claims every alias on the alias block, with one ServerName and the rest ServerAlias', () => {
+        const aliases = ['a.acme.com', 'b.acme.com']
+        const aliasBlock = blocksOf(renderVhost(input({ aliases })), 443).pop() ?? ''
+        const claimed = claimedBy(aliasBlock)
+        assert.deepEqual([...claimed.names].sort(), aliases)
+        assert.equal(claimed.serverNames, 1, 'a second ServerName silently replaces the first')
+    })
+
+    it('gives every block it writes exactly one ServerName, whatever the port', () => {
+        const text = renderVhost(input())
+        for (const block of [...blocksOf(text, 80), ...blocksOf(text, 443)]) {
+            assert.equal(claimedBy(block).serverNames, 1, block)
+        }
+    })
+
+    // mod_rewrite runs at translate_name and the <Location> token block at fixups, so without this the
+    // token probe 503s for as long as a deploy holds the maintenance flag, and every hostname of the
+    // environment fails verification at once over a routine deploy.
+    it('lets the verification token through while the maintenance flag is up', () => {
+        const primaryBlock = blocksOf(renderVhost(input()), 443)[0] ?? ''
+        const lines = primaryBlock.split('\n').map(line => line.trim())
+        const rule = lines.indexOf('RewriteRule ^ - [R=503,L]')
+        assert.ok(rule > 0, 'the maintenance rule should be there')
+        assert.ok(
+            lines.slice(0, rule).includes('RewriteCond %{REQUEST_URI} !^/\\.well-known/'),
+            primaryBlock,
+        )
+    })
+
+    // ErrorDocument with a local path is an internal redirect, so the holding page meets the proxy again
+    // on its way out: unexcluded, the page that covers for a dead upstream is fetched from it.
+    it('serves the holding page from disk rather than through the proxy', () => {
+        const primaryBlock = blocksOf(renderVhost(input()), 443)[0] ?? ''
+        const holding = primaryBlock.match(/ErrorDocument 503 (\S+)/)?.[1] ?? ''
+        assert.notEqual(holding, '')
+        assert.ok(primaryBlock.includes(`Alias "${holding}" "/var/www/hostd-maintenance/index.html"`), primaryBlock)
+        const excluded = primaryBlock.indexOf(`ProxyPass ${holding} !`)
+        const proxied = primaryBlock.indexOf('ProxyPass / http://')
+        assert.ok(excluded >= 0 && proxied > excluded, 'the holding page must be excluded before the general ProxyPass')
+        // The maintenance rewrite would otherwise 503 the holding page itself, which is how an
+        // ErrorDocument turns into Apache's own canned error page instead.
+        assert.ok(primaryBlock.includes(`RewriteCond %{REQUEST_URI} !^${holding.split('.').join('\\.')}`), primaryBlock)
     })
 
     it('answers the verification token on the alias block before redirecting it away', () => {

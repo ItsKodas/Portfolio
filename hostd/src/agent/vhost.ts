@@ -24,16 +24,30 @@ export function vhostPath(dir: string, id: string, environment: EnvironmentName)
     return posix.join(dir, `${id}-${environment}.conf`)
 }
 
-const aliasLines = (aliases: string[]): string =>
-    aliases.map(alias => `    ServerAlias ${alias}`).join('\n')
+// Every name a block answers for, in the one shape Apache actually reads: the first as ServerName and
+// the rest as ServerAlias. ServerName is single-valued, so a second occurrence in the same container
+// silently replaces the first and every name but the last matches no vhost at all, falling through to
+// whichever *:443 block Apache loaded first, which on this machine is another client's site.
+// apache2ctl configtest has nothing to say about it, so the only guard is rendering it correctly here.
+const serverNames = (names: string[]): string =>
+    names.map((name, index) => `    Server${index === 0 ? 'Name' : 'Alias'} ${name}`).join('\n')
+
+// The holding page's own URL path, rather than /index.html. ErrorDocument with a local path is an
+// internal redirect, so the request runs through translate_name a second time, where both the
+// maintenance RewriteRule and the general ProxyPass below would claim it: the page that covers for a
+// dead upstream would be fetched from that same dead upstream. So it gets a path nothing else serves,
+// excluded from both. /index.html could not be excluded that way, because a real site may serve one and
+// excluding it would answer that URL from the maintenance directory while the site is perfectly well.
+const HOLDING_PAGE = '/.hostd-maintenance'
+// The same path as a RewriteCond pattern, where the dot is a regular expression metacharacter.
+const HOLDING_PAGE_PATTERN = HOLDING_PAGE.split('.').join('\\.')
 
 // Port 80 exists to do three things and nothing else: answer the ACME challenge (which 4b needs and which
 // costs nothing to serve now), answer the verification token, and send everything else to https. The
 // challenge and the token are matched before the rewrite, because a 301 would take a challenge with it.
 function port80(input: VhostInput): string {
     return `<VirtualHost *:80>
-    ServerName ${input.primary}
-${aliasLines(input.aliases)}
+${serverNames([input.primary, ...input.aliases])}
 
     Alias "/.well-known/acme-challenge" "${input.acmeWebroot}/.well-known/acme-challenge"
     <Directory "${input.acmeWebroot}/.well-known/acme-challenge">
@@ -60,6 +74,13 @@ ${aliasLines(input.aliases)}
 // ServerName or ServerAlias matches), leaving the alias's redirect block unreachable and the site
 // answering at two URLs.
 //
+// The maintenance rewrite excludes /.well-known/ for the same reason the :80 block does, and it is not
+// cosmetic here: mod_rewrite's per-server rules run at translate_name, while the <Location> token block
+// above runs at fixups, so without the exclusion the token probe 503s for as long as a deploy holds the
+// flag. Verification would then fail on every hostname of the environment at once, turning each active
+// domain broken and putting "Your website address stopped answering" on the client's screen for a
+// routine deploy.
+//
 // The maintenance-flag RewriteCond's quoting is two layers deep and easy to get backwards: the outer
 // double quotes group -f and the path into the one CondPattern argument RewriteCond expects (they are
 // separated by a space, and a bare third token would be read as an invalid flags list); the inner single
@@ -78,14 +99,18 @@ function port443(input: VhostInput): string {
     </Location>
 
     DocumentRoot "${input.maintenanceDir}"
-    ErrorDocument 503 /index.html
+    Alias "${HOLDING_PAGE}" "${input.maintenanceDir}/index.html"
+    ErrorDocument 503 ${HOLDING_PAGE}
     Header always set Retry-After "120" "expr=%{REQUEST_STATUS} == 503"
 
     RewriteEngine On
+    RewriteCond %{REQUEST_URI} !^/\\.well-known/
+    RewriteCond %{REQUEST_URI} !^${HOLDING_PAGE_PATTERN}
     RewriteCond expr "-f '${input.maintenanceFlag}'"
     RewriteRule ^ - [R=503,L]
 
     ProxyPreserveHost On
+    ProxyPass ${HOLDING_PAGE} !
     ProxyPass /.well-known/hostd/${input.token} !
     ProxyPass / http://127.0.0.1:${input.port}/
     ProxyPassReverse / http://127.0.0.1:${input.port}/
@@ -103,7 +128,7 @@ function aliasRedirect(input: VhostInput): string {
     if (input.aliases.length === 0) return ''
     return `
 <VirtualHost *:443>
-${input.aliases.map(alias => `    ServerName ${alias}`).join('\n')}
+${serverNames(input.aliases)}
 
     SSLEngine on
     SSLCertificateFile ${input.certificate.chain}
