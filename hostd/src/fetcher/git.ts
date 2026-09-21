@@ -1,5 +1,7 @@
 // Git, as a set of argument lists and one runner. Every value is validated by fetch-protocol before it
-// arrives, and `--` separates options from arguments everywhere a value could otherwise look like one.
+// arrives, and options are separated from arguments everywhere a value could otherwise look like one:
+// with `--` for the commands that take paths, and with `--verify --end-of-options` for rev-parse, which
+// treats a trailing `--` as one more thing to echo (see tipArgv).
 
 import { tail, type Runner } from '../agent/compose.ts'
 import type { Commit, FetchReply, FetchRequest } from '../shared/fetch-protocol.ts'
@@ -33,8 +35,16 @@ export const checkoutArgv = (dir: string, worktree: string, commit: string) =>
     ['-C', dir, 'worktree', 'add', '--detach', '--force', worktree, commit]
 export const logArgv = (dir: string, branch: string, limit: number) =>
     ['-C', dir, 'log', `--max-count=${limit}`, `--format=%h${FIELD}%s${FIELD}%an${FIELD}%aI${RECORD}`, `origin/${branch}`, '--']
-export const tipArgv = (dir: string, branch: string) => ['-C', dir, 'rev-parse', `origin/${branch}`, '--']
-const headArgv = (dir: string) => ['-C', dir, 'rev-parse', 'HEAD', '--']
+// The two rev-parse reads, and the one place in this file where a trailing `--` is wrong. rev-parse
+// echoes back every argument it does not consume as a revision, so `git rev-parse origin/main --` answers
+// two lines: the sha, then `--`. That second line rode out of here inside the commit, and the checkout
+// the deploy ran next refused it against GIT_COMMIT ("commit is malformed"), after the history had
+// already recorded the sha it starts with. `--end-of-options` on its own is echoed exactly the same way;
+// `--verify` is what confines the output to the single revision asked for, and is what lets
+// `--end-of-options` stand in for the separation the bare `--` was there to provide.
+export const tipArgv = (dir: string, branch: string) =>
+    ['-C', dir, 'rev-parse', '--verify', '--end-of-options', `origin/${branch}`]
+const headArgv = (dir: string) => ['-C', dir, 'rev-parse', '--verify', '--end-of-options', 'HEAD']
 // No dir: this asks the remote directly, so it needs nothing cloned yet. Reads the same way a clone or a
 // fetch does (the token already lives in git's global credential.helper, set once at fetcher boot), so an
 // ssh-style or an https repo both work exactly as they do for those verbs.

@@ -1,7 +1,8 @@
 import { describe, it } from 'node:test'
 import assert from 'node:assert/strict'
 
-import { branchesArgv, cloneArgv, checkoutArgv, fetchArgv, parseBranches, parseLog, runGit, MAX_BRANCHES } from './git.ts'
+import { branchesArgv, cloneArgv, checkoutArgv, fetchArgv, parseBranches, parseLog, runGit, tipArgv, MAX_BRANCHES } from './git.ts'
+import { GIT_COMMIT } from '../shared/registry.ts'
 import type { Runner, RunResult } from '../agent/compose.ts'
 
 const ok: RunResult = { exitCode: 0, stdout: '', stderr: '', timedOut: false }
@@ -45,6 +46,17 @@ describe('argv', () => {
     it('checks a commit out into a separate tree without touching the original', () => {
         assert.deepEqual(checkoutArgv('/var/www/b', '/var/www/b.next', 'a1b2c3d'),
             ['-C', '/var/www/b', 'worktree', 'add', '--detach', '--force', '/var/www/b.next', 'a1b2c3d'])
+    })
+
+    // rev-parse is the one command here that must not be given a trailing `--`, and the reason is that
+    // it echoes every argument it does not consume as a revision: `git rev-parse origin/main --` answers
+    // the sha AND a second line reading `--`, and `--end-of-options` on its own is echoed the same way.
+    // That trailing line rode out of the fetcher inside the commit, and the checkout that followed
+    // refused it against GIT_COMMIT. `--verify` is what confines the output to the one revision, and is
+    // what lets `--end-of-options` stay as the option-injection guard the bare `--` was there to be.
+    it('reads a tip as a bare sha: rev-parse echoes any argument it does not consume as a revision', () => {
+        assert.deepEqual(tipArgv('/var/www/b.git', 'main'),
+            ['-C', '/var/www/b.git', 'rev-parse', '--verify', '--end-of-options', 'origin/main'])
     })
 
     it('lists a remote\'s branches with no dir: this reads the remote directly, nothing on disk', () => {
@@ -129,6 +141,23 @@ describe('runGit', () => {
         const reply = await runGit({ verb: 'clone', repo: 'git@github.com:a/b.git', dir: '/var/www/b', branch: 'main' }, run)
         assert.deepEqual(reply, { ok: true, commit: 'a1b2c3d4e5f6' })
         assert.equal(runs[0]![1], 'clone')
+    })
+
+    // The commit a tip answers is handed straight back to a checkout, which validates it against
+    // GIT_COMMIT: anything riding alongside the sha fails the deploy rather than the read.
+    it('answers a tip as a commit the checkout that follows will accept', async () => {
+        const { run, runs } = recorder([{ ...ok, stdout: 'a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2\n' }])
+        const reply = await runGit({ verb: 'tip', dir: '/var/www/b.git', branch: 'main' }, run)
+        assert.deepEqual(reply, { ok: true, commit: 'a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2' })
+        assert.ok(reply.ok && reply.commit && GIT_COMMIT.test(reply.commit))
+        assert.deepEqual(runs[0]!.slice(-3), ['--verify', '--end-of-options', 'origin/main'])
+    })
+
+    it('reads the commit a clone landed on the same way, so a fresh site records a sha too', async () => {
+        const { run, runs } = recorder([ok, { ...ok, stdout: 'a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2\n' }])
+        const reply = await runGit({ verb: 'clone', repo: 'git@github.com:a/b.git', dir: '/var/www/b', branch: 'main' }, run)
+        assert.ok(reply.ok && reply.commit && GIT_COMMIT.test(reply.commit))
+        assert.deepEqual(runs[1], ['git', '-C', '/var/www/b', 'rev-parse', '--verify', '--end-of-options', 'HEAD'])
     })
 
     it('reports a failure with git\'s message, not a stack', async () => {
