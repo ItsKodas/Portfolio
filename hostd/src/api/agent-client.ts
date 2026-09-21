@@ -102,20 +102,39 @@ function openBytes(connect: Connect, request: AgentRequest) {
     let failure: Error | null = null
     let ended = false
     const queue: Buffer[] = []
-    let waiting: ((chunk: Buffer | null) => void) | null = null
+    // Holds both sides of a pending read, so a socket error can reject it directly instead of the only
+    // path being deliver(null), which a waiting reader cannot tell apart from a clean end.
+    let waiting: { resolve: (chunk: Buffer | null) => void, reject: (error: Error) => void } | null = null
+
+    const unavailable = (error: Error) => new AgentUnavailableError(`the agent connection failed: ${describeError(error)}`)
 
     const deliver = (chunk: Buffer | null) => {
         if (waiting) {
-            const resolve = waiting
+            const { resolve } = waiting
             waiting = null
             resolve(chunk)
         } else if (chunk !== null) {
             queue.push(chunk)
         }
     }
-    const onData = (chunk: Buffer) => deliver(chunk)
+    const onData = (chunk: Buffer) => {
+        deliver(chunk)
+        // Backpressure: an unconsumed chunk stays queued here rather than the socket piling more of a
+        // multi-gigabyte download in behind it. nextChunk() resumes once the consumer drains the queue.
+        if (queue.length > 0) socket.pause()
+    }
     const onEnd = () => { ended = true; deliver(null) }
-    const onError = (error: Error) => { failure = error; ended = true; deliver(null) }
+    const onError = (error: Error) => {
+        failure = error
+        ended = true
+        // A read already in flight must see the real failure, not a clean end: resolving it with null
+        // here would hand the consumer a truncated body with no error to explain the missing bytes.
+        if (waiting) {
+            const { reject } = waiting
+            waiting = null
+            reject(unavailable(error))
+        }
+    }
     socket.on('data', onData)
     socket.on('end', onEnd)
     socket.on('error', onError)
@@ -123,12 +142,16 @@ function openBytes(connect: Connect, request: AgentRequest) {
     socket.write(`${JSON.stringify(request)}\n`)
 
     function nextChunk(): Promise<Buffer | null> {
-        if (queue.length > 0) return Promise.resolve(queue.shift()!)
+        if (queue.length > 0) {
+            const chunk = queue.shift()!
+            if (queue.length === 0) socket.resume()
+            return Promise.resolve(chunk)
+        }
         if (ended) {
-            if (failure) return Promise.reject(new AgentUnavailableError(`the agent connection failed: ${describeError(failure)}`))
+            if (failure) return Promise.reject(unavailable(failure))
             return Promise.resolve(null)
         }
-        return new Promise(resolve => { waiting = resolve })
+        return new Promise((resolve, reject) => { waiting = { resolve, reject } })
     }
 
     let leftover: Buffer | null = null
@@ -143,7 +166,11 @@ function openBytes(connect: Connect, request: AgentRequest) {
                 return parseLine(buffered.subarray(0, newline).toString('utf8'))
             }
             const chunk = await nextChunk()
-            if (chunk === null) throw new AgentUnavailableError('the agent closed the connection without answering')
+            if (chunk === null) {
+                // Mirrors open()'s first(): a clean close and a real failure must not read alike.
+                const reason = failure as Error | null
+                throw new AgentUnavailableError(reason ? `the agent connection failed: ${reason.message}` : 'the agent closed the connection without answering')
+            }
             buffered = Buffer.concat([buffered, chunk])
         }
     }

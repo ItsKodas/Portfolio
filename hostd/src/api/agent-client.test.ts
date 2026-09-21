@@ -266,4 +266,71 @@ describe('download', () => {
         await closedOnAgent
         assert.equal((await iterator.next()).done, true)
     })
+
+    it('rejects the header read with the real failure reason, not the generic closed-without-answering message', async () => {
+        const client = createAgentClient(connectRaw((_server, clientSide) => {
+            setImmediate(() => clientSide.destroy(new Error('read ECONNRESET')))
+        }))
+        await assert.rejects(client.download(backup), /the agent connection failed: read ECONNRESET/)
+    })
+
+    it('rejects a pending body read with the real failure, rather than ending the body silently', async () => {
+        // A truncated body that ends quietly is indistinguishable from a complete one until someone tries
+        // to restore it. A socket failure mid-download must reject, not resolve as a clean end.
+        let server!: Duplex
+        let clientSide!: Duplex
+        const connect: Connect = () => {
+            const pair = duplexPair()
+            clientSide = pair[0]
+            server = pair[1]
+            return clientSide
+        }
+        const client = createAgentClient(connect)
+        const resultPromise = client.download(backup)
+        await new Promise<void>(resolve => server.once('data', () => resolve()))
+        server.write('{"ok":true,"stream":true}\n')
+        const result = await resultPromise
+        assert.ok(result.ok)
+        if (!result.ok) return
+        const iterator = result.body[Symbol.asyncIterator]()
+        const first = iterator.next()
+        server.write('first')
+        assert.deepEqual((await first).value, Buffer.from('first'))
+        const failing = iterator.next()
+        clientSide.destroy(new Error('read ECONNRESET'))
+        await assert.rejects(failing, /the agent connection failed: read ECONNRESET/)
+    })
+
+    it('applies backpressure while chunks are queued, and resumes once the consumer drains them', async () => {
+        // A duplexPair, not a single PassThrough: PassThrough echoes writes straight back to its own
+        // reads, which would loop the client's own request line back as if the agent had sent it.
+        const [clientSide, server] = duplexPair()
+        let pauseCalls = 0
+        let resumeCalls = 0
+        const originalPause = clientSide.pause.bind(clientSide)
+        const originalResume = clientSide.resume.bind(clientSide)
+        clientSide.pause = () => { pauseCalls += 1; return originalPause() }
+        clientSide.resume = () => { resumeCalls += 1; return originalResume() }
+
+        const client = createAgentClient(() => clientSide)
+        const resultPromise = client.download(backup)
+        await new Promise<void>(resolve => server.once('data', () => resolve()))
+        server.write('{"ok":true,"stream":true}\n')
+        const result = await resultPromise
+        assert.ok(result.ok)
+        if (!result.ok) return
+
+        // Two chunks arrive before anyone reads the body: they queue up locally, and the socket is
+        // paused rather than piling more of a multi-gigabyte download into an unbounded array.
+        server.write(Buffer.from('chunk1'))
+        server.write(Buffer.from('chunk2'))
+        server.end()
+        await new Promise(resolve => setImmediate(resolve))
+        assert.ok(pauseCalls > 0, 'expected the socket to be paused while chunks were unconsumed')
+
+        const chunks: Buffer[] = []
+        for await (const chunk of result.body) chunks.push(chunk)
+        assert.equal(Buffer.concat(chunks).toString(), 'chunk1chunk2')
+        assert.ok(resumeCalls > 0, 'expected the socket to resume once the queue was drained')
+    })
 })
