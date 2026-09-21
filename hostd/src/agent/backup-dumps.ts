@@ -71,7 +71,14 @@ export function dumpPlan(service: string, entry: ServiceEntry): DumpPlan | PlanP
         case 'redis':
             // --rdb writes to a file rather than stdout, so it goes to the container's own /tmp and is then
             // streamed out and removed. The rm runs even if cat fails, hence ';' rather than '&&'.
-            return exec(['sh', '-c', 'redis-cli --rdb /tmp/hostd-dump.rdb >/dev/null && cat /tmp/hostd-dump.rdb; rm -f /tmp/hostd-dump.rdb'], 'dump.rdb')
+            //
+            // `s=$?; rm -f ...; exit $s` is what makes the failure visible, and must not be dropped. The
+            // exit status of `A && B; C` is C's, and `rm -f` succeeds whatever happened, so without it the
+            // exec exits 0 whether redis-cli dumped, failed to authenticate, or is missing from the image
+            // entirely. backup-run.ts only has the exit code to go on, so the run would be recorded as ok
+            // with an empty dump.rdb, which is the one thing the design forbids: a failed dump fails the
+            // whole run. $? here is redis-cli's status when it failed and cat's when it did not.
+            return exec(['sh', '-c', 'redis-cli --rdb /tmp/hostd-dump.rdb >/dev/null && cat /tmp/hostd-dump.rdb; s=$?; rm -f /tmp/hostd-dump.rdb; exit $s'], 'dump.rdb')
         case 'generic':
             return { kind: 'generic', service, file: 'data' }
     }

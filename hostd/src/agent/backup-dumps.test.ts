@@ -53,11 +53,14 @@ describe('dumpPlan', () => {
         })
     })
 
-    it('streams a redis rdb out through a temporary file inside the container', () => {
+    it('streams a redis rdb out through a temporary file inside the container, and keeps its exit status', () => {
+        // The `s=$?; rm -f ...; exit $s` tail is what this assertion is really protecting. The exit status
+        // of `A && B; C` is C's, and `rm -f` always succeeds, so without it a redis-cli that failed on
+        // auth or is absent from the image exits 0 and the run is recorded as ok with an empty dump.rdb.
         const plan = dumpPlan('cache', { role: 'database', engine: 'redis', dump: {} })
         assert.deepEqual(plan, {
             kind: 'exec', service: 'cache', file: 'dump.rdb',
-            argv: ['sh', '-c', 'redis-cli --rdb /tmp/hostd-dump.rdb >/dev/null && cat /tmp/hostd-dump.rdb; rm -f /tmp/hostd-dump.rdb'],
+            argv: ['sh', '-c', 'redis-cli --rdb /tmp/hostd-dump.rdb >/dev/null && cat /tmp/hostd-dump.rdb; s=$?; rm -f /tmp/hostd-dump.rdb; exit $s'],
         })
     })
 
