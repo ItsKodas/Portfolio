@@ -145,13 +145,30 @@ async function main(): Promise<void> {
             lastTick = Date.now()
             try {
                 const registry = store.current()
+                // due() only ever considers a project in the schedules map with a mode other than off, so
+                // asking about the rest cannot change the outcome and would only spawn a restic snapshots
+                // subprocess a minute for nothing.
+                const candidates = [...registry.projects.values()]
+                    .filter(project => project.capabilities.has('backups') && schedules.get(project.id).mode !== 'off')
                 const lastRuns = new Map<string, number | null>()
-                for (const id of registry.projects.keys()) {
-                    const reply = await agent.call({ verb: 'backup', project: id, args: { action: 'list' } })
-                    const newest = reply.ok && 'runs' in reply ? reply.runs[0] : undefined
-                    lastRuns.set(id, newest ? Date.parse(newest.startedAt) : null)
+                const unreadable = new Set<string>()
+                for (const project of candidates) {
+                    // Isolated per project: a stuck restic lock or a slow snapshots listing on one large
+                    // repository must not abandon every other project's schedule for the rest of the tick.
+                    try {
+                        const reply = await agent.call({ verb: 'backup', project: project.id, args: { action: 'list' } })
+                        const newest = reply.ok && 'runs' in reply ? reply.runs[0] : undefined
+                        lastRuns.set(project.id, newest ? Date.parse(newest.startedAt) : null)
+                    } catch (error) {
+                        // One project the agent cannot describe must not stop the others being considered, and
+                        // must not be treated as never-run: the grace window would then start a run on
+                        // unknown history, duplicating a backup that had in fact just succeeded.
+                        unreadable.add(project.id)
+                        log(`WARN could not read ${project.id}'s backup history: ${describeError(error)}`)
+                    }
                 }
                 for (const { id, schedule } of schedules.due(registry, projectId => lastRuns.get(projectId) ?? null, Date.now())) {
+                    if (unreadable.has(id)) continue
                     const started = await agent.call({ verb: 'backup', project: id, args: { action: 'run', tag: 'scheduled', keep: schedule.keep } })
                     // A refusal here is ordinary: another backup may hold the dedi-wide lock, and the next
                     // tick tries again because the slot is still unsatisfied.
@@ -159,6 +176,8 @@ async function main(): Promise<void> {
                     else log(`scheduled backup for ${id} started`)
                 }
             } catch (error) {
+                // Last resort: the loop above now isolates every per-project failure itself, so this guards
+                // only the tick's own bookkeeping, such as store.current() throwing.
                 log(`WARN the backup schedule tick failed: ${describeError(error)}`)
             }
         }

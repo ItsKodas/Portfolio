@@ -299,7 +299,8 @@ async function main(): Promise<void> {
         // deploy this starts is never awaited, so a build cannot hold up the loop or the other sites.
         await deployPoller.tick()
         // Prunes are expensive and take the repository lock, so they never run while a backup might want
-        // it, and they are skipped rather than queued: next week is soon enough.
+        // it. lastPrune only advances once the sweep actually runs, so a busy runner does not defer this a
+        // week: the loop's own 10 second cadence simply polls again until a free moment shows up.
         if (Date.now() - lastPrune >= PRUNE_MS && !backupRunner.isBusy()) {
             for (const project of store.current().projects.values()) {
                 if (!project.capabilities.has('backups')) continue
