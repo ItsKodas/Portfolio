@@ -76,9 +76,11 @@ export async function runBackup(project: ProjectEntry, request: BackupRequest, d
         for (const plan of planned.plans) {
             const target = posix.join(staging, 'db', plan.service)
             await deps.fs.mkdir(target)
+            // A generic dump stops the service to copy it, so the run is disruptive from the moment it
+            // starts, whether or not the copy then succeeds.
+            if (plan.kind === 'generic') disruptive = true
             const failure = await dump(plan, posix.join(target, plan.file), project, live.dir, containers, deps)
             if (failure) return record('failed', null, failure)
-            if (plan.kind === 'generic') disruptive = true
         }
 
         // One capture of staging and every storage directory, whatever its mode: hidden storage is backed
@@ -99,7 +101,8 @@ export async function runBackup(project: ProjectEntry, request: BackupRequest, d
         return record('failed', null, describeError(error))
     } finally {
         // Whatever happened: a dump left behind is a copy of the client's database sitting outside the
-        // repository, and the next run would capture it again.
+        // repository, and the next run would capture it again. Safe even when staging was never created,
+        // since dumpPlans can fail before the mkdir above runs.
         await deps.fs.remove(staging).catch(error => deps.log(`WARN backup ${project.id}: staging could not be cleared: ${describeError(error)}`))
     }
 }
@@ -123,6 +126,7 @@ async function dump(
     if (plan.kind === 'generic') {
         // The fallback for an engine with no dump method: stop it, copy what it has bind-mounted, start it
         // again. Briefly disruptive, and the caller marks the record so the portal can say so.
+        await deps.fs.mkdir(target)
         const resolved = await resolveCompose({ dir, composePaths: project.composePaths }, deps.runner)
         if (!resolved.ok) return `${plan.service}: ${resolved.problem}`
         const sources = (resolved.resolved.services[plan.service]?.volumes ?? [])
@@ -134,11 +138,13 @@ async function dump(
         if (stopped.exitCode !== 0) return `${plan.service}: could not be stopped to copy its data`
         try {
             for (const source of sources) await deps.fs.copy(source, posix.join(target, posix.basename(source)))
+            return null
+        } catch (error) {
+            return `${plan.service}: ${describeError(error)}`
         } finally {
             const started = await deps.runner('docker', [...base, 'start', plan.service], LIFECYCLE_TIMEOUT_MS)
             if (started.exitCode !== 0) deps.log(`WARN backup ${project.id}: ${plan.service} did not start again after a generic dump`)
         }
-        return null
     }
 
     const container = containers.get(plan.service)
@@ -155,6 +161,9 @@ async function dump(
         return null
     } catch (error) {
         sink.end()
+        // Waited the same as the success path, so the file is settled before staging is removed; a
+        // problem here must not replace the dump's own failure reason with a stream one.
+        await done.catch(() => {})
         return `${plan.service}: ${describeError(error)}`
     }
 }

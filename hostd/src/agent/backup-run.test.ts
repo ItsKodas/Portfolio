@@ -132,4 +132,24 @@ describe('runBackup', () => {
         assert.ok(joined.some(line => line.includes('stop db')), 'the service is stopped')
         assert.ok(joined.some(line => line.includes('start db')), 'and started again')
     })
+
+    it('creates the repository when it does not already exist, and the run still succeeds', async () => {
+        const { deps } = setup()
+        const inits: string[] = []
+        deps.fs.exists = async () => false
+        deps.restic.init = async repo => { inits.push(repo); return { ok: true } }
+        const record = await runBackup(project(), { tag: 'manual', actor: 'client', run: 'run1', keep: null }, deps)
+        assert.equal(record.outcome, 'ok')
+        assert.deepEqual(inits, ['/backups/acme'])
+    })
+
+    it('fails the run and never calls restic backup when restic init fails', async () => {
+        const { deps, backups } = setup()
+        deps.fs.exists = async () => false
+        deps.restic.init = async () => ({ ok: false, reason: 'restic init exited with code 1', output: 'no such directory' })
+        const record = await runBackup(project(), { tag: 'manual', actor: 'client', run: 'run1', keep: null }, deps)
+        assert.equal(record.outcome, 'failed')
+        assert.match(record.reason ?? '', /restic init exited with code 1/)
+        assert.deepEqual(backups, [])
+    })
 })
