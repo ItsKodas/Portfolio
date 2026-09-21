@@ -99,6 +99,18 @@ describe('gatherSite', () => {
         if (view.kind === 'site') expect(view.capabilities).toEqual(['lifecycle', 'logs'])
     })
 
+    // The page draws the dashboard's nav, which is every site this caller may see. The listing is already
+    // in hand by then, so carrying it costs nothing and asking hostd twice would.
+    it('carries the sites the nav draws, which is only ever this caller own listing', async () => {
+        const view = await gatherSite(deps({
+            listProjects: async () => ({
+                ok: true as const,
+                value: [{ id: 'asot', name: 'ASOT', valid: true }, { id: 'pmpc', name: 'PMPC', valid: true }],
+            }),
+        }), 'asot')
+        if (view.kind === 'site') expect(view.sites.map(site => site.id)).toEqual(['asot', 'pmpc'])
+    })
+
     // A registry entry hostd itself could not parse is answered with an id and a reason and no name
     it('falls back to the id when the project has no name', async () => {
         const view = await gatherSite(deps({

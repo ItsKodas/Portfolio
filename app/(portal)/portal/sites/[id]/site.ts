@@ -36,6 +36,9 @@ export type SiteView =
         isAdmin: boolean
         capabilities: string[]
         services: ServiceStatus[]
+        // Every site this caller may see, for the nav the dashboard draws. It is hostd's own listing,
+        // which is already scoped to the caller, so this is never wider than what they could see there.
+        sites: Project[]
         // hostd's own words for the operator, a fixed sentence for a client, null when nothing is wrong
         trouble: string | null
     }
@@ -72,6 +75,7 @@ export async function gatherSite(deps: SiteDeps, id: string): Promise<SiteView> 
             isAdmin,
             capabilities: [],
             services: [],
+            sites: [],
             trouble: troubleFor(isAdmin, config),
         }
     }
@@ -87,6 +91,7 @@ export async function gatherSite(deps: SiteDeps, id: string): Promise<SiteView> 
             isAdmin,
             capabilities: [],
             services: [],
+            sites: [],
             trouble: troubleFor(isAdmin, projects),
         }
     }
@@ -107,6 +112,7 @@ export async function gatherSite(deps: SiteDeps, id: string): Promise<SiteView> 
         isAdmin,
         capabilities: project.capabilities ?? [],
         services: status.ok ? status.value : [],
+        sites: projects.value,
         trouble: status.ok ? null : troubleFor(isAdmin, status),
     }
 }
