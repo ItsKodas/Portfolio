@@ -200,6 +200,31 @@ projects:
         assert.match(result.ok === false ? result.message : '', /no domain/)
     })
 
+    // The registry's uniqueness rule only sees hostd's own entries. Apache does not refuse two vhosts
+    // claiming one hostname either: it warns and serves whichever loaded first.
+    it('refuses an alias a hand-written vhost already claims, naming the file', async () => {
+        const { deps, sent, project, environment } = setup()
+        deps.listSitesEnabled = async () => [
+            { path: '/etc/apache2/sites-enabled/legacy.conf', text: 'ServerName legacy.example\nServerAlias shop.acme.com\n' },
+        ]
+        const result = await setAliases(deps, project, environment, ['www.acme.com', 'shop.acme.com'], 'abc123')
+        assert.equal(result.ok, false)
+        assert.match(result.ok === false ? result.message : '', /shop\.acme\.com is already served by \/etc\/apache2\/sites-enabled\/legacy\.conf/)
+        // Refused before the registry is touched, let alone Apache.
+        assert.equal(sent.length, 0)
+    })
+
+    // Otherwise removing one alias would be refused because an unrelated one, accepted long ago, is
+    // claimed by a file nobody is proposing to change.
+    it('does not re-check the names the environment already serves', async () => {
+        const { deps, project, environment } = setup()
+        deps.listSitesEnabled = async () => [
+            { path: '/etc/apache2/sites-enabled/acme.conf', text: 'ServerName acme.com\nServerAlias www.acme.com\n' },
+        ]
+        const result = await setAliases(deps, project, environment, ['www.acme.com'], 'abc123')
+        assert.equal(result.ok, true)
+    })
+
     it('renders the vhost from the reloaded entry, not from the arguments', async () => {
         const { deps, sent, project, environment } = setup()
         // The registry accepted only one of the two: the second was already taken by another project.
