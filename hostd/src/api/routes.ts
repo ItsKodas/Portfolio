@@ -1023,14 +1023,11 @@ export function createHandler(deps: ApiDeps): (req: IncomingMessage, res: Server
                     return refuseRoute(502, 'failed', 'the agent did not answer the preview with one', entry.id, 'domains', target)
                 }
 
+                // Whatever the preview found, including nothing. An environment nobody hand-wrote a file
+                // for has nothing to displace, and adopt is the only route to a vhost hostd owns: were
+                // an empty list refused here, a newly provisioned site would sit with a domain in the
+                // registry and no vhost forever.
                 const { claims, adoptable } = preview.preview
-                if (claims.length === 0) {
-                    return refuseRoute(
-                        400, 'bad-request',
-                        `no file in sites-enabled serves ${entry.id} ${environment.name}, so there is nothing to adopt`,
-                        entry.id, 'domains', target,
-                    )
-                }
                 if (!adoptable) {
                     const unreadable = claims.filter(claim => claim.unsupported !== null).map(claim => `${claim.path} (${claim.unsupported})`)
                     return refuseRoute(400, 'bad-request', `these cannot be read well enough to adopt: ${unreadable.join(', ')}`, entry.id, 'domains', target)

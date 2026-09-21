@@ -385,7 +385,11 @@ export function parseDomainsArgs(args: unknown): { ok: true, args: DomainsArgs }
             const value = token()
             if (value === null) return refuse('bad-request', 'token must be lowercase hex')
             const disable = args.disable
-            if (!Array.isArray(disable) || disable.length === 0) return refuse('bad-request', 'adopt must name at least one file to disable')
+            // An empty list is allowed, and deliberately so: adopt is the only route to a vhost hostd
+            // owns, and an environment nobody has hand-written a file for has nothing to displace. What
+            // adopt means is "hostd owns this environment's vhost from now on, moving aside whatever
+            // was in the way, if anything", not "there must have been something in the way".
+            if (!Array.isArray(disable)) return refuse('bad-request', 'disable must be a list of files to move aside')
             for (const path of disable) {
                 if (typeof path !== 'string' || !path.startsWith(SITES_ENABLED) || path.includes('/..') || path.includes('/.')) {
                     return refuse('bad-request', 'every disable entry must be a plain path inside sites-enabled')

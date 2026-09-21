@@ -248,6 +248,27 @@ describe('parseDomainsArgs', () => {
         }
     })
 
+    // An environment nothing currently serves has nothing to move aside, and adopt is the only route to
+    // a vhost hostd owns, so refusing an empty list would leave such a site with no way to get one.
+    it('accepts an adopt that disables nothing', () => {
+        const parsed = ok({ action: 'adopt', environment: 'live', token: 'abc123', disable: [] })
+        assert.deepEqual(parsed.ok && parsed.args, { action: 'adopt', environment: 'live', token: 'abc123', disable: [] })
+    })
+
+    it('still refuses a bad path inside a list that is not empty', () => {
+        for (const bad of ['/etc/passwd', '/etc/apache2/sites-enabled/../../passwd', '/etc/apache2/sites-enabled/.hidden']) {
+            const parsed = parseDomainsArgs({
+                action: 'adopt', environment: 'live', token: 'abc123',
+                disable: ['/etc/apache2/sites-enabled/acme.conf', bad],
+            })
+            assert.equal(parsed.ok, false, bad)
+        }
+    })
+
+    it('refuses a disable that is not a list at all', () => {
+        assert.equal(parseDomainsArgs({ action: 'adopt', environment: 'live', token: 'abc123', disable: '/etc/apache2/sites-enabled/acme.conf' }).ok, false)
+    })
+
     it('refuses a disable entry that is not inside sites-enabled', () => {
         const parsed = parseDomainsArgs({ action: 'adopt', environment: 'live', token: 'abc123', disable: ['/etc/passwd'] })
         assert.equal(parsed.ok, false)

@@ -1048,17 +1048,28 @@ describe('GET|POST /projects/:id/:env/adopt', () => {
         assert.deepEqual([entry?.verb, entry?.target, entry?.outcome], ['domains', 'acme.example', 'ok'])
     })
 
-    it('refuses when nothing in sites-enabled serves these names, or when a claim cannot be read', async () => {
-        agent.reply = () => preview({ claims: [] })
-        const nothing = await request('/projects/acme/live/adopt', { method: 'POST', actor: 'admin', body: { confirm: 'Acme' } })
-        assert.equal(nothing.status, 400)
+    // Adopt is the only route to a vhost hostd owns, so an environment nobody hand-wrote a file for has
+    // to be able to take it: otherwise a newly provisioned site keeps its registry domain and never gets
+    // a vhost at all.
+    it('adopts an environment nothing claims, disabling nothing', async () => {
+        await seedDomains([domainRecord({ token: TOKEN_IN_PLACE })])
+        agent.reply = request => request.verb === 'domains' && request.args.action === 'preview' ? preview({ claims: [] }) : WRITTEN
+        const response = await request('/projects/acme/live/adopt', { method: 'POST', actor: 'admin', body: { confirm: 'Acme' } })
+        assert.equal(response.status, 200)
+        assert.deepEqual(agent.calls[1], {
+            verb: 'domains', project: 'acme',
+            args: { action: 'adopt', environment: 'live', token: TOKEN_IN_PLACE, disable: [] },
+        })
+        assert.equal(domains.get(domainKey('acme', 'live', 'acme.example'))?.state, 'pending')
+    })
 
+    it('refuses when a claim cannot be read, naming the file', async () => {
         agent.reply = () => preview({ claims: [{ ...claim, unsupported: 'an IncludeOptional this parser cannot follow' }], adoptable: false })
         const unreadable = await request('/projects/acme/live/adopt', { method: 'POST', actor: 'admin', body: { confirm: 'Acme' } })
         assert.equal(unreadable.status, 400)
         assert.equal((await unreadable.json() as { message: string }).message.includes(claim.path), true)
-        // The preview in each case, and never the adopt that would have moved a file.
-        assert.equal(agent.calls.length, 2)
+        // The preview, and never the adopt that would have moved a file.
+        assert.equal(agent.calls.length, 1)
     })
 })
 
