@@ -212,6 +212,67 @@ describe('the site page', () => {
     })
 })
 
+describe('the settings tab', () => {
+    it('gives the operator a Settings tab', async () => {
+        render(await page())
+        expect(screen.getByRole('tab', { name: 'Settings' })).toBeInTheDocument()
+    })
+
+    it('gives a client none, because what their site is allowed to do is not theirs to see', async () => {
+        callerFromSession.mockResolvedValue(client)
+        render(await page())
+        expect(screen.queryByRole('tab', { name: 'Settings' })).toBeNull()
+    })
+
+    it('lands a client asking for it on Overview', async () => {
+        callerFromSession.mockResolvedValue(client)
+        render(await page({ tab: 'settings' }))
+        expect(screen.getByRole('tab', { name: 'Overview' })).toHaveAttribute('aria-selected', 'true')
+    })
+
+    it('shows the form with the entry as it stands', async () => {
+        listProjects.mockResolvedValue({ ok: true, value: [
+            { id: 'asot', name: 'ASOT', valid: true, capabilities: ['lifecycle'], repo: 'git@github.com:ItsKodas/asot.git', environments: [{ name: 'live', branch: null }] },
+        ] })
+        render(await page({ tab: 'settings' }))
+        expect(screen.getByLabelText(/repo/i)).toHaveValue('git@github.com:ItsKodas/asot.git')
+    })
+
+    // configure runs the same checkStructure every verb does, so hostd would refuse it the same way
+    it('offers no form for an entry the registry could not parse', async () => {
+        listProjects.mockResolvedValue({ ok: true, value: [{ id: 'asot', valid: false, reason: 'dir must be /var/www/<one segment>', environments: [] }] })
+        render(await page({ tab: 'settings' }))
+        expect(screen.getByText(/dir must be/)).toBeInTheDocument()
+        expect(screen.queryByRole('button', { name: /save/i })).toBeNull()
+    })
+
+    // Rendering the form here would show eight unticked capability boxes over a site that may have every
+    // one of them on: nothing about the project is actually known when hostd could not be reached.
+    it('offers no form, only hostd\'s own trouble, when hostd could not be reached at all', async () => {
+        delete process.env.HOSTD_URL
+        render(await page({ tab: 'settings' }))
+        const panel = within(screen.getByRole('tabpanel'))
+        expect(panel.getByText(/HOSTD_URL/)).toBeInTheDocument()
+        expect(screen.queryByRole('button', { name: /save/i })).toBeNull()
+        expect(screen.queryByLabelText(/repo/i)).toBeNull()
+    })
+})
+
+describe('the environment tab', () => {
+    it('disables the Environment tab until the capability is on, and says where it is turned on', async () => {
+        listProjects.mockResolvedValue({ ok: true, value: [{ id: 'asot', name: 'ASOT', valid: true, capabilities: ['lifecycle'], environments: [] }] })
+        render(await page({ tab: 'env' }))
+        expect(screen.getByRole('tab', { name: 'Environment' })).toHaveAttribute('aria-disabled', 'true')
+        expect(screen.getByText(/Settings tab/)).toBeInTheDocument()
+    })
+
+    it('enables it once it is', async () => {
+        listProjects.mockResolvedValue({ ok: true, value: [{ id: 'asot', name: 'ASOT', valid: true, capabilities: ['lifecycle', 'env'], environments: [] }] })
+        render(await page())
+        expect(screen.getByRole('tab', { name: 'Environment' })).not.toHaveAttribute('aria-disabled')
+    })
+})
+
 describe('the deploys tab', () => {
     it('stays disabled, and says why, for a site hostd has no deploys for', async () => {
         // The default listing above carries no deploy capability, so hostd would refuse every call the
