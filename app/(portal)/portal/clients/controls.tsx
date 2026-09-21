@@ -4,18 +4,19 @@
 // successful action refreshes the page itself (the actions revalidate it), same shape as the quote controls.
 
 import { useState } from 'react'
-import {
-    Alert, Box, Button, Dialog, DialogActions, DialogContent, DialogContentText, DialogTitle,
-    IconButton, Stack, TextField, Typography,
-} from '@mui/material'
-import { ContentCopy, DeleteOutline } from '@mui/icons-material'
 
 import { siteSchema } from '@/server/clients/schema'
+import { Button } from '@/ui/Button/Button'
+import { Callout } from '@/ui/Callout/Callout'
+import { Dialog } from '@/ui/Dialog/Dialog'
+import { Field } from '@/ui/Field/Field'
+import { ContentCopy, DeleteOutline } from '@/ui/icons'
 import {
     addSiteAction, clearLockAction, createClientAction, deleteClientAction, removeSiteAction,
     resendInviteAction, resetTwoFactorAction, sendResetAction, setSuspendedAction, updateClientAction,
     type AdminResult,
 } from './actions'
+import styles from './controls.module.css'
 
 function useAction() {
     const [pending, setPending] = useState(false)
@@ -38,7 +39,11 @@ function useAction() {
     return { pending, error: failure?.error ?? null, failure, run }
 }
 
-const Problem = ({ error }: { error: string | null }) => (error ? <Alert severity="error" sx={{ mt: 1 }}>{error}</Alert> : null)
+// The error is the whole message, as it was in the Alert this replaces, so it goes in the title rather than
+// being split into a heading and a body that nobody wrote. Callout's crit tone announces it either way.
+const Problem = ({ error }: { error: string | null }) => (
+    error ? <div className={styles.problem}><Callout tone="crit" title={error}>{null}</Callout></div> : null
+)
 
 // The id is what gets typed by hand into hostd's projects.yaml, so copying it correctly matters more than usual
 export function ClientId({ id }: { id: string }) {
@@ -55,18 +60,18 @@ export function ClientId({ id }: { id: string }) {
     }
 
     return (
-        <Box>
-            <Stack direction="row" sx={{ alignItems: 'center', gap: 1 }}>
-                <Typography component="span" sx={{ fontFamily: 'monospace' }}>{id}</Typography>
-                <IconButton size="small" aria-label="Copy client id" onClick={copy}>
-                    <ContentCopy fontSize="small" />
-                </IconButton>
-                {copied && <Typography variant="caption" color="success.main">Copied</Typography>}
-            </Stack>
-            <Typography variant="caption" color="text.secondary">
+        <div>
+            <div className={styles.idLine}>
+                <span className={styles.id}>{id}</span>
+                <Button variant="quiet" size="small" aria-label="Copy client id" onClick={copy}>
+                    <ContentCopy size={15} />
+                </Button>
+                {copied && <span className={styles.copied}>Copied</span>}
+            </div>
+            <p className={styles.note}>
                 Use this as <code>client:</code> in hostd&apos;s projects.yaml
-            </Typography>
-        </Box>
+            </p>
+        </div>
     )
 }
 
@@ -90,18 +95,24 @@ export function ClientForm({ fromQuoteId, initial, clientId }: {
 
     return (
         <form onSubmit={event => { event.preventDefault(); submit() }}>
-            <Stack sx={{ gap: 2, maxWidth: 420 }}>
-                <TextField label="Name" value={name} onChange={event => setName(event.target.value)} required />
-                <TextField label="Company" value={company} onChange={event => setCompany(event.target.value)} />
-                <TextField label="Email" type="email" value={email} onChange={event => setEmail(event.target.value)} required />
-                <Button type="submit" variant="contained" disabled={pending}>{clientId ? 'Save' : 'Create client'}</Button>
-            </Stack>
+            <div className={styles.fields}>
+                <Field label="Name" value={name} onChange={event => setName(event.target.value)} required />
+                <Field label="Company" value={company} onChange={event => setCompany(event.target.value)} />
+                <Field label="Email" type="email" value={email} onChange={event => setEmail(event.target.value)} required />
+                <div>
+                    <Button type="submit" variant="primary" disabled={pending}>{clientId ? 'Save' : 'Create client'}</Button>
+                </div>
+            </div>
             <Problem error={error} />
             {failure?.clientId && (
-                <Alert severity="info" sx={{ mt: 1 }}>
-                    <a href={`/admin/clients/${failure.clientId}`} style={{ color: 'inherit' }}>Open that client&apos;s page</a>
-                    {fromQuoteId ? ' to link this quote to them instead.' : ' instead of creating a duplicate.'}
-                </Alert>
+                <div className={styles.problem}>
+                    {/* Callout's title is a string and this one is a sentence with a link in it, so the
+                        sentence stays in the body word for word and the title names what it is about. */}
+                    <Callout title="That client already exists">
+                        <a href={`/admin/clients/${failure.clientId}`} className={styles.link}>Open that client&apos;s page</a>
+                        {fromQuoteId ? ' to link this quote to them instead.' : ' instead of creating a duplicate.'}
+                    </Callout>
+                </div>
             )}
         </form>
     )
@@ -111,7 +122,7 @@ export function ResendInviteButton({ clientId }: { clientId: string }) {
     const { pending, error, run } = useAction()
     return (
         <div>
-            <Button variant="outlined" disabled={pending} onClick={() => run(() => resendInviteAction(clientId))}>Resend invite</Button>
+            <Button disabled={pending} onClick={() => run(() => resendInviteAction(clientId))}>Resend invite</Button>
             <Problem error={error} />
         </div>
     )
@@ -121,7 +132,7 @@ export function SendResetButton({ clientId }: { clientId: string }) {
     const { pending, error, run } = useAction()
     return (
         <div>
-            <Button variant="outlined" disabled={pending} onClick={() => run(() => sendResetAction(clientId))}>Send password reset</Button>
+            <Button disabled={pending} onClick={() => run(() => sendResetAction(clientId))}>Send password reset</Button>
             <Problem error={error} />
         </div>
     )
@@ -131,7 +142,7 @@ export function SuspendButton({ clientId, suspended }: { clientId: string, suspe
     const { pending, error, run } = useAction()
     return (
         <div>
-            <Button variant="outlined" color={suspended ? 'success' : 'warning'} disabled={pending}
+            <Button className={suspended ? styles.good : styles.warn} disabled={pending}
                 onClick={() => run(() => setSuspendedAction(clientId, !suspended))}>
                 {suspended ? 'Unsuspend' : 'Suspend'}
             </Button>
@@ -144,7 +155,7 @@ export function ClearLockButton({ clientId }: { clientId: string }) {
     const { pending, error, run } = useAction()
     return (
         <div>
-            <Button variant="outlined" disabled={pending} onClick={() => run(() => clearLockAction(clientId))}>Clear lock</Button>
+            <Button disabled={pending} onClick={() => run(() => clearLockAction(clientId))}>Clear lock</Button>
             <Problem error={error} />
         </div>
     )
@@ -155,22 +166,25 @@ export function ResetTwoFactorButton({ clientId }: { clientId: string }) {
     const [confirming, setConfirming] = useState(false)
     return (
         <div>
-            <Button variant="outlined" color="warning" disabled={pending} onClick={() => setConfirming(true)}>Reset 2FA</Button>
+            <Button className={styles.warn} disabled={pending} onClick={() => setConfirming(true)}>Reset 2FA</Button>
             <Problem error={error} />
-            <Dialog open={confirming} onClose={() => setConfirming(false)}>
-                <DialogTitle>Reset two-factor authentication?</DialogTitle>
-                <DialogContent>
-                    <DialogContentText>
-                        This wipes the authenticator, every recovery code and every open session. The client will
-                        need to set up a new authenticator app next time they sign in.
-                    </DialogContentText>
-                </DialogContent>
-                <DialogActions>
-                    <Button onClick={() => setConfirming(false)}>Cancel</Button>
-                    <Button color="warning" disabled={pending} onClick={() => run(() => resetTwoFactorAction(clientId), () => setConfirming(false))}>
-                        Reset 2FA
-                    </Button>
-                </DialogActions>
+            <Dialog
+                open={confirming}
+                onClose={() => setConfirming(false)}
+                title="Reset two-factor authentication?"
+                footer={
+                    <>
+                        <Button onClick={() => setConfirming(false)}>Cancel</Button>
+                        <Button className={styles.warn} disabled={pending} onClick={() => run(() => resetTwoFactorAction(clientId), () => setConfirming(false))}>
+                            Reset 2FA
+                        </Button>
+                    </>
+                }
+            >
+                <p className={styles.dialogText}>
+                    This wipes the authenticator, every recovery code and every open session. The client will
+                    need to set up a new authenticator app next time they sign in.
+                </p>
             </Dialog>
         </div>
     )
@@ -181,20 +195,23 @@ export function DeleteClientButton({ clientId }: { clientId: string }) {
     const [confirming, setConfirming] = useState(false)
     return (
         <div>
-            <Button variant="outlined" color="error" disabled={pending} onClick={() => setConfirming(true)}>Delete</Button>
+            <Button className={styles.crit} disabled={pending} onClick={() => setConfirming(true)}>Delete</Button>
             <Problem error={error} />
-            <Dialog open={confirming} onClose={() => setConfirming(false)}>
-                <DialogTitle>Delete this client?</DialogTitle>
-                <DialogContent>
-                    <DialogContentText>
-                        This removes the client, their sites, sessions and recovery codes entirely. It can&apos;t be
-                        undone from here.
-                    </DialogContentText>
-                </DialogContent>
-                <DialogActions>
-                    <Button onClick={() => setConfirming(false)}>Cancel</Button>
-                    <Button color="error" disabled={pending} onClick={() => run(() => deleteClientAction(clientId))}>Delete</Button>
-                </DialogActions>
+            <Dialog
+                open={confirming}
+                onClose={() => setConfirming(false)}
+                title="Delete this client?"
+                footer={
+                    <>
+                        <Button onClick={() => setConfirming(false)}>Cancel</Button>
+                        <Button className={styles.crit} disabled={pending} onClick={() => run(() => deleteClientAction(clientId))}>Delete</Button>
+                    </>
+                }
+            >
+                <p className={styles.dialogText}>
+                    This removes the client, their sites, sessions and recovery codes entirely. It can&apos;t be
+                    undone from here.
+                </p>
             </Dialog>
         </div>
     )
@@ -208,11 +225,11 @@ export function AddSiteForm({ clientId }: { clientId: string }) {
 
     return (
         <form onSubmit={event => { event.preventDefault(); run(() => addSiteAction(clientId, { projectId, name }), () => { setProjectId(''); setName('') }) }}>
-            <Stack direction="row" sx={{ gap: 1, flexWrap: 'wrap', alignItems: 'flex-start' }}>
-                <TextField size="small" label="Project id" value={projectId} onChange={event => setProjectId(event.target.value)} />
-                <TextField size="small" label="Site name" value={name} onChange={event => setName(event.target.value)} />
-                <Button type="submit" variant="outlined" disabled={pending || !valid}>Add site</Button>
-            </Stack>
+            <div className={styles.addSite}>
+                <Field label="Project id" value={projectId} onChange={event => setProjectId(event.target.value)} />
+                <Field label="Site name" value={name} onChange={event => setName(event.target.value)} />
+                <Button type="submit" className={styles.addSiteButton} disabled={pending || !valid}>Add site</Button>
+            </div>
             <Problem error={error} />
         </form>
     )
@@ -222,9 +239,9 @@ export function RemoveSiteButton({ clientId, siteId }: { clientId: string, siteI
     const { pending, error, run } = useAction()
     return (
         <>
-            <IconButton size="small" aria-label="Remove site" disabled={pending} onClick={() => run(() => removeSiteAction(clientId, siteId))}>
-                <DeleteOutline fontSize="small" />
-            </IconButton>
+            <Button variant="quiet" size="small" aria-label="Remove site" disabled={pending} onClick={() => run(() => removeSiteAction(clientId, siteId))}>
+                <DeleteOutline size={15} />
+            </Button>
             <Problem error={error} />
         </>
     )

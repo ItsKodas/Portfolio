@@ -103,6 +103,50 @@
     color: var(--ink-3);
 }
 
+/* A link painted as a button, which is what `Button component={Link}` was. ui/Button is a real <button>
+   and stays one: going somewhere is a link, and only the paint is shared. */
+.action {
+    display: inline-block;
+    font-size: 12.5px;
+    font-weight: 500;
+    line-height: 1.5;
+    padding: 6px 12px;
+    border: 1px solid var(--rule-hi);
+    border-radius: var(--radius-control);
+    color: var(--ink-2);
+    text-decoration: none;
+    white-space: nowrap;
+}
+
+.action:hover {
+    background: var(--panel-hi);
+    color: var(--ink);
+}
+
+.action:focus-visible {
+    outline: 2px solid var(--lake);
+    outline-offset: 2px;
+}
+
+.actionPrimary {
+    background: var(--lake);
+    border-color: var(--lake);
+    color: var(--night);
+    font-weight: 600;
+}
+
+.actionPrimary:hover {
+    background: var(--lake-hi);
+    border-color: var(--lake-hi);
+    color: var(--night);
+}
+
+.actionSmall {
+    font-size: 11.5px;
+    padding: 3px 9px;
+    border-radius: var(--radius-chip);
+}
+
 .rule {
     border: 0;
     border-top: 1px solid var(--rule);

@@ -1,12 +1,14 @@
 import type { Metadata } from 'next'
 import Link from 'next/link'
-import { Box, Button, Chip, Container, Paper, Table, TableBody, TableCell, TableContainer, TableHead, TableRow, Typography } from '@mui/material'
 
 import { requireAdmin } from '@/server/auth'
 import { repo } from '@/server/clients/wiring'
+import { Chip } from '@/ui/Chip/Chip'
+import { DataTable } from '@/ui/DataTable/DataTable'
 import { formatWhen } from '../format'
 import AdminHeader from '../adminHeader'
-import { STATE_COLOURS, clientState } from './state'
+import frame from '../frame.module.css'
+import { STATE_TONES, clientState } from './state'
 
 export const metadata: Metadata = { title: 'Clients' }
 
@@ -15,50 +17,37 @@ export default async function ClientsPage() {
     const clients = await repo().list()
     const now = new Date()
 
-    return (
-        <Container maxWidth="lg" sx={{ pb: 6 }}>
-            <AdminHeader />
-            <Box sx={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', gap: 2, mb: 3, flexWrap: 'wrap' }}>
-                <Typography variant="h4" component="h1" sx={{ fontWeight: 700 }}>Clients</Typography>
-                <Button variant="contained" component={Link} href="/admin/clients/new">New client</Button>
-            </Box>
+    const columns = [
+        { key: 'name', head: 'Name' },
+        { key: 'company', head: 'Company' },
+        { key: 'email', head: 'Email' },
+        { key: 'status', head: 'Status' },
+        { key: 'sites', head: 'Sites', numeric: true },
+        { key: 'signedIn', head: 'Last sign-in', numeric: true },
+    ]
 
-            {clients.length === 0 ? (
-                <Typography color="text.secondary">No clients yet.</Typography>
-            ) : (
-                <Paper>
-                    <TableContainer>
-                        <Table size="small">
-                            <TableHead>
-                                <TableRow>
-                                    <TableCell>Name</TableCell>
-                                    <TableCell>Company</TableCell>
-                                    <TableCell>Email</TableCell>
-                                    <TableCell>Status</TableCell>
-                                    <TableCell>Sites</TableCell>
-                                    <TableCell>Last sign-in</TableCell>
-                                </TableRow>
-                            </TableHead>
-                            <TableBody>
-                                {clients.map(client => (
-                                    <TableRow key={client.id} hover>
-                                        <TableCell>
-                                            <Link href={`/admin/clients/${client.id}`} style={{ color: 'inherit', fontWeight: 600 }}>{client.name}</Link>
-                                        </TableCell>
-                                        <TableCell>{client.company}</TableCell>
-                                        <TableCell>{client.email}</TableCell>
-                                        <TableCell>
-                                            <Chip size="small" label={clientState(client, now)} color={STATE_COLOURS[clientState(client, now)]} />
-                                        </TableCell>
-                                        <TableCell>{client._count.sites}</TableCell>
-                                        <TableCell sx={{ whiteSpace: 'nowrap' }}>{client.lastSignInAt ? formatWhen(client.lastSignInAt) : 'Never'}</TableCell>
-                                    </TableRow>
-                                ))}
-                            </TableBody>
-                        </Table>
-                    </TableContainer>
-                </Paper>
-            )}
-        </Container>
+    const rows = clients.map(client => {
+        const state = clientState(client, now)
+        return {
+            name: <Link href={`/admin/clients/${client.id}`} className={frame.plainLink}>{client.name}</Link>,
+            company: client.company,
+            email: client.email,
+            status: <Chip tone={STATE_TONES[state]}>{state}</Chip>,
+            sites: client._count.sites,
+            signedIn: client.lastSignInAt ? formatWhen(client.lastSignInAt) : 'Never',
+        }
+    })
+
+    return (
+        <div className={frame.page}>
+            <AdminHeader />
+            <div className={[frame.head, frame.headSpread].join(' ')}>
+                <h1 className={frame.title}>Clients</h1>
+                <Link href="/admin/clients/new" className={[frame.action, frame.actionPrimary].join(' ')}>New client</Link>
+            </div>
+
+            {/* DataTable prints its own line rather than headings over nothing, so the page has no empty state of its own */}
+            <DataTable label="Clients" columns={columns} rows={rows} empty="No clients yet." />
+        </div>
     )
 }

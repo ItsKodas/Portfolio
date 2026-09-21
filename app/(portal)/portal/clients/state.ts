@@ -14,10 +14,12 @@ export function clientState(client: Fields, now: Date): ClientState {
     return 'Active'
 }
 
-export const STATE_COLOURS: Record<ClientState, 'default' | 'info' | 'warning' | 'error' | 'success'> = {
-    Invited: 'info',
-    'Setup incomplete': 'warning',
-    Suspended: 'error',
-    Locked: 'warning',
-    Active: 'success',
+// ui/Chip has three tones and a neutral. Invited was MUI's `info`, which has no tone here and is not a
+// problem, so it takes the neutral chip rather than borrowing a colour that would read as a warning.
+export const STATE_TONES: Record<ClientState, 'good' | 'warn' | 'crit' | undefined> = {
+    Invited: undefined,
+    'Setup incomplete': 'warn',
+    Suspended: 'crit',
+    Locked: 'warn',
+    Active: 'good',
 }
