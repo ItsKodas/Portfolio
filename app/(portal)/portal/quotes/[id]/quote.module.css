@@ -1,0 +1,66 @@
+/* What this page used to get from MUI's Stack, Box, Paper and Typography. Every colour is a token, which is
+   what ui/palette.test.ts asks of a stylesheet: that test walks ui/ and does not reach this file, so the
+   rule is kept here by hand. */
+
+.titleRow { margin-bottom: 6px; }
+
+.label {
+    font-size: 10.5px;
+    font-family: var(--font-mono), monospace;
+    color: var(--ink-3);
+    margin: 0 0 3px;
+}
+
+.value {
+    font-size: 13.5px;
+    color: var(--ink);
+}
+
+.plain { color: inherit; }
+
+.external {
+    color: inherit;
+    word-break: break-all;
+}
+
+/* What the prospect typed, kept exactly as they typed it */
+.message {
+    white-space: pre-wrap;
+    margin: 0;
+    font-size: 13.5px;
+    line-height: 1.65;
+}
+
+.actions {
+    margin-bottom: 20px;
+    align-items: flex-end;
+}
+
+/* Lines up with the status picker's control rather than its label */
+.reply { margin-bottom: 1px; }
+
+.quoteActions { margin-bottom: 30px; }
+
+.notesHead {
+    font-size: 13px;
+    font-weight: 600;
+    margin: 0 0 14px;
+}
+
+.notes { margin-top: 22px; }
+
+.note {
+    display: flex;
+    align-items: flex-start;
+    gap: 8px;
+}
+
+.note > :first-child {
+    flex: 1 1 auto;
+    min-width: 0;
+}
+
+.noteBody {
+    white-space: pre-wrap;
+    font-weight: 400;
+}

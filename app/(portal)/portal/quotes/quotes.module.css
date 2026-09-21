@@ -1,0 +1,51 @@
+/* The inbox's own frame: the filter row, and the mark beside a name whose email did not send. Every colour
+   is a token, which is what ui/palette.test.ts asks of a stylesheet: that test walks ui/ and does not reach
+   this file, so the rule is kept here by hand. */
+
+.filters {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    margin-bottom: 18px;
+}
+
+/* A filter is somewhere to go, so it is a link. It is painted as a chip because that is what it was. */
+.filter {
+    font-size: 11px;
+    font-weight: 500;
+    border: 1px solid var(--rule-hi);
+    border-radius: 999px;
+    padding: 3px 11px;
+    color: var(--ink-2);
+    text-decoration: none;
+}
+
+.filter:hover {
+    color: var(--ink);
+    background: var(--panel-hi);
+}
+
+.filter:focus-visible {
+    outline: 2px solid var(--lake);
+    outline-offset: 2px;
+}
+
+.filterOn {
+    background: var(--lake);
+    border-color: var(--lake);
+    color: var(--night);
+    font-weight: 600;
+}
+
+.filterOn:hover {
+    background: var(--lake-hi);
+    border-color: var(--lake-hi);
+    color: var(--night);
+}
+
+.missing {
+    display: inline-flex;
+    vertical-align: middle;
+    margin-left: 6px;
+    color: var(--warn);
+}

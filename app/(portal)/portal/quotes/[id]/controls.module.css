@@ -1,0 +1,34 @@
+/* What the quote controls used to get from MUI's Stack and the sx prop. Every colour is a token or a
+   neutral overlay, which is what ui/palette.test.ts asks of a stylesheet: that test walks ui/ and does not
+   reach this file, so the rule is kept here by hand. */
+
+.problem { margin-top: 8px; }
+
+.picker { min-width: 160px; }
+
+.buttons {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+}
+
+.noteSubmit { margin-top: 10px; }
+
+.dialogText {
+    margin: 0;
+    color: var(--ink-2);
+    font-size: 13px;
+    line-height: 1.6;
+}
+
+/* A destructive or cautionary button keeps ui/Button's shape and only takes the tone's colour, the same way
+   ui/Chip tints a border rather than repainting the whole control. */
+.warn {
+    color: var(--warn);
+    border-color: color-mix(in srgb, var(--warn) 40%, transparent);
+}
+
+.crit {
+    color: var(--soft-red);
+    border-color: color-mix(in srgb, var(--crit) 45%, transparent);
+}

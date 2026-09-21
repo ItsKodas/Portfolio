@@ -5,9 +5,12 @@ const when = new Intl.DateTimeFormat('en-AU', { dateStyle: 'medium', timeStyle: 
 
 export const formatWhen = (date: Date) => when.format(date)
 
-export const STATUS_COLOURS: Record<Status, 'info' | 'default' | 'success' | 'error'> = {
-    NEW: 'info',
-    REPLIED: 'default',
-    WON: 'success',
-    LOST: 'error',
+// ui/Chip has three tones and a neutral. NEW was MUI's `info` and REPLIED its `default`, and neither is a
+// problem, so both take the neutral chip: warn would say something is wrong when nothing is. The word in
+// the chip is what carries the status either way.
+export const STATUS_TONES: Record<Status, 'good' | 'warn' | 'crit' | undefined> = {
+    NEW: undefined,
+    REPLIED: undefined,
+    WON: 'good',
+    LOST: 'crit',
 }
