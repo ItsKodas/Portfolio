@@ -139,6 +139,52 @@ projects:
     })
 })
 
+describe('backups', () => {
+    const registry = parseRegistry(`
+projects:
+  acme:
+    client: cl_1
+    name: Acme
+    dir: /var/www/acme
+    upstream: 127.0.0.1:5010
+    capabilities: [backups]
+    services: { web: { role: site } }
+  plain:
+    client: cl_1
+    name: Plain
+    dir: /var/www/plain
+    upstream: 127.0.0.1:5011
+    capabilities: [lifecycle]
+    services: { web: { role: site } }
+`)
+    const owner = { kind: 'client', client: 'cl_1', label: 'client:cl_1', user: 'u1' } as const
+    const stranger = { kind: 'client', client: 'cl_2', label: 'client:cl_2', user: 'u2' } as const
+
+    it('lets the owner read and act on their own backups', () => {
+        assert.equal(authorize(registry, owner, 'acme', 'backup-read').ok, true)
+        assert.equal(authorize(registry, owner, 'acme', 'backup').ok, true)
+    })
+
+    it('refuses a project whose backups capability is off, without confirming it exists', () => {
+        const decision = authorize(registry, owner, 'plain', 'backup')
+        assert.equal(decision.ok, false)
+        assert.equal(!decision.ok && decision.code, 'capability-disabled')
+    })
+
+    it('answers a stranger the same way for someone else\'s project as for a missing one', () => {
+        const theirs = authorize(registry, stranger, 'acme', 'backup-read')
+        const missing = authorize(registry, stranger, 'nosuch', 'backup-read')
+        assert.equal(theirs.ok, false)
+        assert.equal(missing.ok, false)
+        // Same status and same code: nothing distinguishes a project that exists but is not theirs from
+        // one that does not exist. The message differs only by the id the caller itself supplied.
+        assert.equal(!theirs.ok && theirs.status, !missing.ok && missing.status)
+        assert.equal(!theirs.ok && theirs.code, !missing.ok && missing.code)
+        assert.equal(!theirs.ok ? theirs.message : '', 'no project acme')
+        assert.equal(!missing.ok ? missing.message : '', 'no project nosuch')
+    })
+})
+
 describe('visibleProjects', () => {
     it('shows a client only their own projects and the admin everything', () => {
         assert.deepEqual(visibleProjects(registry, owner).map(p => p.id), ['acme', 'quiet'])

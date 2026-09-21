@@ -7,7 +7,11 @@ import type { Actor } from './auth.ts'
 // 'deploy' is deploying, rolling back and switching branch, which only the admin may do. 'deploy-read'
 // is the deploy history and the commit list, which a client may read for their own site: both need the
 // project's deploy capability, and the split lives here because only api knows who is asking.
-export type PolicyVerb = 'status' | 'lifecycle' | 'logs' | 'audit' | 'provision' | 'env' | 'deploy' | 'deploy-read'
+//
+// 'backup' and 'backup-read' both let the owning client act on and read their own backups. Unlike deploy,
+// which is admin-only, a client's backups belong to them: they keep them until they delete them, and choose
+// the schedule. The split exists so the audit log distinguishes reading from acting, not to gate one behind admin.
+export type PolicyVerb = 'status' | 'lifecycle' | 'logs' | 'audit' | 'provision' | 'env' | 'deploy' | 'deploy-read' | 'backup' | 'backup-read'
 
 // Deliberately its own table rather than protocol.ts's VERB_CAPABILITY: that one is keyed by the agent's
 // verbs, and this one has two entries for the same verb, which is what the split above needs.
@@ -20,6 +24,8 @@ const POLICY_CAPABILITY: Record<PolicyVerb, Capability | null> = {
     env: 'env',
     deploy: 'deploy',
     'deploy-read': 'deploy',
+    backup: 'backups',
+    'backup-read': 'backups',
 }
 
 // What only the admin may ever do, whatever the registry says and whoever owns the project.
