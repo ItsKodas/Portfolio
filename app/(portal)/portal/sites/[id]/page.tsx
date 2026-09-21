@@ -7,12 +7,13 @@ import { assertOwned, getProject, listProjects, type ServiceStatus } from '@/ser
 import { callerFromSession } from '@/server/hostd/session'
 import { Callout } from '@/ui/Callout/Callout'
 import { Shell } from '@/ui/Shell/Shell'
-import { StatStrip } from '@/ui/StatStrip/StatStrip'
 import { StatusDot } from '@/ui/StatusDot/StatusDot'
 import { DeployPanel } from './deployPanel'
 import { EnvPanel } from './env'
 import { Lifecycle } from './lifecycle'
 import { SiteLogs } from './logs'
+import { SiteDot, SiteStats } from './reading'
+import { SettlingProvider } from './settling'
 import { gatherSite } from './site'
 import { SiteTabs } from './tabs'
 import { serviceDot, stateOf, stateOfServices, type SiteState } from '../../siteState'
@@ -186,7 +187,11 @@ export default async function SitePage({ params, searchParams }: Props) {
                     href={`/portal/sites/${site.id}`}
                     aria-current={site.id === view.id ? 'page' : undefined}
                 >
-                    <StatusDot state={site.id === view.id ? current : stateOf(site)} bare />
+                    {/* This site's own dot is the one that moves while the controls below are being
+                        used, so it is the one that says what is being done to it. */}
+                    {site.id === view.id
+                        ? <SiteDot state={current} />
+                        : <StatusDot state={stateOf(site)} bare />}
                     <span className={nav.navName}>{site.name ?? site.id}</span>
                 </a>
             ))}
@@ -194,75 +199,79 @@ export default async function SitePage({ params, searchParams }: Props) {
     )
 
     return (
-        <Shell brand="Horizons" nav={navigation} rail={null} fill>
-            <div className={styles.hello}>
-                <h1>{view.name}</h1>
-                <p className={styles.mono}>{view.id}</p>
-            </div>
+        // Around the whole shell rather than around the panel: the sidebar draws this site's dot too, and
+        // a restart that calms the strip and leaves a red dot beside the name has only moved the alarm.
+        <SettlingProvider state={current}>
+            <Shell brand="Horizons" nav={navigation} rail={null} fill>
+                <div className={styles.hello}>
+                    <h1>{view.name}</h1>
+                    <p className={styles.mono}>{view.id}</p>
+                </div>
 
-            {view.trouble && (
-                <Callout tone="warn" title="The containers could not be read">{view.trouble}</Callout>
-            )}
+                {view.trouble && (
+                    <Callout tone="warn" title="The containers could not be read">{view.trouble}</Callout>
+                )}
 
-            <SiteTabs
-                tabs={tabs}
-                selected={selected}
-                basePath={`/portal/sites/${view.id}`}
-                label={`${view.name} tools`}
-            />
+                <SiteTabs
+                    tabs={tabs}
+                    selected={selected}
+                    basePath={`/portal/sites/${view.id}`}
+                    label={`${view.name} tools`}
+                />
 
-            <div
-                className={styles.panel}
-                role="tabpanel"
-                id={`panel-${selected}`}
-                aria-labelledby={`tab-${selected}`}
-                tabIndex={0}
-            >
-                {selected === 'overview' && (
-                    <>
-                        <div className={styles.strip}>
-                            <StatStrip stats={[
-                                { key: 'state', value: current, tone: current === 'down' ? 'crit' : undefined },
-                                // Nothing was read, so nothing is counted: a zero here would be a figure
-                                // this page was never given, printed as though it had been.
-                                { key: 'services', value: view.trouble ? NOT_AVAILABLE : String(view.services.length) },
-                                { key: 'restarts', value: view.trouble ? NOT_AVAILABLE : restartsOf(view.services) },
-                            ]} />
-                        </div>
-
-                        <Lifecycle id={view.id} enabled={view.capabilities.includes('lifecycle')} state={current} />
-
-                        {/* What the site is doing right now, which is the log, with what it is made of
-                            beside it. The Logs tab is the same view given the whole panel, for when the
-                            thing being read is longer than a glance. */}
-                        <div className={styles.split}>
-                            <div className={styles.splitMain}>
-                                <SiteLogs id={view.id} services={view.services.map(service => service.service)} />
+                <div
+                    className={styles.panel}
+                    role="tabpanel"
+                    id={`panel-${selected}`}
+                    aria-labelledby={`tab-${selected}`}
+                    tabIndex={0}
+                >
+                    {selected === 'overview' && (
+                        <>
+                            <div className={styles.strip}>
+                                <SiteStats
+                                    state={current}
+                                    // Nothing was read, so nothing is counted: a zero here would be a figure
+                                    // this page was never given, printed as though it had been.
+                                    services={view.trouble ? NOT_AVAILABLE : String(view.services.length)}
+                                    restarts={view.trouble ? NOT_AVAILABLE : restartsOf(view.services)}
+                                />
                             </div>
-                            <Environment name={LIVE} services={view.services} trouble={view.trouble} />
-                        </div>
-                    </>
-                )}
 
-                {selected === 'logs' && <SiteLogs id={view.id} services={view.services.map(service => service.service)} />}
+                            <Lifecycle id={view.id} enabled={view.capabilities.includes('lifecycle')} state={current} />
 
-                {selected === 'env' && <EnvPanel id={view.id} file={one(search.file)} />}
+                            {/* What the site is doing right now, which is the log, with what it is made of
+                                beside it. The Logs tab is the same view given the whole panel, for when the
+                                thing being read is longer than a glance. */}
+                            <div className={styles.split}>
+                                <div className={styles.splitMain}>
+                                    <SiteLogs id={view.id} services={view.services.map(service => service.service)} />
+                                </div>
+                                <Environment name={LIVE} services={view.services} trouble={view.trouble} />
+                            </div>
+                        </>
+                    )}
 
-                {selected === 'deploys' && canDeploy && (
-                    <DeployPanel
-                        id={view.id}
-                        environments={view.environments}
-                        environment={environment}
-                        enabled={canDeploy}
-                    />
-                )}
+                    {selected === 'logs' && <SiteLogs id={view.id} services={view.services.map(service => service.service)} />}
 
-                {/* Only when the tab is disabled: deploys has a panel now, and this is what stands in
-                    for a project hostd would refuse it for. */}
-                {WAITING[selected] && !(selected === 'deploys' && canDeploy) && (
-                    <Callout title={WAITING[selected].title}>{WAITING[selected].body}</Callout>
-                )}
-            </div>
-        </Shell>
+                    {selected === 'env' && <EnvPanel id={view.id} file={one(search.file)} />}
+
+                    {selected === 'deploys' && canDeploy && (
+                        <DeployPanel
+                            id={view.id}
+                            environments={view.environments}
+                            environment={environment}
+                            enabled={canDeploy}
+                        />
+                    )}
+
+                    {/* Only when the tab is disabled: deploys has a panel now, and this is what stands in
+                        for a project hostd would refuse it for. */}
+                    {WAITING[selected] && !(selected === 'deploys' && canDeploy) && (
+                        <Callout title={WAITING[selected].title}>{WAITING[selected].body}</Callout>
+                    )}
+                    </div>
+            </Shell>
+        </SettlingProvider>
     )
 }
