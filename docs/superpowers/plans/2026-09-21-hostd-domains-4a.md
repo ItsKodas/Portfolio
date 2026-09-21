@@ -3339,6 +3339,10 @@ git commit -m "Build the Domains tab, and stop hiding it from clients"
 - [ ] `cd hostd && npm run typecheck && npm test` passes with no skipped files
 - [ ] `npm test` at the repo root passes
 - [ ] `sh -n hostd/host/hostd-apache.sh` is silent
-- [ ] `grep -rnP '\x{2014}' hostd/RUNBOOK.md hostd/host/ docs/superpowers/plans/2026-09-21-hostd-domains-4a.md` finds nothing (the codepoint rather than the character, so this line does not match itself)
+- [ ] No em dashes in the runbook or the host files. `grep -P` is unavailable in this environment's locale, so use node:
+
+```bash
+node -e "for (const f of process.argv.slice(1)) { const n = [...require('fs').readFileSync(f,'utf8')].filter(c => c === '—').length; if (n) console.log(f, n) }" hostd/RUNBOOK.md hostd/host/*
+```
 - [ ] The five existing sites are untouched: nothing in this branch writes to `projects.yaml`, and no vhost is written until somebody calls adopt
 - [ ] The PR names what 4a deliberately leaves out: certbot and Let's Encrypt, changing a primary hostname, wildcards, and the maintenance page's own markup
