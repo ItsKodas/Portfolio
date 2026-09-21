@@ -3,7 +3,7 @@ import assert from 'node:assert/strict'
 import { EventEmitter } from 'node:events'
 import { PassThrough } from 'node:stream'
 
-import { backupArgv, createRestic, dumpArgv, nodeSpawnStream, repoPath, RESTIC_ENV_KEYS, retentionArgv, snapshotsArgv, stagingPath, type SpawnStream } from './restic.ts'
+import { backupArgv, createRestic, createResticRunner, dumpArgv, nodeSpawnStream, repoPath, RESTIC_ENV_KEYS, retentionArgv, snapshotsArgv, stagingPath, type SpawnStream } from './restic.ts'
 import type { Runner, RunResult } from './compose.ts'
 import { spawn as nodeSpawn } from 'node:child_process'
 
@@ -82,6 +82,24 @@ describe('createRestic', () => {
         for await (const chunk of stream.stdout) chunks.push(chunk as Buffer)
         assert.equal(Buffer.concat(chunks).toString(), 'tar bytes')
     })
+
+    it('finds the snapshot id when a progress line comes after the summary', async () => {
+        const summary = JSON.stringify({ message_type: 'summary', snapshot_id: 'cafecafe', total_bytes_processed: 1024 })
+        const progress = JSON.stringify({ message_type: 'status', percent_done: 1.0 })
+        const { run } = setup({ backup: { stdout: `${summary}\n${progress}\n` } })
+        const restic = createRestic(run, (() => { throw new Error('not used') }) as unknown as SpawnStream)
+        const result = await restic.backup(REPO, ['/staging'], 'manual')
+        assert.deepEqual(result, { ok: true, snapshot: 'cafecafe', sizeBytes: 1024 })
+    })
+
+    it('returns a failure when the summary line has no snapshot_id', async () => {
+        const summary = JSON.stringify({ message_type: 'summary', total_bytes_processed: 1024 })
+        const { run } = setup({ backup: { stdout: `{"message_type":"status"}\n${summary}\n` } })
+        const restic = createRestic(run, (() => { throw new Error('not used') }) as unknown as SpawnStream)
+        const result = await restic.backup(REPO, ['/staging'], 'manual')
+        assert.equal(result.ok, false)
+        assert.ok(result.ok || result.reason.includes('snapshot id'))
+    })
 })
 
 describe('nodeSpawnStream environment', () => {
@@ -144,6 +162,40 @@ describe('nodeSpawnStream environment', () => {
 
             assert.deepEqual(calls[0]?.options.env, {
                 PATH: '/usr/bin', HOME: '/root',
+            })
+        } finally {
+            process.env = original
+        }
+    })
+})
+
+describe('createResticRunner', () => {
+    it('passes a child environment with RESTIC_PASSWORD and omits docker-specific keys', async () => {
+        const original = { ...process.env }
+        try {
+            process.env.PATH = '/usr/bin'
+            process.env.HOME = '/root'
+            process.env.TZ = 'UTC'
+            process.env.DOCKER_HOST = 'unix:///var/run/docker.sock'
+            process.env.DOCKER_CONFIG = '/root/.docker'
+            process.env.RESTIC_PASSWORD = 'super-secret'
+
+            const calls: Array<{ command: string, args: string[], options: Record<string, unknown> }> = []
+            const fakeSpawn = ((command: string, args: string[], options: Record<string, unknown>) => {
+                calls.push({ command, args, options })
+                const child = Object.assign(new EventEmitter(), {
+                    stdout: new PassThrough(),
+                    stderr: new PassThrough(),
+                })
+                setImmediate(() => child.emit('close', 0))
+                return child
+            }) as unknown as typeof nodeSpawn
+
+            const runner = createResticRunner(fakeSpawn)
+            await runner('restic', ['init', '-r', '/repo'], 1000)
+
+            assert.deepEqual(calls[0]?.options.env, {
+                PATH: '/usr/bin', HOME: '/root', TZ: 'UTC', RESTIC_PASSWORD: 'super-secret',
             })
         } finally {
             process.env = original

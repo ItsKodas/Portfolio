@@ -9,13 +9,19 @@ import { spawn as nodeSpawn } from 'node:child_process'
 import { posix } from 'node:path'
 import type { Readable } from 'node:stream'
 
-import { childEnv, tail, type Runner } from './compose.ts'
+import { childEnv, createSpawnRunner, tail, type Runner } from './compose.ts'
 import type { Keep } from '../shared/registry.ts'
 import type { BackupTag, Snapshot } from '../shared/backups.ts'
 
 // restic needs its repository password and nothing docker-specific. It never runs compose, so
 // unlike the docker allowlist nothing here can be interpolated into a client's own compose file.
 export const RESTIC_ENV_KEYS = ['PATH', 'HOME', 'TZ', 'RESTIC_PASSWORD'] as const
+
+// Every restic command except dump runs through this, not through the docker runner: it is the only
+// Runner whose children are given RESTIC_PASSWORD. Wiring builds the restic adapter with this, and a
+// plain createSpawnRunner() would leave restic with no password and fail every command.
+export const createResticRunner = (spawn: typeof nodeSpawn = nodeSpawn): Runner =>
+    createSpawnRunner(spawn, RESTIC_ENV_KEYS)
 
 // A backup of a large site is minutes, and a prune of a large repository can be longer. Nothing here is
 // on a request's critical path: the run was started, not awaited.
