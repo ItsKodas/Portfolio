@@ -17,7 +17,9 @@ USER node
 CMD ["node", "--import", "tsx", "src/api/index.ts"]
 
 FROM base AS agent
-RUN apk add --no-cache docker-cli docker-cli-compose
+# restic takes the backups; sqlite3 is how a sqlite database is copied safely under a concurrent writer.
+# Neither belongs in api or fetcher: only the agent ever runs them.
+RUN apk add --no-cache docker-cli docker-cli-compose restic sqlite
 CMD ["node", "--import", "tsx", "src/agent/index.ts"]
 
 FROM base AS fetcher

@@ -415,6 +415,228 @@ environment's own folder name, so a repo whose compose file pins `name:` still g
 rather than taking over live's containers. Lifecycle (`start`, `stop`, `restart`) still only ever reaches
 `live`.
 
+## Backups
+
+Only `hostd-agent` ever touches a backup: it holds the Docker socket, restic and sqlite3, and the bind
+mount at `/backups`. Only a project's `live` environment is backed up, the same rule deploys and lifecycle
+follow, because there is no per-environment lifecycle yet.
+
+### Setting backups up
+
+1. Create the backup directory on the host, or point `HOSTD_BACKUP_DIR` at whichever disk you actually
+   want backups written to before the first `docker compose up`:
+
+   ```bash
+   sudo mkdir -p /srv/backups/hostd
+   ```
+
+2. Create `hostd/.env.agent` from `hostd/example.env.agent`, and generate the password on the dedi:
+
+   ```bash
+   openssl rand -hex 32
+   ```
+
+   Paste it in as `RESTIC_PASSWORD`. **Before you do anything else, copy that value somewhere that is not
+   the dedi:** a password manager, a note kept on another machine, anything off this box. Every backup
+   repository is encrypted with this one value and nothing else. Without your copy, every repository is
+   unreadable, and a lost dedi is exactly the situation backups exist for: you would have kept the backups
+   and lost the only key to them.
+
+3. Install `restic` on the dedi itself, not only in the agent image. The bind mount at `/backups` exists so
+   a restore can reach the repository files directly off `/srv/backups/hostd`, without going through
+   Docker at all; that only works if `restic` is also on the host (`apt-get install restic` on
+   Debian/Ubuntu, or a static binary from restic's own releases).
+
+4. Bring the agent up (or recreate it) so it picks up the new mount and env file:
+
+   ```bash
+   cd hostd
+   docker compose up -d --build agent
+   ```
+
+5. Turn backups on for a project by adding `backups` to its `capabilities:` in `registry/projects.yaml`,
+   then wait ten seconds for the reload:
+
+   ```yaml
+   capabilities: [lifecycle, logs, backups]
+   ```
+
+   That alone is enough for manual backups. To schedule them too, `PUT` a schedule: `mode` is `daily` or
+   `weekly`, `hour`/`minute`/`weekday` are read in Brisbane time, and `keep` is how many scheduled
+   snapshots to hold at each level (the operator's own ceiling in the registry clamps whatever a client
+   asks for; a manual snapshot is never touched by retention, only the client deleting it removes one):
+
+   ```bash
+   hc -X PUT http://hostd-api:8080/projects/acme-bakery/backups/schedule \
+     -H 'Content-Type: application/json' \
+     -d '{"mode":"daily","hour":2,"minute":0,"weekday":0,"keep":{"daily":7,"weekly":4,"monthly":3}}'
+   ```
+
+   A manual backup, any time, capability allowing:
+
+   ```bash
+   hc -X POST http://hostd-api:8080/projects/acme-bakery/backups
+   ```
+
+   That call answers as soon as the run has started, the same as a deploy. Read the run back with the
+   `run` id it returns:
+
+   ```bash
+   hc http://hostd-api:8080/projects/acme-bakery/backups/runs/<run>
+   ```
+
+### What is and is not backed up
+
+Every run of a `backups`-capable project captures, from its `live` environment only:
+
+- Each database service's own dump (see the restore table below for exactly how each engine's is taken).
+- Every `storage` directory the project declares, whatever its `mode`. A `hidden` directory is backed up
+  exactly like a `rw` one; `hidden` only ever means the file API never shows it.
+
+It does **not** capture the `test` environment, the compose file or its overrides, `.env`, `.env.agent`,
+`.env.fetcher`, the site's source tree, or any directory the project has not declared under `storage`.
+
+**Backups are local to this dedi until the offsite phase lands.** They live on this machine's own disk,
+under `/srv/backups/hostd` (or wherever `HOSTD_BACKUP_DIR` points). A dedi that is lost, destroyed or has
+its disk fail loses every backup on it, exactly the way it loses everything else under `/var/www`. Nothing
+built so far protects against that. Only the offsite copy, not built in this phase, will.
+
+### Restoring
+
+This is deliberately a runbook procedure, not a portal button. A restore overwrites a live database with
+an old one; a control that can do that from one click in a tired 3am moment is a worse design than a
+procedure that costs ten minutes and forces you to look at what you are about to overwrite before you do
+it.
+
+1. **Find the snapshot.** Each project has its own repository, named by its id. `RESTIC_PASSWORD` has to
+   be in the environment for every restic command below; the shortest way is to read it out of
+   `hostd/.env.agent` on the dedi (or out of your own copy, if the dedi is the thing you have lost):
+
+   The repository is root-owned (the agent container writes it as root), so read and restore commands
+   need `sudo`, and `sudo` does not carry your own shell's exported variables into the command it runs
+   unless you pass them through explicitly:
+
+   ```bash
+   export RESTIC_PASSWORD=$(grep ^RESTIC_PASSWORD= hostd/.env.agent | cut -d= -f2)
+   sudo env RESTIC_PASSWORD="$RESTIC_PASSWORD" restic -r /srv/backups/hostd/acme-bakery snapshots
+   ```
+
+   Note the short id of the snapshot you want. `tags` says `manual` or `scheduled`; `time` is when it was
+   taken.
+
+2. **Restore it to a staging path, never straight over the live tree:**
+
+   ```bash
+   sudo env RESTIC_PASSWORD="$RESTIC_PASSWORD" restic -r /srv/backups/hostd/acme-bakery restore \
+     <snapshot-id> --target /srv/backups/hostd/restore/acme-bakery
+   ```
+
+   restic recreates the absolute paths it captured, and it captured them from the agent container's own
+   point of view. A database dump lands under
+   `/srv/backups/hostd/restore/acme-bakery/backups/.staging/acme-bakery/<run>/db/<service>/<file>`
+   (`<run>` is whichever run produced that snapshot; the snapshot's own `paths` field, or just `ls` the
+   restored `db/` directory, will show it). Each `storage` directory lands at its real host path, for
+   example `/srv/backups/hostd/restore/acme-bakery/var/www/acme-bakery/live/uploads/`, because `/var/www`
+   is the same bind mount on the host and in every container.
+
+3. **Stop the site:**
+
+   ```bash
+   cd /var/www/acme-bakery/live
+   sudo docker compose stop
+   ```
+
+4. **Put the storage directories back**, from the restored copy over the live one, for every directory the
+   project declares under `storage`, not only the one you think changed:
+
+   ```bash
+   sudo rsync -a --delete \
+     /srv/backups/hostd/restore/acme-bakery/var/www/acme-bakery/live/uploads/ \
+     /var/www/acme-bakery/live/uploads/
+   ```
+
+5. **Load the database dump, with that engine's own tool.** What restic captured, and how to put it back,
+   depend on the engine. Verified against `src/agent/backup-dumps.ts`:
+
+   | engine | file in the snapshot | produced by | restore with |
+   | --- | --- | --- | --- |
+   | postgres | `dump.sql` | `pg_dumpall` | `psql` reading that file |
+   | mysql / mariadb | `dump.sql` | `mysqldump` / `mariadb-dump --all-databases` | `mysql` / `mariadb` reading that file |
+   | mongodb | `dump.archive.gz` | `mongodump --archive --gzip` | `mongorestore --archive --gzip` |
+   | sqlite | `dump.db` | `sqlite3 .backup` | copy the file back into place |
+   | redis | `dump.rdb` | `redis-cli --rdb` | stop the service, put the rdb where the image expects it, start |
+   | generic | a copied data directory | stop, copy, start | stop the service, copy it back, start |
+
+   `psql`, `mysql`/`mariadb` and `mongorestore` all talk to a running server, so bring just that one
+   database service back up first (the site's other services can stay down; nothing else needs to be
+   writing to it yet):
+
+   The dump files under `$DUMP` are root-owned too, so piping one into a command is `sudo cat` on the
+   read side, same reason `RESTIC_PASSWORD` above needed `sudo env`: a plain `< file` redirection runs in
+   your own shell, before `sudo` ever starts, so it hits the same permission error the raw `restic` call
+   would.
+
+   ```bash
+   sudo docker compose start db
+   DUMP=/srv/backups/hostd/restore/acme-bakery/backups/.staging/acme-bakery/<run>/db/db
+
+   # postgres, using the same user pg_dumpall ran as (POSTGRES_USER by default, or whatever the
+   # registry's dump.userEnv names):
+   sudo cat "$DUMP/dump.sql" | sudo docker compose exec -T db psql -U "$POSTGRES_USER"
+
+   # mysql (mariadb: swap mysql for mariadb, and MYSQL_ROOT_PASSWORD for MARIADB_ROOT_PASSWORD, or
+   # whatever the registry's dump.passwordEnv/userEnv name instead):
+   sudo cat "$DUMP/dump.sql" | sudo docker compose exec -T db sh -c 'MYSQL_PWD="$MYSQL_ROOT_PASSWORD" mysql -u root'
+
+   # mongodb (the ${VAR:+...} expands only when the image actually sets credentials, same as the dump did):
+   sudo cat "$DUMP/dump.archive.gz" | sudo docker compose exec -T db sh -c \
+     'mongorestore --archive --gzip ${MONGO_INITDB_ROOT_USERNAME:+-u "$MONGO_INITDB_ROOT_USERNAME" -p "$MONGO_INITDB_ROOT_PASSWORD" --authenticationDatabase admin}'
+   ```
+
+   sqlite, redis and generic are filesystem copies instead, and never need their service started first;
+   `docker cp` and a plain file copy both work against a stopped container:
+
+   ```bash
+   # sqlite: copy the file to the path named by that service's file: in the registry, under the live
+   # environment's directory.
+   sudo cp "$DUMP/dump.db" /var/www/acme-bakery/live/<the service's file: path>
+
+   # redis: the official image reads /data/dump.rdb by default; check the site's own redis command or
+   # config if it sets `dir` or `dbfilename` to something else.
+   sudo docker cp "$DUMP/dump.rdb" acme-bakery-cache-1:/data/dump.rdb
+
+   # generic: db/<service>/data/ holds one directory per bind mount the service had, named for that
+   # mount's own directory name; copy each one back to where it was mounted from.
+   sudo rsync -a --delete "$DUMP/data/<mount-name>/" <the original bind mount source>/
+   ```
+
+6. **Start the site:**
+
+   ```bash
+   sudo docker compose start
+   ```
+
+### The generic engine
+
+An engine with no real dump method falls back to `generic`: the agent stops that one database service,
+copies its bind-mounted data directory, and starts it again, every single time it is backed up, whether
+manual or scheduled. The record says `disruptive: true` so the portal can show that this backup briefly
+took the database down. Writing a real dump method for a new engine (a command that reads a live database
+without stopping it, the way postgres, mysql, mariadb, mongodb and redis already do) is worth doing before
+a project on that engine gets much traffic, since a project with `generic` and a schedule stops its own
+database on a timer.
+
+### When a backup is refused
+
+| Refusal | What to do |
+| --- | --- |
+| `the backup disk has less than 10% free` | Free space on `/srv/backups/hostd` (or wherever `HOSTD_BACKUP_DIR` points): delete manual snapshots you no longer need (below), and know that deleting a scheduled one only reclaims space once the weekly prune runs. |
+| `there are already five manual backups; delete one before taking another` | `hc -X DELETE http://hostd-api:8080/projects/<id>/backups/<snapshot>` on one you no longer need, then try again. |
+| `a manual backup was taken less than 10 minutes ago; wait before taking another` | Wait; it clears itself ten minutes after the last manual run started. |
+| `another backup is running; only one runs on the dedi at a time` | Wait for it to finish. Only one backup runs across the whole dedi at once, on purpose, so a scheduled sweep across many projects can never saturate the disk together. |
+| `<id> already has a backup running` | The same project's own backup is still running; read its run status instead of starting another. |
+| `<id> is deploying; a backup waits until that has finished` | A deploy renames the directory storage lives under, so a backup started mid-swap would walk a tree that is moving. Wait for the deploy to finish (or fail) and try again. |
+
 ## What is deliberately not automatic
 
 - **The first start waits for the operator.** `create` registers a project with no capabilities at all and

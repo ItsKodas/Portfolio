@@ -12,6 +12,9 @@ services:
     container_name: hostd-agent
     # Root, because it holds the Docker socket. It listens only on the Unix socket in hostd-sock.
     network_mode: none
+    # RESTIC_PASSWORD, and nothing else. The agent's other settings are inline below because this file is
+    # committed; a password cannot be.
+    env_file: .env.agent
     environment:
       HOSTD_REGISTRY_FILE: /etc/hostd/registry/projects.yaml
       HOSTD_AGENT_SOCKET: /run/hostd/agent.sock
@@ -21,6 +24,8 @@ services:
       HOSTD_STATUS_FILE: /tmp/hostd-status.json
       HOSTD_DEPLOY_STATE_FILE: /var/lib/hostd/deploys.json
       HOSTD_MAINTENANCE_DIR: /run/hostd/maintenance
+      HOSTD_BACKUP_DIR: /backups
+      HOSTD_BACKUP_STATE_FILE: /var/lib/hostd/backups.json
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
       # The same path inside as outside: compose hands bind mount sources to the daemon as host paths.
@@ -45,6 +50,9 @@ services:
       # directly, and fetcher must never be able to touch agent.sock (in hostd-sock) to impersonate the
       # agent to api. See fetcher's own volumes below for the other half of this.
       - hostd-fetch-sock:/run/hostd-fetch
+      # The host's backup disk. Its own bind mount rather than a volume: the operator chooses which disk
+      # this is, and a restore has to be able to reach these files without Docker.
+      - ${HOSTD_BACKUP_DIR:-/srv/backups/hostd}:/backups
     healthcheck:
       test: ["CMD", "node", "--import", "tsx", "src/shared/healthcheck.ts", "/tmp/hostd-status.json"]
       interval: 60s

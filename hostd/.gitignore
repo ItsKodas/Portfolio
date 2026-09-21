@@ -6,3 +6,4 @@ registry/projects.yaml
 .env
 .env.*
 .env.fetcher
+.env.agent
