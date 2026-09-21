@@ -11,8 +11,17 @@
 .strip { margin-bottom: 18px; }
 
 /* The panel under the tab strip. It is focusable, because a tab panel a keyboard cannot reach is a tab
-   nobody can read. */
-.panel { margin-top: 20px; }
+   nobody can read.
+
+   It takes the height the content column has left (ui/Shell's fill), so the tab that wants the room, the
+   log, gets it instead of sitting in a letterbox with an empty screen underneath. It never shrinks below
+   its content: a window too short for the panel scrolls the column rather than cropping the panel. */
+.panel {
+    margin-top: 20px;
+    flex: 1 0 auto;
+    display: flex;
+    flex-direction: column;
+}
 .panel:focus-visible { outline: 2px solid var(--lake); outline-offset: 4px; }
 
 .block { margin-top: 22px; }
