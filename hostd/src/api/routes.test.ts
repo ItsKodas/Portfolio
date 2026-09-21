@@ -8,8 +8,9 @@ import { join } from 'node:path'
 import { createHandler, matchRoute, parseLogsQuery } from './routes.ts'
 import { AuditLog } from './audit.ts'
 import { AgentUnavailableError, type AgentClient } from './agent-client.ts'
+import { DomainStore, domainKey, newRecord, type DomainRecord } from './domain-state.ts'
 import { parseRegistry } from '../shared/registry.ts'
-import type { AgentReply, AgentRequest, LogLine } from '../shared/protocol.ts'
+import { DOMAIN_TOKEN, type AgentReply, type AgentRequest, type LogLine } from '../shared/protocol.ts'
 import type { SystemUsage } from '../shared/system.ts'
 
 const TOKEN = 'k'.repeat(64)
@@ -20,9 +21,9 @@ projects:
     name: Acme
     repo: git@github.com:acme/site.git
     services: { web: { role: site } }
-    capabilities: [lifecycle, logs, provision, env, deploy]
+    capabilities: [lifecycle, logs, provision, env, deploy, domains]
     environments:
-      live: { dir: /var/www/acme, port: 5010, branch: main, domain: acme.example, certificate: letsencrypt, deployed: abc1234 }
+      live: { dir: /var/www/acme, port: 5010, branch: main, domain: acme.example, aliases: [www.acme.example], certificate: letsencrypt, deployed: abc1234 }
       test: { dir: /var/www/acme-test, port: 5013, branch: develop, domain: test.acme.example }
   quiet:
     client: cl_1
@@ -65,7 +66,9 @@ function fakeAgent() {
         calls,
         reply: request => {
             switch (request.verb) {
-                case 'health': return { ok: true, warnings: [], invalid: { acme: 'guard says no' }, system: usage, railAge: null }
+                // A rail that answered a second ago, so only a test that asks for a quiet one sees the
+                // warning about it.
+                case 'health': return { ok: true, warnings: [], invalid: { acme: 'guard says no' }, system: usage, railAge: 1_000 }
                 case 'status': return { ok: true, services: [] }
                 case 'statuses': return { ok: true, projects: request.projects.map(project => ({ project, ok: true as const, services: [] })) }
                 default: return { ok: true, output: 'done' }
@@ -83,11 +86,51 @@ function fakeAgent() {
     return agent
 }
 
+// The real DomainStore over a file that only ever exists in memory: the class is what the routes are
+// wired to in production, and its ordering and its key are part of what these tests are checking.
+function memoryDomains(): DomainStore {
+    let text = '[]'
+    return new DomainStore('/state/domains.json', {
+        readFile: async () => text,
+        writeFile: async (_path, written) => { text = written },
+        rename: async () => {},
+        mkdir: async () => {},
+    })
+}
+
+// The verifier as the routes see it: one record checked on demand. The outcome is a plain function so a
+// test can decide what the check concluded without a network or a clock.
+function fakeVerifier(store: () => DomainStore) {
+    return {
+        checked: [] as string[],
+        outcome: (record: DomainRecord): DomainRecord => ({ ...record, state: 'active', checkedAt: CHECKED_AT, error: null }),
+        async checkNow(key: string) {
+            this.checked.push(key)
+            const record = store().get(key)
+            if (record) await store().put(this.outcome(record))
+        },
+    }
+}
+
+const CHECKED_AT = '2026-09-21T12:00:00.000Z'
+const FIRST_SEEN = '2026-09-20T00:00:00.000Z'
+const TOKEN_IN_PLACE = 'a1b2c3d4e5f6'
+
+function domainRecord(over: Partial<DomainRecord> = {}): DomainRecord {
+    return { ...newRecord('acme', 'live', 'acme.example', true, FIRST_SEEN), ...over }
+}
+
+async function seedDomains(records: DomainRecord[]): Promise<void> {
+    for (const record of records) await domains.put(record)
+}
+
 let server: Server
 let base = ''
 let dir = ''
 let audit: AuditLog
 let agent: ReturnType<typeof fakeAgent>
+let domains: DomainStore
+let verifier: ReturnType<typeof fakeVerifier>
 
 before(async () => {
     dir = await mkdtemp(join(tmpdir(), 'hostd-routes-'))
@@ -106,7 +149,9 @@ let handler: ReturnType<typeof createHandler>
 beforeEach(async () => {
     audit = new AuditLog(join(dir, `audit-${Math.random().toString(36).slice(2)}`))
     agent = fakeAgent()
-    handler = createHandler({ token: TOKEN, registry: () => registry, agent, audit, keepaliveMs: 60_000 })
+    domains = memoryDomains()
+    verifier = fakeVerifier(() => domains)
+    handler = createHandler({ token: TOKEN, registry: () => registry, agent, audit, domains, verifier, keepaliveMs: 60_000 })
 })
 
 function request(
@@ -168,6 +213,33 @@ describe('matchRoute', () => {
     })
 })
 
+describe('domain routes', () => {
+    it('matches the six endpoints', () => {
+        assert.deepEqual(matchRoute('GET', '/projects/acme/live/domains'), { verb: 'domains-list', project: 'acme', environment: 'live' })
+        assert.deepEqual(matchRoute('POST', '/projects/acme/live/domains'), { verb: 'domain-add', project: 'acme', environment: 'live' })
+        assert.deepEqual(matchRoute('DELETE', '/projects/acme/live/domains/www.acme.com'), { verb: 'domain-remove', project: 'acme', environment: 'live', hostname: 'www.acme.com' })
+        assert.deepEqual(matchRoute('POST', '/projects/acme/live/domains/www.acme.com/verify'), { verb: 'domain-verify', project: 'acme', environment: 'live', hostname: 'www.acme.com' })
+        assert.deepEqual(matchRoute('GET', '/projects/acme/live/adopt'), { verb: 'adopt-preview', project: 'acme', environment: 'live' })
+        assert.deepEqual(matchRoute('POST', '/projects/acme/live/adopt'), { verb: 'adopt', project: 'acme', environment: 'live' })
+    })
+
+    it('refuses the wrong method on each of them', () => {
+        assert.deepEqual(matchRoute('PUT', '/projects/acme/live/domains'), { verb: 'method-not-allowed' })
+        assert.deepEqual(matchRoute('DELETE', '/projects/acme/live/adopt'), { verb: 'method-not-allowed' })
+    })
+
+    it('does not match an environment that does not exist', () => {
+        assert.deepEqual(matchRoute('GET', '/projects/acme/staging/domains'), { verb: 'not-found' })
+    })
+
+    it('refuses the wrong method and an unknown tail under one hostname', () => {
+        assert.deepEqual(matchRoute('GET', '/projects/acme/live/domains/www.acme.com'), { verb: 'method-not-allowed' })
+        assert.deepEqual(matchRoute('GET', '/projects/acme/live/domains/www.acme.com/verify'), { verb: 'method-not-allowed' })
+        assert.deepEqual(matchRoute('POST', '/projects/acme/live/domains/www.acme.com/check'), { verb: 'not-found' })
+        assert.deepEqual(matchRoute('POST', '/projects/acme/live/adopt/now'), { verb: 'not-found' })
+    })
+})
+
 describe('parseLogsQuery', () => {
     const parse = (query: string) => parseLogsQuery(new URLSearchParams(query))
 
@@ -211,7 +283,7 @@ describe('GET /projects', () => {
             ok: true,
             projects: [
                 {
-                    id: 'acme', name: 'Acme', capabilities: ['lifecycle', 'logs', 'provision', 'env', 'deploy'],
+                    id: 'acme', name: 'Acme', capabilities: ['lifecycle', 'logs', 'provision', 'env', 'deploy', 'domains'],
                     valid: false, reason: 'guard says no', environments: acmeEnvironmentsForClient,
                 },
                 { id: 'quiet', name: 'Quiet', capabilities: [], valid: true, environments: quietEnvironmentsForClient },
@@ -234,7 +306,7 @@ describe('GET /projects', () => {
         assert.deepEqual(agent.calls, [{ verb: 'health' }, { verb: 'statuses', projects: ['acme', 'quiet'] }])
         assert.deepEqual(body.projects, [
             {
-                id: 'acme', name: 'Acme', capabilities: ['lifecycle', 'logs', 'provision', 'env', 'deploy'],
+                id: 'acme', name: 'Acme', capabilities: ['lifecycle', 'logs', 'provision', 'env', 'deploy', 'domains'],
                 valid: false, reason: 'guard says no', environments: acmeEnvironmentsForClient, status: { ok: true, services: [] },
             },
             { id: 'quiet', name: 'Quiet', capabilities: [], valid: true, environments: quietEnvironmentsForClient, status: { ok: true, services: [] } },
@@ -308,7 +380,11 @@ describe('GET /health', () => {
     it('gives the admin the machine\'s figures', async () => {
         const response = await request('/health', { actor: 'admin' })
         assert.equal(response.status, 200)
-        assert.deepEqual(await response.json(), { ok: true, warnings: [], invalid: { acme: 'guard says no' }, system: usage, railAge: null })
+        // acme live is set to letsencrypt, which 4a cannot serve yet, so health says so once.
+        assert.deepEqual(await response.json(), {
+            ok: true, warnings: ['waiting for Let\'s Encrypt support: acme live'],
+            invalid: { acme: 'guard says no' }, system: usage, railAge: 1_000,
+        })
     })
 
     it('refuses a client', async () => {
@@ -760,6 +836,289 @@ describe('deploy routes', () => {
         assert.equal(response.status, 503)
         const [entry] = await audit.read({ limit: 1 })
         assert.equal(entry?.outcome, 'failed')
+    })
+})
+
+const WRITTEN: AgentReply = { ok: true, written: { hostnames: ['acme.example'], path: '/etc/apache2/hostd/acme-live.conf' } }
+
+describe('GET /projects/:id/:env/domains', () => {
+    it('answers the primary first, with the environment\'s certificate mode joined on', async () => {
+        await seedDomains([
+            domainRecord({ hostname: 'www.acme.example', primary: false, state: 'pending', checkedAt: CHECKED_AT, error: 'No record exists yet.' }),
+            domainRecord({ state: 'active', checkedAt: CHECKED_AT }),
+        ])
+        const response = await request('/projects/acme/live/domains')
+        assert.equal(response.status, 200)
+        assert.deepEqual(await response.json(), {
+            ok: true,
+            domains: [
+                { hostname: 'acme.example', primary: true, state: 'active', certificate: 'letsencrypt', checkedAt: CHECKED_AT, error: null, vhost: null },
+                { hostname: 'www.acme.example', primary: false, state: 'pending', certificate: 'letsencrypt', checkedAt: CHECKED_AT, error: 'No record exists yet.', vhost: null },
+            ],
+        })
+        assert.deepEqual(agent.calls, [])
+    })
+
+    it('keeps Apache\'s own words from the client and gives them to the operator', async () => {
+        await seedDomains([domainRecord({ vhost: { ok: false, output: 'AH00526: Syntax error on line 12' } })])
+        const mine = await (await request('/projects/acme/live/domains')).json() as { domains: Array<{ vhost: unknown }> }
+        assert.deepEqual(mine.domains[0]?.vhost, { ok: false })
+        const operator = await (await request('/projects/acme/live/domains', { actor: 'admin' })).json() as { domains: Array<{ vhost: unknown }> }
+        assert.deepEqual(operator.domains[0]?.vhost, { ok: false, output: 'AH00526: Syntax error on line 12' })
+    })
+
+    // The token is the vhost's, and nothing outside hostd has any use for it.
+    it('never answers the verification token, not even to the operator', async () => {
+        await seedDomains([domainRecord({ token: TOKEN_IN_PLACE })])
+        const text = await (await request('/projects/acme/live/domains', { actor: 'admin' })).text()
+        assert.equal(text.includes(TOKEN_IN_PLACE), false)
+    })
+
+    it('refuses a project without the domains capability, and another client\'s site', async () => {
+        assert.equal((await request('/projects/quiet/live/domains')).status, 403)
+        assert.equal((await request('/projects/other/live/domains')).status, 404)
+    })
+})
+
+describe('POST /projects/:id/:env/domains', () => {
+    it('sends the whole alias list with the environment\'s token, and records the new name pending', async () => {
+        await seedDomains([
+            domainRecord({ token: TOKEN_IN_PLACE, state: 'active' }),
+            domainRecord({ hostname: 'www.acme.example', primary: false, token: TOKEN_IN_PLACE, state: 'active' }),
+        ])
+        agent.reply = () => WRITTEN
+        const response = await request('/projects/acme/live/domains', { method: 'POST', actor: 'admin', body: { hostname: 'shop.acme.example' } })
+        assert.equal(response.status, 200)
+        assert.deepEqual(agent.calls, [{
+            verb: 'domains', project: 'acme',
+            args: { action: 'set-aliases', environment: 'live', aliases: ['www.acme.example', 'shop.acme.example'], token: TOKEN_IN_PLACE },
+        }])
+
+        const added = domains.get(domainKey('acme', 'live', 'shop.acme.example'))
+        assert.equal(added?.state, 'pending')
+        // One token per environment, never one per hostname: the vhost carries a single token for the
+        // primary and every alias, so an alias minted its own would fail against it forever.
+        assert.equal(added?.token, TOKEN_IN_PLACE)
+        // The names that were already proved keep the state they had; rewriting the vhost proves
+        // nothing new about them.
+        assert.equal(domains.get(domainKey('acme', 'live', 'acme.example'))?.state, 'active')
+
+        const body = await response.json() as { domains: Array<{ hostname: string }> }
+        assert.deepEqual(body.domains.map(domain => domain.hostname), ['acme.example', 'shop.acme.example', 'www.acme.example'])
+        const [entry] = await audit.read({ limit: 1 })
+        assert.deepEqual([entry?.verb, entry?.target, entry?.outcome], ['domains', 'shop.acme.example', 'ok'])
+    })
+
+    it('mints one token for an environment that has none, and writes it onto every record of it', async () => {
+        await seedDomains([domainRecord(), domainRecord({ hostname: 'www.acme.example', primary: false })])
+        agent.reply = () => WRITTEN
+        await request('/projects/acme/live/domains', { method: 'POST', actor: 'admin', body: { hostname: 'shop.acme.example' } })
+
+        const sent = agent.calls[0]
+        const token = sent?.verb === 'domains' && sent.args.action === 'set-aliases' ? sent.args.token : ''
+        assert.match(token, DOMAIN_TOKEN)
+        for (const record of domains.forEnvironment('acme', 'live')) assert.equal(record.token, token, record.hostname)
+    })
+
+    it('refuses a hostname that is not one, or one the site already serves, without asking the agent', async () => {
+        for (const hostname of ['not a host', 'https://acme.example', '', 'www.acme.example', 'acme.example']) {
+            const response = await request('/projects/acme/live/domains', { method: 'POST', actor: 'admin', body: { hostname } })
+            assert.equal(response.status, 400, hostname)
+        }
+        const extra = await request('/projects/acme/live/domains', { method: 'POST', actor: 'admin', body: { hostname: 'shop.acme.example', force: true } })
+        assert.equal(extra.status, 400)
+        assert.deepEqual(agent.calls, [])
+    })
+
+    it('writes no record when the agent refuses, and audits the failure', async () => {
+        agent.reply = () => ({ ok: false, code: 'failed', message: 'Apache refused the new configuration for acme live' })
+        const response = await request('/projects/acme/live/domains', { method: 'POST', actor: 'admin', body: { hostname: 'shop.acme.example' } })
+        assert.equal(response.status, 502)
+        assert.equal(domains.get(domainKey('acme', 'live', 'shop.acme.example')), undefined)
+        const [entry] = await audit.read({ limit: 1 })
+        assert.deepEqual([entry?.verb, entry?.target, entry?.outcome], ['domains', 'shop.acme.example', 'failed'])
+    })
+})
+
+describe('DELETE /projects/:id/:env/domains/:hostname', () => {
+    it('refuses the primary outright, because the only way out of it is removing the environment', async () => {
+        const response = await request('/projects/acme/live/domains/acme.example', { method: 'DELETE', actor: 'admin' })
+        assert.equal(response.status, 400)
+        assert.deepEqual(agent.calls, [])
+        const [entry] = await audit.read({ limit: 1 })
+        assert.deepEqual([entry?.verb, entry?.target, entry?.outcome], ['domains', 'acme.example', 'refused'])
+    })
+
+    it('sends the list without that name and drops its record', async () => {
+        await seedDomains([
+            domainRecord({ token: TOKEN_IN_PLACE, state: 'active' }),
+            domainRecord({ hostname: 'www.acme.example', primary: false, token: TOKEN_IN_PLACE, state: 'active' }),
+        ])
+        agent.reply = () => WRITTEN
+        const response = await request('/projects/acme/live/domains/www.acme.example', { method: 'DELETE', actor: 'admin' })
+        assert.equal(response.status, 200)
+        assert.deepEqual(agent.calls, [{
+            verb: 'domains', project: 'acme',
+            args: { action: 'set-aliases', environment: 'live', aliases: [], token: TOKEN_IN_PLACE },
+        }])
+        assert.equal(domains.get(domainKey('acme', 'live', 'www.acme.example')), undefined)
+        const body = await response.json() as { domains: Array<{ hostname: string }> }
+        assert.deepEqual(body.domains.map(domain => domain.hostname), ['acme.example'])
+    })
+
+    it('answers 404 for a hostname this environment does not serve', async () => {
+        const response = await request('/projects/acme/live/domains/elsewhere.example', { method: 'DELETE', actor: 'admin' })
+        assert.equal(response.status, 404)
+        assert.deepEqual(agent.calls, [])
+    })
+})
+
+describe('POST /projects/:id/:env/domains/:hostname/verify', () => {
+    it('forces one check and answers the record it left behind', async () => {
+        await seedDomains([domainRecord({ hostname: 'www.acme.example', primary: false, state: 'pending', token: TOKEN_IN_PLACE })])
+        const response = await request('/projects/acme/live/domains/www.acme.example/verify', { method: 'POST', actor: 'admin' })
+        assert.equal(response.status, 200)
+        assert.deepEqual(verifier.checked, [domainKey('acme', 'live', 'www.acme.example')])
+        assert.deepEqual(await response.json(), {
+            ok: true,
+            domain: { hostname: 'www.acme.example', primary: false, state: 'active', certificate: 'letsencrypt', checkedAt: CHECKED_AT, error: null, vhost: null },
+        })
+        // Nothing is written to the host to check a name, so the agent hears nothing about it.
+        assert.deepEqual(agent.calls, [])
+        const [entry] = await audit.read({ limit: 1 })
+        assert.deepEqual([entry?.verb, entry?.target, entry?.outcome, entry?.output], ['domains', 'www.acme.example', 'ok', 'active'])
+    })
+
+    it('answers 404 for a hostname with no record of its own', async () => {
+        const response = await request('/projects/acme/live/domains/elsewhere.example/verify', { method: 'POST', actor: 'admin' })
+        assert.equal(response.status, 404)
+        assert.deepEqual(verifier.checked, [])
+    })
+})
+
+describe('GET|POST /projects/:id/:env/adopt', () => {
+    const claim: { path: string, names: string[], unsupported: string | null } =
+        { path: '/etc/apache2/sites-enabled/acme.conf', names: ['acme.example'], unsupported: null }
+    const preview = (over: Partial<{ claims: typeof claim[], adoptable: boolean }> = {}): AgentReply => ({
+        ok: true,
+        preview: { proposed: '<VirtualHost *:443>', claims: over.claims ?? [claim], extraNames: [], adoptable: over.adoptable ?? true },
+    })
+
+    it('previews with the token adopt will write, so the file shown is the file written', async () => {
+        await seedDomains([domainRecord({ token: TOKEN_IN_PLACE })])
+        agent.reply = () => preview()
+        const response = await request('/projects/acme/live/adopt', { actor: 'admin' })
+        assert.equal(response.status, 200)
+        assert.deepEqual(await response.json(), preview())
+        assert.deepEqual(agent.calls, [{
+            verb: 'domains', project: 'acme', args: { action: 'preview', environment: 'live', token: TOKEN_IN_PLACE },
+        }])
+    })
+
+    it('refuses to adopt without the project\'s name typed back, and never its id', async () => {
+        for (const confirm of ['acme', 'Acme Bakery', '']) {
+            const response = await request('/projects/acme/live/adopt', { method: 'POST', actor: 'admin', body: { confirm } })
+            assert.equal(response.status, 400, confirm)
+        }
+        assert.deepEqual(agent.calls, [])
+    })
+
+    it('disables the files the preview found and starts every hostname pending', async () => {
+        await seedDomains([
+            domainRecord({ token: TOKEN_IN_PLACE }),
+            domainRecord({ hostname: 'www.acme.example', primary: false, token: TOKEN_IN_PLACE }),
+        ])
+        agent.reply = request => request.verb === 'domains' && request.args.action === 'preview'
+            ? preview()
+            : { ok: true, written: { hostnames: ['acme.example', 'www.acme.example'], path: '/etc/apache2/hostd/acme-live.conf' } }
+
+        const response = await request('/projects/acme/live/adopt', { method: 'POST', actor: 'admin', body: { confirm: 'Acme' } })
+        assert.equal(response.status, 200)
+        assert.deepEqual(agent.calls[1], {
+            verb: 'domains', project: 'acme',
+            args: { action: 'adopt', environment: 'live', token: TOKEN_IN_PLACE, disable: [claim.path] },
+        })
+        for (const record of domains.forEnvironment('acme', 'live')) {
+            assert.equal(record.state, 'pending', record.hostname)
+            // The 72 hour clock starts now, not when the registry first named the hostname: a record
+            // the registry has named for days would otherwise fail on its very first check.
+            assert.notEqual(record.firstSeenAt, FIRST_SEEN)
+        }
+        const [entry] = await audit.read({ limit: 1 })
+        assert.deepEqual([entry?.verb, entry?.target, entry?.outcome], ['domains', 'acme.example', 'ok'])
+    })
+
+    it('refuses when nothing in sites-enabled serves these names, or when a claim cannot be read', async () => {
+        agent.reply = () => preview({ claims: [] })
+        const nothing = await request('/projects/acme/live/adopt', { method: 'POST', actor: 'admin', body: { confirm: 'Acme' } })
+        assert.equal(nothing.status, 400)
+
+        agent.reply = () => preview({ claims: [{ ...claim, unsupported: 'an IncludeOptional this parser cannot follow' }], adoptable: false })
+        const unreadable = await request('/projects/acme/live/adopt', { method: 'POST', actor: 'admin', body: { confirm: 'Acme' } })
+        assert.equal(unreadable.status, 400)
+        assert.equal((await unreadable.json() as { message: string }).message.includes(claim.path), true)
+        // The preview in each case, and never the adopt that would have moved a file.
+        assert.equal(agent.calls.length, 2)
+    })
+})
+
+describe('the domain routes a client may not use', () => {
+    it('answers 404 for every one of them, and audits the refusal', async () => {
+        const attempts = [
+            () => request('/projects/acme/live/domains', { method: 'POST', body: { hostname: 'shop.acme.example' } }),
+            () => request('/projects/acme/live/domains/www.acme.example', { method: 'DELETE' }),
+            () => request('/projects/acme/live/domains/www.acme.example/verify', { method: 'POST' }),
+            () => request('/projects/acme/live/adopt'),
+            () => request('/projects/acme/live/adopt', { method: 'POST', body: { confirm: 'Acme' } }),
+        ]
+        for (const attempt of attempts) {
+            const response = await attempt()
+            assert.equal(response.status, 404, await response.text())
+        }
+        assert.deepEqual(agent.calls, [])
+        assert.deepEqual(verifier.checked, [])
+        const events = await audit.read({ limit: attempts.length })
+        assert.equal(events.length, attempts.length)
+        assert.ok(events.every(event => event.outcome === 'refused' && event.reason === 'not-found'))
+    })
+})
+
+describe('GET /health: what only health can see', () => {
+    it('names a hostname that stopped answering and a vhost that was rolled back', async () => {
+        await seedDomains([
+            domainRecord({ state: 'broken' }),
+            domainRecord({ hostname: 'www.acme.example', primary: false, vhost: { ok: false, output: 'AH00526' } }),
+        ])
+        const body = await (await request('/health', { actor: 'admin' })).json() as { warnings: string[] }
+        assert.ok(body.warnings.some(warning => warning === 'acme.example stopped answering (acme live)'), body.warnings.join('; '))
+        assert.ok(body.warnings.some(warning => warning === 'the vhost for acme live was rolled back'), body.warnings.join('; '))
+    })
+
+    // Said once, naming the environments, rather than once per hostname.
+    it('names an environment waiting for Let\'s Encrypt once, however many hostnames it has', async () => {
+        await seedDomains([domainRecord(), domainRecord({ hostname: 'www.acme.example', primary: false })])
+        const body = await (await request('/health', { actor: 'admin' })).json() as { warnings: string[] }
+        assert.deepEqual(body.warnings.filter(warning => warning.includes('Let\'s Encrypt')), ['waiting for Let\'s Encrypt support: acme live'])
+    })
+
+    // The warning that matters most: with the unit dead, every domain action hangs for 30 seconds
+    // rather than failing, and nothing else says so before somebody tries one.
+    it('warns when the Apache host unit has never answered, or has gone quiet', async () => {
+        const railWarning = 'the Apache host unit has not answered; no domain change can take effect'
+        for (const railAge of [null, 11 * 60_000]) {
+            agent.reply = () => ({ ok: true, warnings: [], invalid: {}, system: usage, railAge })
+            const body = await (await request('/health', { actor: 'admin' })).json() as { warnings: string[] }
+            assert.ok(body.warnings.includes(railWarning), String(railAge))
+        }
+        agent.reply = () => ({ ok: true, warnings: [], invalid: {}, system: usage, railAge: 9 * 60_000 })
+        const fresh = await (await request('/health', { actor: 'admin' })).json() as { warnings: string[] }
+        assert.equal(fresh.warnings.includes(railWarning), false)
+    })
+
+    it('keeps the agent\'s own warnings alongside them', async () => {
+        agent.reply = () => ({ ok: true, warnings: ['the registry could not be re-read'], invalid: {}, system: usage, railAge: 1_000 })
+        const body = await (await request('/health', { actor: 'admin' })).json() as { warnings: string[] }
+        assert.equal(body.warnings[0], 'the registry could not be re-read')
     })
 })
 

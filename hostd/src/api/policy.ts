@@ -7,7 +7,14 @@ import type { Actor } from './auth.ts'
 // 'deploy' is deploying, rolling back and switching branch, which only the admin may do. 'deploy-read'
 // is the deploy history and the commit list, which a client may read for their own site: both need the
 // project's deploy capability, and the split lives here because only api knows who is asking.
-export type PolicyVerb = 'status' | 'lifecycle' | 'logs' | 'audit' | 'provision' | 'env' | 'deploy' | 'deploy-read'
+//
+// 'domains' and 'domains-read' split the same way and for the same reason. Adding, removing, adopting
+// and re-checking a hostname all change what Apache serves, so they are the operator's; reading the
+// list is how a client watches their own DNS land, so that half is theirs. Re-checking is in the admin
+// half rather than the read one because it writes the record it checks.
+export type PolicyVerb =
+    | 'status' | 'lifecycle' | 'logs' | 'audit' | 'provision' | 'env' | 'deploy' | 'deploy-read'
+    | 'domains' | 'domains-read'
 
 // Deliberately its own table rather than protocol.ts's VERB_CAPABILITY: that one is keyed by the agent's
 // verbs, and this one has two entries for the same verb, which is what the split above needs.
@@ -20,10 +27,12 @@ const POLICY_CAPABILITY: Record<PolicyVerb, Capability | null> = {
     env: 'env',
     deploy: 'deploy',
     'deploy-read': 'deploy',
+    domains: 'domains',
+    'domains-read': 'domains',
 }
 
 // What only the admin may ever do, whatever the registry says and whoever owns the project.
-const ADMIN_ONLY: PolicyVerb[] = ['provision', 'env', 'deploy']
+const ADMIN_ONLY: PolicyVerb[] = ['provision', 'env', 'deploy', 'domains']
 export type Decision =
     | { ok: true, project: ProjectEntry }
     | { ok: false, status: 403 | 404 | 409, code: 'not-found' | 'capability-disabled' | 'invalid-project', message: string }
