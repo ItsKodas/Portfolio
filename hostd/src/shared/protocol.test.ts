@@ -219,8 +219,15 @@ describe('parseDomainsArgs', () => {
 
     it('accepts a remove, a preview and an adopt', () => {
         ok({ action: 'remove', environment: 'test' })
-        ok({ action: 'preview', environment: 'live' })
+        ok({ action: 'preview', environment: 'live', token: 'abc123' })
         ok({ action: 'adopt', environment: 'live', token: 'abc123', disable: ['/etc/apache2/sites-enabled/acme.conf'] })
+    })
+
+    // A preview with no token would render a file that can never match what adopt actually writes,
+    // since api passes the very same token to both: a preview that always differs from the real thing
+    // teaches whoever reads it to expect and skim past a diff in exactly the security-relevant lines.
+    it('refuses a preview without a token', () => {
+        assert.equal(parseDomainsArgs({ action: 'preview', environment: 'live' }).ok, false)
     })
 
     it('refuses an unknown action', () => {

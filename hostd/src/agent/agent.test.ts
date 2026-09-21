@@ -829,6 +829,13 @@ describe('the domains verb', () => {
         assert.equal(sent[0]!.write?.path, '/etc/apache2/hostd/acme-live.conf')
     })
 
+    it('previews with the token that was passed in, not a placeholder', async () => {
+        const { agent } = setup()
+        const result = await agent.domains({ verb: 'domains', project: 'acme', args: { action: 'preview', environment: 'live', token: 'deadbeef' } })
+        assert.equal(result.ok, true)
+        assert.ok(result.ok && 'preview' in result && result.preview.proposed.includes('deadbeef'))
+    })
+
     it('reports the rail\'s last answer in health, so a dead host unit is visible', async () => {
         const { agent } = setup()
         const health = replyOf(await agent.handle({ verb: 'health' }))

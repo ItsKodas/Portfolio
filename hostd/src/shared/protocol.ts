@@ -83,7 +83,10 @@ export const MAX_ALIASES = 20
 
 export type DomainsWriteArgs = { action: 'write', environment: EnvironmentName, token: string }
 export type DomainsRemoveArgs = { action: 'remove', environment: EnvironmentName }
-export type DomainsPreviewArgs = { action: 'preview', environment: EnvironmentName }
+// Carries a token, exactly like write, because api mints and stores one token per hostname and passes
+// the SAME token to preview and to adopt: that is what makes the previewed file byte-accurate against
+// what adopt will actually write, rather than differing from it in every security-relevant line.
+export type DomainsPreviewArgs = { action: 'preview', environment: EnvironmentName, token: string }
 export type DomainsAdoptArgs = { action: 'adopt', environment: EnvironmentName, token: string, disable: string[] }
 // set-aliases is how an alias is added or removed. It carries the whole list the environment should end
 // up with rather than one hostname and a direction, because the agent writes the registry and then
@@ -369,9 +372,12 @@ export function parseDomainsArgs(args: unknown): { ok: true, args: DomainsArgs }
         case 'remove':
             if (!onlyKeys(args, ['action', 'environment'])) return refuse('bad-request', 'remove takes only environment')
             return { ok: true, args: { action: 'remove', environment: name } }
-        case 'preview':
-            if (!onlyKeys(args, ['action', 'environment'])) return refuse('bad-request', 'preview takes only environment')
-            return { ok: true, args: { action: 'preview', environment: name } }
+        case 'preview': {
+            if (!onlyKeys(args, ['action', 'environment', 'token'])) return refuse('bad-request', 'preview takes only environment and token')
+            const value = token()
+            if (value === null) return refuse('bad-request', 'token must be lowercase hex')
+            return { ok: true, args: { action: 'preview', environment: name, token: value } }
+        }
         case 'adopt': {
             if (!onlyKeys(args, ['action', 'environment', 'token', 'disable'])) {
                 return refuse('bad-request', 'adopt takes only environment, token and disable')

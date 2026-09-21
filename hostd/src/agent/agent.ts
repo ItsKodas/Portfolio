@@ -23,10 +23,6 @@ import { createLogDecoder } from './logframes.ts'
 import { listEnvFiles, readEnvFile, writeEnvFile, type EnvFs } from './env-files.ts'
 import { createProject, addEnvironment, removeProject, type ProvisionDeps } from './provision.ts'
 
-// A preview never reaches Apache and is matched against no real challenge, so any hex-looking string
-// stands in for the token a written vhost would actually carry.
-const PREVIEW_TOKEN = '0'.repeat(32)
-
 export const MAX_FOLLOWS_PER_PROJECT = 4
 export const FOLLOW_MAX_MS = 60 * 60_000
 
@@ -144,7 +140,7 @@ export class Agent {
             case 'remove':
                 return removeVhost(domains, checked.project, environment)
             case 'preview':
-                return previewAdopt(domains, checked.project, environment, PREVIEW_TOKEN)
+                return previewAdopt(domains, checked.project, environment, request.args.token)
             case 'adopt':
                 return adopt(domains, checked.project, environment, request.args.token, request.args.disable)
             case 'set-aliases':
