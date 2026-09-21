@@ -8,9 +8,10 @@
 //
 // The git repository lives at <dir>.git, not inside <dir>, because a deploy renames <dir>: leaving the
 // repository in the tree would move it into <dir>.prev and delete it on the next deploy. Provisioning
-// clones into <dir>, so the first deploy of an environment moves <dir>/.git across once. That move is
-// idempotent: if it is interrupted the repository is already at its new home, which is exactly what the
-// next deploy looks for.
+// clones into <dir>, so the first deploy of an environment moves <dir>/.git across once. The rename
+// itself is atomic, but the move is three steps (make the directory, own it, rename into it), and only
+// the last one puts a repository anywhere: interrupted before it, this leaves an empty <dir>.git behind.
+// So what the next deploy looks for is the repository, never the directory holding it. See ensureRepo.
 
 import { posix } from 'node:path'
 
@@ -24,7 +25,7 @@ import type { Runner } from './compose.ts'
 import type { DockerApi } from './docker.ts'
 import { listEnvFiles, readEnvFile, writeEnvFile, type EnvFs } from './env-files.ts'
 import {
-    buildArgv, composeNameOf, deployTrees, downArgv, locationIn, runCompose, upArgv,
+    buildArgv, composeNameOf, deployTrees, downArgv, locationIn, repositoryIn, runCompose, upArgv,
     BUILD_TIMEOUT_MS, SWAP_TIMEOUT_MS, type DeployTrees,
 } from './deploy-compose.ts'
 import { waitForHealthy } from './deploy-health.ts'
@@ -95,20 +96,32 @@ function treesProblem(registry: Registry, id: string, trees: DeployTrees): strin
 
 // Moves the repository out of the tree the first time, and confirms there is one at all. Every git
 // command after this runs against trees.repo, which no swap ever renames.
+//
+// What is asked is whether the repository is there, never whether the directory that holds it is: the
+// three steps below are not one atomic act, and an interruption between the mkdir and the move leaves
+// <dir>.git in place with nothing inside it. Read as "already moved", that empty directory is handed to
+// every later deploy's fetch, which can only answer "fatal: not a git repository (or any parent up to
+// mount point /var)", in under a second, with no retry able to recover it. Asking for the repository
+// instead makes the half-done state something this finishes rather than something it inherits.
 async function ensureRepo(trees: DeployTrees, deps: DeployDeps): Promise<{ ok: true } | { ok: false, problem: string }> {
-    if (await deps.fs.exists(trees.repo)) return { ok: true }
+    const repository = repositoryIn(trees)
+    if (await deps.fs.exists(repository)) return { ok: true }
     if (!(await deps.fs.exists(trees.git))) {
-        return { ok: false, problem: `${trees.dir} has no git repository, so it cannot be deployed` }
+        // Both places are named. Whichever way this site got here, the operator is the one who has to
+        // look at the disk, and the answer is far more use than git's own account of the same fact.
+        return { ok: false, problem: `${trees.dir} has no git repository, and nor does ${trees.repo}, so it cannot be deployed` }
     }
     // trees.repo is a directory this process makes itself, under its own restrictive umask (right for
     // the secrets it mostly writes; see index.ts), so left alone it lands root-owned with no group or
     // other bits at all: on the live server this came out drw-rw---- root root, a directory with no
     // execute bit that nothing but root can even enter. It belongs with the site it was split out of, so
     // it is given that site's own ownership and mode before anything moves into it, never root's.
-    const like = await deps.fs.owner(trees.dir)
-    await deps.fs.mkdir(trees.repo)
-    await deps.fs.own(trees.repo, like)
-    await deps.fs.move(trees.git, posix.join(trees.repo, '.git'))
+    if (!(await deps.fs.exists(trees.repo))) {
+        const like = await deps.fs.owner(trees.dir)
+        await deps.fs.mkdir(trees.repo)
+        await deps.fs.own(trees.repo, like)
+    }
+    await deps.fs.move(trees.git, repository)
     deps.log(`deploy ${trees.dir}: moved the git repository to ${trees.repo}`)
     return { ok: true }
 }

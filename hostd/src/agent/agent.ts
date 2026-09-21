@@ -15,7 +15,7 @@ import { diskProblem, manualProblem } from '../shared/backups.ts'
 import type { RegistryWriter } from '../shared/registry-write.ts'
 import type { DiskUsage, SystemUsage } from '../shared/system.ts'
 import { runLifecycle, type Runner } from './compose.ts'
-import { deployTrees } from './deploy-compose.ts'
+import { deployTrees, repositoryIn } from './deploy-compose.ts'
 import type { DeployDeps } from './deploy.ts'
 import type { DeployRunner } from './deploy-runner.ts'
 import type { DeployStore } from './deploy-state.ts'
@@ -326,8 +326,10 @@ export class Agent {
             if (!environment.branch) return refuse('bad-request', `${project.id} ${environment.name} has no branch to list`)
             const trees = deployTrees(environment.dir)
             // Before the first deploy the repository is still inside the tree, where provisioning cloned
-            // it; after it, it is beside the tree. Both are asked about rather than assumed.
-            const dir = (await deps.fs.exists(trees.repo)) ? trees.repo : environment.dir
+            // it; after it, it is beside the tree. Both are asked about rather than assumed, and what is
+            // asked is whether the repository is there, not whether the directory that holds it is: see
+            // repositoryIn, and ensureRepo, which can leave that directory behind with nothing in it.
+            const dir = (await deps.fs.exists(repositoryIn(trees))) ? trees.repo : environment.dir
             const log = await deps.fetcher.call({ verb: 'log', dir, branch: environment.branch, limit: args.limit })
             if (!log.ok) return refuse(log.code === 'bad-request' ? 'bad-request' : 'failed', log.message)
             return { ok: true, commits: log.commits ?? [] }
