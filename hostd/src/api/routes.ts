@@ -13,7 +13,7 @@ import {
     type CertificateMode, type EnvironmentName, type ProjectEntry, type Registry,
 } from '../shared/registry.ts'
 import { envPathProblem } from '../shared/envfiles.ts'
-import { authenticate, actorLabel, type Caller } from './auth.ts'
+import { authenticate, actorLabel, type Actor, type Caller } from './auth.ts'
 import { authorize, visibleProjects, type PolicyVerb } from './policy.ts'
 import { AgentUnavailableError, type AgentClient } from './agent-client.ts'
 import { MAX_AUDIT_READ, type AuditLog, type AuditOutcome } from './audit.ts'
@@ -292,6 +292,34 @@ function parseEnvWriteBody(value: Record<string, unknown>): { ok: true, text: st
     return { ok: true, text: value.text }
 }
 
+// One project's environments as this actor may see them, live first, then test. Answered from the
+// registry rather than the agent, because the registry is what knows them and api is the only process
+// that knows who is asking.
+//
+// The operator sees the entry as it is: they own the machine. A client sees their own site and nothing
+// about the machine underneath it, so dir and composePaths (paths on the dedi) and port (a host port)
+// are left out entirely rather than nulled, which is also what makes them absent once this is JSON.
+// branch does go to a client: the deploy-read policy verb already lets them read that branch's deploy
+// history and its commit list for their own site, so withholding the name here would protect nothing,
+// and switching it stays admin-only either way. The portal deciding not to show a client a branch is a
+// question for the portal's own copy, not a reason for this to lie about the site.
+//
+// A project registered in the single-environment shape (dir and upstream, no environments block) still
+// has exactly one live environment here: parseRegistry synthesises it, with nulls for the fields that
+// shape cannot carry. There is no such thing as a valid project with no environments.
+function environmentsFor(project: ProjectEntry, actor: Actor): Array<Record<string, unknown>> {
+    return [...project.environments.values()].map(environment => ({
+        name: environment.name,
+        ...(actor.kind === 'admin'
+            ? { dir: environment.dir, composePaths: environment.composePaths, port: environment.port }
+            : {}),
+        branch: environment.branch,
+        domain: environment.domain,
+        certificate: environment.certificate,
+        deployed: environment.deployed,
+    }))
+}
+
 function sendJson(res: ServerResponse, status: number, body: unknown): void {
     res.writeHead(status, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' })
     res.end(JSON.stringify(body))
@@ -480,6 +508,7 @@ export function createHandler(deps: ApiDeps): (req: IncomingMessage, res: Server
                         id: project.id,
                         name: project.name,
                         capabilities: [...project.capabilities],
+                        environments: environmentsFor(project, caller.actor),
                         valid: reason === undefined,
                         ...(reason === undefined ? {} : { reason }),
                         ...(wantStatus ? statusOf(project.id) : {}),
@@ -523,11 +552,16 @@ export function createHandler(deps: ApiDeps): (req: IncomingMessage, res: Server
             }
 
             case 'status': {
-                if (!(await decide(route.project, 'status', null))) return
+                // The one page about one site asks here, so the environments ride along with the
+                // services rather than making that page fetch the whole list to find them again. The
+                // services come from the agent and the environments from the registry: two sources, one
+                // answer, which is api's job and nothing the agent could do for itself.
+                const project = await authorizeProject(route.project, 'status', null)
+                if (!project) return
                 const reply = await callAgent({ verb: 'status', project: route.project })
                 if (!reply) return
                 if (!reply.ok) return refuseRoute(AGENT_STATUS[reply.code], reply.code, reply.message, route.project, 'status')
-                return sendJson(res, 200, reply)
+                return sendJson(res, 200, { ...reply, environments: environmentsFor(project, caller.actor) })
             }
 
             case 'create': {
