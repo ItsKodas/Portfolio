@@ -511,6 +511,11 @@ export function createHandler(deps: ApiDeps): (req: IncomingMessage, res: Server
                         id: project.id,
                         name: project.name,
                         capabilities: [...project.capabilities],
+                        // The operator sees the entry as it is: they own the machine. A client has no use
+                        // for the URL of a repository they cannot reach, and it is the kind of detail that
+                        // belongs to the machine rather than to their site, so it is absent rather than
+                        // null, exactly as environmentsFor withholds dir, composePaths and port.
+                        ...(caller.actor.kind === 'admin' ? { repo: project.repo } : {}),
                         environments: environmentsFor(project, caller.actor),
                         valid: reason === undefined,
                         ...(reason === undefined ? {} : { reason }),

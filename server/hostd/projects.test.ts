@@ -53,6 +53,13 @@ describe('listProjects', () => {
         expect(result.ok).toBe(true)
         if (result.ok) expect(result.value[0].status).toBeUndefined()
     })
+
+    it('carries a project\'s repo back for the operator', async () => {
+        const { fetchImpl } = fakeFetch({ projects: [{ id: 'acme', name: 'Acme', valid: true, repo: 'git@github.com:ItsKodas/acme.git', environments: [] }] })
+        const result = await listProjects(config, admin, fetchImpl)
+        expect(result.ok).toBe(true)
+        if (result.ok) expect(result.value[0].repo).toBe('git@github.com:ItsKodas/acme.git')
+    })
 })
 
 describe('getProject', () => {

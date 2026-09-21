@@ -302,6 +302,19 @@ describe('GET /projects', () => {
         const broken = body.projects.find(project => project.id === 'broken')
         assert.equal(Object.hasOwn(broken ?? {}, 'environments'), false)
     })
+
+    it('answers the operator a project\'s repo', async () => {
+        const body = await (await request('/projects', { actor: 'admin' })).json() as { projects: Array<{ id: string, repo?: string | null }> }
+        const acme = body.projects.find(project => project.id === 'acme')
+        assert.equal(acme?.repo, 'git@github.com:acme/site.git')
+    })
+
+    it('tells a client nothing about the repo', async () => {
+        const body = await (await request('/projects')).json() as { projects: Array<Record<string, unknown>> }
+        for (const project of body.projects) {
+            assert.equal(Object.hasOwn(project, 'repo'), false)
+        }
+    })
 })
 
 describe('GET /health', () => {
