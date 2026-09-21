@@ -41,6 +41,7 @@ export type Route =
     | { verb: 'delete', project: string }
     | { verb: 'add-environment', project: string }
     | { verb: 'settings', project: string }
+    | { verb: 'branches', project: string }
     | { verb: 'remove-environment', project: string, environment: EnvironmentName }
     | { verb: 'env-list', project: string, environment: EnvironmentName }
     | { verb: 'env-file', project: string, environment: EnvironmentName, path: string }
@@ -97,6 +98,9 @@ export function matchRoute(method: string, pathname: string): Route {
         if (segment === 'audit') return only('GET', { verb: 'audit', project })
         if (segment === 'environments') return only('POST', { verb: 'add-environment', project })
         if (segment === 'settings') return only('PUT', { verb: 'settings', project })
+        // Project level, not under an environment: repo is a project-level field and both environments
+        // draw from the one list.
+        if (segment === 'branches') return only('GET', { verb: 'branches', project })
         return { verb: 'not-found' }
     }
 
@@ -633,6 +637,21 @@ export function createHandler(deps: ApiDeps): (req: IncomingMessage, res: Server
                 const reply = await callAgentAudited({ verb: 'configure', project: route.project, args }, route.project, 'configure', target)
                 if (!reply) return
                 return respondAgentAction('configure', reply, route.project, target)
+            }
+
+            case 'branches': {
+                // Reuses 'configure' rather than a new policy verb: admin-only with a deliberately null
+                // capability, which is right here for the same reason it is right there. The list fills
+                // the operator's Settings form; a client has no use for it, and requiring the deploy
+                // capability would leave the dropdown empty on exactly the site an operator is setting
+                // deploys up on.
+                const target = 'branches'
+                const entry = await authorizeProject(route.project, 'configure', target)
+                if (!entry) return
+                const reply = await callAgent({ verb: 'branches', project: route.project })
+                if (!reply) return
+                if (!reply.ok) return refuseRoute(AGENT_STATUS[reply.code], reply.code, reply.message, route.project, 'configure', target)
+                return sendJson(res, 200, reply)
             }
 
             case 'env-list': {

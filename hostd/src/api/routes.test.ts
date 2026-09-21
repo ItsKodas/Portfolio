@@ -821,6 +821,43 @@ describe('PUT /projects/:id/settings', () => {
     })
 })
 
+describe('GET /projects/:id/branches', () => {
+    it('routes a branches read, project level rather than under an environment, and allows only GET there', () => {
+        assert.deepEqual(matchRoute('GET', '/projects/acme/branches'), { verb: 'branches', project: 'acme' })
+        assert.equal(matchRoute('PUT', '/projects/acme/branches').verb, 'method-not-allowed')
+    })
+
+    it('asks the agent and answers its branch list', async () => {
+        agent.reply = () => ({ ok: true, branches: ['main', 'develop'] })
+        const response = await request('/projects/acme/branches', { actor: 'admin' })
+        assert.equal(response.status, 200)
+        assert.deepEqual(await response.json(), { ok: true, branches: ['main', 'develop'] })
+        assert.deepEqual(agent.calls, [{ verb: 'branches', project: 'acme' }])
+    })
+
+    // Reusing 'configure' rather than a new policy verb: the list exists to fill the Settings form, which
+    // is admin-only end to end, and configure is already the null-capability, admin-only verb this needs.
+    it('refuses a client with a 404, the same as settings, and never calls the agent', async () => {
+        const response = await request('/projects/acme/branches')
+        assert.equal(response.status, 404)
+        assert.deepEqual(agent.calls, [])
+    })
+
+    it('passes the agent\'s refusal through, mapped by its code', async () => {
+        agent.reply = () => ({ ok: false, code: 'bad-request', message: 'acme has no repo to list branches from' })
+        const response = await request('/projects/acme/branches', { actor: 'admin' })
+        assert.equal(response.status, 400)
+        const body = await response.json() as { message: string }
+        assert.equal(body.message, 'acme has no repo to list branches from')
+    })
+
+    it('answers 503 when the agent cannot be reached', async () => {
+        agent.call = async () => { throw new AgentUnavailableError('the agent is not answering') }
+        const response = await request('/projects/acme/branches', { actor: 'admin' })
+        assert.equal(response.status, 503)
+    })
+})
+
 describe('provisioning and env routes refuse a client actor', () => {
     it('refuses every new route for a client actor, and audits the refusal', async () => {
         const attempts = [
