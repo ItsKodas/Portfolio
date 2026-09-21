@@ -23,7 +23,11 @@ import type { FetchClient } from './fetch-client.ts'
 import type { Runner } from './compose.ts'
 import type { DockerApi } from './docker.ts'
 import { listEnvFiles, readEnvFile, writeEnvFile, type EnvFs } from './env-files.ts'
-import { buildArgv, composeNameOf, deployTrees, locationIn, runCompose, BUILD_TIMEOUT_MS, type DeployTrees } from './deploy-compose.ts'
+import {
+    buildArgv, composeNameOf, deployTrees, downArgv, locationIn, runCompose, upArgv,
+    BUILD_TIMEOUT_MS, SWAP_TIMEOUT_MS, type DeployTrees,
+} from './deploy-compose.ts'
+import { waitForHealthy } from './deploy-health.ts'
 
 // The worst case is a swap that cannot complete, so a deploy refuses to start rather than risk it.
 export const MIN_FREE_BYTES = 10 * 1024 ** 3
@@ -144,6 +148,28 @@ async function carryEnvFiles(
     return { ok: true }
 }
 
+// The automatic return the design is emphatic about: the new tree is parked back at <dir>.next, the
+// previous one takes its place, and only once the previous copy is up and healthy is the failed tree
+// removed. Nothing is deleted before its replacement is in place, so an interrupted rollback still
+// leaves both copies on disk for the operator to sort out.
+async function swapBack(
+    project: ProjectEntry, environment: EnvironmentEntry, trees: DeployTrees, name: string, deps: DeployDeps,
+): Promise<{ ok: true } | { ok: false, problem: string }> {
+    if (!(await deps.fs.exists(trees.prev))) return { ok: false, problem: 'there is no previous copy to go back to' }
+    // Whatever state the failed version is in, its containers have to go before the old tree takes its
+    // place: they hold the port. A down that fails is not a reason to stop, because the up below is
+    // what actually decides whether the site comes back.
+    await runCompose(downArgv(locationIn(environment, trees.dir), name), SWAP_TIMEOUT_MS, deps.runner)
+    await deps.fs.move(trees.dir, trees.next)
+    await deps.fs.move(trees.prev, trees.dir)
+    const up = await runCompose(upArgv(locationIn(environment, trees.dir), name), SWAP_TIMEOUT_MS, deps.runner)
+    if (!up.ok) return { ok: false, problem: up.message }
+    const healthy = await waitForHealthy(project, name, { docker: deps.docker, now: deps.now, sleep: deps.sleep })
+    if (!healthy.ok) return { ok: false, problem: healthy.problem }
+    await deps.fs.rmdir(trees.next).catch(() => {})
+    return { ok: true }
+}
+
 export async function runDeploy(
     project: ProjectEntry, environment: EnvironmentEntry, request: DeployRequest, deps: DeployDeps,
 ): Promise<DeployRecord> {
@@ -218,7 +244,52 @@ export async function runDeploy(
             return fail(built.message, built.output)
         }
 
-        void key
+        // Swap. Everything from here until the flag comes down is the only window in which the site is
+        // not serving, so it holds no network call and no build: a down, two renames and an up.
+        await deps.fs.setMaintenance(key)
+        try {
+            const down = await runCompose(downArgv(locationIn(environment, trees.dir), name), SWAP_TIMEOUT_MS, deps.runner)
+            if (!down.ok) {
+                // Nothing has moved, so the old tree is still the site and can be started again by the
+                // operator or by the next deploy. Refusing to move on is what keeps that true.
+                await deps.fs.rmdir(trees.next).catch(() => {})
+                return fail(`the running copy could not be stopped: ${down.message}`, down.output)
+            }
+
+            // Only one previous copy is kept, which is what bounds the disk this costs.
+            if (await deps.fs.exists(trees.prev)) await deps.fs.rmdir(trees.prev)
+            await deps.fs.move(trees.dir, trees.prev)
+            await deps.fs.move(trees.next, trees.dir)
+
+            const up = await runCompose(upArgv(locationIn(environment, trees.dir), name), SWAP_TIMEOUT_MS, deps.runner)
+            const healthy = up.ok
+                ? await waitForHealthy(project, name, { docker: deps.docker, now: deps.now, sleep: deps.sleep })
+                : { ok: false as const, problem: up.message }
+            if (!healthy.ok) {
+                const back = await swapBack(project, environment, trees, name, deps)
+                deps.log(`deploy ${project.id} ${environment.name} ${commit.slice(0, 7)}: rolled back, ${healthy.problem}`)
+                const reason = back.ok
+                    ? `${healthy.problem}; rolled back to the previous copy`
+                    : `${healthy.problem}; the previous copy did not come back healthy either: ${back.problem}`
+                return record(commit, subject, 'rolled-back', reason, up.ok ? null : up.output)
+            }
+        } finally {
+            // Always, including on the way out through a throw: a flag left behind would serve the
+            // holding page over a site that is running perfectly well.
+            await deps.fs.clearMaintenance(key).catch(() => {})
+        }
+
+        // Record. The registry is written last, so `deployed` only ever names a commit this environment
+        // actually served, and the store is refreshed so the next poll compares against it.
+        const written = await deps.writer.write({ kind: 'set-deployed', id: project.id, environment: environment.name, commit })
+        if (!written.ok) {
+            // The site is up and healthy on the new commit; only the bookkeeping failed. Saying so beats
+            // pretending the deploy failed, and the next poll simply deploys the same commit again.
+            deps.log(`deploy ${project.id} ${environment.name}: deployed, but the registry could not be updated: ${written.problem}`)
+            return record(commit, subject, 'failed', `deployed, but the registry could not be updated: ${written.problem}`)
+        }
+        await deps.refreshRegistry()
+        deps.log(`deploy ${project.id} ${environment.name} ${commit.slice(0, 7)}: deployed`)
         return record(commit, subject, 'ok', null)
     } catch (error) {
         return failed(describeError(error))
