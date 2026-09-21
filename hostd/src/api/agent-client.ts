@@ -230,10 +230,12 @@ function openBytes(connect: Connect, request: AgentRequest) {
             }
             const chunk = await nextChunk()
             if (chunk === null) {
-                // An abort is this side's own decision, so it ends the body rather than failing it; the
-                // caller that called close() already knows it stopped reading. Anything else reaching EOF
-                // without the terminator is a download that stopped short, whether the agent's restic
-                // exited non-zero, the agent destroyed the socket, or the connection simply went away.
+                // An abort that came first is this side's own decision, so it ends the body rather than
+                // failing it: the caller that called close() already knows it stopped reading. An abort
+                // that came after the stream ended says nothing about why it ended, so it falls through.
+                // Anything else reaching EOF without the terminator is a download that stopped short,
+                // whether the agent's restic exited non-zero, the agent destroyed the socket, or the
+                // connection simply went away.
                 if (aborted) return
                 throw new AgentUnavailableError('the download ended before it was complete')
             }
@@ -245,9 +247,15 @@ function openBytes(connect: Connect, request: AgentRequest) {
         socket.off('data', onData)
         socket.off('end', onEnd)
         socket.off('error', onError)
+        // Latched only while the stream is still live, and that condition is the whole point of the flag:
+        // it means "this side stopped the download before the download stopped itself". An abort that
+        // arrives after the socket has already ended is not why the body is short, so it must not be
+        // allowed to excuse a body that is short. Latching unconditionally would make any cleanup that
+        // runs after a truncation, from any caller, turn that truncation back into a clean end, which is
+        // the exact failure this whole protocol exists to prevent. Do not simplify this to `aborted = true`.
+        if (!ended) aborted = true
         // Unblocks a read that is waiting on this connection, exactly as reader.close() does for open():
         // ending locally does not depend on the peer ever acknowledging.
-        aborted = true
         ended = true
         deliver(null)
         socket.end()

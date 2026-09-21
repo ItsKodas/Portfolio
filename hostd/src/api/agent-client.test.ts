@@ -316,6 +316,34 @@ describe('download', () => {
         await assert.rejects(iterator.next(), /the download ended before it was complete/)
     })
 
+    it('still fails a truncated body when close() is called after the socket already ended', async () => {
+        // Ordering matters, and only one order is a clean end. Here the download breaks first and the
+        // abort follows it, which is what happens when the agent gives up and only then does the reader
+        // tear its side down: a late close() must not launder a truncation into a success. The opposite
+        // order, close() first, is the test below that asserts a deliberate abort ends quietly.
+        // Registered inside connect(), before a byte moves, so the EOF cannot be missed.
+        let sawEnd: () => void = () => {}
+        const ended = new Promise<void>(resolve => { sawEnd = resolve })
+        const client = createAgentClient(connectRaw((server, clientSide) => {
+            clientSide.on('end', () => sawEnd())
+            server.once('data', () => {
+                server.end(Buffer.concat([HEADER, Buffer.from('9\ntar ')]))
+            })
+        }))
+        const result = await client.download(backup)
+        assert.ok(result.ok)
+        if (!result.ok) return
+        const iterator = result.body[Symbol.asyncIterator]()
+        // A frame that promised 9 bytes and delivered 4. The 4 are real and arrive.
+        assert.deepEqual((await iterator.next()).value, Buffer.from('tar '))
+        // The EOF lands with nobody reading; the abort comes after it and must not excuse it. Without
+        // the latch being conditional on the stream still being live, the read below ends cleanly and
+        // the caller keeps 4 bytes of a 9 byte archive believing it has all of them.
+        await ended
+        result.close()
+        await assert.rejects(iterator.next(), /the download ended before it was complete/)
+    })
+
     it('rejects a length line that is not a run of digits rather than buffering towards a newline', async () => {
         const client = createAgentClient(connectRaw(server => {
             server.once('data', () => {
