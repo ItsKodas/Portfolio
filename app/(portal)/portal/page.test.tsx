@@ -6,11 +6,15 @@ import { render, screen } from '@testing-library/react'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 const listProjects = vi.fn()
+const getProject = vi.fn()
 const getHealth = vi.fn()
 const callerFromSession = vi.fn()
 
 vi.mock('@/server/hostd/session', () => ({ callerFromSession: () => callerFromSession() }))
-vi.mock('@/server/hostd/projects', () => ({ listProjects: (...args: unknown[]) => listProjects(...args) }))
+vi.mock('@/server/hostd/projects', () => ({
+    listProjects: (...args: unknown[]) => listProjects(...args),
+    getProject: (...args: unknown[]) => getProject(...args),
+}))
 vi.mock('@/server/hostd/health', () => ({ getHealth: (...args: unknown[]) => getHealth(...args) }))
 
 const { default: PortalHome } = await import('./page')
@@ -39,6 +43,7 @@ beforeEach(() => {
     process.env.HOSTD_API_TOKEN = 'a'.repeat(32)
     callerFromSession.mockResolvedValue({ caller: { actor: 'admin', user: 'koda@horizons.gg' }, clientId: null })
     listProjects.mockResolvedValue({ ok: true, value: [] })
+    getProject.mockResolvedValue({ ok: true, value: [service('running')] })
     getHealth.mockResolvedValue({ ok: true, value: { warnings: [], invalid: {}, system: system() } })
 })
 
@@ -108,10 +113,43 @@ describe('the portal home', () => {
             ok: true,
             value: [{ id: 'asot', name: 'ASOT', valid: true, status: { ok: false, code: 'failed', message: 'docker did not answer' } }],
         })
+        // Asked again on its own, and refused again. The reason on screen is the second one.
+        getProject.mockResolvedValue({ ok: false, code: 'failed', message: 'docker did not answer' })
 
         render(await PortalHome())
 
         expect(screen.getByText('docker did not answer')).toBeInTheDocument()
+    })
+
+    // A listing with no status field is what a hostd older than that flag answers, whatever it is asked.
+    // Every site read as unknown, and the only way to see what one was doing was to open it.
+    it('asks about each site on its own when the listing said nothing about any of them', async () => {
+        listProjects.mockResolvedValue({
+            ok: true,
+            value: [{ id: 'asot', name: 'ASOT', valid: true }, { id: 'pmpc', name: 'PMPC', valid: true }],
+        })
+        getProject.mockImplementation(async (_config: unknown, _caller: unknown, id: string) =>
+            id === 'asot'
+                ? { ok: true, value: [service('running')] }
+                : { ok: true, value: [service('exited')] })
+
+        render(await PortalHome())
+
+        expect(getProject.mock.calls.map(call => call[2])).toEqual(['asot', 'pmpc'])
+        expect(screen.getByText('1 site is down.')).toBeInTheDocument()
+        expect(screen.queryAllByText('unknown')).toHaveLength(0)
+    })
+
+    it('does not ask again about a site hostd already answered for', async () => {
+        // The whole point of asking for the status on the list is that it costs one request
+        listProjects.mockResolvedValue({
+            ok: true,
+            value: [{ id: 'asot', name: 'ASOT', valid: true, status: { ok: true, services: [service('running')] } }],
+        })
+
+        render(await PortalHome())
+
+        expect(getProject).not.toHaveBeenCalled()
     })
 
     it('tells a client nothing about the machine, or about which setting is missing', async () => {

@@ -3,7 +3,7 @@ import { redirect } from 'next/navigation'
 
 import { readHostd } from '@/server/hostd/config'
 import { getHealth, type Health, type SystemUsage } from '@/server/hostd/health'
-import { listProjects, type Project } from '@/server/hostd/projects'
+import { getProject, listProjects, type Project } from '@/server/hostd/projects'
 import { callerFromSession } from '@/server/hostd/session'
 import { Callout } from '@/ui/Callout/Callout'
 import { KeyValue } from '@/ui/KeyValue/KeyValue'
@@ -192,6 +192,7 @@ export default async function PortalHome() {
             return problems.length ? { ok: false, problems } : { ok: true, value }
         },
         listProjects: (config, caller) => listProjects(config, caller),
+        getProject: (config, caller, project) => getProject(config, caller, project),
         getHealth: (config, caller) => getHealth(config, caller),
     })
 

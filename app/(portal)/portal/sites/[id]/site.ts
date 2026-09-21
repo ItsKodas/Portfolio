@@ -8,6 +8,7 @@
 
 import { forClient } from '@/server/hostd/errors'
 import type { Environment, Project, ServiceStatus } from '@/server/hostd/projects'
+import { fillStatuses } from '@/server/hostd/statuses'
 
 type Ok<T> = { ok: true, value: T }
 type Bad = { ok: false, code?: string, message?: string, problems?: string[] }
@@ -109,6 +110,12 @@ export async function gatherSite(deps: SiteDeps, id: string): Promise<SiteView> 
     // still has a page, with the reason on it.
     const status = await deps.getProject(config.value, who.caller, id)
 
+    // The nav draws a dot per site from the listing, and a listing that says nothing about any of them
+    // leaves every dot but this one grey. The answer just read stands in for this project rather than
+    // being asked for a second time.
+    const sites = await fillStatuses(projects.value, wanted =>
+        wanted === id ? Promise.resolve(status) : deps.getProject(config.value, who.caller, wanted))
+
     return {
         kind: 'site',
         id: project.id,
@@ -119,7 +126,7 @@ export async function gatherSite(deps: SiteDeps, id: string): Promise<SiteView> 
         capabilities: project.capabilities ?? [],
         environments: project.environments ?? [],
         services: status.ok ? status.value : [],
-        sites: projects.value,
+        sites,
         trouble: status.ok ? null : troubleFor(isAdmin, status),
     }
 }
