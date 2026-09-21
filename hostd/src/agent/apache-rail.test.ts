@@ -81,11 +81,24 @@ describe('ApacheRail', () => {
         await assert.rejects(rail.send('reload', { write: null, remove: [], disable: [] }), /did not answer/)
     })
 
-    it('records when it last got an answer, for health to report', async () => {
+    // An age, never a timestamp: /health compares this against a ten minute threshold, and a timestamp
+    // is larger than any threshold, so the alarm would be permanently on and therefore say nothing.
+    it('reports how long ago it last got an answer, not when', async () => {
         const { rail } = setup()
-        assert.equal(rail.lastSuccessAt(), null)
+        assert.equal(rail.ageOfLastSuccess(), null)
         await rail.send('reload', { write: null, remove: [], disable: [] })
-        assert.notEqual(rail.lastSuccessAt(), null)
+        assert.equal(rail.ageOfLastSuccess(), 0)
+    })
+
+    it('numbers its first request above anything a previous process left on disk', async () => {
+        const { rail, files } = setup(() => null)
+        // A request that timed out before a restart, and the answer the host unit left after it. A
+        // counter that began again at 0 would read that answer, to a question this process never asked,
+        // as its own.
+        files.set('/rail/request.json', JSON.stringify({ seq: 0, action: 'reload', write: null, remove: [], disable: [] }))
+        files.set('/rail/result.json', JSON.stringify({ seq: 0, ok: true, output: 'the previous operation' }))
+        await assert.rejects(rail.send('reload', { write: null, remove: [], disable: [] }), /did not answer/)
+        assert.equal(JSON.parse(files.get('/rail/request.json')!).seq, 1)
     })
 
     it('runs one request at a time, so two callers cannot interleave their sequences', async () => {

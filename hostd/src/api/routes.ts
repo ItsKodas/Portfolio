@@ -347,7 +347,10 @@ function parseAdoptBody(value: Record<string, unknown>): { ok: true, confirm: st
 
 // Ten minutes. Long enough that an idle hostd with nothing to change is not perpetually unhealthy, short
 // enough that a unit which died this morning is named before the day's first domain action hangs on it.
-const RAIL_STALE_MS = 10 * 60_000
+// Exported so the agent's own end of this figure can be tested against the threshold it is read with:
+// the two live in different processes, and what went wrong here once was that they disagreed about
+// whether railAge was an age or a timestamp, which no test on either side alone could see.
+export const RAIL_STALE_MS = 10 * 60_000
 
 // Named once, listing the environments, rather than once per hostname: a site with three aliases would
 // otherwise produce three copies of the same sentence about the same certificate.

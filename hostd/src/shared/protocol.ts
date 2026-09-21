@@ -139,9 +139,10 @@ export type ServiceStatus = {
 }
 // system carries figures only. Nothing in it is a check, and none of its problems reach warnings, so a
 // busy machine never makes hostd unhealthy (see system.ts).
-// railAge is the rail's own lastSuccessAt, carried out of the agent process so api can serve it at
-// /health: null means the rail has never once heard back from the Apache host unit, not that it recently
-// failed. Task 14 uses this to warn when the host unit has gone quiet, which nothing else surfaces before
+// railAge is how long ago the rail last heard back from the Apache host unit, in milliseconds, carried
+// out of the agent process so api can serve it at /health. An age and never a timestamp: api compares it
+// against a staleness threshold, and a timestamp would be larger than any threshold, so the alarm would
+// fire forever. null means the rail has never once heard back, not that it recently failed. Task 14 uses this to warn when the host unit has gone quiet, which nothing else surfaces before
 // a domain action hangs for 30 seconds and then fails.
 export type HealthReply = { ok: true, warnings: string[], invalid: Record<string, string>, system: SystemUsage, railAge: number | null }
 export type StatusReply = { ok: true, services: ServiceStatus[] }

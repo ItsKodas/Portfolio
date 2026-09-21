@@ -21,8 +21,20 @@ export type RailParts = { write: ApacheWrite | null, remove: string[], disable: 
 
 const sleepReal = (ms: number) => new Promise<void>(resolve => setTimeout(resolve, ms))
 
+// The seq of a request or result file already on disk, or -1 for one that is not there or cannot be
+// read. Used only to start this process's counter above whatever a previous one left behind.
+function seqIn(text: string): number {
+    try {
+        const value = (JSON.parse(text) as Record<string, unknown>).seq
+        return typeof value === 'number' && Number.isInteger(value) && value >= 0 ? value : -1
+    } catch {
+        return -1
+    }
+}
+
 export class ApacheRail {
     private seq = 0
+    private seeded = false
     private queue: Promise<unknown> = Promise.resolve()
     private lastSuccess: number | null = null
     private readonly now: () => number
@@ -37,8 +49,29 @@ export class ApacheRail {
         this.sleep = options.sleep ?? sleepReal
     }
 
-    lastSuccessAt(): number | null {
-        return this.lastSuccess
+    // How long ago the host unit last answered, not when: the whole point of the figure is the comparison
+    // api makes against RAIL_STALE_MS, and an absolute timestamp handed to that comparison is larger than
+    // any threshold, so the alarm the spec calls the one that matters most fires forever and teaches the
+    // operator to ignore it. The subtraction belongs here, where the clock this class measured with is.
+    // null still means the rail has never once been answered.
+    ageOfLastSuccess(): number | null {
+        return this.lastSuccess === null ? null : this.now() - this.lastSuccess
+    }
+
+    // The counter has to keep rising across a restart, not merely within one process. A request that
+    // timed out is deliberately left on disk for the unit to answer late, so a fresh process starting
+    // again at 0 would take that late answer, to a question it never asked, as its own. The rail
+    // directory is the agent state the design asks for a monotonic counter to live in: whatever the
+    // files there already carry, the next request is numbered above it.
+    private async seed(): Promise<void> {
+        if (this.seeded) return
+        this.seeded = true
+        let highest = -1
+        for (const file of [REQUEST_FILE, RESULT_FILE]) {
+            const text = await this.fs.readFile(posix.join(this.dir, file)).catch(() => null)
+            if (text !== null) highest = Math.max(highest, seqIn(text))
+        }
+        this.seq = highest + 1
     }
 
     // Serialised rather than merely awaited by callers: two domain actions arriving together would
@@ -51,6 +84,8 @@ export class ApacheRail {
     }
 
     private async one(action: ApacheAction, parts: RailParts): Promise<ApacheResult> {
+        // Inside the queue, so the read happens once and before any request is numbered.
+        await this.seed()
         const seq = this.seq++
         const request: ApacheRequest = { seq, action, ...parts }
         const target = posix.join(this.dir, REQUEST_FILE)

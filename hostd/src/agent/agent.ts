@@ -56,9 +56,10 @@ export type AgentDeps = {
     // configuration: the domains verb then refuses unavailable instead of crashing, exactly like
     // provision and deploy do.
     domains?: DomainsDeps
-    // The rail's own lastSuccessAt, read fresh on every health request exactly like system is. Required
-    // rather than optional, unlike domains itself: health must always answer with a railAge, even one
-    // that stayed null because nothing ever configured the rail, so no caller of health can forget it.
+    // How long ago the rail last got an answer, read fresh on every health request exactly like system
+    // is. An age in milliseconds, never a timestamp: api compares it against a staleness threshold.
+    // Required rather than optional, unlike domains itself: health must always answer with a railAge,
+    // even one that stayed null because nothing ever configured the rail, so no caller can forget it.
     railAge: () => number | null
 }
 

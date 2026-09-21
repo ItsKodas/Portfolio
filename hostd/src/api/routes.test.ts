@@ -5,7 +5,11 @@ import type { AddressInfo } from 'node:net'
 import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { createHandler, matchRoute, parseLogsQuery } from './routes.ts'
+import { createHandler, matchRoute, parseLogsQuery, RAIL_STALE_MS } from './routes.ts'
+// The agent's own end of railAge. Imported into an api test on purpose: the figure is produced in one
+// process and read in another, each side had its own passing tests, and what they disagreed about was
+// what the figure meant. Only a test that joins them can see that.
+import { ApacheRail, type RailFs } from '../agent/apache-rail.ts'
 import { AuditLog } from './audit.ts'
 import { AgentUnavailableError, type AgentClient } from './agent-client.ts'
 import { DomainStore, domainKey, newRecord, type DomainRecord } from './domain-state.ts'
@@ -1128,6 +1132,49 @@ describe('GET /health: what only health can see', () => {
         agent.reply = () => ({ ok: true, warnings: [], invalid: {}, system: usage, railAge: 9 * 60_000 })
         const fresh = await (await request('/health', { actor: 'admin' })).json() as { warnings: string[] }
         assert.equal(fresh.warnings.includes(railWarning), false)
+    })
+
+    // The same warning again, but fed by the real ApacheRail rather than by a number this test chose:
+    // both ends of the figure at once, which is the only place the timestamp-for-an-age mismatch that
+    // kept this alarm permanently on could ever have been caught.
+    it('does not warn one second after a real handshake, and does warn ten minutes later', async () => {
+        const railWarning = 'the Apache host unit has not answered; no domain change can take effect'
+        // A real epoch, which is exactly the value that used to make every reading look stale.
+        let clock = 1_790_000_000_000
+        const files = new Map<string, string>()
+        const railFs: RailFs = {
+            async writeFile(path, text) { files.set(path, text) },
+            async rename(from, to) {
+                const text = files.get(from)!
+                files.delete(from)
+                files.set(to, text)
+                // The host unit, answering the request it was just handed.
+                if (to.endsWith('request.json')) {
+                    files.set('/rail/result.json', JSON.stringify({ seq: JSON.parse(text).seq, ok: true, output: 'Syntax OK' }))
+                    files.delete(to)
+                }
+            },
+            async readFile(path) {
+                const text = files.get(path)
+                if (text === undefined) throw Object.assign(new Error('ENOENT'), { code: 'ENOENT' })
+                return text
+            },
+            async unlink(path) { files.delete(path) },
+        }
+        const rail = new ApacheRail('/rail', railFs, { now: () => clock, sleep: async ms => { clock += ms } })
+        agent.reply = () => ({ ok: true, warnings: [], invalid: {}, system: usage, railAge: rail.ageOfLastSuccess() })
+
+        const never = await (await request('/health', { actor: 'admin' })).json() as { warnings: string[] }
+        assert.ok(never.warnings.includes(railWarning), 'a rail that has never been answered is not healthy')
+
+        await rail.send('reload', { write: null, remove: [], disable: [] })
+        clock += 1_000
+        const fresh = await (await request('/health', { actor: 'admin' })).json() as { warnings: string[] }
+        assert.equal(fresh.warnings.includes(railWarning), false, fresh.warnings.join('; '))
+
+        clock += RAIL_STALE_MS
+        const stale = await (await request('/health', { actor: 'admin' })).json() as { warnings: string[] }
+        assert.ok(stale.warnings.includes(railWarning), stale.warnings.join('; '))
     })
 
     it('keeps the agent\'s own warnings alongside them', async () => {

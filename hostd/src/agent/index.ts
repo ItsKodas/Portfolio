@@ -273,7 +273,9 @@ async function main(): Promise<void> {
         provision,
         deploys: { runner: deployRunner, store: deployStore, deps: deployDeps },
         domains: domainsDeps,
-        railAge: () => rail.lastSuccessAt(),
+        // An age, which is what /health compares against its staleness threshold, not the timestamp the
+        // rail records: the two are one line apart here and the whole alarm depends on which is which.
+        railAge: () => rail.ageOfLastSuccess(),
     })
 
     await rm(SOCKET_PATH, { force: true })
