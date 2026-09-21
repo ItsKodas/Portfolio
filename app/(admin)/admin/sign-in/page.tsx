@@ -1,9 +1,11 @@
 import type { Metadata } from 'next'
 import { redirect } from 'next/navigation'
-import { Alert, Box, Button, Paper, Typography } from '@mui/material'
 
 import { auth, signIn } from '@/server/auth'
 import { isAdminSession } from '@/server/auth/allow'
+import { Button } from '@/ui/Button/Button'
+import { Callout } from '@/ui/Callout/Callout'
+import styles from './signIn.module.css'
 
 export const metadata: Metadata = { title: 'Sign in' }
 
@@ -17,18 +19,23 @@ export default async function SignInPage({ searchParams }: { searchParams: Promi
     }
 
     return (
-        <Box sx={{ minHeight: '100vh', display: 'grid', placeItems: 'center', p: 2 }}>
-            <Paper sx={{ p: 4, width: '100%', maxWidth: 380 }}>
-                <Typography variant="h5" component="h1" sx={{ mb: 3, fontWeight: 700 }}>Horizons admin</Typography>
+        <div className={styles.ground}>
+            <div className={styles.panel}>
+                <h1 className={styles.title}>Horizons admin</h1>
                 {error && (
-                    <Alert severity="error" sx={{ mb: 3 }}>
-                        {error === 'AccessDenied' ? 'That Google account is not authorised.' : 'Sign-in failed. Please try again.'}
-                    </Alert>
+                    <div className={styles.problem}>
+                        <Callout
+                            tone="crit"
+                            title={error === 'AccessDenied' ? 'That Google account is not authorised.' : 'Sign-in failed. Please try again.'}
+                        >
+                            {null}
+                        </Callout>
+                    </div>
                 )}
                 <form action={signInWithGoogle}>
-                    <Button type="submit" variant="contained" fullWidth size="large">Sign in with Google</Button>
+                    <Button type="submit" variant="primary" className={styles.submit}>Sign in with Google</Button>
                 </form>
-            </Paper>
-        </Box>
+            </div>
+        </div>
     )
 }

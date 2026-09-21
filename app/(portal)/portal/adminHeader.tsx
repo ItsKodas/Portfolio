@@ -1,8 +1,11 @@
 import Link from 'next/link'
-import { Box, Button, Stack, Typography } from '@mui/material'
 
 import { signOut } from '@/server/auth'
+import { Button } from '@/ui/Button/Button'
+import styles from './header.module.css'
 
+// Kept, rather than dropped for ui/Shell's bar: only the portal home renders inside a Shell, so for the
+// quotes, clients and gallery pages this is the whole of their navigation. No page shows both.
 export default function AdminHeader() {
     async function signOutAction() {
         'use server'
@@ -10,17 +13,15 @@ export default function AdminHeader() {
     }
 
     return (
-        <Box component="header" sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', py: 2, mb: 3, borderBottom: 1, borderColor: 'divider' }}>
-            <Link href="/admin" style={{ color: 'inherit', textDecoration: 'none' }}>
-                <Typography variant="h6" component="p" sx={{ fontWeight: 700 }}>Horizons admin</Typography>
-            </Link>
-            <Stack direction="row" spacing={2} sx={{ ml: 'auto', mr: 2 }}>
-                <Link href="/admin" style={{ color: 'inherit' }}>Quotes</Link>
-                <Link href="/admin/clients" style={{ color: 'inherit' }}>Clients</Link>
-            </Stack>
+        <header className={styles.bar}>
+            <Link href="/admin" className={styles.brand}>Horizons admin</Link>
+            <nav className={styles.nav}>
+                <Link href="/admin" className={styles.link}>Quotes</Link>
+                <Link href="/admin/clients" className={styles.link}>Clients</Link>
+            </nav>
             <form action={signOutAction}>
-                <Button type="submit" size="small" color="inherit">Sign out</Button>
+                <Button type="submit" variant="quiet" size="small">Sign out</Button>
             </form>
-        </Box>
+        </header>
     )
 }
