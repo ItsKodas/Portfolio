@@ -54,10 +54,19 @@ ${aliasLines(input.aliases)}
 // The maintenance rules come before the proxy so that a deploy in progress, or an upstream that is not
 // answering, both meet the holding page rather than a proxy error. ErrorDocument 503 is what turns a
 // failed proxy into the same page, which is the half of this that covers an unplanned outage.
+//
+// This block declares only the primary, never the aliases: an alias declared here as well as on its own
+// block below would be matched here first (Apache resolves a name-based vhost by the first block whose
+// ServerName or ServerAlias matches), leaving the alias's redirect block unreachable and the site
+// answering at two URLs.
+//
+// The maintenance-flag RewriteCond's quoting is two layers deep and easy to get backwards: the outer
+// double quotes group -f and the path into the one CondPattern argument RewriteCond expects (they are
+// separated by a space, and a bare third token would be read as an invalid flags list); the inner single
+// quotes are ap_expr's own string-literal syntax, not the config tokenizer's.
 function port443(input: VhostInput): string {
     return `<VirtualHost *:443>
     ServerName ${input.primary}
-${aliasLines(input.aliases)}
 
     SSLEngine on
     SSLCertificateFile ${input.certificate.chain}
@@ -73,9 +82,6 @@ ${aliasLines(input.aliases)}
     Header always set Retry-After "120" "expr=%{REQUEST_STATUS} == 503"
 
     RewriteEngine On
-    // Outer double quotes group -f and the path into the one CondPattern argument RewriteCond expects
-    // (they are separated by a space, and a bare third token would be read as an invalid flags list).
-    // The inner single quotes are ap_expr's own string-literal syntax, not the config tokenizer's.
     RewriteCond expr "-f '${input.maintenanceFlag}'"
     RewriteRule ^ - [R=503,L]
 
@@ -88,6 +94,11 @@ ${aliasLines(input.aliases)}
 
 // An alias never serves the site. It exists to send a visitor to the one canonical address, so that a
 // site is not reachable at two URLs with two sets of cookies and two entries in a search index.
+//
+// The token Location comes before the redirect, same as on the other two blocks and for the same reason:
+// verify.ts probes https://<alias>/.well-known/hostd/<token> and treats anything but a 2xx as a failure.
+// Without this, the redirect would 301 that probe and every alias would sit pending and then fail, which
+// reads as a DNS problem rather than as the ordering bug it would actually be.
 function aliasRedirect(input: VhostInput): string {
     if (input.aliases.length === 0) return ''
     return `
@@ -97,6 +108,11 @@ ${input.aliases.map(alias => `    ServerName ${alias}`).join('\n')}
     SSLEngine on
     SSLCertificateFile ${input.certificate.chain}
     SSLCertificateKeyFile ${input.certificate.key}
+
+    <Location "/.well-known/hostd/${input.token}">
+        Header always set X-Hostd-Token "${input.token}"
+        Redirect 204
+    </Location>
 
     Redirect permanent / https://${input.primary}/
 </VirtualHost>`
