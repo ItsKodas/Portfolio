@@ -45,7 +45,7 @@ export default defineConfig({
                 extends: true,
                 test: {
                     name: 'unit',
-                    include: ['app/**/*.test.ts', 'server/**/*.test.ts', 'ui/**/*.test.ts', 'middleware.test.ts'],
+                    include: ['app/**/*.test.ts', 'server/**/*.test.ts', 'ui/**/*.test.ts', 'scripts/**/*.test.ts', 'middleware.test.ts'],
                     exclude: ['server/clients/model.test.ts', 'server/clients/repo.test.ts', 'server/quotes/repo.test.ts'],
                 },
             },
