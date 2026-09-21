@@ -38,7 +38,9 @@ export function SiteStats({ state, services, restarts }: Stats) {
 // are read from the listing and are none of this operation's business.
 export function SiteDot({ state }: { state: SiteState }) {
     const { settling } = useSettling()
-    // deploying is the dot that pulses, and is already what this page draws for work in progress
-    if (settling) return <StatusDot state="deploying" label={DOING[settling.action]} />
-    return <StatusDot state={state} />
+    // deploying is the dot that pulses, and is already what this page draws for work in progress. bare
+    // because this dot lives in the sidebar, where no dot is labelled any more; the word still reaches a
+    // pointer through the dot's title, and mid-operation that word is "restarting" rather than a state.
+    if (settling) return <StatusDot state="deploying" label={DOING[settling.action]} bare />
+    return <StatusDot state={state} bare />
 }

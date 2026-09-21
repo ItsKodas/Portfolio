@@ -191,7 +191,7 @@ export default async function SitePage({ params, searchParams }: Props) {
                         used, so it is the one that says what is being done to it. */}
                     {site.id === view.id
                         ? <SiteDot state={current} />
-                        : <StatusDot state={stateOf(site)} />}
+                        : <StatusDot state={stateOf(site)} bare />}
                     <span className={nav.navName}>{site.name ?? site.id}</span>
                 </a>
             ))}
