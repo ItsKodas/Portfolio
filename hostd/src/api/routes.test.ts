@@ -18,11 +18,12 @@ projects:
   acme:
     client: cl_1
     name: Acme
+    repo: git@github.com:acme/site.git
     services: { web: { role: site } }
     capabilities: [lifecycle, logs, provision, env, deploy]
     environments:
-      live: { dir: /var/www/acme, port: 5010 }
-      test: { dir: /var/www/acme-test, port: 5013 }
+      live: { dir: /var/www/acme, port: 5010, branch: main, domain: acme.example, certificate: letsencrypt, deployed: abc1234 }
+      test: { dir: /var/www/acme-test, port: 5013, branch: develop, domain: test.acme.example }
   quiet:
     client: cl_1
     name: Quiet
@@ -39,6 +40,15 @@ projects:
   broken:
     client: cl_1
 `)
+
+// Every environment of acme and of quiet as a client is allowed to see them: their own site's branch,
+// domain, certificate and deployed commit, and nothing about the machine underneath. quiet is the
+// single-environment shape, where the registry synthesises one live environment out of dir and upstream.
+const acmeEnvironmentsForClient = [
+    { name: 'live', branch: 'main', domain: 'acme.example', certificate: 'letsencrypt', deployed: 'abc1234' },
+    { name: 'test', branch: 'develop', domain: 'test.acme.example', certificate: null, deployed: null },
+]
+const quietEnvironmentsForClient = [{ name: 'live', branch: null, domain: null, certificate: null, deployed: null }]
 
 const logLine: LogLine = { stream: 'stdout', ts: '2026-09-20T00:00:00Z', text: 'hello', truncated: false }
 const usage: SystemUsage = {
@@ -200,8 +210,11 @@ describe('GET /projects', () => {
         assert.deepEqual(body, {
             ok: true,
             projects: [
-                { id: 'acme', name: 'Acme', capabilities: ['lifecycle', 'logs', 'provision', 'env', 'deploy'], valid: false, reason: 'guard says no' },
-                { id: 'quiet', name: 'Quiet', capabilities: [], valid: true },
+                {
+                    id: 'acme', name: 'Acme', capabilities: ['lifecycle', 'logs', 'provision', 'env', 'deploy'],
+                    valid: false, reason: 'guard says no', environments: acmeEnvironmentsForClient,
+                },
+                { id: 'quiet', name: 'Quiet', capabilities: [], valid: true, environments: quietEnvironmentsForClient },
             ],
         })
     })
@@ -220,8 +233,11 @@ describe('GET /projects', () => {
         const body = await (await request('/projects?status=1')).json() as { projects: Array<Record<string, unknown>> }
         assert.deepEqual(agent.calls, [{ verb: 'health' }, { verb: 'statuses', projects: ['acme', 'quiet'] }])
         assert.deepEqual(body.projects, [
-            { id: 'acme', name: 'Acme', capabilities: ['lifecycle', 'logs', 'provision', 'env', 'deploy'], valid: false, reason: 'guard says no', status: { ok: true, services: [] } },
-            { id: 'quiet', name: 'Quiet', capabilities: [], valid: true, status: { ok: true, services: [] } },
+            {
+                id: 'acme', name: 'Acme', capabilities: ['lifecycle', 'logs', 'provision', 'env', 'deploy'],
+                valid: false, reason: 'guard says no', environments: acmeEnvironmentsForClient, status: { ok: true, services: [] },
+            },
+            { id: 'quiet', name: 'Quiet', capabilities: [], valid: true, environments: quietEnvironmentsForClient, status: { ok: true, services: [] } },
         ])
     })
 
@@ -251,6 +267,41 @@ describe('GET /projects', () => {
         assert.equal(response.status, 400)
         assert.deepEqual(agent.calls, [])
     })
+
+    // The test that matters most. A key that is present and undefined would serialise away here but
+    // would still be there in any other caller of the same code, so absence is asserted on the key.
+    it('keeps the machine out of a client\'s environments: no dir and no port, in any of them', async () => {
+        const body = await (await request('/projects')).json() as { projects: Array<{ environments: Array<Record<string, unknown>> }> }
+        const environments = body.projects.flatMap(project => project.environments)
+        assert.equal(environments.length, 3)
+        for (const environment of environments) {
+            assert.equal(Object.hasOwn(environment, 'dir'), false)
+            assert.equal(Object.hasOwn(environment, 'port'), false)
+            assert.equal(Object.hasOwn(environment, 'composePaths'), false)
+        }
+    })
+
+    it('gives the operator the whole entry, dir and port included', async () => {
+        const body = await (await request('/projects', { actor: 'admin' })).json() as { projects: Array<{ id: string, environments?: Array<Record<string, unknown>> }> }
+        assert.deepEqual(body.projects.find(project => project.id === 'acme')?.environments, [
+            {
+                name: 'live', dir: '/var/www/acme', composePaths: ['/var/www/acme/docker-compose.yml'], port: 5010,
+                branch: 'main', domain: 'acme.example', certificate: 'letsencrypt', deployed: 'abc1234',
+            },
+            {
+                name: 'test', dir: '/var/www/acme-test', composePaths: ['/var/www/acme-test/docker-compose.yml'], port: 5013,
+                branch: 'develop', domain: 'test.acme.example', certificate: null, deployed: null,
+            },
+        ])
+    })
+
+    // A registry entry api itself could not parse has no environments to report, so it carries none
+    // rather than an empty list that would read as a site with nothing running.
+    it('leaves environments off an invalid registry entry', async () => {
+        const body = await (await request('/projects', { actor: 'admin' })).json() as { projects: Array<{ id: string }> }
+        const broken = body.projects.find(project => project.id === 'broken')
+        assert.equal(Object.hasOwn(broken ?? {}, 'environments'), false)
+    })
 })
 
 describe('GET /health', () => {
@@ -266,6 +317,44 @@ describe('GET /health', () => {
         assert.deepEqual(agent.calls, [])
         const [entry] = await audit.read({ limit: 1 })
         assert.deepEqual([entry?.outcome, entry?.reason], ['refused', 'admin-only'])
+    })
+})
+
+describe('GET /projects/:id', () => {
+    it('carries the environments beside the agent\'s services', async () => {
+        const response = await request('/projects/acme')
+        assert.equal(response.status, 200)
+        assert.deepEqual(await response.json(), { ok: true, services: [], environments: acmeEnvironmentsForClient })
+    })
+
+    it('keeps the machine out of a client\'s environments here too', async () => {
+        const body = await (await request('/projects/acme')).json() as { environments: Array<Record<string, unknown>> }
+        for (const environment of body.environments) {
+            assert.equal(Object.hasOwn(environment, 'dir'), false)
+            assert.equal(Object.hasOwn(environment, 'port'), false)
+            assert.equal(Object.hasOwn(environment, 'composePaths'), false)
+        }
+    })
+
+    it('gives the operator dir and port', async () => {
+        const body = await (await request('/projects/acme', { actor: 'admin' })).json() as { environments: Array<Record<string, unknown>> }
+        assert.deepEqual(body.environments.map(environment => [environment.dir, environment.port]), [
+            ['/var/www/acme', 5010],
+            ['/var/www/acme-test', 5013],
+        ])
+    })
+
+    // The single-environment shape: no environments key in the registry at all, which the registry reads
+    // as live only, so the answer is one live environment rather than none.
+    it('answers a single-environment project with its one live environment', async () => {
+        const body = await (await request('/projects/quiet')).json()
+        assert.deepEqual(body, { ok: true, services: [], environments: quietEnvironmentsForClient })
+    })
+
+    it('refuses another client\'s project without asking the agent', async () => {
+        const response = await request('/projects/other')
+        assert.equal(response.status, 404)
+        assert.deepEqual(agent.calls, [])
     })
 })
 
@@ -323,7 +412,7 @@ describe('project routes', () => {
 
     it('returns status without auditing a plain read', async () => {
         const response = await request('/projects/acme')
-        assert.deepEqual(await response.json(), { ok: true, services: [] })
+        assert.deepEqual(await response.json(), { ok: true, services: [], environments: acmeEnvironmentsForClient })
         assert.deepEqual(await audit.read({ limit: 10 }), [])
     })
 
