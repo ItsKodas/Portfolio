@@ -1,0 +1,10 @@
+[Unit]
+Description=Watch for a hostd Apache request
+
+[Path]
+# PathExists rather than PathChanged: the service deletes the request when it is done, which re-arms
+# this. PathChanged would fire on the result being written as well.
+PathExists=/etc/hostd/apache/request.json
+
+[Install]
+WantedBy=multi-user.target
