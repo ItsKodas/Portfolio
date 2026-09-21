@@ -80,3 +80,75 @@ export function diskProblem(disk: DiskUsage | null): string | null {
         ? 'the backup disk has less than 10% free'
         : null
 }
+
+export const SCHEDULE_MODES = ['off', 'daily', 'weekly'] as const
+export type ScheduleMode = typeof SCHEDULE_MODES[number]
+// weekday is 0 (Sunday) to 6, read in Brisbane's own week, and is ignored unless mode is weekly.
+export type Schedule = { mode: ScheduleMode, hour: number, minute: number, weekday: number, keep: Keep }
+
+// Australia/Brisbane is UTC+10 all year. The design chose it for exactly that: no daylight saving means
+// no slot that is skipped and none that happens twice, and a fixed offset needs no timezone database.
+export const BRISBANE_OFFSET_MS = 10 * 60 * 60_000
+
+// A schedule that has never run fires for a slot that has only just passed, not for every slot in
+// the past. Without this, a project with no run history (a schedule just switched on, or a history
+// file that could not be read, which the store deliberately tolerates by starting empty) would fire
+// the moment it was first seen, and an unreadable history would start a backup on every scheduled
+// project at once.
+export const FIRST_RUN_GRACE_MS = 60 * 60_000
+
+export function defaultSchedule(): Schedule {
+    return { mode: 'off', hour: 2, minute: 0, weekday: 0, keep: { daily: 7, weekly: 4, monthly: 3 } }
+}
+
+const isWhole = (value: unknown, min: number, max: number): value is number =>
+    typeof value === 'number' && Number.isInteger(value) && value >= min && value <= max
+
+function parseKeep(raw: unknown): Keep | null {
+    if (!raw || typeof raw !== 'object') return null
+    const { daily, weekly, monthly } = raw as Record<string, unknown>
+    if (!isWhole(daily, 0, 3650) || !isWhole(weekly, 0, 520) || !isWhole(monthly, 0, 120)) return null
+    return { daily, weekly, monthly }
+}
+
+// max is the project's registry ceiling: a client may ask for less than the operator allows, never more,
+// and asking for more is clamped rather than refused so the portal can say what it settled on.
+export function parseSchedule(raw: unknown, max: Keep): { ok: true, schedule: Schedule } | { ok: false, problem: string } {
+    if (!raw || typeof raw !== 'object') return { ok: false, problem: 'a schedule must be an object' }
+    const { mode, hour, minute, weekday, keep } = raw as Record<string, unknown>
+    if (typeof mode !== 'string' || !(SCHEDULE_MODES as readonly string[]).includes(mode)) {
+        return { ok: false, problem: `mode must be one of ${SCHEDULE_MODES.join(', ')}` }
+    }
+    if (!isWhole(hour, 0, 23)) return { ok: false, problem: 'hour must be a whole number from 0 to 23' }
+    if (!isWhole(minute, 0, 59)) return { ok: false, problem: 'minute must be a whole number from 0 to 59' }
+    if (!isWhole(weekday, 0, 6)) return { ok: false, problem: 'weekday must be a whole number from 0 (Sunday) to 6' }
+    const parsedKeep = parseKeep(keep)
+    if (!parsedKeep) return { ok: false, problem: 'keep must hold whole daily, weekly and monthly counts' }
+    return { ok: true, schedule: { mode: mode as ScheduleMode, hour, minute, weekday, keep: clampKeep(parsedKeep, max) } }
+}
+
+// The most recent moment this schedule should have fired at or before `now`, or null if it never has.
+function slotBefore(schedule: Schedule, now: number): number | null {
+    const local = new Date(now + BRISBANE_OFFSET_MS)
+    const slot = Date.UTC(local.getUTCFullYear(), local.getUTCMonth(), local.getUTCDate(), schedule.hour, schedule.minute) - BRISBANE_OFFSET_MS
+    const today = slot <= now ? slot : slot - 24 * 60 * 60_000
+    if (schedule.mode === 'daily') return today
+    // Weekly: walk back to the most recent occurrence of its weekday, at most seven days.
+    for (let days = 0; days < 7; days += 1) {
+        const candidate = today - days * 24 * 60 * 60_000
+        if (new Date(candidate + BRISBANE_OFFSET_MS).getUTCDay() === schedule.weekday) return candidate
+    }
+    return null
+}
+
+// True when the slot this schedule last passed has not been run yet. Comparing against the last run,
+// rather than against a tick, is what makes a slot missed while api was down run once at startup and
+// exactly once: a run at 03:00 for the 02:30 slot still satisfies it.
+export function isDue(schedule: Schedule, lastRunAt: number | null, now: number): boolean {
+    if (schedule.mode === 'off') return false
+    const slot = slotBefore(schedule, now)
+    if (slot === null) return false
+    // No history: the slot must be recent, not any slot in the past. See FIRST_RUN_GRACE_MS.
+    if (lastRunAt === null) return now - slot <= FIRST_RUN_GRACE_MS
+    return lastRunAt < slot
+}
