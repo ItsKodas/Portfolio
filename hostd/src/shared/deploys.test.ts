@@ -2,7 +2,7 @@ import { describe, it } from 'node:test'
 import assert from 'node:assert/strict'
 
 import {
-    emptyDeploys, recordDeploy, lastHealthyCommit, deployKey,
+    emptyDeploys, recordDeploy, lastHealthyCommit, deployKey, maintenanceKey,
     MAX_DEPLOY_RECORDS, PAUSE_AFTER_FAILURES, type DeployOutcome, type DeployRecord,
 } from './deploys.ts'
 
@@ -14,6 +14,10 @@ const record = (commit: string, outcome: DeployOutcome): DeployRecord => ({
 describe('deploy history', () => {
     it('keys an environment by project and name', () => {
         assert.equal(deployKey('acme', 'test'), 'acme:test')
+    })
+
+    it('names the maintenance flag the way the vhost looks for it, with no colon in the filename', () => {
+        assert.equal(maintenanceKey('acme', 'test'), 'acme-test')
     })
 
     it('puts the newest record first and keeps the cap', () => {

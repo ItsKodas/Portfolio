@@ -18,7 +18,7 @@ import { describeError } from '../shared/formats.ts'
 import type { EnvironmentEntry, ProjectEntry, Registry } from '../shared/registry.ts'
 import type { RegistryWriter } from '../shared/registry-write.ts'
 import type { Commit } from '../shared/fetch-protocol.ts'
-import { deployKey, type DeployRecord, type DeployTrigger } from '../shared/deploys.ts'
+import { maintenanceKey, type DeployRecord, type DeployTrigger } from '../shared/deploys.ts'
 import type { FetchClient } from './fetch-client.ts'
 import type { Runner } from './compose.ts'
 import type { DockerApi } from './docker.ts'
@@ -177,7 +177,8 @@ export async function runDeploy(
     const startedAt = new Date(startedMs).toISOString()
     const trees = deployTrees(environment.dir)
     const name = composeNameOf(environment)
-    const key = deployKey(project.id, environment.name)
+    // The maintenance flag's own name, not the deploy key: this one becomes a filename Apache reads.
+    const key = maintenanceKey(project.id, environment.name)
 
     const record = (
         commit: string, subject: string | null, outcome: DeployRecord['outcome'], reason: string | null, output: string | null = null,

@@ -40,6 +40,13 @@ export function deployKey(id: string, environment: EnvironmentName): string {
     return `${id}:${environment}`
 }
 
+// The name of the maintenance flag file, which the design spells <id>-<env>. Deliberately not the deploy
+// key above: that one is only ever a map key, while this becomes a filename Apache is configured to look
+// for, and a colon in a path is a needless thing to make a vhost template quote.
+export function maintenanceKey(id: string, environment: EnvironmentName): string {
+    return `${id}-${environment}`
+}
+
 // A rolled-back deploy counts as a failure: the site is serving the commit it started on, and a branch
 // that keeps doing this must stop being polled just as surely as one that fails to build.
 export function recordDeploy(state: EnvironmentDeploys, record: DeployRecord): EnvironmentDeploys {
