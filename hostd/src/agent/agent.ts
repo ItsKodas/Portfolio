@@ -145,6 +145,14 @@ export class Agent {
         }
 
         if (args.action === 'run') {
+            // The design's run order refuses on a full disk before it refuses a sixth manual run, and the
+            // runbook lists this under "When a backup is refused", so it is a synchronous refusal like the
+            // manual cap and the cooldown beside it, not a run that starts and records a reason minutes
+            // later. backup-run.ts still checks the same thing: the agent never lets its own caller stand
+            // in for its own check, and a scheduled run reaches that one by a different path.
+            const diskFull = await this.backupDiskProblem()
+            if (diskFull) return reply(refuse('unavailable', diskFull))
+
             const listed = await restic.snapshots(repo)
             if (args.tag === 'manual') {
                 // Checked here as well as in api: the agent never lets api's decision stand in for its own.
@@ -194,6 +202,19 @@ export class Agent {
                 // exit promise with no settler attached and the restic child unreaped.
                 void handle.exit.then(() => {}, () => {})
             },
+        }
+    }
+
+    // Why the backup disk will not take another run, or null when it will. Shared by health, which reports
+    // it as a warning, and by the run branch, which refuses on it: a reading that throws degrades to a
+    // problem rather than taking its caller down, and a disk that cannot be read at all is not a disk a
+    // run may be started against.
+    private async backupDiskProblem(): Promise<string | null> {
+        if (!this.deps.backups) return null
+        try {
+            return diskProblem(await this.deps.backups.backupDisk())
+        } catch (error) {
+            return `the backup disk could not be read: ${describeError(error)}`
         }
     }
 
@@ -255,12 +276,7 @@ export class Agent {
             // is unhealthy.
             // health is what the operator reads when something is already wrong, so a disk reading that
             // cannot be taken must degrade to a warning rather than take the whole reply down with it.
-            let problem: string | null
-            try {
-                problem = diskProblem(await this.deps.backups.backupDisk())
-            } catch (error) {
-                problem = `the backup disk could not be read: ${describeError(error)}`
-            }
+            const problem = await this.backupDiskProblem()
             if (problem) warnings.push(problem)
             warnings.push(...this.deps.backups.store.failures())
         }

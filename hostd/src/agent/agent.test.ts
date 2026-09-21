@@ -807,7 +807,9 @@ function backupsWiring(options: {
         newRunId: () => 'run1',
         backupDisk: async () => {
             if (options.diskError) throw options.diskError
-            return options.disk ?? null
+            // Plenty free unless a test says otherwise: a disk that cannot be read now refuses a run, so a
+            // null default would refuse every run test for a reason it was not written to exercise.
+            return options.disk === undefined ? { path: '/backups', totalBytes: 1000, usedBytes: 100, freeBytes: 900 } : options.disk
         },
     }
     return { backups, started }
@@ -828,6 +830,31 @@ describe('backup', () => {
         const { agent } = setup({ backups })
         const outcome = await agent.handle(backup({ action: 'list' }))
         assert.equal(outcome.kind === 'reply' && outcome.reply.ok && 'snapshots' in outcome.reply && outcome.reply.snapshots.length, 1)
+    })
+
+    it('refuses a run on a nearly full backup disk instead of starting one', async () => {
+        // The design's run order refuses on the disk before it refuses a sixth manual run, and the runbook
+        // lists this under "When a backup is refused". Checked inside backup-run.ts too, but a check only
+        // there answers 202 with a run id and puts the reason in a record minutes later.
+        const full = { path: '/backups', totalBytes: 1000, usedBytes: 950, freeBytes: 50 }
+        for (const tag of ['manual', 'scheduled'] as const) {
+            const { backups, started } = backupsWiring({ snapshots: [], disk: full })
+            const { agent } = setup({ backups })
+            const outcome = await agent.handle(backup({ action: 'run', tag }))
+            assert.ok(outcome.kind === 'reply' && !outcome.reply.ok)
+            assert.equal(outcome.reply.code, 'unavailable')
+            assert.equal(outcome.reply.message, 'the backup disk has less than 10% free')
+            assert.deepEqual(started, [])
+        }
+    })
+
+    it('refuses a run when the backup disk cannot be read at all', async () => {
+        const { backups, started } = backupsWiring({ snapshots: [], diskError: new Error('the statfs syscall failed') })
+        const { agent } = setup({ backups })
+        const outcome = await agent.handle(backup({ action: 'run', tag: 'manual' }))
+        assert.ok(outcome.kind === 'reply' && !outcome.reply.ok)
+        assert.match(outcome.reply.message, /the backup disk could not be read/)
+        assert.deepEqual(started, [])
     })
 
     it('refuses a sixth manual run itself, whatever api decided', async () => {
