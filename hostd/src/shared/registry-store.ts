@@ -70,11 +70,31 @@ export class RegistryStore {
             return false
         }
         if (info.mtimeMs === this.loadedMtimeMs) return false
-        // Recorded before parsing, so a rejected file is parsed once, not on every poll.
-        this.loadedMtimeMs = info.mtimeMs
+
+        // A file that cannot be read at all (not a file where one should be, or readFile itself
+        // throwing, EACCES most realistically) was never actually examined, so this must not adopt the
+        // mtime the way a parse failure deliberately does below: the mtime is left exactly as it was,
+        // so the next poll tries the read again even though nothing about the file has moved since.
+        // This is the shape of the bug found on the live dedi: registry-write.ts's writer left the
+        // registry unreadable to api after replacing it, the read's EACCES was folded into the same
+        // "recorded before parsing" branch a parse failure uses, and the mtime that move consumed was
+        // never seen again, so hostd did not retry until a container restart forced a fresh read. A read
+        // failure and a parse failure are different problems, and now take different paths.
+        let text: string
         try {
             if (!info.isFile()) throw new RegistryError([`${this.path} is not a file`])
-            this.registry = parseRegistry(await this.fs.readFile(this.path))
+            text = await this.fs.readFile(this.path)
+        } catch (error) {
+            this.rejection = explainRegistryError(error)
+            return false
+        }
+
+        // Recorded only now, after a successful read, and before parsing: a file that goes on to fail to
+        // *parse* is parsed once, not on every poll, because content that is wrong now will still be
+        // wrong next poll unless the mtime moves again.
+        this.loadedMtimeMs = info.mtimeMs
+        try {
+            this.registry = parseRegistry(text)
             this.rejection = null
             return true
         } catch (error) {

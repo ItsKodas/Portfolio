@@ -8,7 +8,12 @@ const other = good.replace('name: Site', 'name: Renamed')
 
 // A file whose contents, modification time and kind the test controls, counting reads.
 function fakeFs(initial: { text: string, mtimeMs: number, isFile?: boolean, nlink?: number }) {
-    const state = { ...initial, isFile: initial.isFile ?? true, nlink: initial.nlink ?? 1, missing: false, reads: 0 }
+    const state = {
+        ...initial, isFile: initial.isFile ?? true, nlink: initial.nlink ?? 1, missing: false, reads: 0,
+        // A read failure (EACCES, most realistically) is not the same thing as a file whose content
+        // fails to parse: readFile itself never returns.
+        readFails: false,
+    }
     const fs: RegistryFs = {
         async stat() {
             if (state.missing) throw Object.assign(new Error('ENOENT: no such file'), { code: 'ENOENT' })
@@ -16,6 +21,7 @@ function fakeFs(initial: { text: string, mtimeMs: number, isFile?: boolean, nlin
         },
         async readFile() {
             state.reads++
+            if (state.readFails) throw Object.assign(new Error('EACCES: permission denied'), { code: 'EACCES' })
             return state.text
         },
     }
@@ -152,5 +158,54 @@ describe('RegistryStore.refresh', () => {
         state.missing = false
         assert.equal(await store.refresh(), true)
         assert.deepEqual(store.warnings(), [])
+    })
+
+    // Bug found on the live dedi: registry-write.ts's writer left the file unreadable to api (EACCES),
+    // and the mtime moved because the writer had replaced the file. The old code recorded that new mtime
+    // before the read that then failed, so it never tried again until something else touched the file
+    // and moved the mtime a second time: in practice, only a container restart. A read failure must
+    // instead leave the store willing to retry on the very next poll, at the same mtime.
+    it('retries a read failure on the next poll, even though the mtime has not moved since', async () => {
+        const { fs, state } = fakeFs({ text: good, mtimeMs: 1 })
+        const store = new RegistryStore('/p', fs)
+        await store.load()
+        Object.assign(state, { mtimeMs: 2, readFails: true })
+        assert.equal(await store.refresh(), false)
+        assert.match(store.warnings()[0] ?? '', /EACCES/)
+        assert.equal(store.current().projects.get('site')?.name, 'Site')
+
+        // Still stuck at mtime 2, still failing to read: unlike a parse failure, this must try to read
+        // again on every poll, not just once.
+        const readsBefore = state.reads
+        assert.equal(await store.refresh(), false)
+        assert.ok(state.reads > readsBefore, 'expected refresh to read the file again rather than skip it')
+    })
+
+    it('takes the file into effect once reading it starts working again, at the same mtime that used to fail', async () => {
+        const { fs, state } = fakeFs({ text: good, mtimeMs: 1 })
+        const store = new RegistryStore('/p', fs)
+        await store.load()
+        Object.assign(state, { mtimeMs: 2, readFails: true })
+        await store.refresh()
+        // The mtime never moves again: only the permissions were fixed, which is exactly what happened
+        // on the live dedi.
+        state.readFails = false
+        assert.equal(await store.refresh(), true)
+        assert.equal(store.current().projects.get('site')?.name, 'Site')
+        assert.deepEqual(store.warnings(), [])
+    })
+
+    // The parse-failure behaviour the comment in refresh() already explains must not change: content
+    // that is wrong now will still be wrong next poll unless the mtime moves again, so a parse failure
+    // is still recorded against the mtime it was seen at and not retried until that changes.
+    it('still parses a broken file only once, unlike a read failure', async () => {
+        const { fs, state } = fakeFs({ text: good, mtimeMs: 1 })
+        const store = new RegistryStore('/p', fs)
+        await store.load()
+        Object.assign(state, { text: 'projects: [', mtimeMs: 2 })
+        await store.refresh()
+        const readsBefore = state.reads
+        await store.refresh()
+        assert.equal(state.reads, readsBefore, 'a parse failure at an unchanged mtime is not read again, matching the old behaviour')
     })
 })
