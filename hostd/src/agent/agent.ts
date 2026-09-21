@@ -363,6 +363,23 @@ export class Agent {
     // widens to include it and stops compiling). { ok: true, output } is the shape the codebase already
     // uses for "nothing else to carry" (see env()'s write case and provision.ts's removeProject above).
     private async configure(project: ProjectEntry, args: ConfigureArgs): Promise<AgentReply> {
+        // Setting a first address is safe; changing one is not, so this refuses it outright rather than
+        // doing it badly. A change rewrites the environment's vhost, which invalidates the verification
+        // of every hostname on it and leaves the old address answering nothing, and none of that is
+        // recoverable from this form. The refusal names the current value so the operator can see what
+        // they are actually asking to replace. An environment that does not exist is not checked here:
+        // the writer answers that in its own words below, the same way set-branch leaves it to do.
+        for (const [name, domain] of Object.entries(args.domains ?? {})) {
+            const existing = environmentOf(project, name)?.domain
+            if (!existing) continue
+            return refuse(
+                'bad-request',
+                `${project.id} ${name} is already at ${existing}, so ${domain} cannot be set from here.`
+                + ' Changing the address rewrites the vhost and invalidates verification for every hostname'
+                + ' on it, so it is changed by editing projects.yaml on the server.',
+            )
+        }
+
         const written = await this.deps.writer.write({
             kind: 'configure',
             id: project.id,
@@ -375,6 +392,21 @@ export class Agent {
         // refusal from the same writer. failed would reach the portal as a 502 and be audited as hostd
         // having failed, for a repo URL the validator simply would not take.
         if (!written.ok) return refuse('bad-request', written.problem)
+
+        // A write of its own per domain, rather than a field on the configure change: a domain is set
+        // once in an environment's life and the refusal above has already had the last word on whether
+        // it may be, so folding it into the change that carries capabilities, repo and branches would
+        // put a once-ever write on the path of every routine capability save.
+        //
+        // Nothing else happens here. Recording the address only makes the environment eligible for a
+        // vhost; the hand-written file still serving the site is displaced by adopting it, which is one
+        // reload rather than two files claiming the same name.
+        for (const [name, domain] of Object.entries(args.domains ?? {})) {
+            const set = await this.deps.writer.write({
+                kind: 'set-domain', id: project.id, environment: name as EnvironmentName, domain,
+            })
+            if (!set.ok) return refuse('bad-request', set.problem)
+        }
         // The registry store only reloads on its own ten second timer, so without this the next request
         // answers from the entry this write has already replaced: the capability just granted would still
         // look absent. set-branch and both provisioning paths refresh for the same reason.

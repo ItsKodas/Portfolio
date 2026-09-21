@@ -158,6 +158,8 @@ export async function rollbackAction(id: string, environment: string): Promise<S
 // the one below is a claim the compiler checks and nothing else checks. This is the shape check every
 // other action here makes of its own arguments, mirroring hostd's parseConfigureArgs (which checks it
 // again, and has the last word on what a capability, a repo and a branch may actually be).
+// domains is deliberately not among the keys accepted here: the Settings form never sends one, and the
+// only thing allowed to set an address is setPrimaryDomainAction below, which builds its own object.
 function isSettings(value: unknown): value is SiteSettings {
     if (typeof value !== 'object' || value === null) return false
     const { capabilities, repo, branches, ...rest } = value as Record<string, unknown>
@@ -227,6 +229,31 @@ export async function addDomainAction(id: string, environment: string, hostname:
 
     revalidatePath(`/portal/sites/${id}`)
     return { ok: true, message: `${wanted} is added. hostd checks its DNS before it starts serving it.` }
+}
+
+// The site's own address, which until now could only be given at provision time: every site enrolled by
+// hand has none, so this is the first thing the tab needs to be able to do. It goes through configure
+// rather than the domains verb, because it edits the registry entry rather than writing a vhost, and
+// hostd refuses it for an environment that already has an address: changing one rewrites the vhost and
+// invalidates verification for every hostname on it, so that stays a hand-edit on the server.
+export async function setPrimaryDomainAction(id: string, environment: string, hostname: string): Promise<SiteActionResult> {
+    const name = environmentOf(environment)
+    if (!name || typeof hostname !== 'string') return { ok: false, error: 'That is not something this page can do.' }
+
+    const allowed = await allow(id, true)
+    if (!allowed.ok) return allowed
+
+    // Lowercased here for the same reason the domain actions below do it: the grammar it is checked
+    // against has no capital letters in it and a pasted hostname often does.
+    const wanted = hostname.trim().toLowerCase()
+    const result = await writeSettings(allowed.config, allowed.caller, id, { domains: { [name]: wanted } })
+    if (!result.ok) return refused(`set primary domain ${wanted} on ${id}`, allowed.isAdmin, result)
+
+    revalidatePath(`/portal/sites/${id}`)
+    return {
+        ok: true,
+        message: `${wanted} is this site's address now. Nothing is served from it until this environment is adopted.`,
+    }
 }
 
 export async function removeDomainAction(id: string, environment: string, hostname: string): Promise<SiteActionResult> {

@@ -149,12 +149,16 @@ export type AdoptPreview = {
     }
 }
 
-// Editing the registry entry itself: capabilities, repo and each environment's branch. Absent fields are
-// left alone, and a null repo or branch clears that key.
+// Editing the registry entry itself: capabilities, repo, each environment's branch and each
+// environment's domain. Absent fields are left alone, and a null repo or branch clears that key.
 export type ConfigureArgs = {
     capabilities?: Capability[]
     repo?: string | null
     branches?: Partial<Record<EnvironmentName, string | null>>
+    // No null member, unlike branches: this can give an environment its first address, never clear one.
+    // The agent refuses an environment that already has a domain as well, so this only ever sets a first
+    // one; changing an address rewrites the vhost and is a hand-edit of projects.yaml.
+    domains?: Partial<Record<EnvironmentName, string>>
 }
 export type ConfigureRequest = { verb: 'configure', project: string, args: ConfigureArgs }
 
@@ -538,8 +542,8 @@ export function parseDomainsArgs(args: unknown): { ok: true, args: DomainsArgs }
 // body it could not read is refused in exactly one place. See policy.ts and routes.ts in api for how the
 // route bridges this Refusal shape onto its own parsers' { ok: false, message }.
 export function parseConfigureArgs(raw: unknown): ConfigureArgs | Refusal {
-    if (!isRecord(raw) || !onlyKeys(raw, ['capabilities', 'repo', 'branches'])) {
-        return refuse('bad-request', 'configure takes only capabilities, repo and branches')
+    if (!isRecord(raw) || !onlyKeys(raw, ['capabilities', 'repo', 'branches', 'domains'])) {
+        return refuse('bad-request', 'configure takes only capabilities, repo, branches and domains')
     }
 
     let capabilities: Capability[] | undefined
@@ -570,10 +574,27 @@ export function parseConfigureArgs(raw: unknown): ConfigureArgs | Refusal {
         branches = parsed
     }
 
+    let domains: Partial<Record<EnvironmentName, string>> | undefined
+    if (raw.domains !== undefined) {
+        if (!isRecord(raw.domains)) return refuse('bad-request', 'domains is malformed')
+        const parsed: Partial<Record<EnvironmentName, string>> = {}
+        for (const [name, domain] of Object.entries(raw.domains)) {
+            if (!(ENVIRONMENTS as readonly string[]).includes(name)) return refuse('bad-request', `${name} is not an environment`)
+            // Unlike branches, null is not a value here: an address can be given, never taken away.
+            // normaliseHostname is the one place that decides what a hostname is, and it answers the
+            // single spelling the registry should hold whichever way the operator typed it.
+            const host = normaliseHostname(domain)
+            if (host === null) return refuse('bad-request', `${name} domain must be a hostname`)
+            parsed[name as EnvironmentName] = host
+        }
+        domains = parsed
+    }
+
     return {
         ...(capabilities !== undefined ? { capabilities } : {}),
         ...(repo !== undefined ? { repo } : {}),
         ...(branches !== undefined ? { branches } : {}),
+        ...(domains !== undefined ? { domains } : {}),
     }
 }
 

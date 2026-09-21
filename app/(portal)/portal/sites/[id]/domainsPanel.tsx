@@ -12,7 +12,7 @@ import type { EnvironmentName } from '@/server/hostd/env'
 import { Callout } from '@/ui/Callout/Callout'
 import { DataTable } from '@/ui/DataTable/DataTable'
 import { StatusDot, type State as DotState } from '@/ui/StatusDot/StatusDot'
-import { AddDomain, AdoptSite, DomainActions } from './domainControls'
+import { AddDomain, AdoptSite, DomainActions, SetPrimaryDomain } from './domainControls'
 import { clientSentence, needsYou, sortDomains, stateTone, stateWord } from './domains'
 import { EnvSwitcher } from './envSwitcher'
 import { formatWhen } from '../../format'
@@ -106,6 +106,11 @@ export function DomainsPanel({ id, environments, environment, domains, isAdmin, 
         )
     }
 
+    // Whether the environment has an address at all. The list is what hostd answers about the registry
+    // entry, so no primary row means no domain key on the entry, which is the state every site enrolled
+    // by hand is in.
+    const hasPrimary = ordered.some(domain => domain.primary)
+
     const rows = ordered.map(domain => ({
         hostname: <span className={styles.mono}>{domain.hostname}</span>,
         role: domain.primary ? 'primary' : 'alias',
@@ -147,7 +152,13 @@ export function DomainsPanel({ id, environments, environment, domains, isAdmin, 
 
             {!trouble && (
                 <>
-                    <AddDomain id={id} environment={environment} />
+                    {/* An alias is a name that redirects to the primary, so with no primary there is
+                        nothing for one to redirect to and hostd refuses every alias this form could
+                        send. Offering it would be offering the one thing that cannot work, which is
+                        exactly the dead end an operator meets on a site enrolled by hand. */}
+                    {hasPrimary
+                        ? <AddDomain id={id} environment={environment} />
+                        : <SetPrimaryDomain id={id} environment={environment} />}
 
                     <section className={styles.block}>
                         <h2>Addresses</h2>

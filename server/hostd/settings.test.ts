@@ -25,6 +25,22 @@ describe('writeSettings', () => {
         expect(JSON.parse(calls[0].body as string)).toEqual({ capabilities: ['lifecycle'], branches: { live: 'main' } })
     })
 
+    it('puts a domain, which is how an environment gets its first address', async () => {
+        const { fetchImpl, calls } = fakeFetch({ ok: true })
+        await writeSettings(config, admin, 'acme', { domains: { live: 'acme.com' } }, fetchImpl)
+
+        expect(JSON.parse(calls[0].body as string)).toEqual({ domains: { live: 'acme.com' } })
+    })
+
+    // The same copy of hostd's grammar the domains calls hold, for the same reason: a hostname that is
+    // not one is worth saying immediately rather than after a round trip. hostd checks it again.
+    it('refuses a hostname hostd would not take, before asking', async () => {
+        const { fetchImpl, calls } = fakeFetch({ ok: true })
+        const result = await writeSettings(config, admin, 'acme', { domains: { live: 'not a host' } }, fetchImpl)
+        expect(result).toEqual({ ok: false, code: 'bad-request', message: 'hostname must be a plain domain name' })
+        expect(calls).toHaveLength(0)
+    })
+
     it('refuses a project id hostd would not recognise, before asking', async () => {
         const { fetchImpl, calls } = fakeFetch({ ok: true })
         const result = await writeSettings(config, admin, 'Not An Id', {}, fetchImpl)

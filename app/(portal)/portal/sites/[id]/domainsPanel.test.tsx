@@ -16,6 +16,7 @@ vi.mock('./actions', () => ({
     verifyDomainAction: async () => ({ ok: true, message: 'ok' }),
     adoptAction: async () => ({ ok: true, message: 'ok' }),
     adoptPreviewAction: (...args: unknown[]) => adoptPreview(...args),
+    setPrimaryDomainAction: async () => ({ ok: true, message: 'ok' }),
 }))
 vi.mock('next/navigation', () => ({ useRouter: () => ({ push: () => {}, refresh: () => {} }) }))
 
@@ -126,6 +127,29 @@ describe('DomainsPanel, for the operator', () => {
 
         expect((await screen.findByText(/RewriteRule/)).textContent).toBe(HAND_WRITTEN)
         expect(screen.getByText(/cannot be read here/)).toBeInTheDocument()
+    })
+
+    // Every site on the dedi was enrolled by hand and has no address at all, so this is the tab's first
+    // interaction for all of them. The alias box could only ever answer "it has no domain, so it cannot
+    // have aliases", which is the dead end this replaces.
+    it('offers the address form, and not the alias form, when the environment has no primary', () => {
+        render(<DomainsPanel {...props} domains={[]} />)
+        expect(screen.getByRole('button', { name: /set the address/i })).toBeInTheDocument()
+        expect(screen.queryByRole('button', { name: /^add$/i })).toBeNull()
+        expect(screen.queryByLabelText(/hostname/i)).toBeNull()
+    })
+
+    it('says what setting the address does, since nothing is served from it until the site is adopted', () => {
+        render(<DomainsPanel {...props} domains={[]} />)
+        expect(screen.getByText(/adopted/i)).toBeInTheDocument()
+    })
+
+    // Changing an address is out of scope on purpose: it rewrites the vhost and invalidates verification
+    // for every name on it, so hostd refuses it and the form is not offered a second time.
+    it('offers the alias form, and no address form, once a primary exists', () => {
+        render(<DomainsPanel {...props} />)
+        expect(screen.getByRole('button', { name: /^add$/i })).toBeInTheDocument()
+        expect(screen.queryByRole('button', { name: /set the address/i })).toBeNull()
     })
 
     it('keeps the environment selector, because a domain belongs to an environment', () => {

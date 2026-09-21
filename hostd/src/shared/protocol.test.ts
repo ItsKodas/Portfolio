@@ -204,11 +204,31 @@ describe('parseAgentRequest', () => {
         assert.equal(refusalOf({ verb: 'deploy', project: 'acme', args: { action: 'history' } }), 'bad-request: environment must be live or test')
     })
 
-    it('parses a configure request carrying all three fields', () => {
+    it('parses a configure request carrying all four fields', () => {
         assert.deepEqual(
-            parsed({ verb: 'configure', project: 'acme', args: { capabilities: ['lifecycle', 'logs'], repo: null, branches: { live: 'main', test: null } } }),
-            { ok: true, request: { verb: 'configure', project: 'acme', args: { capabilities: ['lifecycle', 'logs'], repo: null, branches: { live: 'main', test: null } } } },
+            parsed({ verb: 'configure', project: 'acme', args: { capabilities: ['lifecycle', 'logs'], repo: null, branches: { live: 'main', test: null }, domains: { live: 'acme.com' } } }),
+            { ok: true, request: { verb: 'configure', project: 'acme', args: { capabilities: ['lifecycle', 'logs'], repo: null, branches: { live: 'main', test: null }, domains: { live: 'acme.com' } } } },
         )
+    })
+
+    // One spelling reaches the registry whichever way it was typed, so nothing downstream has to compare
+    // two forms of the same name.
+    it('normalises a domain the way every other hostname hostd takes is normalised', () => {
+        assert.deepEqual(
+            parsed({ verb: 'configure', project: 'acme', args: { domains: { live: 'ACME.com.' } } }),
+            { ok: true, request: { verb: 'configure', project: 'acme', args: { domains: { live: 'acme.com' } } } },
+        )
+    })
+
+    // Null clears a branch; it must not clear a domain. An environment with no address at all serves
+    // nothing, and getting back to one is a vhost rewrite rather than a form submission.
+    it('refuses a domain that is not a hostname, a null one, and one on an environment it does not know', () => {
+        assert.equal(refusalOf({ verb: 'configure', project: 'acme', args: { domains: { live: 'not a host' } } }), 'bad-request: live domain must be a hostname')
+        assert.equal(refusalOf({ verb: 'configure', project: 'acme', args: { domains: { live: 'https://acme.com/shop' } } }), 'bad-request: live domain must be a hostname')
+        assert.equal(refusalOf({ verb: 'configure', project: 'acme', args: { domains: { live: '203.0.113.7' } } }), 'bad-request: live domain must be a hostname')
+        assert.equal(refusalOf({ verb: 'configure', project: 'acme', args: { domains: { live: null } } }), 'bad-request: live domain must be a hostname')
+        assert.equal(refusalOf({ verb: 'configure', project: 'acme', args: { domains: { staging: 'acme.com' } } }), 'bad-request: staging is not an environment')
+        assert.equal(refusalOf({ verb: 'configure', project: 'acme', args: { domains: 'acme.com' } }), 'bad-request: domains is malformed')
     })
 
     it('parses a configure request carrying only some fields, since absent means leave alone', () => {
@@ -226,7 +246,7 @@ describe('parseAgentRequest', () => {
         assert.equal(refusalOf({ verb: 'configure', project: 'acme', args: { capabilities: ['teleport'] } }), 'bad-request: capabilities must be a list of known capabilities')
         assert.equal(refusalOf({ verb: 'configure', project: 'acme', args: { branches: { live: 'a branch' } } }), 'bad-request: live branch must be null or a plain branch name')
         assert.equal(refusalOf({ verb: 'configure', project: 'acme', args: { branches: { staging: 'main' } } }), 'bad-request: staging is not an environment')
-        assert.equal(refusalOf({ verb: 'configure', project: 'acme', args: { capabilities: [], extra: true } }), 'bad-request: configure takes only capabilities, repo and branches')
+        assert.equal(refusalOf({ verb: 'configure', project: 'acme', args: { capabilities: [], extra: true } }), 'bad-request: configure takes only capabilities, repo, branches and domains')
     })
 
     it('parses a branches request', () => {
