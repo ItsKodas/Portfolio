@@ -9,6 +9,7 @@ import {
     PROJECT_ID, CLIENT_ID, SERVICE_NAME, STORAGE_NAME, ENV_NAME, HOSTNAME, RESERVED_PROJECT_IDS,
     isRecord, relativePathProblem, overlaps,
 } from './formats.ts'
+import { normaliseHostname, isReserved, allowedEntryProblem } from './hostnames.ts'
 
 export const CAPABILITIES = ['lifecycle', 'logs', 'files', 'backups', 'domains', 'provision', 'env', 'deploy'] as const
 export type Capability = typeof CAPABILITIES[number]
@@ -36,6 +37,7 @@ export type EnvironmentEntry = {
     composePaths: string[]
     branch: string | null
     domain: string | null
+    aliases: string[]
     port: number
     certificate: CertificateMode | null
     deployed: string | null
@@ -73,6 +75,7 @@ export type ProjectEntry = {
 
 export type Registry = {
     reserved: string[]
+    allowed: string[]
     offsite: { keep: Keep }
     projects: Map<string, ProjectEntry>
     invalid: Map<string, string>
@@ -83,6 +86,12 @@ export class RegistryError extends Error {
         super(`Invalid registry:\n  ${failures.join('\n  ')}`)
         this.name = 'RegistryError'
     }
+}
+
+// The primary first, because it is the canonical name and every alias redirects to it. An environment
+// with no domain has no hostnames at all rather than a list of aliases pointing at nothing.
+export function hostnamesOf(environment: EnvironmentEntry): string[] {
+    return environment.domain === null ? [] : [environment.domain, ...environment.aliases]
 }
 
 // SQLite lives in a file the site container opens, not in a compose service of its own.
@@ -98,12 +107,12 @@ const DEFAULT_COMPOSE = ['docker-compose.yml']
 const DEFAULT_OFFSITE_KEEP: Keep = { daily: 14, weekly: 8, monthly: 6 }
 const DEFAULT_MAX_KEEP: Keep = { daily: 14, weekly: 8, monthly: 12 }
 const DEFAULT_RESERVED = ['horizons.gg']
-const TOP_KEYS = new Set(['reserved', 'offsite', 'projects'])
+const TOP_KEYS = new Set(['reserved', 'allowed', 'offsite', 'projects'])
 const PROJECT_KEYS = new Set([
     'client', 'name', 'dir', 'compose', 'upstream', 'services', 'storage', 'capabilities', 'maxDomains', 'backups',
     'repo', 'portEnv', 'limits', 'environments',
 ])
-const ENVIRONMENT_KEYS = new Set(['dir', 'compose', 'branch', 'domain', 'port', 'certificate', 'deployed'])
+const ENVIRONMENT_KEYS = new Set(['dir', 'compose', 'branch', 'domain', 'aliases', 'port', 'certificate', 'deployed'])
 const DIR = /^\/var\/www\/[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/
 const UPSTREAM = /^(localhost|\d{1,3}(?:\.\d{1,3}){3}):(\d{1,5})$/
 const MEMORY_LIMIT = /^[0-9]+(b|k|m|g)$/i
@@ -341,11 +350,7 @@ function parseEnvironmentDir(raw: unknown): string | null {
     return typeof raw === 'string' && DIR.test(raw) && !raw.endsWith('/..') && !raw.endsWith('/.') ? raw : null
 }
 
-function isReserved(domain: string, reserved: string[]): boolean {
-    return reserved.some(host => domain === host || domain.endsWith(`.${host}`))
-}
-
-function parseEnvironment(name: EnvironmentName, raw: unknown, reserved: string[], problems: string[]): EnvironmentEntry | null {
+function parseEnvironment(name: EnvironmentName, raw: unknown, reserved: string[], allowed: string[], problems: string[]): EnvironmentEntry | null {
     const where = `environments.${name}`
     if (!isRecord(raw)) {
         problems.push(`${where} must be a mapping`)
@@ -366,9 +371,25 @@ function parseEnvironment(name: EnvironmentName, raw: unknown, reserved: string[
 
     let domain: string | null = null
     if (raw.domain !== undefined) {
-        if (typeof raw.domain !== 'string' || !HOSTNAME.test(raw.domain)) problems.push(`${where}.domain must be a lowercase hostname`)
-        else if (isReserved(raw.domain, reserved)) problems.push(`${where}.domain must not be at or below a reserved domain`)
-        else domain = raw.domain
+        const host = normaliseHostname(raw.domain)
+        if (host === null) problems.push(`${where}.domain must be a lowercase hostname`)
+        else if (isReserved(host, reserved, allowed)) problems.push(`${where}.domain must not be at or below a reserved domain`)
+        else domain = host
+    }
+
+    const aliases: string[] = []
+    if (raw.aliases !== undefined) {
+        if (!Array.isArray(raw.aliases)) problems.push(`${where}.aliases must be a list of hostnames`)
+        else {
+            for (const entry of raw.aliases) {
+                const host = normaliseHostname(entry)
+                if (host === null) problems.push(`${where}.aliases must be a list of lowercase hostnames`)
+                else if (isReserved(host, reserved, allowed)) problems.push(`${where}.aliases must not be at or below a reserved domain`)
+                else if (host === domain) problems.push(`${where}.aliases entry ${host} is already this environment's domain`)
+                else if (aliases.includes(host)) problems.push(`${where}.aliases lists ${host} twice`)
+                else aliases.push(host)
+            }
+        }
     }
 
     const port = wholeNumber(raw.port, 1, 65535)
@@ -388,12 +409,12 @@ function parseEnvironment(name: EnvironmentName, raw: unknown, reserved: string[
     }
 
     if (!dir || port === null) return null
-    return { name, dir, composePaths: compose.map(file => posix.join(dir, file)), branch, domain, port, certificate, deployed }
+    return { name, dir, composePaths: compose.map(file => posix.join(dir, file)), branch, domain, aliases, port, certificate, deployed }
 }
 
 // When environments is absent, the caller synthesises a single live entry from the project-level
 // dir, compose and upstream fields instead of calling this.
-function parseEnvironments(raw: unknown, reserved: string[], problems: string[]): Map<EnvironmentName, EnvironmentEntry> {
+function parseEnvironments(raw: unknown, reserved: string[], allowed: string[], problems: string[]): Map<EnvironmentName, EnvironmentEntry> {
     const environments = new Map<EnvironmentName, EnvironmentEntry>()
     if (!isRecord(raw)) {
         problems.push('environments must be a mapping')
@@ -404,7 +425,7 @@ function parseEnvironments(raw: unknown, reserved: string[], problems: string[])
 
     for (const name of ENVIRONMENTS) {
         if (raw[name] === undefined) continue
-        const entry = parseEnvironment(name, raw[name], reserved, problems)
+        const entry = parseEnvironment(name, raw[name], reserved, allowed, problems)
         if (entry) environments.set(name, entry)
     }
 
@@ -419,7 +440,7 @@ function parseEnvironments(raw: unknown, reserved: string[], problems: string[])
 
 type ParsedProject = { entry: ProjectEntry } | { problems: string[] }
 
-function parseProject(id: string, raw: unknown, reserved: string[]): ParsedProject {
+function parseProject(id: string, raw: unknown, reserved: string[], allowed: string[]): ParsedProject {
     if (!PROJECT_ID.test(id)) return { problems: [`id must match ${PROJECT_ID}`] }
     if (RESERVED_PROJECT_IDS.has(id)) return { problems: [`${id} is reserved for the operator's own stacks`] }
     if (!isRecord(raw)) return { problems: ['entry must be a mapping'] }
@@ -444,7 +465,7 @@ function parseProject(id: string, raw: unknown, reserved: string[]): ParsedProje
     let environments: Map<EnvironmentName, EnvironmentEntry>
     let upstream: { host: string, port: number } | null
     if (usesEnvironments) {
-        environments = parseEnvironments(raw.environments, reserved, problems)
+        environments = parseEnvironments(raw.environments, reserved, allowed, problems)
         // There is no per-environment host field (yet), so the live environment is always reached
         // through the loopback address. This is the one place upstream.host is not carried from input.
         const liveForUpstream = environments.get('live')
@@ -462,7 +483,7 @@ function parseProject(id: string, raw: unknown, reserved: string[]): ParsedProje
         if (dir && upstream) {
             environments.set('live', {
                 name: 'live', dir, composePaths: compose.map(file => posix.join(dir, file)),
-                branch: null, domain: null, port: upstream.port, certificate: null, deployed: null,
+                branch: null, domain: null, aliases: [], port: upstream.port, certificate: null, deployed: null,
             })
         }
     }
@@ -485,6 +506,13 @@ function parseProject(id: string, raw: unknown, reserved: string[]): ParsedProje
         const value = wholeNumber(raw.maxDomains, 1, 20)
         if (value === null) problems.push('maxDomains must be a whole number from 1 to 20')
         else maxDomains = value
+    }
+
+    for (const environment of environments.values()) {
+        const hostnames = hostnamesOf(environment)
+        if (hostnames.length > maxDomains) {
+            problems.push(`environments.${environment.name} has ${hostnames.length} hostnames, and this project allows at most ${maxDomains} hostnames`)
+        }
     }
 
     let maxKeep = DEFAULT_MAX_KEEP
@@ -525,6 +553,26 @@ export function parseRegistry(text: string): Registry {
         }
     }
 
+    let allowed: string[] = []
+    if (doc.allowed !== undefined) {
+        const list = doc.allowed
+        if (!Array.isArray(list)) failures.push('allowed must be a list of lowercase hostnames')
+        else {
+            for (const entry of list) {
+                const host = normaliseHostname(entry)
+                if (host === null) failures.push('allowed must be a list of lowercase hostnames')
+                else {
+                    // A whole-file failure, not a per-project one. An operator who wrote this meant it to
+                    // take effect, so the right answer is to refuse the file and keep the last good
+                    // registry, not to drop the entry and carry on looking healthy.
+                    const problem = allowedEntryProblem(host)
+                    if (problem) failures.push(problem)
+                    else allowed.push(host)
+                }
+            }
+        }
+    }
+
     let offsiteKeep = DEFAULT_OFFSITE_KEEP
     if (doc.offsite !== undefined) {
         if (!isRecord(doc.offsite) || !onlyKeys(doc.offsite, ['keep'])) failures.push('offsite may only contain keep')
@@ -537,7 +585,7 @@ export function parseRegistry(text: string): Registry {
     const parsed = new Map<string, ProjectEntry>()
     const invalid = new Map<string, string>()
     for (const [id, raw] of Object.entries(doc.projects as Record<string, unknown>)) {
-        const result = parseProject(id, raw, reserved)
+        const result = parseProject(id, raw, reserved, allowed)
         if ('problems' in result) invalid.set(id, result.problems.join('; '))
         else parsed.set(id, result.entry)
     }
@@ -563,18 +611,18 @@ export function parseRegistry(text: string): Registry {
                 .map(other => other.id)
             if (sharingPort.length > 0) messages.push(`port ${env.port} is also used by ${sharingPort.join(', ')}`)
 
-            if (env.domain !== null) {
-                const sharingDomain = [...parsed.values()]
-                    .filter(other => other.id !== id && [...other.environments.values()].some(otherEnv => otherEnv.domain === env.domain))
+            for (const host of hostnamesOf(env)) {
+                const sharing = [...parsed.values()]
+                    .filter(other => other.id !== id && [...other.environments.values()].some(otherEnv => hostnamesOf(otherEnv).includes(host)))
                     .map(other => other.id)
-                if (sharingDomain.length > 0) messages.push(`domain ${env.domain} is also used by ${sharingDomain.join(', ')}`)
+                if (sharing.length > 0) messages.push(`domain ${host} is also used by ${sharing.join(', ')}`)
             }
         }
         if (messages.length > 0) invalid.set(id, messages.join('; '))
         else projects.set(id, entry)
     }
 
-    return { reserved, offsite: { keep: offsiteKeep }, projects, invalid }
+    return { reserved, allowed, offsite: { keep: offsiteKeep }, projects, invalid }
 }
 
 export function environmentOf(project: ProjectEntry, name: string): EnvironmentEntry | null {

@@ -28,7 +28,12 @@ export function normaliseHostname(raw: unknown): string | null {
     } catch {
         return null
     }
-    return HOSTNAME.test(host) ? host : null
+    if (!HOSTNAME.test(host)) return null
+    // An IP address is not a name a client can prove they control, and it must never become a
+    // ServerName: a dotted-quad is exactly a hostname whose labels are all numeric, and URL canonicalises
+    // other IPv4 spellings (hex, octal) to that form before we ever see them.
+    if (host.split('.').every(label => /^[0-9]+$/.test(label))) return null
+    return host
 }
 
 export function atOrBelow(host: string, parent: string): boolean {

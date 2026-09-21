@@ -1,6 +1,6 @@
 import { describe, it } from 'node:test'
 import assert from 'node:assert/strict'
-import { parseRegistry, RegistryError, isComposeService, MAX_COMPOSE_FILES } from './registry.ts'
+import { parseRegistry, RegistryError, isComposeService, MAX_COMPOSE_FILES, hostnamesOf } from './registry.ts'
 
 const valid = `
 reserved: [horizons.gg]
@@ -469,5 +469,111 @@ projects:
 `)
         assert.deepEqual(registry.projects.get('acme')!.limits, { memory: '1g', cpus: '1' })
         assert.equal(registry.projects.get('acme')!.portEnv, 'WEB_PORT')
+    })
+})
+
+describe('aliases', () => {
+    const base = (extra: string) => `
+projects:
+  acme:
+    client: cl_1
+    name: Acme
+    services: { web: { role: site } }
+    environments:
+      live:
+        dir: /var/www/acme
+        port: 5010
+        domain: acme.com
+${extra}
+`
+
+    it('defaults to none, so every entry that exists today is unchanged', () => {
+        const registry = parseRegistry(base(''))
+        assert.deepEqual(registry.projects.get('acme')!.environments.get('live')!.aliases, [])
+    })
+
+    it('normalises each alias', () => {
+        const registry = parseRegistry(base('        aliases: [WWW.Acme.com]'))
+        assert.deepEqual(registry.projects.get('acme')!.environments.get('live')!.aliases, ['www.acme.com'])
+    })
+
+    it('puts the primary first and the aliases after it', () => {
+        const registry = parseRegistry(base('        aliases: [www.acme.com]'))
+        const live = registry.projects.get('acme')!.environments.get('live')!
+        assert.deepEqual(hostnamesOf(live), ['acme.com', 'www.acme.com'])
+    })
+
+    it('refuses an alias equal to its own primary', () => {
+        const registry = parseRegistry(base('        aliases: [acme.com]'))
+        assert.match(registry.invalid.get('acme') ?? '', /already this environment's domain/)
+    })
+
+    it('refuses more hostnames than maxDomains allows, counting the primary', () => {
+        const registry = parseRegistry(`
+projects:
+  acme:
+    client: cl_1
+    name: Acme
+    maxDomains: 2
+    services: { web: { role: site } }
+    environments:
+      live:
+        dir: /var/www/acme
+        port: 5010
+        domain: acme.com
+        aliases: [www.acme.com, shop.acme.com]
+`)
+        assert.match(registry.invalid.get('acme') ?? '', /at most 2 hostnames/)
+    })
+
+    it('refuses an alias another project already uses', () => {
+        const registry = parseRegistry(`
+projects:
+  acme:
+    client: cl_1
+    name: Acme
+    services: { web: { role: site } }
+    environments:
+      live: { dir: /var/www/acme, port: 5010, domain: acme.com }
+  other:
+    client: cl_2
+    name: Other
+    services: { web: { role: site } }
+    environments:
+      live: { dir: /var/www/other, port: 5011, domain: other.com, aliases: [acme.com] }
+`)
+        assert.equal(registry.projects.size, 0)
+    })
+})
+
+describe('allowed', () => {
+    const withAllowed = (allowed: string) => `
+reserved: [horizons.gg]
+allowed: [${allowed}]
+projects:
+  acme:
+    client: cl_1
+    name: Acme
+    services: { web: { role: site } }
+    environments:
+      live: { dir: /var/www/acme, port: 5010, domain: test.hostd.horizons.gg }
+`
+
+    it('exempts exactly the named hostname from reserved', () => {
+        const registry = parseRegistry(withAllowed('test.hostd.horizons.gg'))
+        assert.equal(registry.projects.get('acme')!.environments.get('live')!.domain, 'test.hostd.horizons.gg')
+    })
+
+    it('rejects the whole file when the apex is listed', () => {
+        assert.throws(() => parseRegistry(withAllowed('horizons.gg')), /can never be exempted/)
+    })
+
+    it('rejects the whole file when the mail subtree is listed', () => {
+        assert.throws(() => parseRegistry(withAllowed('mail.dev.horizons.gg')), /can never be exempted/)
+    })
+
+    it('still refuses a reserved name that is not listed', () => {
+        const registry = parseRegistry(withAllowed('something.else.horizons.gg'))
+        assert.match(registry.invalid.get('acme') ?? '', /reserved/)
     })
 })

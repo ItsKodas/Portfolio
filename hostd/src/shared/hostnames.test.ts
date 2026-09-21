@@ -25,6 +25,18 @@ describe('normaliseHostname', () => {
     it('refuses anything that is not a string', () => {
         for (const bad of [null, undefined, 42, {}, ['example.com']]) assert.equal(normaliseHostname(bad), null)
     })
+
+    it('refuses a hostname whose labels are all numeric, because that is an IP address, not a name', () => {
+        assert.equal(normaliseHostname('127.0.0.1'), null)
+    })
+
+    it('accepts a hostname with some numeric labels, because it is not all-numeric', () => {
+        assert.equal(normaliseHostname('3.example.com'), '3.example.com')
+    })
+
+    it('refuses a hex-notation IPv4 address, because URL canonicalises it to a dotted-quad first', () => {
+        assert.equal(normaliseHostname('0x7f.0.0.1'), null)
+    })
 })
 
 describe('atOrBelow', () => {
