@@ -95,6 +95,18 @@ describe('handleConnection', () => {
         assert.deepEqual(logged, ['branches acme ok'])
     })
 
+    it('logs a credentials request by its verb alone, having no project to log it by', async () => {
+        const agent = stubAgent(async () => ({ kind: 'reply', reply: { ok: true, credentials: ['acme'] } }))
+        const [client, server] = duplexPair()
+        const logged: string[] = []
+        const done = handleConnection(server, agent, message => logged.push(message))
+        client.end('{"verb":"credentials"}\n')
+        client.setEncoding('utf8')
+        for await (const _chunk of client) { /* drain */ }
+        await done
+        assert.deepEqual(logged, ['credentials ok'])
+    })
+
     it('refuses a malformed request without calling the agent', async () => {
         const agent = stubAgent(async () => { throw new Error('must not be called') })
         const [reply] = await exchange(agent, '{"verb":"exec","project":"acme"}\n')
