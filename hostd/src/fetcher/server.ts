@@ -13,6 +13,7 @@ function describe(request: FetchRequest): string {
         case 'clone': return `clone ${request.dir} ${request.branch}`
         case 'fetch': return `fetch ${request.dir}`
         case 'checkout': return `checkout ${request.dir} ${request.commit}`
+        case 'repair': return `repair ${request.dir} ${request.worktree}`
         case 'log': return `log ${request.dir} ${request.branch}`
         case 'tip': return `tip ${request.dir} ${request.branch}`
         // No dir to log it by, unlike every other verb here: branches has none. The repo is safe to log,

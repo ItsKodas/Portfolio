@@ -325,6 +325,20 @@ export async function runDeploy(
             await deps.fs.clearMaintenance(key).catch(() => {})
         }
 
+        // The tree now serving is the one checked out as <dir>.next, and the swap renamed it. Git still
+        // records it under the path it was created at, which no longer exists, so anyone who ever runs
+        // `git worktree prune` against this repository (an operator tidying up, which is exactly what
+        // the stale entry invites) deletes the admin directory <dir>/.git points at, and the live site's
+        // tree stops being a repository at all. Repair follows the tree to where it actually is.
+        //
+        // Outside the maintenance window on purpose: this is a round trip to the fetcher and it touches
+        // nothing the site is serving. Best effort for the same reason. The site is up and healthy, and
+        // a record that could not be tidied is not a deploy that failed.
+        const repaired = await deps.fetcher.call({ verb: 'repair', dir: trees.repo, worktree: trees.dir })
+        if (!repaired.ok) {
+            deps.log(`deploy ${project.id} ${environment.name}: could not repair the worktree record: ${repaired.message}`)
+        }
+
         // Record. The registry is written last, so `deployed` only ever names a commit this environment
         // actually served, and the store is refreshed so the next poll compares against it.
         const written = await deps.writer.write({ kind: 'set-deployed', id: project.id, environment: environment.name, commit })

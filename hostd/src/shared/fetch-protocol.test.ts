@@ -25,6 +25,19 @@ describe('parseFetchRequest', () => {
         assert.match(refusalOf({ verb: 'checkout', dir: '/var/www/b', worktree: '/etc/x', commit: 'a1b2c3d' })!, /worktree/)
     })
 
+    it('reads a repair, which names two trees and nothing else', () => {
+        const result = parseFetchRequest(JSON.stringify({ verb: 'repair', dir: '/var/www/b.git', worktree: '/var/www/b' }))
+        assert.deepEqual(result, { ok: true, request: { verb: 'repair', dir: '/var/www/b.git', worktree: '/var/www/b' } })
+    })
+
+    it('holds a repair to the same bounds as every other path: under /var/www, and no extra fields', () => {
+        assert.match(refusalOf({ verb: 'repair', dir: '/etc', worktree: '/var/www/b' })!, /dir/)
+        assert.match(refusalOf({ verb: 'repair', dir: '/var/www/b.git', worktree: '/var/www/../etc' })!, /worktree/)
+        assert.match(refusalOf({ verb: 'repair', dir: '/var/www/b.git' })!, /worktree/)
+        assert.equal(refusalOf({ verb: 'repair', dir: '/var/www/b.git', worktree: '/var/www/b', force: true }),
+            'repair takes only dir and worktree')
+    })
+
     it('refuses a branch, commit or repo that could be read as an option', () => {
         assert.match(refusalOf({ verb: 'clone', repo: '--upload-pack=evil', dir: '/var/www/b', branch: 'main' })!, /repo/)
         assert.match(refusalOf({ verb: 'log', dir: '/var/www/b', branch: '--all', limit: 10 })!, /branch/)
