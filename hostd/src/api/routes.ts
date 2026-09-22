@@ -1538,19 +1538,27 @@ export function createHandler(deps: ApiDeps): (req: IncomingMessage, res: Server
                 } finally {
                     res.off('close', stop)
                     downloadStream.close()
-                    // A truncated archive must never look like a complete one. Ending the response
-                    // cleanly here would tell the client the download succeeded, and they would only
-                    // find out at restore time. Destroying it instead leaves the chunked encoding
-                    // incomplete, which every HTTP client reports as a failed transfer rather than a
-                    // short but valid file. Destroying an already-destroyed response is harmless.
-                    if (failure !== null) res.destroy()
-                    else res.end()
+                    if (failure !== null) {
+                        // The entry above records the authorization decision, which was made before a
+                        // byte moved; without this one a download that broke mid-transfer would read back
+                        // as a clean success, so the operator's own record would agree with the truncated
+                        // archive rather than expose it. The reason is the transport's own message: the
+                        // client's bytes never appear in it. It is written before the destroy below
+                        // because destroying the response is what tells the client the transfer broke:
+                        // anything that reads the log on that signal, the portal included, would
+                        // otherwise race this append and find only the entry from before the transfer.
+                        // append never throws, so awaiting it here cannot cost the destroy.
+                        await audit(who, { project: route.project, verb: 'backup', target, outcome: 'failed', reason: failure })
+                        // A truncated archive must never look like a complete one. Ending the response
+                        // cleanly would tell the client the download succeeded, and they would only find
+                        // out at restore time. Destroying it instead leaves the chunked encoding
+                        // incomplete, which every HTTP client reports as a failed transfer rather than a
+                        // short but valid file. Destroying an already-destroyed response is harmless.
+                        res.destroy()
+                    } else {
+                        res.end()
+                    }
                 }
-                // The entry above records the authorization decision, which was made before a byte moved;
-                // without this one a download that broke mid-transfer would read back as a clean success,
-                // so the operator's own record would agree with the truncated archive rather than expose
-                // it. The reason is the transport's own message: the client's bytes never appear in it.
-                if (failure !== null) await audit(who, { project: route.project, verb: 'backup', target, outcome: 'failed', reason: failure })
                 return
             }
 

@@ -1968,6 +1968,17 @@ describe('the backup endpoints', () => {
                 close() {},
             }
         }
+        // A deliberately slow failure entry, to make the order the handler promises observable. The
+        // handler writes that entry before it destroys the response, so with the write held open the
+        // client cannot see the transfer break until the record is on disk. Written the other way round
+        // this test then fails outright rather than only under load, which is how the ordering escaped
+        // it before.
+        const append = audit.append.bind(audit)
+        audit.append = async event => {
+            if (event.outcome === 'failed') await new Promise(resolve => setTimeout(resolve, 50))
+            await append(event)
+        }
+
         // The status line and headers were already sent before the failure, so status alone would pass
         // whether the transfer completed or not; what actually distinguishes a truncated transfer is
         // that the client never gets to read a complete body. undici's fetch tears the whole request
@@ -1983,6 +1994,10 @@ describe('the backup endpoints', () => {
         // records the authorization decision, which really was ok; without a second entry the audit log
         // would agree with the truncated archive that the download succeeded, and the one place the
         // failure could still be seen after the fact would be gone.
+        //
+        // Read the moment the client sees the failure, with nothing waiting in between: that is the
+        // portal's position too, and it is the read that holds the handler to writing the entry before
+        // it destroys the response rather than after.
         const entries = await audit.read({ limit: 10 })
         const [failure] = entries
         assert.deepEqual([failure?.verb, failure?.target, failure?.outcome], ['backup', 'deadbeef', 'failed'])
