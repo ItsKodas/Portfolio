@@ -4,6 +4,7 @@ import { notFound, redirect } from 'next/navigation'
 import { getDb } from '@/server/db'
 import { listBranches } from '@/server/hostd/branches'
 import { readHostd } from '@/server/hostd/config'
+import { listCredentials } from '@/server/hostd/credentials'
 import { listDomains, type Domain } from '@/server/hostd/domains'
 import type { EnvironmentName } from '@/server/hostd/env'
 import { forAdmin, forClient } from '@/server/hostd/errors'
@@ -245,18 +246,29 @@ export default async function SitePage({ params, searchParams }: Props) {
     // page. A save must never be blocked by a list that did not load.
     let branches: string[] | null = null
     let branchesError: string | null = null
+    // The credential list, fetched alongside branches from the same caller and config: both are read only
+    // for the Settings tab, and there is exactly one hostd config and one session caller to read either
+    // with, so reading either twice would only be two chances for the two reads to disagree.
+    let credentials: string[] | null = null
+    let credentialsError: string | null = null
     if (view.isAdmin && selected === 'settings' && view.registryEntry === 'valid') {
         const problems: string[] = []
         const hostdConfig = readHostd(process.env, problems)
         const who = problems.length === 0 ? await callerFromSession() : null
         if (problems.length > 0) {
             branchesError = problems.join('; ')
+            credentialsError = problems.join('; ')
         } else if (!who) {
             branchesError = 'hostd could not be reached.'
+            credentialsError = 'hostd could not be reached.'
         } else {
             const result = await listBranches(hostdConfig, who.caller, view.id)
             if (result.ok) branches = result.value
             else branchesError = result.message
+
+            const held = await listCredentials(hostdConfig, who.caller)
+            if (held.ok) credentials = held.value
+            else credentialsError = held.message
         }
     }
 
@@ -376,9 +388,12 @@ export default async function SitePage({ params, searchParams }: Props) {
                                     id={view.id}
                                     capabilities={view.capabilities}
                                     repo={view.repo}
+                                    credential={view.credential}
                                     environments={view.environments}
                                     branches={branches}
                                     branchesError={branchesError}
+                                    credentials={credentials}
+                                    credentialsError={credentialsError}
                                 />
                             )
                             : (
