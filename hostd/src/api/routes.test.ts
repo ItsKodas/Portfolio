@@ -140,6 +140,26 @@ function fakeVerifier(store: () => DomainStore) {
     }
 }
 
+// The adopt route asks the hostname itself whether it is still answering, once before it replaces the
+// vhost and once after. Nothing in this suite leaves the process, so the answers are scripted: each
+// entry of `answers` is consumed by one probe, in order, and an Error is thrown rather than returned,
+// which is what a name that does not resolve looks like. The default is a plain 200 both times, so every
+// test that does not care about the check is unaffected by it.
+function fakeProbe() {
+    const probe = {
+        calls: [] as string[],
+        answers: [] as (number | Error)[],
+        fetch: (async (url: string) => {
+            probe.calls.push(String(url))
+            const next = probe.answers.shift() ?? 200
+            if (next instanceof Error) throw next
+            const headers: Record<string, string> = next >= 300 && next < 400 ? { location: 'https://acme.example/' } : {}
+            return new Response(null, { status: next, headers })
+        }) as unknown as typeof fetch,
+    }
+    return probe
+}
+
 const CHECKED_AT = '2026-09-21T12:00:00.000Z'
 const FIRST_SEEN = '2026-09-20T00:00:00.000Z'
 const TOKEN_IN_PLACE = 'a1b2c3d4e5f6'
@@ -160,6 +180,7 @@ let agent: ReturnType<typeof fakeAgent>
 let schedules: ScheduleStore
 let domains: DomainStore
 let verifier: ReturnType<typeof fakeVerifier>
+let probe: ReturnType<typeof fakeProbe>
 
 before(async () => {
     dir = await mkdtemp(join(tmpdir(), 'hostd-routes-'))
@@ -182,9 +203,10 @@ beforeEach(async () => {
     await schedules.load()
     domains = memoryDomains()
     verifier = fakeVerifier(() => domains)
+    probe = fakeProbe()
     handler = createHandler({
         token: TOKEN, registry: () => registry, refreshRegistry: async () => false,
-        agent, audit, schedules, domains, verifier, keepaliveMs: 60_000,
+        agent, audit, schedules, domains, verifier, keepaliveMs: 60_000, fetch: probe.fetch,
     })
 })
 
@@ -1413,6 +1435,130 @@ describe('GET|POST /projects/:id/:env/adopt', () => {
         assert.equal((await unreadable.json() as { message: string }).message.includes(claim.path), true)
         // The preview, and never the adopt that would have moved a file.
         assert.equal(agent.calls.length, 1)
+        // And nothing was asked of the hostname, because nothing was going to be replaced.
+        assert.deepEqual(probe.calls, [])
+    })
+})
+
+// The outage this was built for: adopting thebackroom.dev passed apache2ctl configtest, reloaded
+// cleanly, was reported a success by every layer that was watching, and took the site off the internet
+// until the operator noticed. The rail cannot see that and neither can the agent, which runs
+// network_mode: none; api is the process with a network, so api asks the hostname.
+describe('POST /projects/:id/:env/adopt: did the site survive it', () => {
+    const claim: { path: string, text: string, names: string[], unsupported: string[] } = {
+        path: '/etc/apache2/sites-enabled/acme.conf',
+        text: '<VirtualHost *:80>\n    ServerName acme.example\n</VirtualHost>\n',
+        names: ['acme.example'],
+        unsupported: [],
+    }
+    const adoptReply: AgentReply = { ok: true, written: { hostnames: ['acme.example'], path: '/etc/apache2/hostd/acme-live.conf' } }
+    const replies = (over: { claims?: typeof claim[] } = {}): typeof agent.reply => request => {
+        if (request.verb !== 'domains') return { ok: true, output: 'done' }
+        if (request.args.action === 'preview') {
+            return {
+                ok: true,
+                preview: {
+                    proposed: '<VirtualHost *:443>', claims: over.claims ?? [claim],
+                    extraNames: [], unreadable: [], adoptable: true,
+                },
+            }
+        }
+        return adoptReply
+    }
+
+    const adoptRequest = () => request('/projects/acme/live/adopt', { method: 'POST', actor: 'admin', body: { confirm: 'Acme' } })
+
+    it('takes a baseline before the vhost is replaced, and asks again after', async () => {
+        await seedDomains([domainRecord({ token: TOKEN_IN_PLACE })])
+        agent.reply = replies()
+        const response = await adoptRequest()
+        assert.equal(response.status, 200)
+        // Twice, both at the primary, over https, the way a visitor reaches it.
+        assert.deepEqual(probe.calls, ['https://acme.example/', 'https://acme.example/'])
+        // No rollback: the agent heard the preview and the adopt and nothing else.
+        assert.equal(agent.calls.length, 2)
+    })
+
+    it('rolls back when a page became a redirect, which is what the outage looked like', async () => {
+        await seedDomains([domainRecord({ token: TOKEN_IN_PLACE })])
+        agent.reply = replies()
+        probe.answers = [200, 301]
+
+        const response = await adoptRequest()
+        assert.equal(response.status, 502)
+        // The agent is asked to put the operator's own file back, naming the same path adopt disabled.
+        assert.deepEqual(agent.calls[2], {
+            verb: 'domains', project: 'acme',
+            args: { action: 'restore', environment: 'live', restore: [claim.path] },
+        })
+        const said = (await response.json() as { message: string }).message
+        assert.match(said, /answered 200/)
+        assert.match(said, /answered 301/)
+        assert.match(said, /acme\.conf/)
+    })
+
+    it('does not start a verification countdown against a vhost it just removed', async () => {
+        await seedDomains([domainRecord({ token: TOKEN_IN_PLACE, state: 'unmanaged' })])
+        agent.reply = replies()
+        probe.answers = [200, 503]
+
+        await adoptRequest()
+        const record = domains.get(domainKey('acme', 'live', 'acme.example'))!
+        assert.equal(record.state, 'unmanaged', 'a rolled-back adoption wrote no vhost to prove anything against')
+        // The operator has to go and look at this one, which is what needsYou reads in the portal.
+        assert.equal(record.vhost?.ok, false)
+    })
+
+    it('audits the rollback as a failure rather than as an adoption', async () => {
+        await seedDomains([domainRecord({ token: TOKEN_IN_PLACE })])
+        agent.reply = replies()
+        probe.answers = [200, new Error('socket hang up')]
+
+        await adoptRequest()
+        const [entry] = await audit.read({ limit: 1 })
+        assert.equal(entry?.outcome, 'failed')
+        assert.match(entry?.reason ?? '', /stopped answering as it had/)
+    })
+
+    it('says so plainly when putting the file back did not work either', async () => {
+        await seedDomains([domainRecord({ token: TOKEN_IN_PLACE })])
+        const base = replies()
+        agent.reply = request => {
+            if (request.verb === 'domains' && request.args.action === 'restore') {
+                return { ok: false, code: 'failed', message: 'Apache would not reload', output: 'AH00526' }
+            }
+            return base(request)
+        }
+        probe.answers = [200, 301]
+
+        const response = await adoptRequest()
+        assert.equal(response.status, 502)
+        assert.match((await response.json() as { message: string }).message, /Apache would not reload/)
+    })
+
+    // Adoption is how an operator fixes a site that is already down. A baseline of "did not answer" has
+    // nothing below it to fall to, so this can never be the thing standing in their way.
+    it('lets an adoption of an already broken site through, however it comes out', async () => {
+        for (const after of [200, 301, 500, new Error('ENOTFOUND')]) {
+            await seedDomains([domainRecord({ token: TOKEN_IN_PLACE })])
+            agent.reply = replies()
+            probe.answers = [new Error('getaddrinfo ENOTFOUND acme.example'), after]
+            const response = await adoptRequest()
+            assert.equal(response.status, 200, String(after))
+        }
+    })
+
+    // With no hand-written file to put back, the only rollback available is to leave the hostname with
+    // no vhost at all, which is worse than whatever the probe would have complained about.
+    it('does not check an environment that had nothing to displace', async () => {
+        await seedDomains([domainRecord({ token: TOKEN_IN_PLACE })])
+        agent.reply = replies({ claims: [] })
+        probe.answers = [200, 500]
+
+        const response = await adoptRequest()
+        assert.equal(response.status, 200)
+        assert.deepEqual(probe.calls, [])
+        assert.equal(agent.calls.length, 2)
     })
 })
 

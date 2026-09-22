@@ -123,6 +123,10 @@ async function main(): Promise<void> {
         schedules,
         domains,
         verifier,
+        // The same global fetch the verifier above is given. api is the only hostd process with a
+        // network at all (the agent runs network_mode: none), so it is the one that can ask a hostname
+        // whether an adoption left it answering.
+        fetch,
     })
     const server = createServer(handler)
     // A bind failure (say the port is already taken) must fail boot with a named FATAL line, through the
