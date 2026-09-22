@@ -1,7 +1,8 @@
 import { describe, it } from 'node:test'
 import assert from 'node:assert/strict'
 
-import { credentialArgs, credentialLine, readCredentials } from './credentials.ts'
+import { credentialArgs, credentialLine, readCredentials, writeCredentials } from './credentials.ts'
+import type { Runner } from '../agent/compose.ts'
 
 // Checked against the real helper rather than reasoned about, because the failure mode is silent:
 //   printf 'protocol=https\nhost=github.com\n\n' | git credential-store --file=<file> get
@@ -68,5 +69,60 @@ describe('credentialArgs', () => {
 
     it('adds nothing at all for the default credential, leaving the global helper in charge', () => {
         assert.deepEqual(credentialArgs(null), [])
+    })
+})
+
+function fakeFs() {
+    const written: Array<{ path: string, text: string, mode: number }> = []
+    const chmodded: Array<{ path: string, mode: number }> = []
+    const fs = {
+        writeFile: async (path: string, text: string, mode: number) => { written.push({ path, text, mode }) },
+        chmod: async (path: string, mode: number) => { chmodded.push({ path, mode }) },
+    }
+    return { fs, written, chmodded }
+}
+
+function fakeRunner() {
+    const runs: string[][] = []
+    const run: Runner = async (command, args) => {
+        runs.push([command, ...args])
+        return { exitCode: 0, stdout: '', stderr: '', timedOut: false }
+    }
+    return { run, runs }
+}
+
+describe('writeCredentials', () => {
+    it('writes the default token where the global helper reads it, as it always has', async () => {
+        const { fs, written } = fakeFs()
+        const { run, runs } = fakeRunner()
+        await writeCredentials('default', new Map(), run, fs)
+
+        assert.deepEqual(written, [{ path: '/root/.git-credentials', text: credentialLine('default'), mode: 0o600 }])
+        assert.deepEqual(runs[0], ['git', 'config', '--global', 'credential.helper', 'store --file=/root/.git-credentials'])
+        assert.deepEqual(runs[1], ['git', 'config', '--global', 'url.https://github.com/.insteadOf', 'git@github.com:'])
+    })
+
+    it('writes one file per named token, beside the default and just as private', async () => {
+        const { fs, written } = fakeFs()
+        const { run } = fakeRunner()
+        await writeCredentials('default', new Map([['acme', 'a']]), run, fs)
+
+        assert.deepEqual(written[1], { path: '/root/.git-credentials.acme', text: credentialLine('a'), mode: 0o600 })
+    })
+
+    // Only the default is ever made global. A named file is reached by the -c pair credentialArgs
+    // builds, per invocation, which is what keeps one git run from reaching another account's token.
+    it('makes no global config for a named token', async () => {
+        const { fs } = fakeFs()
+        const { run, runs } = fakeRunner()
+        await writeCredentials('default', new Map([['acme', 'a']]), run, fs)
+
+        assert.ok(!runs.some(argv => argv.join(' ').includes('.git-credentials.acme')))
+    })
+
+    it('throws when git config fails, so boot stops rather than running without a helper', async () => {
+        const { fs } = fakeFs()
+        const run: Runner = async () => ({ exitCode: 1, stdout: '', stderr: 'nope', timedOut: false })
+        await assert.rejects(() => writeCredentials('default', new Map(), run, fs), /credential.helper failed/)
     })
 })

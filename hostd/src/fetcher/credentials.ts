@@ -53,3 +53,39 @@ export function readCredentials(env: Record<string, string | undefined>): { toke
 export function credentialArgs(name: string | null): string[] {
     return name === null ? [] : ['-c', 'credential.helper=', '-c', `credential.helper=store --file=${credentialFile(name)}`]
 }
+
+import type { Runner } from '../agent/compose.ts'
+
+const GIT_CONFIG_TIMEOUT_MS = 10_000
+
+// Only the parts of node:fs/promises this needs, so a test can watch what was written without touching
+// a disk. The mode is passed to writeFile AND re-applied with chmod, because writeFile's mode is only
+// honoured when it is the call that creates the file.
+export type CredentialFs = {
+    writeFile(path: string, text: string, mode: number): Promise<void>
+    chmod(path: string, mode: number): Promise<void>
+}
+
+// Puts each token where git itself will find it and never anywhere else: not a command-line argument (so
+// it cannot appear in `ps`), not a log line, not the status file. The default token gets the global
+// helper, exactly as before. A named token gets a file and nothing else: credentialArgs names it per
+// invocation, which is what keeps one git run from reaching another account's token.
+//
+// url.insteadOf is global and account-independent: it is what lets a registry entry go on giving its
+// repo as an ssh-style URL and still be fetched over HTTPS, so no SSH key needs to exist here either.
+export async function writeCredentials(
+    default_: string, tokens: Map<string, string>, run: Runner, fs: CredentialFs,
+): Promise<void> {
+    await fs.writeFile(DEFAULT_CREDENTIAL_FILE, credentialLine(default_), 0o600)
+    await fs.chmod(DEFAULT_CREDENTIAL_FILE, 0o600)
+    for (const [name, token] of tokens) {
+        await fs.writeFile(credentialFile(name), credentialLine(token), 0o600)
+        await fs.chmod(credentialFile(name), 0o600)
+    }
+
+    const helper = await run('git', ['config', '--global', 'credential.helper', `store --file=${DEFAULT_CREDENTIAL_FILE}`], GIT_CONFIG_TIMEOUT_MS)
+    if (helper.exitCode !== 0) throw new Error(`git config credential.helper failed: ${helper.stderr || helper.stdout}`)
+
+    const insteadOf = await run('git', ['config', '--global', 'url.https://github.com/.insteadOf', 'git@github.com:'], GIT_CONFIG_TIMEOUT_MS)
+    if (insteadOf.exitCode !== 0) throw new Error(`git config url.insteadOf failed: ${insteadOf.stderr || insteadOf.stdout}`)
+}
