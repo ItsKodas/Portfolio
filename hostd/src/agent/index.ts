@@ -32,7 +32,7 @@ import type { BackupFs } from './backup-run.ts'
 import { handleConnection } from './server.ts'
 import { ApacheRail, type RailFs } from './apache-rail.ts'
 import type { DomainsConfig, DomainsDeps } from './domains.ts'
-import type { VhostFile } from './sites-enabled.ts'
+import { SitesEnabledReader } from './sites-enabled.ts'
 
 const REGISTRY_FILE = process.env.HOSTD_REGISTRY_FILE ?? '/etc/hostd/registry/projects.yaml'
 const SOCKET_PATH = process.env.HOSTD_AGENT_SOCKET ?? '/run/hostd/agent.sock'
@@ -78,6 +78,10 @@ const GUARD_EVERY_MS = 10 * 60_000
 // Projects that are already invalid are re-checked much sooner, so a fix shows up in /projects in about a
 // minute instead of waiting out the full sweep. Only failing projects pay for the extra compose runs.
 const INVALID_EVERY_MS = 60_000
+// sites-enabled is a handful of small files, so a minute is cheap, and a dangling symlink is something
+// somebody put there by hand rather than something that appears on its own. A domain action re-reads the
+// directory anyway, so this clock only has to cover the stretches where nobody is doing anything.
+const SITES_ENABLED_EVERY_MS = 60_000
 // Roughly 75 seconds in total, as in mailops: long enough for a daemon still starting after a reboot.
 const BOOT_BACKOFF_MS = [5_000, 10_000, 20_000, 40_000]
 
@@ -286,6 +290,12 @@ async function main(): Promise<void> {
         unlink: path => unlink(path),
     }
     const rail = new ApacheRail(APACHE_RAIL_DIR, railFs)
+    // One reader for both the domain verbs and the health sweep below, so an unreadable vhost is said out
+    // loud on a clock rather than only when somebody happens to add an alias.
+    const sitesEnabled = new SitesEnabledReader(APACHE_SITES_ENABLED, {
+        readdir: path => readdir(path),
+        readFile: path => readFile(path, 'utf8'),
+    })
     const domainsConfig: DomainsConfig = {
         includeDir: APACHE_INCLUDE_DIR,
         sitesEnabled: APACHE_SITES_ENABLED,
@@ -308,16 +318,7 @@ async function main(): Promise<void> {
                 throw error
             }
         },
-        listSitesEnabled: async () => {
-            const names = await readdir(APACHE_SITES_ENABLED).catch(() => [])
-            const files: VhostFile[] = []
-            for (const name of names) {
-                if (!name.endsWith('.conf')) continue
-                const path = posix.join(APACHE_SITES_ENABLED, name)
-                files.push({ path, text: await readFile(path, 'utf8') })
-            }
-            return files
-        },
+        listSitesEnabled: () => sitesEnabled.read(),
         // The same writer provisioning already uses, so a domain write and a provisioning write can
         // never both read the registry text and lose one another's change.
         writeRegistry: change => writer.write(change),
@@ -334,6 +335,11 @@ async function main(): Promise<void> {
         ...backupStore.warnings(),
         ...[...store.current().invalid].map(([id, problem]) => `project ${id} is invalid: ${problem}`),
         ...guard.warnings(),
+        // A file in sites-enabled that cannot be opened fails apache2ctl configtest, and hostd runs a
+        // configtest before every reload, so one of them stops every domain change on the whole server
+        // while Apache carries on serving what it loaded earlier. Nothing else notices, which is exactly
+        // why it belongs here rather than only in the reply to whoever tripped over it.
+        ...sitesEnabled.warnings(),
         ...(fetcherProblem ? [fetcherProblem] : []),
     ]
 
@@ -396,7 +402,20 @@ async function main(): Promise<void> {
     const bootedAt = Date.now()
     const lastPruned = new Map<string, number>()
     let lastWarnings = ''
+    // Zero rather than now, so the first pass runs before the first warnings are composed and /health is
+    // right from boot rather than a minute later.
+    let lastSitesEnabledRun = 0
     for (;;) {
+        if (Date.now() - lastSitesEnabledRun >= SITES_ENABLED_EVERY_MS) {
+            lastSitesEnabledRun = Date.now()
+            // Logged rather than thrown: this loop is also the registry refresh, the guard, the deploy
+            // poller and the status file, and none of those should stop because a vhost could not be
+            // read. read() only throws on a read it deliberately refuses to treat as "nothing there",
+            // such as EACCES. The log line is not the only record of that: read() puts the failure into
+            // its own warnings before throwing, so /health carries it too, which is the whole point of
+            // sweeping on a clock rather than waiting for somebody to trip over it.
+            await sitesEnabled.read().catch(error => log(`could not read ${APACHE_SITES_ENABLED}: ${describeError(error)}`))
+        }
         const current = warnings()
         // Logged when they change rather than every poll, so the log shows transitions, not noise.
         if (current.join('\n') !== lastWarnings) {

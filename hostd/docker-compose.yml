@@ -70,6 +70,15 @@ services:
       # already claims; moving a file out of it during an adoption is the host unit's job, precisely so
       # that a compromised agent cannot disable every site on the machine.
       - /etc/apache2/sites-enabled:/etc/apache2/sites-enabled:ro
+      # Do NOT remove this as unused: no code path names this directory, and it is what makes the mount
+      # above readable at all. a2ensite fills sites-enabled with RELATIVE symlinks into sites-available
+      # (../sites-available/<name>.conf), so without this directory mounted beside it every one of those
+      # links dangles inside the container: readdir lists the entry and open() answers ENOENT, while the
+      # host reads the same file perfectly well. hostd would then read none of the hand-written vhosts,
+      # find no claim on any hostname, and adopt a site without displacing the file still serving it.
+      # Read-only for the same reason as sites-enabled: the agent only ever reads these, and moving one
+      # aside during an adoption is the host unit's job.
+      - /etc/apache2/sites-available:/etc/apache2/sites-available:ro
       # The Origin certificate the vhosts present. Read-only, and never named by anything that arrives
       # over the wire.
       - /etc/ssl/hostd:/etc/ssl/hostd:ro

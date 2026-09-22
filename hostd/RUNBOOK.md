@@ -865,6 +865,29 @@ sudo systemctl reload apache2
 `apache2ctl configtest` should say `Syntax OK`. An empty `/etc/apache2/hostd/` is fine: the include line
 uses `IncludeOptional`, precisely so a fresh install with nothing adopted yet is not a startup error.
 
+Last, confirm `hostd-agent` can actually read the hand-written vhosts. It has two read-only mounts for
+this, both in `hostd/docker-compose.yml`, and it needs **both**:
+
+```
+- /etc/apache2/sites-enabled:/etc/apache2/sites-enabled:ro
+- /etc/apache2/sites-available:/etc/apache2/sites-available:ro
+```
+
+The second one looks unused, because no code path in hostd ever names that directory, and it is not.
+`a2ensite` fills `sites-enabled` with *relative* symlinks (`../sites-available/<name>.conf`), so without
+`sites-available` mounted beside it every one of those links dangles inside the container: `readdir`
+lists the entry and `open` answers `ENOENT`, while the host reads the same file perfectly well. hostd
+would then read none of the vhosts on the box, find no claim on any hostname, and let an adoption write
+its own vhost without displacing the one still serving the site. Do not remove it when tidying mounts.
+
+Check it from the host, naming any file that is actually in `sites-enabled`:
+
+```bash
+sudo docker exec hostd-agent cat /etc/apache2/sites-enabled/<name>.conf
+```
+
+It should print the vhost. See the troubleshooting table at the end of this section if it does not.
+
 ### 2. Checking the rail by hand
 
 This is the one thing no automated test covers, because there is no Apache and no systemd in CI. Do this
@@ -1114,6 +1137,8 @@ shows them.
 | A domain stays `pending` with `No record exists yet. Add the CNAME and this will start working within a few minutes.` | No DNS record resolves yet for the hostname, or it has not propagated. Nothing to do but wait, unless the CNAME was never created. |
 | A domain stays `pending` with `The CNAME is not proxied, so the request reached us directly. Turn the proxy on in Cloudflare.` | The environment's `certificate` is `cloudflare-origin` (which expects Cloudflare in front) but the CNAME's cloud icon is grey, not orange: the Origin certificate only Cloudflare should ever see reached this client's browser directly. Turn proxying on. |
 | A domain stays `pending` with `This name points somewhere else at the moment.` | The token this dedi expects did not come back, meaning the hostname currently resolves (through DNS or Cloudflare) to something other than this environment's vhost: a stale CNAME, a different project holding the name, or, if this is an alias, its token path being redirected rather than answered. Run the `curl` in **Live verification** against that alias: `204` with the header means the vhost is fine and the name genuinely points elsewhere, and `301` means something is answering ahead of `mod_alias` on that path, which **Live verification** says how to read. |
+| A domain action fails with `ENOENT: no such file or directory, open '/etc/apache2/sites-enabled/<name>.conf'` while that file is plainly fine on the host (`ls -l` shows a healthy symlink and `cat` prints it) | The agent cannot read `sites-enabled` from inside its container, and the usual cause is `/etc/apache2/sites-available` not being mounted into `hostd-agent`: `a2ensite` makes the entries in `sites-enabled` *relative* symlinks into it, so they all dangle inside the container while the host resolves them fine. One line tells the two apart, because it asks from inside the container: `sudo docker exec hostd-agent cat /etc/apache2/sites-enabled/<name>.conf`. If that prints the vhost, the mount is right and this is something else. If it says `No such file or directory` while the host reads it, the mount is the fault: add the `sites-available` line from **Host setup** to the `agent` service in `hostd/docker-compose.yml`, then `sudo docker compose up -d --force-recreate agent` (a `restart` keeps the old mounts). |
+| `/health` warns `hostd can see /etc/apache2/sites-enabled and the N vhosts listed in it ... and it could not read a single one of them`, or a domain action is refused with the same words | The same fault as the row above, caught before anything was written. hostd will not treat a directory it could not read as an empty one, so every domain action is refused until it can read at least one file: an empty listing and a blind one both look like "no vhost claims this hostname", and acting on the second is how a live site gets adopted over. Run the `docker exec` in that row. If it prints the file, the mount is fine and these entries really are symlinks whose targets were deleted or renamed, which fails `apache2ctl configtest` and blocks domain changes anyway; remove the dead entries. |
 | An adoption is refused `these cannot be read well enough to adopt: <path> (Include is used, so the hostnames this file serves cannot be read here)` (or `IncludeOptional`, or `Use`) | The existing vhost pulls in another file, or uses a `mod_macro Use`, that could define a hostname `hostd/src/agent/sites-enabled.ts` cannot see. Resolve or inline whatever that file defines by hand, outside hostd, before adopting; nothing here will half-understand it for you. |
 | `/health` warns `waiting for Let's Encrypt support: <project> <env>` | That environment's `certificate` is set to `letsencrypt`, but 4a serves the Cloudflare Origin certificate to every vhost regardless of this setting: the environment works today over the Origin cert, and this warning is only saying certbot itself (4b) is not built yet. Nothing to fix; it clears once 4b lands. |
 

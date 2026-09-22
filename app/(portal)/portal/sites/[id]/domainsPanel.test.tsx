@@ -58,6 +58,7 @@ const preview = (over: Partial<AdoptPreview> = {}): AdoptPreview => ({
         unsupported: null,
     }],
     extraNames: [],
+    unreadable: [],
     adoptable: true,
     ...over,
 })
@@ -129,6 +130,30 @@ describe('DomainsPanel, for the operator', () => {
 
         expect((await screen.findByText(/RewriteRule/)).textContent).toBe(HAND_WRITTEN)
         expect(screen.getByText(/cannot be read here/)).toBeInTheDocument()
+    })
+
+    // A dangling symlink in sites-enabled fails Apache's own configuration test, and hostd runs that test
+    // before every reload, so the adopt this dialog is about will be refused while it is there. Naming it
+    // here is the difference between an operator fixing a link and an operator retrying a button.
+    it('names a file Apache lists but cannot open, and says it stops the change', async () => {
+        adoptPreview.mockResolvedValue({
+            ok: true,
+            preview: preview({ unreadable: ['/etc/apache2/sites-enabled/010-arbys.horizons.gg.conf'] }),
+        })
+
+        render(<DomainsPanel {...props} domains={[domain({ state: 'unmanaged' })]} />)
+        fireEvent.click(screen.getByRole('button', { name: /adopt/i }))
+
+        expect(await screen.findByText(/010-arbys\.horizons\.gg\.conf/)).toBeInTheDocument()
+        expect(screen.getByText(/no domain change on this server/i)).toBeInTheDocument()
+    })
+
+    it('says nothing about unreadable files when every one of them read', async () => {
+        render(<DomainsPanel {...props} domains={[domain({ state: 'unmanaged' })]} />)
+        fireEvent.click(screen.getByRole('button', { name: /adopt/i }))
+
+        await screen.findByText(/RewriteRule/)
+        expect(screen.queryByText(/cannot open/i)).toBeNull()
     })
 
     // Every site on the dedi was enrolled by hand and has no address at all, so this is the tab's first

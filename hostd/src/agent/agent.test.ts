@@ -1052,7 +1052,7 @@ function fakeDomains(registry: Registry) {
             },
         },
         async readFile() { return null },
-        async listSitesEnabled() { return [] },
+        async listSitesEnabled() { return { files: [], unreadable: [] } },
         async writeRegistry() { return { ok: true } },
         async reloadRegistry() {
             reload.calls += 1
