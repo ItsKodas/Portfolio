@@ -43,6 +43,9 @@ export type SiteView =
         // Answered for the operator alone, absent rather than null for a client; folded to null here since
         // a client never reaches the Settings panel this feeds.
         repo: string | null
+        // The name of the fetcher token this project uses, absent rather than null for a client, folded to
+        // null here since a client never reaches the Settings panel this feeds, exactly as repo is.
+        credential: string | null
         // Whether the registry entry itself was actually read, which the Settings panel has to know before
         // it draws anything: rendering the form over capabilities nobody read would show eight unticked
         // boxes over a site that may have every one of them on, and its Save button would mean "take
@@ -95,6 +98,7 @@ export async function gatherSite(deps: SiteDeps, id: string): Promise<SiteView> 
             capabilities: [],
             environments: [],
             repo: null,
+            credential: null,
             registryEntry: 'unread',
             reason: null,
             services: [],
@@ -115,6 +119,7 @@ export async function gatherSite(deps: SiteDeps, id: string): Promise<SiteView> 
             capabilities: [],
             environments: [],
             repo: null,
+            credential: null,
             registryEntry: 'unread',
             reason: null,
             services: [],
@@ -146,6 +151,7 @@ export async function gatherSite(deps: SiteDeps, id: string): Promise<SiteView> 
         capabilities: project.capabilities ?? [],
         environments: project.environments ?? [],
         repo: project.repo ?? null,
+        credential: project.credential ?? null,
         registryEntry: project.valid ? 'valid' : 'invalid',
         reason: project.reason ?? null,
         services: status.ok ? status.value : [],
