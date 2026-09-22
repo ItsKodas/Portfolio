@@ -91,6 +91,14 @@ describe('applyChange', () => {
         assert.equal(registry.projects.get('acme')!.environments.get('live')!.domain, 'acme.com')
     })
 
+    it('adds a project with a credential, which parses back', () => {
+        const result = applyChange(BASE, { ...addProject, id: 'bakery2', project: { ...addProject.project, credential: 'acme' } })
+        assert.ok(result.ok)
+        const registry = parseRegistry(result.text)
+        const bakery2 = registry.projects.get('bakery2')!
+        assert.equal(bakery2.credential, 'acme')
+    })
+
     it('keeps comments and unrelated formatting in the file', () => {
         const withComment = `# hand written note\n${BASE}`
         const result = applyChange(withComment, addProject)
