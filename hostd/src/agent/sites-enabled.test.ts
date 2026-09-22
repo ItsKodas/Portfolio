@@ -4,7 +4,9 @@ import assert from 'node:assert/strict'
 import {
     parseServerNames,
     findClaims,
+    readNothing,
     SitesEnabledReader,
+    blindWarning,
     unreadableWarnings,
     unlistableWarning,
     unopenableWarning,
@@ -179,8 +181,10 @@ describe('SitesEnabledReader', () => {
         assert.deepEqual(quiet.warnings(), [])
     })
 
+    // A readable file beside the broken one on purpose: a directory where the broken one is the ONLY
+    // entry is read differently now, and says so a few tests below.
     it('warns with the file named once its own read has run, with no domain action involved', async () => {
-        const broken = reader({ '010-arbys.horizons.gg.conf': null })
+        const broken = reader({ 'acme.conf': 'ServerName acme.com\n', '010-arbys.horizons.gg.conf': null })
         await broken.read()
         const [warning] = broken.warnings()
         assert.equal(broken.warnings().length, 1)
@@ -198,6 +202,96 @@ describe('SitesEnabledReader', () => {
         entries['acme.conf'] = 'ServerName acme.com\n'
         await changing.read()
         assert.deepEqual(changing.warnings(), [])
+    })
+
+    // The shape the real bug had. sites-available was not mounted into the agent, so every relative
+    // symlink a2ensite had made dangled inside the container: readdir listed all five sites and open
+    // answered ENOENT on every one. Calling that "five deleted targets" would send the operator hunting
+    // for something that never happened, so the whole-directory reading replaces the per-file one.
+    it('blames the mount, not five deleted targets, when nothing in the directory could be read', async () => {
+        const blind = reader({ 'a.conf': null, 'b.conf': null })
+        await blind.read()
+        const [warning] = blind.warnings()
+        assert.equal(blind.warnings().length, 1)
+        assert.match(warning ?? '', /could not read a single one of them/)
+        assert.match(warning ?? '', /sites-available/)
+        assert.equal((warning ?? '').includes('Each is almost certainly a symlink'), false)
+    })
+
+    // One entry is the threshold, deliberately: a dedi serving a single site has a single entry, and
+    // hostd is exactly as blind there as it is with five.
+    it('says the same of a directory holding one entry it could not read', async () => {
+        const blind = reader({ 'only.conf': null })
+        await blind.read()
+        assert.match(blind.warnings()[0] ?? '', /could not read a single one of them/)
+    })
+
+    it('goes back to the per-file warning as soon as one file reads', async () => {
+        const mixed = reader({ 'a.conf': 'ServerName acme.com\n', 'b.conf': null })
+        await mixed.read()
+        assert.match(mixed.warnings()[0] ?? '', /symlink whose target was deleted or renamed/)
+    })
+
+    // Entries that are not .conf are never opened, so they cannot be the reason nothing was read.
+    it('does not call a directory blind when its only unopened entries were not .conf', async () => {
+        const quiet = reader({ 'acme.conf': 'ServerName acme.com\n', 'acme.conf.dpkg-old': null })
+        await quiet.read()
+        assert.deepEqual(quiet.warnings(), [])
+    })
+})
+
+// The distinction the whole fix rests on: an empty sites-enabled and a sites-enabled hostd cannot read
+// are the same value to everything downstream, and only one of them means "no file claims this name".
+describe('readNothing', () => {
+    const file = { path: '/etc/apache2/sites-enabled/acme.conf', text: 'ServerName acme.com\n' }
+
+    it('is true when entries were listed and not one of them could be read', () => {
+        assert.equal(readNothing({ files: [], unreadable: ['/etc/apache2/sites-enabled/a.conf'] }), true)
+    })
+
+    it('is true on a single entry, because one site is as invisible as five', () => {
+        assert.equal(readNothing({ files: [], unreadable: ['/a.conf'] }), true)
+    })
+
+    // Already handled: what was read is real and gets checked, and the rest goes to /health.
+    it('is false when something was read, however much was not', () => {
+        assert.equal(readNothing({ files: [file], unreadable: ['/a.conf', '/b.conf', '/c.conf'] }), false)
+    })
+
+    it('is false for a directory that genuinely holds nothing', () => {
+        assert.equal(readNothing({ files: [], unreadable: [] }), false)
+    })
+})
+
+describe('blindWarning', () => {
+    const DIR = '/etc/apache2/sites-enabled'
+
+    // It has to say all three, because the operator's instinct will be to look at the site.
+    it('says hostd can list the directory, that a mount is the likely cause, and what stops', () => {
+        const warning = blindWarning(DIR, [`${DIR}/010-arbys.horizons.gg.conf`])
+        assert.match(warning, /can see \/etc\/apache2\/sites-enabled/)
+        assert.match(warning, /not an empty directory/)
+        assert.match(warning, /a mount is missing rather than anything a site did/)
+        assert.match(warning, /cannot tell whether a hostname is already served/)
+    })
+
+    // The one line that separates a missing mount from genuinely deleted targets, because it asks from
+    // inside the container, which is the only place the two answers differ.
+    it('carries the exec that tells the two causes apart, naming a file that is actually there', () => {
+        const warning = blindWarning(DIR, [`${DIR}/a.conf`, `${DIR}/b.conf`])
+        assert.match(warning, /sudo docker exec hostd-agent cat \/etc\/apache2\/sites-enabled\/a\.conf/)
+        assert.match(warning, /If that prints the file, the mount is fine/)
+    })
+
+    it('names every entry it could not read', () => {
+        const warning = blindWarning(DIR, [`${DIR}/a.conf`, `${DIR}/b.conf`])
+        assert.match(warning, /a\.conf, \/etc\/apache2\/sites-enabled\/b\.conf/)
+    })
+
+    it('has no em dash in it, whatever the count', () => {
+        for (const paths of [['/a.conf'], ['/a.conf', '/b.conf']]) {
+            assert.equal(blindWarning(DIR, paths).includes('—'), false)
+        }
     })
 })
 

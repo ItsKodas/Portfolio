@@ -89,10 +89,30 @@ export type SitesEnabledFs = {
 // is known to be incomplete.
 const NOTHING_TO_READ = new Set(['ENOENT', 'ENOTDIR'])
 
+// Entries were listed and not one of them could be read. This is NOT an empty directory, and the whole
+// point of naming the state is that the two are indistinguishable to everything downstream: both answer
+// "no file claims this hostname", one truthfully and one because hostd is blind. Some entries unreadable
+// is a different thing and is handled above: what was read is real and is checked.
+//
+// The threshold is one entry. It is tempting to want two or three before calling it a mount fault, but a
+// dedi serving one site has one entry, and the cost of being wrong is not symmetric: a genuinely
+// dangling symlink fails apache2ctl configtest, which hostd runs before every reload, so the domain
+// change was going to fail either way and refusing here only changes which message the operator gets.
+// Being wrong the other way means adopting over a site that is serving somebody right now.
+//
+// Only ever asked of a sweep that completed. A sweep that threw hands no result back at all.
+export function readNothing(sites: SitesEnabled): boolean {
+    return sites.files.length === 0 && sites.unreadable.length > 0
+}
+
 // One reader, shared by the domain verbs and by the agent's periodic health sweep, so /health can say a
 // file is unreadable without anyone having run a domain action first.
 export class SitesEnabledReader {
     private unreadable: string[] = []
+    // Whether the last completed sweep read nothing at all out of a directory that had entries in it.
+    // Held rather than recomputed because warnings() has no result to look at, and false on either
+    // failure path below: those have a failure of their own to report, which says more than this would.
+    private blind = false
     // The last sweep's own failure, as opposed to the entries it found nothing behind. Held separately
     // because the two mean different things and want different actions: a name with nothing behind it is
     // cleaned up by removing the entry, while a directory or file this process cannot read is a host
@@ -111,6 +131,7 @@ export class SitesEnabledReader {
             // verbs carry on. What is new is that it no longer passes in silence. Both pieces of state
             // are replaced, so a sweep that fails cannot leave the previous all-clear standing.
             this.unreadable = []
+            this.blind = false
             this.failure = unlistableWarning(this.dir, describeError(error))
             return { files: [], unreadable: [] }
         }
@@ -130,6 +151,10 @@ export class SitesEnabledReader {
                     // deliberately treated as serious would be the one thing /health never mentioned.
                     // What was found up to here is kept rather than discarded: those entries are real.
                     this.unreadable = unreadable
+                    // Not blind, whatever was read so far: this sweep stopped early, so "nothing in the
+                    // whole directory could be read" was never established, and the failure below says
+                    // more about what is wrong than a guess at a missing mount would.
+                    this.blind = false
                     this.failure = unopenableWarning(path, this.dir, describeError(error))
                     throw error
                 }
@@ -139,6 +164,7 @@ export class SitesEnabledReader {
             files.push({ path, text })
         }
         this.unreadable = unreadable
+        this.blind = readNothing({ files, unreadable })
         this.failure = null
         return { files, unreadable }
     }
@@ -146,7 +172,12 @@ export class SitesEnabledReader {
     warnings(): string[] {
         // The sweep's own failure first: it means hostd cannot see part of what it is reasoning about,
         // so it colours everything below it.
-        return [...(this.failure ? [this.failure] : []), ...unreadableWarnings(this.unreadable)]
+        const failure = this.failure ? [this.failure] : []
+        // Replaces the dangling-symlink warning rather than joining it. Every entry unreadable at once
+        // is almost never several targets deleted on the same day, and sending the operator off to hunt
+        // for targets that were never deleted is worse than saying nothing.
+        if (this.blind) return [...failure, blindWarning(this.dir, this.unreadable)]
+        return [...failure, ...unreadableWarnings(this.unreadable)]
     }
 }
 
@@ -170,6 +201,33 @@ export function unopenableWarning(path: string, dir: string, reason: string): st
         + 'second vhost for a hostname that file already answers. Whatever comes after it in '
         + `${dir} was not read either. hostd runs as root, so this is a permissions fault on the host `
         + 'itself and no domain change can take effect until it is put right.'
+}
+
+// The directory listed fine and every single file behind it was a miss. Said in its own words, because
+// the honest reading of it is not "a lot of dangling symlinks" but "hostd is not looking at what Apache
+// is looking at", and the operator's move is to check the mount, not to go hunting for deleted targets.
+//
+// The shape this had in the wild: sites-enabled was mounted into the agent and sites-available was not,
+// so every relative symlink a2ensite had made resolved to a path that did not exist inside the
+// container. The host read each file perfectly well, hostd read none of them, and nothing anywhere said
+// so. The exec below is the one line that tells the two apart, because it asks the question from inside
+// the container where the answer actually differs.
+export function blindWarning(dir: string, paths: string[]): string {
+    const many = paths.length > 1
+    return `hostd can see ${dir} and the ${paths.length} vhost${many ? 's' : ''} listed in it `
+        + `(${paths.join(', ')}), and it could not read a single one of them. That is not an empty `
+        + 'directory and hostd will not treat it as one. It almost always means a mount is missing '
+        + 'rather than anything a site did: on Debian these entries are relative symlinks into '
+        + '/etc/apache2/sites-available, so if that directory is not mounted into hostd-agent beside '
+        + 'this one, every link dangles inside the container while the host reads the same files '
+        + 'perfectly well. Until it is fixed hostd cannot tell whether a hostname is already served by '
+        + 'one of these files, so it refuses every domain action rather than write a second vhost for a '
+        + 'name one of them already answers. Check it from the host with: sudo docker exec hostd-agent '
+        + `cat ${paths[0] ?? posix.join(dir, '<name>.conf')}`
+        + '. If that prints the file, the mount is fine and these entries really are symlinks whose '
+        + 'targets were deleted or renamed, which fails apache2ctl configtest and stops domain changes '
+        + 'just as surely; remove them. If it says no such file while the host reads it, the mount is '
+        + 'the fault.'
 }
 
 // Written for somebody reading /health at nine at night who has never seen this code. It has to say what

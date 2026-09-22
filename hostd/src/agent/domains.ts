@@ -10,7 +10,7 @@ import { hostnamesOf, type EnvironmentEntry, type ProjectEntry, type Registry } 
 import { refuse, type AdoptPreview, type DomainsWritten, type Refusal } from '../shared/protocol.ts'
 import type { Change } from '../shared/registry-write.ts'
 import type { ApacheRail } from './apache-rail.ts'
-import { findClaims, type SitesEnabled } from './sites-enabled.ts'
+import { blindWarning, findClaims, readNothing, type SitesEnabled } from './sites-enabled.ts'
 import { renderVhost, vhostPath } from './vhost.ts'
 
 export type DomainsConfig = {
@@ -57,6 +57,20 @@ function render(deps: DomainsDeps, project: ProjectEntry, environment: Environme
 
 // Put back what was there, or take away what was just put down. Either way a second reload follows, so
 // that the configuration on disk is known to pass a configtest before this returns.
+// The sweep every claim check starts from. It answers a refusal instead of a listing when the directory
+// had entries and not one of them could be read, because every check below reads "no claim found" out of
+// an empty list and cannot tell that apart from hostd being unable to see. The guards under it are the
+// only thing standing between an adopt and a live site's own vhost, and a guard that cannot fire is
+// worse than one that is not there: it reports all clear.
+//
+// unavailable rather than bad-request: nothing about the call is wrong, and the operator cannot fix it
+// by changing what they asked for. api turns it into a 503.
+async function sweep(deps: DomainsDeps): Promise<{ ok: true, sites: SitesEnabled } | Refusal> {
+    const sites = await deps.listSitesEnabled()
+    if (readNothing(sites)) return refuse('unavailable', blindWarning(deps.config.sitesEnabled, sites.unreadable))
+    return { ok: true, sites }
+}
+
 async function revert(deps: DomainsDeps, path: string, previous: string | null): Promise<string> {
     const parts = previous === null
         ? { write: null, remove: [path], disable: [] }
@@ -138,8 +152,11 @@ export async function setAliases(
     // knowing which one it is.
     // Only the files that were read. An unreadable one is Apache serving nothing from that path, so it
     // cannot be claiming a hostname and it must not stop this write; /health is where it is raised,
-    // because it is a problem with the server rather than with this site.
-    const { files: sitesEnabled } = await deps.listSitesEnabled()
+    // because it is a problem with the server rather than with this site. The one exception is a
+    // directory where nothing at all could be read, which sweep refuses on: see its own comment.
+    const listing = await sweep(deps)
+    if (!listing.ok) return listing
+    const { files: sitesEnabled } = listing.sites
 
     // The primary first, and it is checked on every call rather than only when something is being added.
     // This path does not merely register a name: it writes a whole vhost, and that vhost claims the
@@ -207,7 +224,13 @@ export async function previewAdopt(
         return refuse('bad-request', `${project.id} ${environment.name} has no domain, so there is nothing to adopt`)
     }
     const hostnames = hostnamesOf(environment)
-    const { files, unreadable } = await deps.listSitesEnabled()
+    // Refused rather than previewed when nothing in sites-enabled could be read. This pane is where an
+    // operator decides whether there is anything to displace, and a preview that says "nothing claims
+    // this hostname" for a site that plainly has a vhost is the most convincing wrong answer hostd can
+    // give: they confirm the adopt on the strength of it.
+    const listing = await sweep(deps)
+    if (!listing.ok) return listing
+    const { files, unreadable } = listing.sites
     const claims = findClaims(files, hostnames)
     // Names the old file serves that the registry has never heard of. Offered rather than taken: adopting
     // without carrying these across would silently stop serving hostnames that work today, and adding
@@ -241,8 +264,12 @@ export async function adopt(
     }
     const hostnames = hostnamesOf(environment)
     // Only the files that were read, for the same reason as in setAliases: an unreadable file serves
-    // nothing, so it claims nothing, and it cannot be one of the paths api asked to have disabled.
-    const claims = findClaims((await deps.listSitesEnabled()).files, hostnames)
+    // nothing, so it claims nothing, and it cannot be one of the paths api asked to have disabled. A
+    // sweep that read nothing at all is the exception sweep refuses on: this is the call that writes
+    // hostd's vhost over a site still being served by its own, so it is the one that must not run blind.
+    const listing = await sweep(deps)
+    if (!listing.ok) return listing
+    const claims = findClaims(listing.sites.files, hostnames)
 
     // Every named file has to be one this environment's hostnames actually reach. api chose these from a
     // preview, and the preview could be minutes old, so the claim is re-established here against the

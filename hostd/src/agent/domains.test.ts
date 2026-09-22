@@ -384,9 +384,11 @@ describe('an unreadable file in sites-enabled', () => {
     }
     const dangling = '/etc/apache2/sites-enabled/010-arbys.horizons.gg.conf'
 
+    // A readable file beside the broken one, because a sites-enabled where NOTHING could be read is a
+    // different thing entirely and is refused: see the describe below.
     it('does not stop an alias being added to a different site', async () => {
         const { deps, sent, project, environment } = setup()
-        deps.listSitesEnabled = listing([], [dangling])
+        deps.listSitesEnabled = listing([{ path: '/etc/apache2/sites-enabled/other.conf', text: 'ServerName other.com\n' }], [dangling])
         const result = await setAliases(deps, project, environment, ['www.acme.com', 'shop.acme.com'], 'abc123')
         assert.equal(result.ok, true)
         assert.equal(sent.length, 1)
@@ -439,5 +441,86 @@ describe('an unreadable file in sites-enabled', () => {
         deps.listSitesEnabled = listing([handWritten])
         const result = await previewAdopt(deps, project, environment, 'abc123')
         assert.deepEqual(result.ok && result.preview.unreadable, [])
+    })
+})
+
+// The regression test for the mount bug, and the one that would have caught it. sites-available was not
+// mounted into the agent, so every relative symlink in sites-enabled dangled inside the container: five
+// live sites listed, none of them readable, and every check below answered "nothing claims this
+// hostname" with complete confidence. An empty sites-enabled and one hostd cannot read are the same
+// value to all of this, and only one of them means what the guards read out of it.
+describe('a sites-enabled where nothing at all could be read', () => {
+    // What the dedi actually looked like: the five live sites, every one of them a broken link inside
+    // the container and perfectly readable on the host.
+    const blind = listing([], [
+        '/etc/apache2/sites-enabled/010-arbys.horizons.gg.conf',
+        '/etc/apache2/sites-enabled/020-acme.com.conf',
+    ])
+
+    it('refuses an alias rather than reporting that no file claims the hostname', async () => {
+        const { deps, sent, project, environment } = setup()
+        deps.listSitesEnabled = blind
+        const result = await setAliases(deps, project, environment, ['www.acme.com', 'shop.acme.com'], 'abc123')
+        assert.equal(result.ok, false)
+        // Nothing written, and no registry change either: the refusal is before both.
+        assert.equal(sent.length, 0)
+    })
+
+    // Not bad-request: the call is fine and no rewording of it will help. api answers 503.
+    it('refuses as unavailable, and says the mount rather than the site is at fault', async () => {
+        const { deps, project, environment } = setup()
+        deps.listSitesEnabled = blind
+        const result = await setAliases(deps, project, environment, ['www.acme.com'], 'abc123')
+        assert.equal(result.ok === false && result.code, 'unavailable')
+        const message = result.ok === false ? result.message : ''
+        assert.match(message, /could not read a single one of them/)
+        assert.match(message, /a mount is missing rather than anything a site did/)
+        assert.match(message, /cannot tell whether a hostname is already served/)
+    })
+
+    // The most convincing wrong answer hostd could give: an operator confirms the adopt because the
+    // preview told them there was nothing there to displace.
+    it('refuses the preview rather than showing a site with a live vhost as unclaimed', async () => {
+        const { deps, project, environment } = setup()
+        deps.listSitesEnabled = blind
+        const result = await previewAdopt(deps, project, environment, 'abc123')
+        assert.equal(result.ok, false)
+        assert.equal(result.ok === false && result.code, 'unavailable')
+    })
+
+    // The call that actually writes over a live site. Even with no paths to disable, which is precisely
+    // what an operator would send after a preview that found nothing.
+    it('refuses the adopt itself, including the empty-disable adopt the blind preview would produce', async () => {
+        const { deps, sent, project, environment } = setup()
+        deps.listSitesEnabled = blind
+        const result = await adopt(deps, project, environment, 'abc123', [])
+        assert.equal(result.ok, false)
+        assert.equal(sent.length, 0)
+    })
+
+    // Unchanged behaviour, stated as a test so it stays unchanged: a partly readable directory is still
+    // acted on, because what was read is real.
+    it('still proceeds on what it could read when at least one file read', async () => {
+        const { deps, sent, project, environment } = setup()
+        deps.listSitesEnabled = listing(
+            [{ path: '/etc/apache2/sites-enabled/other.conf', text: 'ServerName other.com\n' }],
+            ['/etc/apache2/sites-enabled/010-arbys.horizons.gg.conf'],
+        )
+        const result = await setAliases(deps, project, environment, ['www.acme.com', 'shop.acme.com'], 'abc123')
+        assert.equal(result.ok, true)
+        assert.equal(sent.length, 1)
+    })
+
+    // And a directory that is genuinely empty is genuinely empty. A dedi with nothing hand-written on it
+    // is an ordinary state, not a fault, and refusing there would block every first adoption.
+    it('proceeds on an empty sites-enabled, which is a real answer rather than a blind one', async () => {
+        const { deps, sent, project, environment } = setup()
+        deps.listSitesEnabled = listing([])
+        const result = await setAliases(deps, project, environment, ['www.acme.com', 'shop.acme.com'], 'abc123')
+        assert.equal(result.ok, true)
+        assert.equal(sent.length, 1)
+        const preview = await previewAdopt(deps, project, environment, 'abc123')
+        assert.equal(preview.ok, true)
+        assert.deepEqual(preview.ok && preview.preview.claims, [])
     })
 })
