@@ -855,6 +855,15 @@ sudo mkdir -p /var/www/hostd-acme/.well-known/acme-challenge
 sudo mkdir -p /var/www/hostd-maintenance
 ```
 
+`/etc/apache2/hostd-adopted` must stay a sibling of `/etc/apache2/sites-enabled`, both directly under
+`/etc/apache2` as created above: `a2ensite` writes `sites-enabled` entries as symlinks relative to
+`sites-available` (`../sites-available/<name>.conf`), and adopting a site moves that symlink, unchanged,
+into `hostd-adopted`. The move only leaves a link that still resolves when the two directories share a
+parent, since that is what makes `../sites-available` mean the same thing from both. Point either
+directory (`HOSTD_APACHE_SITES_ENABLED` or `HOSTD_APACHE_ADOPTED_DIR`) somewhere at a different depth and
+every future adoption's undo becomes a dangling symlink nobody notices until Apache next fails a
+configtest; the agent's boot gate below refuses to start rather than let that happen quietly.
+
 `/var/www/hostd-maintenance/index.html` needs a minimal placeholder now so `ErrorDocument 503` has
 something to serve; its real contents (styling, per-client branding, whatever the holding page should
 actually say) belong to the provisioning design, not to this task:
@@ -1156,6 +1165,13 @@ sudo apache2ctl configtest && sudo systemctl reload apache2
 The `.bak` file is moved, never deleted, specifically so this is possible by hand, months later, by
 someone who was not the one who adopted the site and has nothing memorized about it beyond what `ls`
 shows them.
+
+On Debian, that `.bak` is usually not a regular file: `a2ensite` writes `sites-enabled` entries as
+symlinks, and adoption moves the symlink itself, so `ls -l` shows `<name>.conf.bak -> ../sites-available/
+<name>.conf` rather than a copy of the vhost's text. That is expected, and the `mv` above restores it
+exactly as it was. If `sites-enabled` and `hostd-adopted` are ever set up at different depths (see **Host
+setup**), that symlink would already be broken before you got here, and `hostd-apache.sh` itself refuses
+the adoption that would have produced it rather than leave one behind.
 
 ### 5. Troubleshooting
 
