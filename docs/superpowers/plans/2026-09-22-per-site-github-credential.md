@@ -1654,7 +1654,7 @@ Expected: both green. If anything fails, fix it before the commit; do not report
 
 - [ ] **Step 4: Check the writing rule**
 
-Run: `grep -rn $'—' hostd/RUNBOOK.md hostd/example.env.fetcher docs/superpowers`
+Run: `python -c "import io,sys; [print(f'{f}:{i}') for f in sys.argv[1:] for i,l in enumerate(io.open(f,encoding='utf-8'),1) if chr(0x2014) in l]" hostd/RUNBOOK.md hostd/example.env.fetcher`
 Expected: no matches. An em dash anywhere in this change, including commit messages, breaks `CLAUDE.md`.
 
 - [ ] **Step 5: Commit**
