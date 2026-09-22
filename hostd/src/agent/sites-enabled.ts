@@ -1,33 +1,157 @@
-// Reading just enough of a hand-written vhost to know which hostnames it serves. This is not an Apache
-// configuration parser and must never grow into one: it reads ServerName and ServerAlias, and when it
-// meets a directive that could define a hostname somewhere it cannot see, it says so and adoption
-// refuses. Half-understanding a file that is serving a client's site is the failure this exists to stop.
+// Reading just enough of a hand-written vhost to know which hostnames it serves, and to know when the
+// file is doing something hostd's template cannot do. This is not an Apache configuration parser and
+// must never grow into one: it reads ServerName and ServerAlias, and when it meets a directive that
+// could define a hostname somewhere it cannot see, or that plainly has no equivalent in the generated
+// vhost, it says so and adoption refuses. Half-understanding a file that is serving a client's site is
+// the failure this exists to stop.
+//
+// The second half of that, the refusals below `unsupportedReasons`, was written after adopting
+// thebackroom.dev took a live game off the internet. The design said adoption "cannot know what a
+// hand-written vhost really did" and that was taken as licence not to look; in fact the two directives
+// that mattered, a [P] rewrite onto a ws:// upstream and the total absence of a :443 block, were both
+// plainly readable in the very file adoption was already parsing. What cannot be read is still refused;
+// what can be read is now read.
 
 import { posix } from 'node:path'
 import { describeError } from '../shared/formats.ts'
 import { normaliseHostname } from '../shared/hostnames.ts'
 
 export type VhostFile = { path: string, text: string }
-export type ServerNames = { names: string[], unsupported: string | null }
+// Every reason this file cannot be adopted, not the first one found. An operator reading the preview is
+// about to replace a file by hand, and being told one thing at a time (fix it, retry, be told the next
+// thing) is how a site stays down for an afternoon. Empty means nothing stood in the way.
+export type ServerNames = { names: string[], unsupported: string[] }
 
 const NAME_LINE = /^\s*Server(?:Name|Alias)\s+(.+?)\s*$/i
 // Include and IncludeOptional pull in files this never read. Use is mod_macro, where the hostname is an
 // argument expanded at load time and is not in this file in any readable form.
 const UNSUPPORTED = /^\s*(Include|IncludeOptional|Use)\s+/i
 
-export function parseServerNames(text: string): ServerNames {
+// <VirtualHost *:80 10.0.0.1:443>, with the address list captured whole.
+const VHOST_OPEN = /^\s*<VirtualHost\s+([^>]*)>/i
+const REWRITE_RULE = /^\s*RewriteRule\s+(.+?)\s*$/i
+// mod_rewrite's flags are a bracketed, comma-separated list at the end of the rule, and only there.
+const REWRITE_FLAGS = /\[([^\]]*)\]$/
+// ProxyPass and nothing else: ProxyPassReverse and ProxyPassMatch do not match, because the character
+// after "ProxyPass" has to be whitespace. ProxyPassReverse only rewrites response headers, so a
+// disagreement there is not the site's upstream moving.
+const PROXY_PASS = /^\s*ProxyPass\s+(.+?)\s*$/i
+const WEBSOCKET_URL = /\bwss?:\/\/\S+/i
+
+// How much of a directive is quoted back at the operator. Enough to find the line in their own file,
+// bounded so a minified RewriteRule cannot fill the pane.
+const QUOTED = 120
+
+function quoteDirective(line: string): string {
+    const trimmed = line.trim()
+    return trimmed.length <= QUOTED ? trimmed : `${trimmed.slice(0, QUOTED)}...`
+}
+
+// A ProxyPass target, or null when the line carries none. Three shapes reach here:
+//   ProxyPass /503.html !        an exclusion, which has a path and no target at all
+//   ProxyPass / http://host/     the ordinary two-argument form
+//   ProxyPass http://host/       the one-argument form, only legal inside <Location>
+// Trailing key=value parameters (retry=, connectiontimeout=) are ignored: they are never the target.
+function proxyTarget(rest: string): string | null {
+    const tokens = rest.split(/\s+/).filter(token => token !== '')
+    if (tokens.length === 0) return null
+    if (tokens.length === 1) return tokens[0]!
+    const second = tokens[1]!
+    if (second === '!') return null
+    return second
+}
+
+// Compared without a trailing slash and without case, because http://127.0.0.1:3002 and
+// http://127.0.0.1:3002/ are the same upstream and Apache treats the scheme and host case-insensitively.
+// Nothing else is normalised: a target that differs in any other way really is a different upstream.
+function sameUpstream(found: string, expected: string): boolean {
+    const trim = (value: string) => value.replace(/\/+$/, '').toLowerCase()
+    return trim(found) === trim(expected)
+}
+
+// mod_rewrite accepts P and its long form proxy, in any position in the flag list, in either case.
+function proxiesTheRequest(rule: string): boolean {
+    const flags = rule.match(REWRITE_FLAGS)
+    if (!flags) return false
+    return flags[1]!.split(',').some(flag => {
+        const name = flag.trim().toLowerCase()
+        return name === 'p' || name === 'proxy'
+    })
+}
+
+// What this file does that hostd's generated vhost would not. Each entry says what was found and why the
+// template cannot carry it, because this string is what the operator reads instead of a working site.
+//
+// `expected` is the upstream hostd's template would proxy this environment to, passed in by the caller
+// that holds the registry. Null means the caller had none to offer (no domain, no port), and the
+// ProxyPass comparison is then skipped rather than guessed at: inventing an expectation here and
+// refusing against it would block adoptions for a mismatch nobody established.
+function unsupportedReasons(text: string, expected: string | null): string[] {
+    // Keyed by kind, so a file with four [P] rewrites says the [P] thing once. The first occurrence is
+    // the one quoted, which is the one an operator reading top to bottom finds first.
+    const found = new Map<string, string>()
+    const add = (kind: string, reason: string) => { if (!found.has(kind)) found.set(kind, reason) }
+
+    let sawVirtualHost = false
+    let sawPort443 = false
+
+    for (const raw of text.split('\n')) {
+        if (/^\s*#/.test(raw)) continue
+
+        const blocked = raw.match(UNSUPPORTED)
+        if (blocked) {
+            add('include', `${blocked[1]} is used, so the hostnames this file serves cannot be read here`)
+            continue
+        }
+
+        const opened = raw.match(VHOST_OPEN)
+        if (opened) {
+            sawVirtualHost = true
+            // Any address on the line ending :443, not only *:443. An origin listening on 443 at one
+            // address is still an origin that terminates TLS, which is the fact this is measuring.
+            if (opened[1]!.split(/\s+/).some(address => address.endsWith(':443'))) sawPort443 = true
+        }
+
+        const rewrite = raw.match(REWRITE_RULE)
+        if (rewrite && proxiesTheRequest(rewrite[1]!)) {
+            add('rewrite-proxy', `${quoteDirective(raw)} carries the [P] flag, so it proxies the request through mod_proxy instead of answering or redirecting it. hostd's generated vhost has no rewrite of its own and no way to reproduce this, so adopting would drop the rule and hand those requests to whatever ProxyPass sits below it.`)
+        }
+
+        const websocket = raw.match(WEBSOCKET_URL)
+        if (websocket) {
+            add('websocket', `${quoteDirective(raw)} sends traffic to ${websocket[0]}, a WebSocket upstream served by mod_proxy_wstunnel. hostd's generated vhost proxies plain HTTP only, so adopting would leave the upgrade handshake unanswered and every realtime connection this site makes would stop.`)
+        }
+
+        const proxy = raw.match(PROXY_PASS)
+        if (proxy && expected !== null) {
+            const target = proxyTarget(proxy[1]!)
+            // A ws:// or wss:// target is already named by the reason above, in words that say what is
+            // actually wrong with it. Reporting it a second time as a port disagreement would send the
+            // operator to the registry to change a port that is perfectly correct.
+            if (target !== null && !WEBSOCKET_URL.test(target) && !sameUpstream(target, expected)) {
+                add('proxy-target', `${quoteDirective(raw)} sends traffic to ${target}, and hostd's generated vhost for this environment would send it to ${expected}. Adopting would move the site onto a different upstream, so either the registry's port is not the one this file is really serving or this file belongs to another site.`)
+            }
+        }
+    }
+
+    // Last, because it is a fact about the whole file rather than about any one line, and because a file
+    // with no <VirtualHost> in it at all is a fragment this has no business judging.
+    if (sawVirtualHost && !sawPort443) {
+        add('no-443', 'This file has no port 443 block, so the origin answers plain HTTP on port 80 only and whatever sits in front of it is terminating TLS on its own (Cloudflare calls this Flexible). hostd\'s generated vhost sends every request on port 80 to https and serves 443 itself, so the visitor would be redirected back through the CDN to the same HTTP origin and round again, forever. Give the origin a port 443 block, or take the site off Flexible SSL, before adopting it.')
+    }
+
+    return [...found.values()]
+}
+
+// `expected` is hostd's own upstream for this environment, or null when there is none to compare
+// against. See unsupportedReasons for what it is used for and why it is never guessed here.
+export function parseServerNames(text: string, expected: string | null = null): ServerNames {
     const names: string[] = []
-    let unsupported: string | null = null
     for (const raw of text.split('\n')) {
         // Apache treats a line whose first non-space character is # as a comment in full; there is no
         // trailing-comment syntax, so this is the whole rule.
         if (/^\s*#/.test(raw)) continue
-
-        const blocked = raw.match(UNSUPPORTED)
-        if (blocked && unsupported === null) {
-            unsupported = `${blocked[1]} is used, so the hostnames this file serves cannot be read here`
-            continue
-        }
+        if (UNSUPPORTED.test(raw)) continue
 
         const match = raw.match(NAME_LINE)
         if (!match) continue
@@ -39,21 +163,21 @@ export function parseServerNames(text: string): ServerNames {
             if (host !== null && !names.includes(host)) names.push(host)
         }
     }
-    return { names, unsupported }
+    return { names, unsupported: unsupportedReasons(text, expected) }
 }
 
 // The file itself is carried, not only what was understood of it. Adoption switches this file off and
 // puts hostd's own in its place, in one reload, on a site that is serving somebody right now, and what
-// this parser reads is two directives out of however many the file has. A custom rewrite, basic auth or
-// a bespoke error page is invisible to everything above except the text, so the text travels with the
-// claim and the operator sees the whole of what they are replacing before they confirm it. It is their
-// own server's configuration, and every route that can reach it is admin-only.
-export type Claim = { path: string, text: string, names: string[], unsupported: string | null }
+// this parser reads is a handful of directives out of however many the file has. A custom error page,
+// basic auth or a header rule is invisible to everything above except the text, so the text travels with
+// the claim and the operator sees the whole of what they are replacing before they confirm it. It is
+// their own server's configuration, and every route that can reach it is admin-only.
+export type Claim = { path: string, text: string, names: string[], unsupported: string[] }
 
-export function findClaims(files: VhostFile[], hostnames: string[]): Claim[] {
+export function findClaims(files: VhostFile[], hostnames: string[], expected: string | null = null): Claim[] {
     const claims: Claim[] = []
     for (const file of files) {
-        const parsed = parseServerNames(file.text)
+        const parsed = parseServerNames(file.text, expected)
         if (!parsed.names.some(name => hostnames.includes(name))) continue
         claims.push({ path: file.path, text: file.text, names: parsed.names, unsupported: parsed.unsupported })
     }

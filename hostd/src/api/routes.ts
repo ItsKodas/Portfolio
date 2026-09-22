@@ -1294,8 +1294,12 @@ export function createHandler(deps: ApiDeps): (req: IncomingMessage, res: Server
                 // registry and no vhost forever.
                 const { claims, adoptable } = preview.preview
                 if (!adoptable) {
-                    const unreadable = claims.filter(claim => claim.unsupported !== null).map(claim => `${claim.path} (${claim.unsupported})`)
-                    return refuseRoute(400, 'bad-request', `these cannot be read well enough to adopt: ${unreadable.join(', ')}`, entry.id, 'domains', target)
+                    // Every reason of every file, rather than a count or the first one: the operator's
+                    // next move is to edit those files by hand, and each reason names a different edit.
+                    const blocked = claims
+                        .filter(claim => claim.unsupported.length > 0)
+                        .map(claim => `${claim.path}: ${claim.unsupported.join(' ')}`)
+                    return refuseRoute(400, 'bad-request', `these cannot be adopted as they stand. ${blocked.join(' ')}`, entry.id, 'domains', target)
                 }
 
                 const reply = await callAgentAudited(

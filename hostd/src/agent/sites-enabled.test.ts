@@ -37,15 +37,179 @@ describe('parseServerNames', () => {
 
     it('reports Include as unsupported, because the names may be defined somewhere this never looked', () => {
         const parsed = parseServerNames('ServerName acme.com\nInclude /etc/apache2/common.conf')
-        assert.match(parsed.unsupported ?? '', /Include/)
+        assert.match(parsed.unsupported.join(' '), /Include/)
     })
 
     it('reports mod_macro as unsupported for the same reason', () => {
-        assert.match(parseServerNames('Use CommonSite acme.com').unsupported ?? '', /Use/)
+        assert.match(parseServerNames('Use CommonSite acme.com').unsupported.join(' '), /Use/)
     })
 
     it('drops a name it cannot read as a hostname rather than passing it on', () => {
         assert.deepEqual(parseServerNames('ServerName ${SITE_NAME}').names, [])
+    })
+
+    it('says nothing is unsupported about a file the template can reproduce', () => {
+        const parsed = parseServerNames(`
+<VirtualHost *:80>
+    ServerName acme.com
+    Redirect permanent / https://acme.com/
+</VirtualHost>
+
+<VirtualHost *:443>
+    ServerName acme.com
+    ProxyPass / http://127.0.0.1:3002/
+    ProxyPassReverse / http://127.0.0.1:3002/
+</VirtualHost>
+`, 'http://127.0.0.1:3002/')
+        assert.deepEqual(parsed.unsupported, [])
+    })
+})
+
+// The four refusals added after thebackroom.dev went dark. Each one is a thing the generated vhost
+// cannot reproduce and that is plainly readable in the file adoption is already parsing.
+describe('parseServerNames: what the template cannot carry', () => {
+    const wrap = (body: string) => `<VirtualHost *:443>\n    ServerName acme.com\n${body}\n</VirtualHost>\n`
+    const reasons = (body: string, expected: string | null = null) => parseServerNames(wrap(body), expected).unsupported
+
+    it('refuses a RewriteRule carrying the [P] flag, because the template has no rewrite of its own', () => {
+        const found = reasons('    RewriteRule ^/?(.*) http://127.0.0.1:3002/$1 [P,L]')
+        assert.equal(found.length, 1)
+        assert.match(found[0]!, /\[P\] flag/)
+        // The directive itself, so the operator can find the line in their own file.
+        assert.match(found[0]!, /RewriteRule \^\/\?\(\.\*\)/)
+    })
+
+    it('reads the long form of the same flag, and reads it wherever it sits in the list', () => {
+        assert.equal(reasons('    RewriteRule ^/?(.*) http://127.0.0.1:3002/$1 [NE,proxy,L]').length, 1)
+    })
+
+    it('leaves an ordinary redirecting rewrite alone, which is most of them', () => {
+        assert.deepEqual(reasons('    RewriteRule ^/?(.*)$ https://acme.com/$1 [R=301,L]'), [])
+    })
+
+    it('refuses a ws:// target, because the template proxies plain HTTP only', () => {
+        const found = reasons('    ProxyPass /socket ws://127.0.0.1:3002/socket')
+        assert.equal(found.length, 1)
+        assert.match(found[0]!, /ws:\/\/127\.0\.0\.1:3002\/socket/)
+        assert.match(found[0]!, /mod_proxy_wstunnel/)
+    })
+
+    it('refuses wss:// too', () => {
+        assert.match(reasons('    ProxyPass /socket wss://127.0.0.1:3002/socket').join(' '), /wss:\/\//)
+    })
+
+    it('refuses a ProxyPass that disagrees with the upstream the registry gives', () => {
+        const found = reasons('    ProxyPass / http://127.0.0.1:9999/', 'http://127.0.0.1:3002/')
+        assert.equal(found.length, 1)
+        assert.match(found[0]!, /http:\/\/127\.0\.0\.1:9999\//)
+        assert.match(found[0]!, /http:\/\/127\.0\.0\.1:3002\//)
+    })
+
+    it('accepts the same upstream spelled without its trailing slash', () => {
+        assert.deepEqual(reasons('    ProxyPass / http://127.0.0.1:3002', 'http://127.0.0.1:3002/'), [])
+    })
+
+    it('says nothing about a ProxyPass exclusion, which names a path and no upstream at all', () => {
+        assert.deepEqual(reasons('    ProxyPass /503.html !\n    ProxyPass / http://127.0.0.1:3002/', 'http://127.0.0.1:3002/'), [])
+    })
+
+    // The expectation is passed in by the caller that holds the registry. With none to compare against,
+    // the honest answer is to say nothing rather than to invent one and refuse against it.
+    it('skips the upstream comparison entirely when no expected target was given', () => {
+        assert.deepEqual(reasons('    ProxyPass / http://127.0.0.1:9999/'), [])
+    })
+
+    it('does not read ProxyPassReverse or ProxyPassMatch as the upstream', () => {
+        const body = '    ProxyPass / http://127.0.0.1:3002/\n    ProxyPassReverse / http://127.0.0.1:9999/'
+        assert.deepEqual(reasons(body, 'http://127.0.0.1:3002/'), [])
+    })
+
+    it('refuses a vhost with no port 443 block, because the forced redirect to https would loop', () => {
+        const found = parseServerNames('<VirtualHost *:80>\n    ServerName acme.com\n</VirtualHost>\n').unsupported
+        assert.equal(found.length, 1)
+        assert.match(found[0]!, /no port 443 block/)
+        assert.match(found[0]!, /Flexible/)
+    })
+
+    it('accepts a 443 block on a named address, not only on the wildcard', () => {
+        assert.deepEqual(parseServerNames('<VirtualHost 10.0.0.1:443>\n    ServerName acme.com\n</VirtualHost>\n').unsupported, [])
+    })
+
+    it('says nothing about a fragment with no VirtualHost in it at all, which it cannot judge', () => {
+        assert.deepEqual(parseServerNames('ServerName acme.com\n').unsupported, [])
+    })
+
+    it('says the same thing once however many times the file does it', () => {
+        const body = '    RewriteRule ^/a(.*) http://127.0.0.1:3002/$1 [P]\n    RewriteRule ^/b(.*) http://127.0.0.1:3002/$1 [P]'
+        assert.equal(reasons(body).length, 1)
+    })
+
+    it('ignores all of it inside a comment, because a commented-out directive serves nothing', () => {
+        const body = '    # RewriteRule ^/?(.*) ws://127.0.0.1:3002/$1 [P,L]\n    # ProxyPass / http://127.0.0.1:9999/'
+        assert.deepEqual(reasons(body, 'http://127.0.0.1:3002/'), [])
+    })
+})
+
+// The file that took thebackroom.dev off the internet, verbatim. Adoption moved it aside, Apache's own
+// configtest passed, the reload succeeded, hostd reported success, and the game was dark until the
+// operator put the file back by hand. Two things did it, and both are in this text: the [P] rewrite onto
+// a ws:// upstream, which the template has no equivalent for, and the absence of any :443 block, which
+// means the origin is HTTP-only behind a CDN in Flexible mode and hostd's forced redirect to https loops
+// forever. This fixture is the regression test for that outage and must keep failing adoption.
+describe('the vhost that took thebackroom.dev off the internet', () => {
+    const THE_BACKROOM = `<VirtualHost *:80>
+    ServerName thebackroom.dev
+
+    DocumentRoot /var/www/html
+
+    # The game talks over socket.io, which upgrades to a raw WebSocket. Hand
+    # those requests to mod_proxy_wstunnel before the plain HTTP proxy below
+    # gets a chance to answer them and break the handshake.
+    RewriteEngine On
+    RewriteCond %{HTTP:Upgrade} =websocket [NC]
+    RewriteCond %{HTTP:Connection} upgrade [NC]
+    RewriteRule ^/?(.*) ws://127.0.0.1:3002/$1 [P,L]
+
+    ProxyPass /503.html !
+    ProxyPass / http://127.0.0.1:3002/
+    ProxyPassReverse / http://127.0.0.1:3002/
+    ProxyPreserveHost On
+    ProxyErrorOverride Off
+</VirtualHost>
+`
+    const file = [{ path: '/etc/apache2/sites-enabled/thebackroom.conf', text: THE_BACKROOM }]
+    // The registry really does say 3002 for this environment, and the file really does proxy to 3002.
+    // The upstream was never the problem, and the refusal must not pretend it was.
+    const expected = 'http://127.0.0.1:3002/'
+
+    it('still finds the hostname, so the operator is not told there is nothing there', () => {
+        assert.deepEqual(findClaims(file, ['thebackroom.dev'], expected)[0]!.names, ['thebackroom.dev'])
+    })
+
+    it('refuses it, naming the proxying rewrite, the WebSocket upstream and the missing 443 block', () => {
+        const reasons = findClaims(file, ['thebackroom.dev'], expected)[0]!.unsupported
+        assert.equal(reasons.length, 3, reasons.join('\n'))
+        assert.match(reasons.join('\n'), /\[P\] flag/)
+        assert.match(reasons.join('\n'), /ws:\/\/127\.0\.0\.1:3002\//)
+        assert.match(reasons.join('\n'), /mod_proxy_wstunnel/)
+        assert.match(reasons.join('\n'), /no port 443 block/)
+    })
+
+    // The proxy target was right all along: the registry says 3002 and so does the file. A refusal that
+    // also blamed the port would send the operator to change a setting that was never wrong.
+    it('says nothing about the upstream, because the upstream agreed with the registry', () => {
+        const reasons = findClaims(file, ['thebackroom.dev'], expected)[0]!.unsupported
+        assert.equal(reasons.some(reason => reason.includes('another site')), false, reasons.join('\n'))
+    })
+
+    it('carries the file verbatim, so the operator sees what they would be replacing', () => {
+        assert.equal(findClaims(file, ['thebackroom.dev'], expected)[0]!.text, THE_BACKROOM)
+    })
+
+    it('has no em dash in any reason, because these are operator-facing copy', () => {
+        for (const reason of findClaims(file, ['thebackroom.dev'], expected)[0]!.unsupported) {
+            assert.equal(reason.includes('—'), false, reason)
+        }
     })
 })
 
@@ -83,7 +247,7 @@ describe('findClaims', () => {
     it('carries the text of a file it refuses to call adoptable too, which is when it matters most', () => {
         const awkward = [{ path: '/etc/apache2/sites-enabled/macro.conf', text: 'ServerName acme.com\nUse CommonSite acme.com' }]
         const claim = findClaims(awkward, ['acme.com'])[0]!
-        assert.match(claim.unsupported ?? '', /Use/)
+        assert.match(claim.unsupported.join(' '), /Use/)
         assert.equal(claim.text, awkward[0]!.text)
     })
 })

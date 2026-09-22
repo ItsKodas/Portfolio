@@ -55,7 +55,7 @@ const preview = (over: Partial<AdoptPreview> = {}): AdoptPreview => ({
         path: '/etc/apache2/sites-enabled/acme.conf',
         text: HAND_WRITTEN,
         names: ['acme.com'],
-        unsupported: null,
+        unsupported: [],
     }],
     extraNames: [],
     unreadable: [],
@@ -120,7 +120,7 @@ describe('DomainsPanel, for the operator', () => {
                     path: '/etc/apache2/sites-enabled/acme.conf',
                     text: HAND_WRITTEN,
                     names: ['acme.com'],
-                    unsupported: 'Use is used, so the hostnames this file serves cannot be read here',
+                    unsupported: ['Use is used, so the hostnames this file serves cannot be read here'],
                 }],
             }),
         })

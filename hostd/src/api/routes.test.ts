@@ -1316,11 +1316,11 @@ describe('POST /projects/:id/:env/domains/:hostname/verify', () => {
 })
 
 describe('GET|POST /projects/:id/:env/adopt', () => {
-    const claim: { path: string, text: string, names: string[], unsupported: string | null } = {
+    const claim: { path: string, text: string, names: string[], unsupported: string[] } = {
         path: '/etc/apache2/sites-enabled/acme.conf',
         text: '<VirtualHost *:443>\n    ServerName acme.example\n</VirtualHost>\n',
         names: ['acme.example'],
-        unsupported: null,
+        unsupported: [],
     }
     const preview = (over: Partial<{ claims: typeof claim[], adoptable: boolean }> = {}): AgentReply => ({
         ok: true,
@@ -1407,7 +1407,7 @@ describe('GET|POST /projects/:id/:env/adopt', () => {
     })
 
     it('refuses when a claim cannot be read, naming the file', async () => {
-        agent.reply = () => preview({ claims: [{ ...claim, unsupported: 'an IncludeOptional this parser cannot follow' }], adoptable: false })
+        agent.reply = () => preview({ claims: [{ ...claim, unsupported: ['an IncludeOptional this parser cannot follow'] }], adoptable: false })
         const unreadable = await request('/projects/acme/live/adopt', { method: 'POST', actor: 'admin', body: { confirm: 'Acme' } })
         assert.equal(unreadable.status, 400)
         assert.equal((await unreadable.json() as { message: string }).message.includes(claim.path), true)
