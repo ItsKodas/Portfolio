@@ -75,8 +75,9 @@ async function main(): Promise<void> {
     // group root: this socket now lives in a volume shared only with the agent (never with api), so
     // there is no group to widen it for the way agent.sock widens for api's gid.
     process.umask(0o177)
+    const names = [...tokens.keys()]
     const server = createServer(socket => {
-        handleFetchConnection(socket, request => runGit(request, runner), log)
+        handleFetchConnection(socket, request => runGit(request, runner, names), log)
             .catch(error => log(`connection failed: ${describeError(error)}`))
     })
     await new Promise<void>((resolve, reject) => {

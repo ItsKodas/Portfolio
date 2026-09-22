@@ -5,6 +5,10 @@
 
 import { tail, type Runner } from '../agent/compose.ts'
 import type { Commit, FetchReply, FetchRequest } from '../shared/fetch-protocol.ts'
+import { credentialArgs } from './credentials.ts'
+
+// Everything except the credentials verb, which answers from the fetcher's own list and never runs git.
+type GitRequest = Exclude<FetchRequest, { verb: 'credentials' }>
 
 // A bad or revoked token must fail as soon as the network round trip says so, not sit out the full
 // GIT_TIMEOUT_MS waiting on a stdin prompt this container has no terminal to answer. Set once, at import
@@ -79,7 +83,7 @@ function redact(text: string): string {
         .replace(/github_pat_[A-Za-z0-9_]+/g, '***')
 }
 
-function argvFor(request: FetchRequest): string[] {
+function argvFor(request: GitRequest): string[] {
     switch (request.verb) {
         case 'clone': return cloneArgv(request.repo, request.dir, request.branch)
         case 'fetch': return fetchArgv(request.dir, request.branch)
@@ -106,7 +110,7 @@ function argvFor(request: FetchRequest): string[] {
 // nothing behind in root's global gitconfig once the call returns. clone and branches never need it:
 // clone's destination does not exist yet, so there is nothing yet for git to call dubious, and branches
 // (`git ls-remote`) never touches a local directory at all.
-function safeDirectoryArgs(request: FetchRequest): string[] {
+function safeDirectoryArgs(request: GitRequest): string[] {
     switch (request.verb) {
         case 'fetch': case 'checkout': case 'log': case 'tip':
             return ['-c', `safe.directory=${request.dir}`]
@@ -115,9 +119,20 @@ function safeDirectoryArgs(request: FetchRequest): string[] {
     }
 }
 
-export async function runGit(request: FetchRequest, run: Runner): Promise<FetchReply> {
+export async function runGit(request: FetchRequest, run: Runner, names: readonly string[]): Promise<FetchReply> {
+    // Answered from the names this fetcher was booted with. Names only: a token value never leaves this
+    // container, and this is what the portal's Account select is drawn from.
+    if (request.verb === 'credentials') return { ok: true, credentials: [...names].sort() }
+
+    const credential = 'credential' in request ? request.credential : null
+    // Before git runs, not after: a --file that does not exist makes git fall through to no credential
+    // at all and fail with GitHub's own authentication error, which says nothing about the real cause.
+    if (credential !== null && !names.includes(credential)) {
+        return { ok: false, code: 'bad-request', message: `unknown credential ${credential}` }
+    }
+
     const { verb } = request
-    const result = await run('git', [...safeDirectoryArgs(request), ...argvFor(request)], GIT_TIMEOUT_MS)
+    const result = await run('git', [...credentialArgs(credential), ...safeDirectoryArgs(request), ...argvFor(request)], GIT_TIMEOUT_MS)
     if (result.timedOut) return { ok: false, code: 'failed', message: `git ${verb} timed out` }
     if (result.exitCode !== 0) return { ok: false, code: 'failed', message: redact(tail(result.stderr) || tail(result.stdout)) }
 
