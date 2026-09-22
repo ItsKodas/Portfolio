@@ -5,9 +5,16 @@ import type { Domain, DomainState } from '@/server/hostd/domains'
 
 // What an operator is told each state means. 'unmanaged' reads as a fact about how the domain got there,
 // not a problem: an operator set it up by hand and hostd has not taken it over.
+//
+// 'pending' names no cause, and that is the point of the words it has. It used to read "waiting for
+// DNS", which is only one of the reasons a hostname has not verified yet and was the wrong one the day
+// adopting thebackroom.dev took it off the internet: the DNS was correct, hostd's own vhost was the
+// problem, and the panel sent the operator to Cloudflare. What is actually known here is that the check
+// has not passed, so that is what it says; the detail line underneath carries hostd's own reason, which
+// tells a TLS failure, an NXDOMAIN and a wrong token apart.
 const WORDS: Record<DomainState, string> = {
     unmanaged: 'set up by hand',
-    pending: 'waiting for DNS',
+    pending: 'not verified yet',
     active: 'working',
     failed: 'gave up',
     broken: 'stopped answering',

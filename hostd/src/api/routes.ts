@@ -751,7 +751,7 @@ export function createHandler(deps: ApiDeps): (req: IncomingMessage, res: Server
             const tokens = new Map<EnvironmentName, string>()
             // And which hostnames hostd was already serving. Anything else starts its 72 hour countdown;
             // these do not, because the rewrite kept the token, so an alias that was answering a moment
-            // ago still is and has nothing new to prove. Making it pending would put "waiting for DNS" on
+            // ago still is and has nothing new to prove. Making it pending would put "not verified yet" on
             // a client's screen for a name that never stopped working.
             const already = new Map<EnvironmentName, Set<string>>()
             for (const wrote of rewritten) {
