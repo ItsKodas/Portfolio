@@ -37,6 +37,11 @@ export const fetchArgv = (dir: string, branch: string | null) => [
 ]
 export const checkoutArgv = (dir: string, worktree: string, commit: string) =>
     ['-C', dir, 'worktree', 'add', '--detach', '--force', worktree, commit]
+// The swap renames the tree out from under git's own record of it; this puts the record right. Never
+// `worktree prune`, which is the destructive half of the same idea: prune would remove the record of a
+// tree that has moved rather than follow it, and the live site's tree is exactly such a tree.
+export const repairArgv = (dir: string, worktree: string) =>
+    ['-C', dir, 'worktree', 'repair', '--', worktree]
 export const logArgv = (dir: string, branch: string, limit: number) =>
     ['-C', dir, 'log', `--max-count=${limit}`, `--format=%h${FIELD}%s${FIELD}%an${FIELD}%aI${RECORD}`, `origin/${branch}`, '--']
 // The two rev-parse reads, and the one place in this file where a trailing `--` is wrong. rev-parse
@@ -88,6 +93,7 @@ function argvFor(request: GitRequest): string[] {
         case 'clone': return cloneArgv(request.repo, request.dir, request.branch)
         case 'fetch': return fetchArgv(request.dir, request.branch)
         case 'checkout': return checkoutArgv(request.dir, request.worktree, request.commit)
+        case 'repair': return repairArgv(request.dir, request.worktree)
         case 'log': return logArgv(request.dir, request.branch, request.limit)
         case 'tip': return tipArgv(request.dir, request.branch)
         case 'branches': return branchesArgv(request.repo)
@@ -112,7 +118,7 @@ function argvFor(request: GitRequest): string[] {
 // (`git ls-remote`) never touches a local directory at all.
 function safeDirectoryArgs(request: GitRequest): string[] {
     switch (request.verb) {
-        case 'fetch': case 'checkout': case 'log': case 'tip':
+        case 'fetch': case 'checkout': case 'repair': case 'log': case 'tip':
             return ['-c', `safe.directory=${request.dir}`]
         case 'clone': case 'branches':
             return []
@@ -149,7 +155,7 @@ export async function runGit(request: FetchRequest, run: Runner, names: readonly
             return { ok: true, commit: result.stdout.trim() }
         case 'log':
             return { ok: true, commits: parseLog(result.stdout) }
-        case 'fetch':
+        case 'fetch': case 'repair':
             return { ok: true }
         case 'branches':
             return { ok: true, branches: parseBranches(result.stdout) }

@@ -449,6 +449,33 @@ describe('runDeploy, the swap', () => {
         assert.equal(context.environment().deployed, TIP)
     })
 
+    // The swap renames <dir>.next to <dir>, and git goes on recording the worktree under the path it was
+    // created at. Left that way, the live tree is one `git worktree prune` away from losing its
+    // repository: prune sees a registered path that no longer exists and deletes the admin directory
+    // <dir>/.git points at. Checked against real git before this was written.
+    it('re-points git at the tree the swap moved, so a later prune cannot cut the live site loose', async () => {
+        const context = setup()
+        await runDeploy(context.project(), context.environment(), { ...request, commit: TIP }, context.deps)
+        assert.deepEqual(context.fetchRequests.at(-1), { verb: 'repair', dir: '/var/www/acme.git', worktree: '/var/www/acme' })
+    })
+
+    // Outside the maintenance window, so the site is already up and serving by the time this runs.
+    it('repairs after the site is serving again, never inside the window it is not', async () => {
+        const context = setup()
+        await runDeploy(context.project(), context.environment(), { ...request, commit: TIP }, context.deps)
+        const off = context.calls.indexOf('maintenance off')
+        const repaired = context.calls.lastIndexOf('fetcher repair')
+        assert.ok(off !== -1 && repaired !== -1, context.calls.join(', '))
+        assert.ok(off < repaired)
+    })
+
+    it('still counts the deploy a success when the record could not be tidied', async () => {
+        const context = setup({ fetchReplies: { repair: { ok: false, code: 'failed', message: 'not a working tree' } } })
+        const record = await runDeploy(context.project(), context.environment(), { ...request, commit: TIP }, context.deps)
+        assert.equal(record.outcome, 'ok')
+        assert.equal(context.environment().deployed, TIP)
+    })
+
     it('does not move anything when the old copy will not come down', async () => {
         const context = setup({ composeResults: { down: { exitCode: 1, stderr: 'permission denied' } } })
         const record = await runDeploy(context.project(), context.environment(), { ...request, commit: TIP }, context.deps)

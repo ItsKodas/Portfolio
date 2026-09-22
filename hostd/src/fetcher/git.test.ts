@@ -1,7 +1,7 @@
 import { describe, it } from 'node:test'
 import assert from 'node:assert/strict'
 
-import { branchesArgv, cloneArgv, checkoutArgv, fetchArgv, parseBranches, parseLog, runGit, tipArgv, MAX_BRANCHES } from './git.ts'
+import { branchesArgv, cloneArgv, checkoutArgv, fetchArgv, parseBranches, parseLog, repairArgv, runGit, tipArgv, MAX_BRANCHES } from './git.ts'
 import { GIT_COMMIT } from '../shared/registry.ts'
 import type { Runner, RunResult } from '../agent/compose.ts'
 
@@ -57,6 +57,14 @@ describe('argv', () => {
     it('reads a tip as a bare sha: rev-parse echoes any argument it does not consume as a revision', () => {
         assert.deepEqual(tipArgv('/var/www/b.git', 'main'),
             ['-C', '/var/www/b.git', 'rev-parse', '--verify', '--end-of-options', 'origin/main'])
+    })
+
+    // repair, never prune. Both act on a worktree record git can no longer resolve, but prune deletes
+    // that record and repair follows the tree to where it now is, and after a deploy's swap the tree it
+    // can no longer resolve IS the live site.
+    it('repairs a worktree record by naming the tree, rather than pruning records wholesale', () => {
+        assert.deepEqual(repairArgv('/var/www/b.git', '/var/www/b'),
+            ['-C', '/var/www/b.git', 'worktree', 'repair', '--', '/var/www/b'])
     })
 
     it('lists a remote\'s branches with no dir: this reads the remote directly, nothing on disk', () => {
@@ -158,6 +166,14 @@ describe('runGit', () => {
         const reply = await runGit({ verb: 'clone', repo: 'git@github.com:a/b.git', dir: '/var/www/b', branch: 'main', credential: null }, run, [])
         assert.ok(reply.ok && reply.commit && GIT_COMMIT.test(reply.commit))
         assert.deepEqual(runs[1], ['git', '-C', '/var/www/b', 'rev-parse', '--verify', '--end-of-options', 'HEAD'])
+    })
+
+    it('answers a repair as plain success: there is nothing to read back off it', async () => {
+        const { run, runs } = recorder()
+        const reply = await runGit({ verb: 'repair', dir: '/var/www/b.git', worktree: '/var/www/b' }, run, [])
+        assert.deepEqual(reply, { ok: true })
+        // The repository is the operator's, exactly as it is for fetch, checkout, log and tip.
+        assert.deepEqual(runs[0]!.slice(0, 3), ['git', '-c', 'safe.directory=/var/www/b.git'])
     })
 
     it('reports a failure with git\'s message, not a stack', async () => {

@@ -16,6 +16,11 @@ export type FetchRequest =
     | { verb: 'clone', repo: string, dir: string, branch: string, credential: string | null }
     | { verb: 'fetch', dir: string, branch: string | null, credential: string | null }
     | { verb: 'checkout', dir: string, worktree: string, commit: string }
+    // Re-points git's record of a worktree at where that tree actually is now. A deploy's swap renames
+    // <dir>.next to <dir>, and git goes on recording the path the worktree was created at: a later
+    // `git worktree prune` then sees a registered path that no longer exists and deletes the admin
+    // directory <dir>/.git points at, leaving the live site's tree with no repository at all.
+    | { verb: 'repair', dir: string, worktree: string }
     | { verb: 'log', dir: string, branch: string, limit: number }
     | { verb: 'tip', dir: string, branch: string }
     // No dir: this reads the remote directly (git ls-remote --heads), which needs nothing on disk. A
@@ -114,6 +119,15 @@ export function parseFetchRequest(line: string): Parsed {
             if (!worktree) return refuse('worktree must be a folder directly under /var/www')
             if (typeof raw.commit !== 'string' || !GIT_COMMIT.test(raw.commit)) return refuse('commit is malformed')
             return { ok: true, request: { verb: 'checkout', dir, worktree, commit: raw.commit } }
+        }
+
+        case 'repair': {
+            if (!onlyKeys(raw, ['verb', 'dir', 'worktree'])) return refuse('repair takes only dir and worktree')
+            const dir = dirOf(raw, 'dir')
+            if (!dir) return refuse('dir must be a folder directly under /var/www')
+            const worktree = dirOf(raw, 'worktree')
+            if (!worktree) return refuse('worktree must be a folder directly under /var/www')
+            return { ok: true, request: { verb: 'repair', dir, worktree } }
         }
 
         case 'log': {
