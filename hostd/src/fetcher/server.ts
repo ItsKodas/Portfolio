@@ -18,6 +18,9 @@ function describe(request: FetchRequest): string {
         // No dir to log it by, unlike every other verb here: branches has none. The repo is safe to log,
         // never a credential, because GIT_REPO (checked before this is ever reached) admits no userinfo.
         case 'branches': return `branches ${request.repo}`
+        // The one verb with nothing to log it by: it names no repository and touches no directory, only
+        // the fetcher's own held names, so the verb is the whole of the line.
+        case 'credentials': return 'credentials'
     }
 }
 

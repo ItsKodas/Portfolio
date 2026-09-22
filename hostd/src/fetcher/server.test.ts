@@ -118,4 +118,13 @@ describe('handleFetchConnection', () => {
         assert.deepEqual(stub.requests, [{ verb: 'branches', repo: 'git@github.com:acme/site.git', credential: null }])
         assert.deepEqual(logged, ['branches git@github.com:acme/site.git ok'])
     })
+
+    it('answers a credentials request and logs it by verb alone, having neither a repo nor a dir to log it by', async () => {
+        const logged: string[] = []
+        const stub = stubRun(async () => ({ ok: true, credentials: ['acme', 'northwind'] }))
+        const lines = await exchange(stub.run, '{"verb":"credentials"}\n', message => logged.push(message))
+        assert.deepEqual(lines, ['{"ok":true,"credentials":["acme","northwind"]}'])
+        assert.deepEqual(stub.requests, [{ verb: 'credentials' }])
+        assert.deepEqual(logged, ['credentials ok'])
+    })
 })
