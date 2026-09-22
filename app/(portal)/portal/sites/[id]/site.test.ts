@@ -139,6 +139,23 @@ describe('gatherSite', () => {
         if (view.kind === 'site') expect(view.repo).toBeNull()
     })
 
+    it('carries the credential hostd answered for the operator', async () => {
+        const view = await gatherSite(deps({
+            listProjects: async () => ({
+                ok: true as const,
+                value: [{ id: 'asot', name: 'ASOT', valid: true, capabilities: ['lifecycle'], credential: 'acme' }],
+            }),
+        }), 'asot')
+        if (view.kind === 'site') expect(view.credential).toBe('acme')
+    })
+
+    it('says no credential rather than throwing when hostd left it out, which it does for a client', async () => {
+        const view = await gatherSite(deps({
+            listProjects: async () => ({ ok: true as const, value: [{ id: 'asot', name: 'ASOT', valid: true, capabilities: [] }] }),
+        }), 'asot')
+        if (view.kind === 'site') expect(view.credential).toBeNull()
+    })
+
     it('marks the entry read and valid when the listing found it', async () => {
         const view = await gatherSite(deps(), 'asot')
         if (view.kind === 'site') {
