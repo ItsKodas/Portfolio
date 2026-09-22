@@ -42,6 +42,8 @@ vi.mock('@/server/hostd/deploys', () => ({ listDeploys: (...args: unknown[]) => 
 vi.mock('@/server/hostd/domains', () => ({ listDomains: (...args: unknown[]) => listDomains(...args) }))
 const listBranches = vi.fn()
 vi.mock('@/server/hostd/branches', () => ({ listBranches: (...args: unknown[]) => listBranches(...args) }))
+const listCredentials = vi.fn()
+vi.mock('@/server/hostd/credentials', () => ({ listCredentials: (...args: unknown[]) => listCredentials(...args) }))
 
 const { default: SitePage } = await import('./page')
 
@@ -74,6 +76,7 @@ beforeEach(() => {
     listDomains.mockResolvedValue({ ok: true, value: [] })
     assertOwned.mockResolvedValue(true)
     listBranches.mockResolvedValue({ ok: true, value: [] })
+    listCredentials.mockResolvedValue({ ok: true, value: [] })
 })
 
 describe('the site page', () => {

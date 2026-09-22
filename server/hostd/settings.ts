@@ -11,6 +11,8 @@ import type { HostdConfig } from './config'
 export type SiteSettings = {
     capabilities?: string[]
     repo?: string | null
+    // The name of one of the fetcher's tokens, never a token. null clears it, back to the default.
+    credential?: string | null
     branches?: Record<string, string | null>
     // An environment's primary address. No null member, unlike branches: this gives an environment an
     // address or moves it to another one, and never clears one. Moving it makes hostd rewrite the vhost

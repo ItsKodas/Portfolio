@@ -138,7 +138,7 @@ export async function currentTip(
     try {
         const repo = await ensureRepo(trees, deps)
         if (!repo.ok) return repo
-        const fetched = await deps.fetcher.call({ verb: 'fetch', dir: trees.repo, branch })
+        const fetched = await deps.fetcher.call({ verb: 'fetch', dir: trees.repo, branch, credential: project.credential })
         if (!fetched.ok) return { ok: false, problem: fetched.message }
         const tip = await deps.fetcher.call({ verb: 'tip', dir: trees.repo, branch })
         if (!tip.ok) return { ok: false, problem: tip.message }

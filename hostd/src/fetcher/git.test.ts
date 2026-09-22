@@ -67,7 +67,7 @@ describe('argv', () => {
 describe('safe.directory scope', () => {
     it('trusts only the exact directory a fetch operates on', async () => {
         const { run, runs } = recorder()
-        await runGit({ verb: 'fetch', dir: '/var/www/b.git', branch: null }, run)
+        await runGit({ verb: 'fetch', dir: '/var/www/b.git', branch: null, credential: null }, run, [])
         assert.deepEqual(runs[0], [
             'git', '-c', 'safe.directory=/var/www/b.git', '-C', '/var/www/b.git', 'fetch', '--prune', '--', 'origin',
         ])
@@ -75,9 +75,9 @@ describe('safe.directory scope', () => {
 
     it('does the same for checkout, log and tip: every verb that runs against a repository someone else owns', async () => {
         const { run, runs } = recorder([ok, ok, ok])
-        await runGit({ verb: 'checkout', dir: '/var/www/b.git', worktree: '/var/www/b.next', commit: 'a1b2c3d' }, run)
-        await runGit({ verb: 'log', dir: '/var/www/b.git', branch: 'main', limit: 10 }, run)
-        await runGit({ verb: 'tip', dir: '/var/www/b.git', branch: 'main' }, run)
+        await runGit({ verb: 'checkout', dir: '/var/www/b.git', worktree: '/var/www/b.next', commit: 'a1b2c3d' }, run, [])
+        await runGit({ verb: 'log', dir: '/var/www/b.git', branch: 'main', limit: 10 }, run, [])
+        await runGit({ verb: 'tip', dir: '/var/www/b.git', branch: 'main' }, run, [])
         assert.deepEqual(runs[0]!.slice(0, 3), ['git', '-c', 'safe.directory=/var/www/b.git'])
         assert.deepEqual(runs[1]!.slice(0, 3), ['git', '-c', 'safe.directory=/var/www/b.git'])
         assert.deepEqual(runs[2]!.slice(0, 3), ['git', '-c', 'safe.directory=/var/www/b.git'])
@@ -85,13 +85,13 @@ describe('safe.directory scope', () => {
 
     it('never adds it for clone, whose destination does not exist yet and so is never dubious', async () => {
         const { run, runs } = recorder([ok, { ...ok, stdout: 'a1b2c3d4e5f6\n' }])
-        await runGit({ verb: 'clone', repo: 'git@github.com:a/b.git', dir: '/var/www/b', branch: 'main' }, run)
+        await runGit({ verb: 'clone', repo: 'git@github.com:a/b.git', dir: '/var/www/b', branch: 'main', credential: null }, run, [])
         assert.deepEqual(runs[0], ['git', 'clone', '--branch', 'main', '--single-branch', '--', 'git@github.com:a/b.git', '/var/www/b'])
     })
 
     it('never adds it for branches, which touches no local directory at all', async () => {
         const { run, runs } = recorder()
-        await runGit({ verb: 'branches', repo: 'git@github.com:a/b.git' }, run)
+        await runGit({ verb: 'branches', repo: 'git@github.com:a/b.git', credential: null }, run, [])
         assert.deepEqual(runs[0], ['git', 'ls-remote', '--heads', '--', 'git@github.com:a/b.git'])
     })
 })
@@ -138,7 +138,7 @@ describe('parseLog', () => {
 describe('runGit', () => {
     it('reports the commit it cloned', async () => {
         const { run, runs } = recorder([ok, { ...ok, stdout: 'a1b2c3d4e5f6\n' }])
-        const reply = await runGit({ verb: 'clone', repo: 'git@github.com:a/b.git', dir: '/var/www/b', branch: 'main' }, run)
+        const reply = await runGit({ verb: 'clone', repo: 'git@github.com:a/b.git', dir: '/var/www/b', branch: 'main', credential: null }, run, [])
         assert.deepEqual(reply, { ok: true, commit: 'a1b2c3d4e5f6' })
         assert.equal(runs[0]![1], 'clone')
     })
@@ -147,7 +147,7 @@ describe('runGit', () => {
     // GIT_COMMIT: anything riding alongside the sha fails the deploy rather than the read.
     it('answers a tip as a commit the checkout that follows will accept', async () => {
         const { run, runs } = recorder([{ ...ok, stdout: 'a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2\n' }])
-        const reply = await runGit({ verb: 'tip', dir: '/var/www/b.git', branch: 'main' }, run)
+        const reply = await runGit({ verb: 'tip', dir: '/var/www/b.git', branch: 'main' }, run, [])
         assert.deepEqual(reply, { ok: true, commit: 'a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2' })
         assert.ok(reply.ok && reply.commit && GIT_COMMIT.test(reply.commit))
         assert.deepEqual(runs[0]!.slice(-3), ['--verify', '--end-of-options', 'origin/main'])
@@ -155,41 +155,82 @@ describe('runGit', () => {
 
     it('reads the commit a clone landed on the same way, so a fresh site records a sha too', async () => {
         const { run, runs } = recorder([ok, { ...ok, stdout: 'a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2\n' }])
-        const reply = await runGit({ verb: 'clone', repo: 'git@github.com:a/b.git', dir: '/var/www/b', branch: 'main' }, run)
+        const reply = await runGit({ verb: 'clone', repo: 'git@github.com:a/b.git', dir: '/var/www/b', branch: 'main', credential: null }, run, [])
         assert.ok(reply.ok && reply.commit && GIT_COMMIT.test(reply.commit))
         assert.deepEqual(runs[1], ['git', '-C', '/var/www/b', 'rev-parse', '--verify', '--end-of-options', 'HEAD'])
     })
 
     it('reports a failure with git\'s message, not a stack', async () => {
         const { run } = recorder([{ exitCode: 128, stdout: '', stderr: 'fatal: repository not found', timedOut: false }])
-        const reply = await runGit({ verb: 'fetch', dir: '/var/www/b', branch: null }, run)
+        const reply = await runGit({ verb: 'fetch', dir: '/var/www/b', branch: null, credential: null }, run, [])
         assert.deepEqual(reply, { ok: false, code: 'failed', message: 'fatal: repository not found' })
     })
 
     it('never puts the token in a message', async () => {
         const { run } = recorder([{ exitCode: 128, stdout: '', stderr: 'fatal: https://x-access-token:ghp_secret@github.com/a/b.git not found', timedOut: false }])
-        const reply = await runGit({ verb: 'fetch', dir: '/var/www/b', branch: null }, run)
+        const reply = await runGit({ verb: 'fetch', dir: '/var/www/b', branch: null, credential: null }, run, [])
         assert.equal(reply.ok, false)
         assert.ok(!JSON.stringify(reply).includes('ghp_secret'))
     })
 
     it('calls a timeout what it is', async () => {
         const { run } = recorder([{ exitCode: null, stdout: '', stderr: '', timedOut: true }])
-        const reply = await runGit({ verb: 'fetch', dir: '/var/www/b', branch: null }, run)
+        const reply = await runGit({ verb: 'fetch', dir: '/var/www/b', branch: null, credential: null }, run, [])
         assert.deepEqual(reply, { ok: false, code: 'failed', message: 'git fetch timed out' })
     })
 
     it('answers the branch names for a branches request', async () => {
         const { run, runs } = recorder([{ ...ok, stdout: 'a1b2c3d4\trefs/heads/main\nb2c3d4e5\trefs/heads/develop\n' }])
-        const reply = await runGit({ verb: 'branches', repo: 'git@github.com:a/b.git' }, run)
+        const reply = await runGit({ verb: 'branches', repo: 'git@github.com:a/b.git', credential: null }, run, [])
         assert.deepEqual(reply, { ok: true, branches: ['main', 'develop'] })
         assert.deepEqual(runs[0], ['git', 'ls-remote', '--heads', '--', 'git@github.com:a/b.git'])
     })
 
     it('reports a branches failure with git\'s message, not a stack, and never a credential', async () => {
         const { run } = recorder([{ exitCode: 128, stdout: '', stderr: 'fatal: https://x-access-token:ghp_secret@github.com/a/b.git: not found', timedOut: false }])
-        const reply = await runGit({ verb: 'branches', repo: 'https://github.com/a/b.git' }, run)
+        const reply = await runGit({ verb: 'branches', repo: 'https://github.com/a/b.git', credential: null }, run, [])
         assert.equal(reply.ok, false)
         assert.ok(!JSON.stringify(reply).includes('ghp_secret'))
+    })
+})
+
+describe('running git with a named credential', () => {
+    it('puts the credential options ahead of everything, so git reads them as global options', async () => {
+        const { run, runs } = recorder()
+        await runGit({ verb: 'fetch', dir: '/var/www/b.git', branch: 'main', credential: 'acme' }, run, ['acme'])
+
+        assert.deepEqual(runs[0], [
+            'git',
+            '-c', 'credential.helper=',
+            '-c', 'credential.helper=store --file=/root/.git-credentials.acme',
+            '-c', 'safe.directory=/var/www/b.git',
+            '-C', '/var/www/b.git', 'fetch', '--prune', '--', 'origin', '+refs/heads/main:refs/remotes/origin/main',
+        ])
+    })
+
+    it("adds nothing for the default credential, leaving today's global helper in charge", async () => {
+        const { run, runs } = recorder()
+        await runGit({ verb: 'branches', repo: 'git@github.com:a/b.git', credential: null }, run, ['acme'])
+
+        assert.deepEqual(runs[0], ['git', 'ls-remote', '--heads', '--', 'git@github.com:a/b.git'])
+    })
+
+    // A name the fetcher does not hold is refused before git runs at all: git with a --file that does
+    // not exist would fall through to no credential and fail with GitHub's authentication error, which
+    // says nothing about the actual cause.
+    it('refuses a name it does not hold, without running git', async () => {
+        const { run, runs } = recorder()
+        const reply = await runGit({ verb: 'clone', repo: 'git@github.com:a/b.git', dir: '/var/www/b', branch: 'main', credential: 'nope' }, run, ['acme'])
+
+        assert.deepEqual(reply, { ok: false, code: 'bad-request', message: 'unknown credential nope' })
+        assert.deepEqual(runs, [])
+    })
+
+    it('answers the credentials verb from its own names, sorted, without running git', async () => {
+        const { run, runs } = recorder()
+        const reply = await runGit({ verb: 'credentials' }, run, ['northwind', 'acme'])
+
+        assert.deepEqual(reply, { ok: true, credentials: ['acme', 'northwind'] })
+        assert.deepEqual(runs, [])
     })
 })

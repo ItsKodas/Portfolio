@@ -39,10 +39,11 @@ const NOT_BUILT = 'files, backups, domains and provision are designed but not bu
 const CANNOT_CHECK = 'A deploy needs a git repository already at the environment\'s dir (dir/.git). hostd '
     + 'only finds that out when it runs. This form cannot check that ahead of it.'
 
-export function SiteSettingsForm({ id, capabilities, repo, environments, branches = null, branchesError = null }: {
+export function SiteSettingsForm({ id, capabilities, repo, credential, environments, branches = null, branchesError = null, credentials = null, credentialsError = null }: {
     id: string
     capabilities: string[]
     repo: string | null
+    credential: string | null
     environments: Array<{ name: string, branch: string | null, dir?: string, port?: number }>
     // The repository's branches, fetched for the repo as it stands saved, not for whatever is currently
     // typed into the Repo field above: editing that field without saving leaves this offering the old
@@ -51,10 +52,15 @@ export function SiteSettingsForm({ id, capabilities, repo, environments, branche
     // unreachable one, or hostd itself being unreachable; branchesError says which in hostd's own words.
     branches?: string[] | null
     branchesError?: string | null
+    // The credential names hostd holds, or null when there is no list to offer (hostd unreachable, or
+    // the fetcher down). credentialsError says which, in hostd's own words.
+    credentials?: string[] | null
+    credentialsError?: string | null
 }) {
     const router = useRouter()
     const [checked, setChecked] = useState(() => new Set(capabilities))
     const [repoValue, setRepoValue] = useState(repo ?? '')
+    const [credentialValue, setCredentialValue] = useState(credential ?? '')
     const [branchValues, setBranchValues] = useState<Record<string, string>>(() =>
         Object.fromEntries(environments.map(env => [env.name, env.branch ?? ''])))
     const [pending, setPending] = useState(false)
@@ -87,6 +93,7 @@ export function SiteSettingsForm({ id, capabilities, repo, environments, branche
             ...CAPABILITIES.filter(cap => checked.has(cap.key) && !capabilities.includes(cap.key)).map(cap => cap.key),
         ]
         const nextRepo = repoValue.trim() === '' ? null : repoValue
+        const nextCredential = credentialValue.trim() === '' ? null : credentialValue
         // Compared per environment, not as one object: a save that only touched live must never carry
         // test's branch along, because a present key means "set this" to hostd and an untouched one taken
         // from stale props would set it back to whatever this page happened to be rendered from. That is
@@ -98,9 +105,15 @@ export function SiteSettingsForm({ id, capabilities, repo, environments, branche
             if (nextBranch !== (env.branch ?? null)) changedBranches[env.name] = nextBranch
         }
 
-        const payload: { capabilities?: string[], repo?: string | null, branches?: Record<string, string | null> } = {}
+        const payload: {
+            capabilities?: string[]
+            repo?: string | null
+            credential?: string | null
+            branches?: Record<string, string | null>
+        } = {}
         if (!sameList(nextCapabilities, capabilities)) payload.capabilities = nextCapabilities
         if (nextRepo !== repo) payload.repo = nextRepo
+        if (nextCredential !== credential) payload.credential = nextCredential
         if (Object.keys(changedBranches).length > 0) payload.branches = changedBranches
 
         if (Object.keys(payload).length === 0) {
@@ -122,6 +135,8 @@ export function SiteSettingsForm({ id, capabilities, repo, environments, branche
         }
     }
 
+    const notHeld = credentials !== null && credentialValue !== '' && !credentials.includes(credentialValue)
+
     return (
         <div className={styles.settings}>
             <fieldset className={styles.capabilities}>
@@ -140,6 +155,31 @@ export function SiteSettingsForm({ id, capabilities, repo, environments, branche
 
             <Field label="Repo" value={repoValue} onChange={event => setRepoValue(event.target.value)} />
             <p className={styles.note}>{CANNOT_CHECK}</p>
+
+            {credentials ? (
+                <Field
+                    as="select"
+                    label="Account"
+                    value={credentialValue}
+                    onChange={event => setCredentialValue(event.target.value)}
+                >
+                    {/* The default token, and the way back to it. */}
+                    <option value="">default (GITHUB_TOKEN)</option>
+                    {credentials.map(name => <option key={name} value={name}>{name}</option>)}
+                    {/* A saved name the fetcher no longer holds, kept for the same reason the branch
+                        select keeps an unknown branch: swapping it for something on the list would be
+                        this page rewriting the operator's configuration by rendering. */}
+                    {notHeld && <option value={credentialValue}>{credentialValue}</option>}
+                </Field>
+            ) : (
+                <Field label="Account" value={credentialValue} onChange={event => setCredentialValue(event.target.value)} />
+            )}
+            {notHeld && (
+                <p className={styles.note}>
+                    {`There is no credential named "${credentialValue}" on the host, so anything that reaches GitHub for this site will fail until one is added to .env.fetcher or another is chosen here.`}
+                </p>
+            )}
+            {credentialsError && <p className={styles.note}>{`The host's credential names could not be read: ${credentialsError}`}</p>}
 
             {environments.map(env => {
                 const branchValue = branchValues[env.name] ?? ''

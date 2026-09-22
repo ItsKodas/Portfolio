@@ -199,7 +199,21 @@ describe('currentTip', () => {
         const result = await currentTip(context.project(), context.environment(), context.deps)
         assert.deepEqual(result, { ok: true, commit: TIP })
         assert.ok(context.calls.includes('move /var/www/acme/.git /var/www/acme.git/.git'))
-        assert.deepEqual(context.fetchRequests[0], { verb: 'fetch', dir: '/var/www/acme.git', branch: 'main' })
+        assert.deepEqual(context.fetchRequests[0], { verb: 'fetch', dir: '/var/www/acme.git', branch: 'main', credential: null })
+    })
+
+    // The poller's own path. A project that clones with the right token and then polls with the wrong
+    // one looks provisioned and silently never deploys again, which is the failure this test exists for.
+    it("fetches the tip with the project's own credential", async () => {
+        const context = setup()
+        await currentTip({ ...context.project(), credential: 'acme' }, context.environment(), context.deps)
+        assert.deepEqual(context.fetchRequests[0], { verb: 'fetch', dir: '/var/www/acme.git', branch: 'main', credential: 'acme' })
+    })
+
+    it('fetches with null for a project that has no credential', async () => {
+        const context = setup()
+        await currentTip({ ...context.project(), credential: null }, context.environment(), context.deps)
+        assert.deepEqual(context.fetchRequests[0], { verb: 'fetch', dir: '/var/www/acme.git', branch: 'main', credential: null })
     })
 
     it('leaves an already-moved repository alone', async () => {

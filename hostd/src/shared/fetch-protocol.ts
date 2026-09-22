@@ -4,15 +4,17 @@
 // so a path or option smuggled through a field here is the only way in.
 
 import { isRecord } from './formats.ts'
-import { GIT_COMMIT, GIT_REF, GIT_REPO } from './registry.ts'
+import { CREDENTIAL_NAME, GIT_COMMIT, GIT_REF, GIT_REPO } from './registry.ts'
 
 // One segment directly under /var/www: what stops any path from the caller reaching Git.
 const FETCH_DIR = /^\/var\/www\/[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/
 const MAX_LOG_LIMIT = 500
 
 export type FetchRequest =
-    | { verb: 'clone', repo: string, dir: string, branch: string }
-    | { verb: 'fetch', dir: string, branch: string | null }
+    // credential names which of the fetcher's tokens to authenticate with. null is the default
+    // GITHUB_TOKEN, which is every project with no credential key in the registry.
+    | { verb: 'clone', repo: string, dir: string, branch: string, credential: string | null }
+    | { verb: 'fetch', dir: string, branch: string | null, credential: string | null }
     | { verb: 'checkout', dir: string, worktree: string, commit: string }
     | { verb: 'log', dir: string, branch: string, limit: number }
     | { verb: 'tip', dir: string, branch: string }
@@ -20,12 +22,15 @@ export type FetchRequest =
     // project can have a repo and have never been deployed, so there may be no clone to read branches
     // out of, and the remote's branches right now are also a better answer than whatever an old clone
     // last fetched.
-    | { verb: 'branches', repo: string }
+    | { verb: 'branches', repo: string, credential: string | null }
+    // Which credential names the fetcher actually holds. Names only: a token value never leaves this
+    // container, and this answer is what fills the portal's Account select.
+    | { verb: 'credentials' }
 
 export type Commit = { commit: string, subject: string, author: string, at: string }
 
 export type FetchReply =
-    | { ok: true, commit?: string, commits?: Commit[], branches?: string[] }
+    | { ok: true, commit?: string, commits?: Commit[], branches?: string[], credentials?: string[] }
     | { ok: false, code: 'bad-request' | 'failed' | 'unavailable', message: string }
 
 type Parsed = { ok: true, request: FetchRequest } | FetchReply
@@ -55,6 +60,14 @@ function branchRefusal(raw: Record<string, unknown>): { ok: false, code: 'bad-re
     return refuse(typeof value === 'string' ? `branch ${value} is malformed` : 'branch is malformed')
 }
 
+// A credential name is read exactly as far as a name: it becomes part of a file path in the fetcher, so
+// anything but the registry's own grammar is refused here, before it is ever joined to one.
+function credentialOf(raw: Record<string, unknown>): { ok: true, credential: string | null } | { ok: false, code: 'bad-request', message: string } {
+    if (raw.credential === undefined || raw.credential === null) return { ok: true, credential: null }
+    if (typeof raw.credential === 'string' && CREDENTIAL_NAME.test(raw.credential)) return { ok: true, credential: raw.credential }
+    return refuse(typeof raw.credential === 'string' ? `credential ${raw.credential} is malformed` : 'credential is malformed')
+}
+
 export function parseFetchRequest(line: string): Parsed {
     let raw: unknown
     try {
@@ -66,27 +79,31 @@ export function parseFetchRequest(line: string): Parsed {
 
     switch (raw.verb) {
         case 'clone': {
-            if (!onlyKeys(raw, ['verb', 'repo', 'dir', 'branch'])) return refuse('clone takes only repo, dir and branch')
+            if (!onlyKeys(raw, ['verb', 'repo', 'dir', 'branch', 'credential'])) return refuse('clone takes only repo, dir, branch and credential')
             if (typeof raw.repo !== 'string' || !GIT_REPO.test(raw.repo)) return refuse('repo must be an ssh or https git URL')
             const dir = dirOf(raw, 'dir')
             if (!dir) return refuse('dir must be a folder directly under /var/www')
             const branch = branchOf(raw)
             if (!branch) return branchRefusal(raw)
-            return { ok: true, request: { verb: 'clone', repo: raw.repo, dir, branch } }
+            const credential = credentialOf(raw)
+            if (!credential.ok) return credential
+            return { ok: true, request: { verb: 'clone', repo: raw.repo, dir, branch, credential: credential.credential } }
         }
 
         case 'fetch': {
-            if (!onlyKeys(raw, ['verb', 'dir', 'branch'])) return refuse('fetch takes only dir and branch')
+            if (!onlyKeys(raw, ['verb', 'dir', 'branch', 'credential'])) return refuse('fetch takes only dir, branch and credential')
             const dir = dirOf(raw, 'dir')
             if (!dir) return refuse('dir must be a folder directly under /var/www')
+            const credential = credentialOf(raw)
+            if (!credential.ok) return credential
             // Optional: without a branch this is an ordinary fetch of whatever the clone already tracks.
             // With one it becomes an explicit refspec in git.ts, because cloneArgv clones
             // --single-branch, which writes a refspec covering that one branch only: after a branch
             // switch a plain fetch would never create the remote-tracking ref the new tip is read from.
-            if (raw.branch === undefined || raw.branch === null) return { ok: true, request: { verb: 'fetch', dir, branch: null } }
+            if (raw.branch === undefined || raw.branch === null) return { ok: true, request: { verb: 'fetch', dir, branch: null, credential: credential.credential } }
             const branch = branchOf(raw)
             if (!branch) return branchRefusal(raw)
-            return { ok: true, request: { verb: 'fetch', dir, branch } }
+            return { ok: true, request: { verb: 'fetch', dir, branch, credential: credential.credential } }
         }
 
         case 'checkout': {
@@ -122,11 +139,18 @@ export function parseFetchRequest(line: string): Parsed {
         }
 
         case 'branches': {
-            if (!onlyKeys(raw, ['verb', 'repo'])) return refuse('branches takes only repo')
+            if (!onlyKeys(raw, ['verb', 'repo', 'credential'])) return refuse('branches takes only repo and credential')
             // Validated exactly as clone's repo is: the same grammar, checked the same way, because this
             // is the same value trusted the same distance, just without a dir to clone it into.
             if (typeof raw.repo !== 'string' || !GIT_REPO.test(raw.repo)) return refuse('repo must be an ssh or https git URL')
-            return { ok: true, request: { verb: 'branches', repo: raw.repo } }
+            const credential = credentialOf(raw)
+            if (!credential.ok) return credential
+            return { ok: true, request: { verb: 'branches', repo: raw.repo, credential: credential.credential } }
+        }
+
+        case 'credentials': {
+            if (!onlyKeys(raw, ['verb'])) return refuse('credentials takes no other keys')
+            return { ok: true, request: { verb: 'credentials' } }
         }
 
         default:

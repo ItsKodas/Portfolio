@@ -11,12 +11,12 @@ const refusalOf = (value: unknown) => {
 describe('parseFetchRequest', () => {
     it('reads a clone', () => {
         const result = parseFetchRequest(JSON.stringify({ verb: 'clone', repo: 'git@github.com:a/b.git', dir: '/var/www/b', branch: 'main' }))
-        assert.deepEqual(result, { ok: true, request: { verb: 'clone', repo: 'git@github.com:a/b.git', dir: '/var/www/b', branch: 'main' } })
+        assert.deepEqual(result, { ok: true, request: { verb: 'clone', repo: 'git@github.com:a/b.git', dir: '/var/www/b', branch: 'main', credential: null } })
     })
 
     it('refuses an unknown verb and unknown fields', () => {
         assert.equal(refusalOf({ verb: 'push', dir: '/var/www/b' }), 'unknown verb')
-        assert.equal(refusalOf({ verb: 'fetch', dir: '/var/www/b', remote: 'evil' }), 'fetch takes only dir and branch')
+        assert.equal(refusalOf({ verb: 'fetch', dir: '/var/www/b', remote: 'evil' }), 'fetch takes only dir, branch and credential')
     })
 
     it('refuses anything outside /var/www, and any traversal', () => {
@@ -33,12 +33,12 @@ describe('parseFetchRequest', () => {
 
     it('reads a fetch with no branch, as the ordinary case', () => {
         const result = parseFetchRequest(JSON.stringify({ verb: 'fetch', dir: '/var/www/b.git' }))
-        assert.deepEqual(result, { ok: true, request: { verb: 'fetch', dir: '/var/www/b.git', branch: null } })
+        assert.deepEqual(result, { ok: true, request: { verb: 'fetch', dir: '/var/www/b.git', branch: null, credential: null } })
     })
 
     it('reads a fetch with a branch, which is what makes a branch switch fetchable at all', () => {
         const result = parseFetchRequest(JSON.stringify({ verb: 'fetch', dir: '/var/www/b.git', branch: 'develop' }))
-        assert.deepEqual(result, { ok: true, request: { verb: 'fetch', dir: '/var/www/b.git', branch: 'develop' } })
+        assert.deepEqual(result, { ok: true, request: { verb: 'fetch', dir: '/var/www/b.git', branch: 'develop', credential: null } })
     })
 
     it('refuses a fetch branch that could be read as an option', () => {
@@ -61,7 +61,7 @@ describe('parseFetchRequest', () => {
 
     it('reads a branches request, which needs only the repo and no dir: there may be nothing on disk yet', () => {
         const result = parseFetchRequest(JSON.stringify({ verb: 'branches', repo: 'git@github.com:a/b.git' }))
-        assert.deepEqual(result, { ok: true, request: { verb: 'branches', repo: 'git@github.com:a/b.git' } })
+        assert.deepEqual(result, { ok: true, request: { verb: 'branches', repo: 'git@github.com:a/b.git', credential: null } })
     })
 
     it('validates a branches repo exactly as clone does', () => {
@@ -70,6 +70,50 @@ describe('parseFetchRequest', () => {
     })
 
     it('refuses a branches request carrying an unknown field', () => {
-        assert.equal(refusalOf({ verb: 'branches', repo: 'git@github.com:a/b.git', dir: '/var/www/b' }), 'branches takes only repo')
+        assert.equal(refusalOf({ verb: 'branches', repo: 'git@github.com:a/b.git', dir: '/var/www/b' }), 'branches takes only repo and credential')
+    })
+})
+
+describe('credential on the verbs that reach GitHub', () => {
+    it('carries a name on a clone', () => {
+        const parsed = parseFetchRequest(JSON.stringify({ verb: 'clone', repo: 'git@github.com:a/b.git', dir: '/var/www/b', branch: 'main', credential: 'acme' }))
+        assert.deepEqual(parsed, { ok: true, request: { verb: 'clone', repo: 'git@github.com:a/b.git', dir: '/var/www/b', branch: 'main', credential: 'acme' } })
+    })
+
+    it('carries a name on a fetch', () => {
+        const parsed = parseFetchRequest(JSON.stringify({ verb: 'fetch', dir: '/var/www/b', branch: 'main', credential: 'acme' }))
+        assert.deepEqual(parsed, { ok: true, request: { verb: 'fetch', dir: '/var/www/b', branch: 'main', credential: 'acme' } })
+    })
+
+    it('carries a name on a branch listing, which reads the remote directly', () => {
+        const parsed = parseFetchRequest(JSON.stringify({ verb: 'branches', repo: 'git@github.com:a/b.git', credential: 'acme' }))
+        assert.deepEqual(parsed, { ok: true, request: { verb: 'branches', repo: 'git@github.com:a/b.git', credential: 'acme' } })
+    })
+
+    // Absent means the default token, which is every project that has no credential key.
+    it('reads an absent credential as null rather than refusing', () => {
+        const parsed = parseFetchRequest(JSON.stringify({ verb: 'fetch', dir: '/var/www/b', branch: null }))
+        assert.deepEqual(parsed, { ok: true, request: { verb: 'fetch', dir: '/var/www/b', branch: null, credential: null } })
+    })
+
+    it('refuses a malformed name, naming it, before it can reach a file path', () => {
+        const parsed = parseFetchRequest(JSON.stringify({ verb: 'fetch', dir: '/var/www/b', branch: 'main', credential: '../../etc/x' }))
+        assert.deepEqual(parsed, { ok: false, code: 'bad-request', message: 'credential ../../etc/x is malformed' })
+    })
+
+    it('refuses a credential on a local-only verb, which has no remote to authenticate to', () => {
+        const parsed = parseFetchRequest(JSON.stringify({ verb: 'tip', dir: '/var/www/b', branch: 'main', credential: 'acme' }))
+        assert.deepEqual(parsed, { ok: false, code: 'bad-request', message: 'tip takes only dir and branch' })
+    })
+})
+
+describe('the credentials verb', () => {
+    it('takes nothing but the verb', () => {
+        assert.deepEqual(parseFetchRequest(JSON.stringify({ verb: 'credentials' })), { ok: true, request: { verb: 'credentials' } })
+    })
+
+    it('refuses anything alongside it', () => {
+        const parsed = parseFetchRequest(JSON.stringify({ verb: 'credentials', repo: 'git@github.com:a/b.git' }))
+        assert.deepEqual(parsed, { ok: false, code: 'bad-request', message: 'credentials takes no other keys' })
     })
 })

@@ -100,9 +100,14 @@ describe('handleFetchConnection', () => {
     it('logs every request with its verb and outcome, and never a credential', async () => {
         const logged: string[] = []
         const stub = stubRun(async () => ({ ok: false, code: 'failed', message: 'https://ghp_leakedtoken123@github.com/acme/site.git: fatal: authentication failed' }))
-        await exchange(stub.run, '{"verb":"clone","repo":"https://github.com/acme/site.git","dir":"/var/www/acme","branch":"main"}\n', message => logged.push(message))
+        // Names a real credential (distinct from every other substring in this request: dir and repo both
+        // contain "acme", so a name that collided with them would pass even if the name did leak) so that
+        // the assertion below proves the name itself never reaches the log, not just that an absent one
+        // trivially doesn't.
+        await exchange(stub.run, '{"verb":"clone","repo":"https://github.com/acme/site.git","dir":"/var/www/acme","branch":"main","credential":"hiddenname"}\n', message => logged.push(message))
         assert.deepEqual(logged, ['clone /var/www/acme main failed'])
         assert.ok(!logged.join('\n').includes('ghp_'))
+        assert.ok(!logged.join('\n').includes('hiddenname'))
     })
 
     it('answers a branches request and logs it by repo, having no dir to log it by', async () => {
@@ -110,7 +115,16 @@ describe('handleFetchConnection', () => {
         const stub = stubRun(async () => ({ ok: true, branches: ['main', 'develop'] }))
         const lines = await exchange(stub.run, '{"verb":"branches","repo":"git@github.com:acme/site.git"}\n', message => logged.push(message))
         assert.deepEqual(lines, ['{"ok":true,"branches":["main","develop"]}'])
-        assert.deepEqual(stub.requests, [{ verb: 'branches', repo: 'git@github.com:acme/site.git' }])
+        assert.deepEqual(stub.requests, [{ verb: 'branches', repo: 'git@github.com:acme/site.git', credential: null }])
         assert.deepEqual(logged, ['branches git@github.com:acme/site.git ok'])
+    })
+
+    it('answers a credentials request and logs it by verb alone, having neither a repo nor a dir to log it by', async () => {
+        const logged: string[] = []
+        const stub = stubRun(async () => ({ ok: true, credentials: ['acme', 'northwind'] }))
+        const lines = await exchange(stub.run, '{"verb":"credentials"}\n', message => logged.push(message))
+        assert.deepEqual(lines, ['{"ok":true,"credentials":["acme","northwind"]}'])
+        assert.deepEqual(stub.requests, [{ verb: 'credentials' }])
+        assert.deepEqual(logged, ['credentials ok'])
     })
 })

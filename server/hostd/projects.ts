@@ -58,6 +58,8 @@ export type Project = {
     capabilities?: string[]
     // Answered for the operator alone, so it is absent for a client rather than null
     repo?: string | null
+    // Answered for the operator alone, like repo, so it is absent for a client rather than null
+    credential?: string | null
     // Live first, then test. Absent only from an entry the registry itself could not parse, which is
     // answered with an id and a reason and nothing else: there is no such thing as a valid project with
     // no environments.

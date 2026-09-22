@@ -423,6 +423,49 @@ describe('GET /projects', () => {
     })
 })
 
+describe('GET /credentials', () => {
+    it('routes at the top level, not under a project, and allows only GET', () => {
+        assert.deepEqual(matchRoute('GET', '/credentials'), { verb: 'credentials' })
+        assert.equal(matchRoute('POST', '/credentials').verb, 'method-not-allowed')
+    })
+
+    it('asks the agent and answers its list', async () => {
+        agent.reply = () => ({ ok: true, credentials: ['acme', 'northwind'] })
+        const response = await request('/credentials', { actor: 'admin' })
+        assert.equal(response.status, 200)
+        assert.deepEqual(await response.json(), { ok: true, credentials: ['acme', 'northwind'] })
+        assert.deepEqual(agent.calls, [{ verb: 'credentials' }])
+    })
+
+    // 403 rather than the 404 a project route gives: there is no project here to be coy about, and
+    // this is gated the way audit-all is.
+    it('refuses a client, and never calls the agent', async () => {
+        const response = await request('/credentials')
+        assert.equal(response.status, 403)
+        assert.deepEqual(agent.calls, [])
+    })
+})
+
+describe('the credential on a project', () => {
+    it('carries a settings credential through to the agent, null included rather than dropped', async () => {
+        agent.reply = () => ({ ok: true, output: 'configured' })
+        const body = { credential: null }
+        const response = await request('/projects/acme/settings', { method: 'PUT', actor: 'admin', body })
+        assert.equal(response.status, 200)
+        assert.deepEqual(agent.calls, [{ verb: 'configure', project: 'acme', args: body }])
+    })
+
+    // The operator sees the entry as it is; a client has no use for a name that means nothing to them
+    // and everything to the machine, so it is absent rather than null, exactly as repo is.
+    it('answers the credential to an admin and withholds it from a client', async () => {
+        const forAdmin = await (await request('/projects', { actor: 'admin' })).json() as { projects: Array<Record<string, unknown>> }
+        assert.ok(Object.hasOwn(forAdmin.projects[0]!, 'credential'))
+
+        const forClient = await (await request('/projects')).json() as { projects: Array<Record<string, unknown>> }
+        assert.ok(!Object.hasOwn(forClient.projects[0]!, 'credential'))
+    })
+})
+
 describe('GET /health', () => {
     it('gives the admin the machine\'s figures', async () => {
         const response = await request('/health', { actor: 'admin' })

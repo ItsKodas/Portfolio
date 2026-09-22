@@ -14,6 +14,7 @@ const props = {
     id: 'arbysauto',
     capabilities: ['lifecycle', 'logs'],
     repo: null,
+    credential: null,
     environments: [{ name: 'live', branch: null, dir: '/var/www/arbysauto', port: 5011 }],
 }
 
@@ -251,5 +252,53 @@ describe('the branch select', () => {
         await userEvent.click(screen.getByRole('button', { name: /save/i }))
 
         expect(saveSettingsAction).toHaveBeenCalledWith('arbysauto', { branches: { live: 'develop' } })
+    })
+})
+
+const withCredentials = { ...props, credential: null, credentials: ['acme', 'northwind'], credentialsError: null }
+
+describe('the account select', () => {
+    it('offers the default and every name the fetcher holds', () => {
+        render(<SiteSettingsForm {...withCredentials} />)
+        const select = screen.getByRole('combobox', { name: /account/i })
+        expect(select).toHaveValue('')
+        expect(screen.getByRole('option', { name: /default/i })).toBeInTheDocument()
+        expect(screen.getByRole('option', { name: 'acme' })).toBeInTheDocument()
+    })
+
+    it('sends the chosen name on its own, leaving every other field alone', async () => {
+        render(<SiteSettingsForm {...withCredentials} />)
+
+        await userEvent.selectOptions(screen.getByRole('combobox', { name: /account/i }), 'acme')
+        await userEvent.click(screen.getByRole('button', { name: /save/i }))
+
+        expect(saveSettingsAction).toHaveBeenCalledWith('arbysauto', { credential: 'acme' })
+    })
+
+    // Back to the default token, which has to be reachable: an operator who set the wrong account
+    // would otherwise have to SSH into the dedi to undo it.
+    it('sends null when the default is chosen again', async () => {
+        render(<SiteSettingsForm {...withCredentials} credential="acme" />)
+
+        await userEvent.selectOptions(screen.getByRole('combobox', { name: /account/i }), '')
+        await userEvent.click(screen.getByRole('button', { name: /save/i }))
+
+        expect(saveSettingsAction).toHaveBeenCalledWith('arbysauto', { credential: null })
+    })
+
+    // The same rule the branch select learned: a saved value the list no longer has is still shown.
+    // Dropping it would be this page rewriting the operator's configuration by rendering.
+    it('still shows a saved name the fetcher no longer holds, and says what that means', () => {
+        render(<SiteSettingsForm {...withCredentials} credential="gone" />)
+
+        expect(screen.getByRole('combobox', { name: /account/i })).toHaveValue('gone')
+        expect(screen.getByText(/no credential named "gone"/i)).toBeInTheDocument()
+    })
+
+    // Never blocks the field: hostd could not answer, the operator did nothing wrong.
+    it('falls back to showing the saved name when the list could not be read', () => {
+        render(<SiteSettingsForm {...props} credential="acme" credentials={null} credentialsError="hostd could not be reached." />)
+
+        expect(screen.getByText(/could not be read/i)).toBeInTheDocument()
     })
 })
