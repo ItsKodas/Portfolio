@@ -172,6 +172,9 @@ type ProvisionAttempt = {
     dir: string
     repo: string
     branch: string
+    // Which of the fetcher's tokens the clone authenticates with. null is the default GITHUB_TOKEN, the
+    // same meaning it carries on the registry entry and on the fetch protocol itself.
+    credential: string | null
     // Only ever set by addEnvironment, to the project's own id: the live environment's expected compose
     // name, which is what a test environment's compose file must never be pinned to (see
     // composeNameProblem in compose.ts). Absent for createProject, since live has no other environment to
@@ -224,7 +227,7 @@ async function provisionOnDisk(attempt: ProvisionAttempt, deps: ProvisionDeps): 
     }
 
     try {
-        const cloned = await deps.fetcher.call({ verb: 'clone', repo: attempt.repo, dir, branch: attempt.branch })
+        const cloned = await deps.fetcher.call({ verb: 'clone', repo: attempt.repo, dir, branch: attempt.branch, credential: attempt.credential })
         if (!cloned.ok) {
             await rollback('clone failed')
             return refuse('failed', cloned.message)
@@ -310,6 +313,9 @@ export async function createProject(args: ProvisionCreateArgs, deps: ProvisionDe
         dir,
         repo: args.repo,
         branch: args.branch,
+        // A create has no registry entry to read a credential from yet, so it comes straight from the
+        // args: null when the operator named none, which means the default token.
+        credential: args.credential ?? null,
         // /var/www itself, the folder this project is being created inside: the only thing on disk that
         // says who the operator is when the project has nothing of its own to read it from yet. If that
         // directory belongs to root, so does the new site, which is no worse than today and stays
@@ -331,6 +337,7 @@ export async function createProject(args: ProvisionCreateArgs, deps: ProvisionDe
                 client: args.client,
                 name: args.name,
                 repo: args.repo,
+                ...(args.credential ? { credential: args.credential } : {}),
                 services,
                 environment: { name: 'live', dir, branch: args.branch, domain: args.domain, aliases: [], port: port.port, certificate: args.certificate },
             },
@@ -370,6 +377,9 @@ export async function addEnvironment(project: ProjectEntry, args: ProvisionAddEn
         dir,
         repo: project.repo,
         branch: args.branch,
+        // The project already has a registry entry, so its own credential is what the test clone
+        // authenticates with too: the two environments of one project are one GitHub account.
+        credential: project.credential,
         // The live environment's own expected compose name: a test environment pinning it would share
         // one compose project with live, and starting test would take over live's running containers.
         collidesWith: project.id,

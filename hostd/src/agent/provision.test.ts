@@ -192,7 +192,7 @@ describe('createProject', () => {
         const reply = await createProject(createArgs(), deps)
         assert.deepEqual(reply, { ok: true, project: { id: 'bakery', state: 'needs-setup' }, envFiles: [] })
         assert.deepEqual(mkdirs, ['/var/www/bakery'])
-        assert.deepEqual(cloneRequests, [{ verb: 'clone', repo: 'git@github.com:ItsKodas/bakery.git', dir: '/var/www/bakery', branch: 'main' }])
+        assert.deepEqual(cloneRequests, [{ verb: 'clone', repo: 'git@github.com:ItsKodas/bakery.git', dir: '/var/www/bakery', branch: 'main', credential: null }])
         // The expected compose name is the folder's own basename, with no collision to guard against:
         // live has no other environment yet.
         assert.deepEqual(resolveCalls, [{ expectedName: 'bakery', dir: '/var/www/bakery', composePath: '/var/www/bakery/docker-compose.yml', collidesWith: undefined }])
@@ -204,6 +204,21 @@ describe('createProject', () => {
         assert.equal(bakery.environments.get('live')?.domain, 'bakery.com')
         assert.equal(bakery.environments.get('live')?.port, 5100)
         assert.deepEqual(bakery.services, { web: { role: 'site' } })
+    })
+
+    it('clones a new project with the credential the create named', async () => {
+        const { deps, cloneRequests } = setup()
+        await createProject(createArgs({ credential: 'acme' }), deps)
+        assert.deepEqual(cloneRequests, [{ verb: 'clone', repo: 'git@github.com:ItsKodas/bakery.git', dir: '/var/www/bakery', branch: 'main', credential: 'acme' }])
+    })
+
+    // The registry entry has to carry it too, or the first deploy after creation fetches with the
+    // default token and fails on a repository the clone could read.
+    it('writes the credential onto the new entry', async () => {
+        const { deps, registryFiles } = setup()
+        await createProject(createArgs({ credential: 'acme' }), deps)
+        const bakery = parseRegistry(registryFiles.get(REGISTRY_PATH)!).projects.get('bakery')
+        assert.equal(bakery?.credential, 'acme')
     })
 
     it('writes a database service resolve guessed, not only site services', async () => {
@@ -477,13 +492,19 @@ describe('addEnvironment', () => {
         const reply = await addEnvironment(project(), args(), deps)
         assert.equal(reply.ok, true)
         assert.deepEqual(mkdirs, ['/var/www/acme-test'])
-        assert.deepEqual(cloneRequests, [{ verb: 'clone', repo: 'git@github.com:ItsKodas/acme.git', dir: '/var/www/acme-test', branch: 'develop' }])
+        assert.deepEqual(cloneRequests, [{ verb: 'clone', repo: 'git@github.com:ItsKodas/acme.git', dir: '/var/www/acme-test', branch: 'develop', credential: null }])
 
         const written = parseRegistry(registryFiles.get(REGISTRY_PATH)!)
         const test = written.projects.get('acme')!.environments.get('test')
         assert.equal(test?.dir, '/var/www/acme-test')
         assert.equal(test?.port, 5200)
         assert.equal(test?.domain, 'test.acme.com')
+    })
+
+    it('clones a new environment with the credential the project already has', async () => {
+        const { deps, cloneRequests } = setup()
+        await addEnvironment({ ...project(), credential: 'acme' }, args(), deps)
+        assert.deepEqual(cloneRequests, [{ verb: 'clone', repo: 'git@github.com:ItsKodas/acme.git', dir: '/var/www/acme-test', branch: 'develop', credential: 'acme' }])
     })
 
     // Regression, per the whole-branch re-review: this used to pass the bare project id ('acme') as the
