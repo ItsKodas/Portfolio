@@ -47,6 +47,7 @@ export type ProjectDraft = {
     client: string
     name: string
     repo: string
+    credential?: string | null
     services: Record<string, { role: 'site' } | { role: 'database', engine: string }>
     environment: EnvironmentDraft
 }
@@ -72,6 +73,7 @@ export type Change =
         id: string
         capabilities?: Capability[]
         repo?: string | null
+        credential?: string | null
         branches?: Partial<Record<EnvironmentName, string | null>>
     }
     | { kind: 'remove-project', id: string }
@@ -186,6 +188,7 @@ function edit(doc: Document, change: Change): EditResult {
                 client: change.project.client,
                 name: change.project.name,
                 repo: change.project.repo,
+                ...(change.project.credential ? { credential: change.project.credential } : {}),
                 services: change.project.services,
                 environments: { [change.project.environment.name]: environmentNode(change.project.environment) },
             })
@@ -260,6 +263,11 @@ function edit(doc: Document, change: Change): EditResult {
             if (change.repo !== undefined) {
                 if (change.repo === null) doc.deleteIn(['projects', change.id, 'repo'])
                 else doc.setIn(['projects', change.id, 'repo'], change.repo)
+            }
+
+            if (change.credential !== undefined) {
+                if (change.credential === null) doc.deleteIn(['projects', change.id, 'credential'])
+                else doc.setIn(['projects', change.id, 'credential'], change.credential)
             }
 
             for (const [name, branch] of branches) {

@@ -413,6 +413,40 @@ describe('configure', () => {
     })
 })
 
+describe('configure credential', () => {
+    it('writes the name onto the entry', () => {
+        const result = applyChange(BASE, { kind: 'configure', id: 'acme', credential: 'acme' })
+        assert.ok(result.ok)
+        assert.equal(parseRegistry(result.text).projects.get('acme')?.credential, 'acme')
+    })
+
+    // null deletes the key, exactly as it does for repo: back to the default GITHUB_TOKEN.
+    it('deletes the key on null, rather than writing an empty one', () => {
+        const set = applyChange(BASE, { kind: 'configure', id: 'acme', credential: 'acme' })
+        assert.ok(set.ok)
+        const cleared = applyChange(set.text, { kind: 'configure', id: 'acme', credential: null })
+        assert.ok(cleared.ok)
+        assert.equal(parseRegistry(cleared.text).projects.get('acme')?.credential, null)
+        assert.ok(!cleared.text.includes('credential'))
+    })
+
+    it('leaves the key alone when the change does not mention it', () => {
+        const set = applyChange(BASE, { kind: 'configure', id: 'acme', credential: 'acme' })
+        assert.ok(set.ok)
+        const other = applyChange(set.text, { kind: 'configure', id: 'acme', capabilities: ['lifecycle'] })
+        assert.ok(other.ok)
+        assert.equal(parseRegistry(other.text).projects.get('acme')?.credential, 'acme')
+    })
+
+    // The writer never decides what a name may be: it writes, re-parses with parseRegistry, and hands
+    // back that validator's own words. Two copies of the grammar would drift.
+    it('refuses a malformed name in the validator\'s words, and writes nothing', () => {
+        const result = applyChange(BASE, { kind: 'configure', id: 'acme', credential: 'Acme-1' })
+        assert.ok(!result.ok)
+        assert.match(result.problem, /credential must be 1 to 32 lowercase letters/)
+    })
+})
+
 describe('RegistryWriter', () => {
     // mode/uid/gid describe the original file this test suite is about: the operator's own, on the live
     // dedi rw-rw-r-- 1000:1000. statCalls, chmodCalls and chownCalls are recorded separately from `calls`
