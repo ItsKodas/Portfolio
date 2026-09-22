@@ -1,7 +1,7 @@
 import { describe, it } from 'node:test'
 import assert from 'node:assert/strict'
 
-import { credentialLine } from './credentials.ts'
+import { credentialArgs, credentialLine, readCredentials } from './credentials.ts'
 
 // Checked against the real helper rather than reasoned about, because the failure mode is silent:
 //   printf 'protocol=https\nhost=github.com\n\n' | git credential-store --file=<file> get
@@ -23,5 +23,50 @@ describe('credentialLine', () => {
         assert.equal(url.username, 'x-access-token')
         assert.equal(url.password, 'ghp_example')
         assert.equal(url.host, 'github.com')
+    })
+})
+
+describe('readCredentials', () => {
+    it('reads every GITHUB_TOKEN_<NAME> as a named token, lowercasing the name', () => {
+        const { tokens, problems } = readCredentials({ GITHUB_TOKEN: 'default', GITHUB_TOKEN_ACME: 'a', GITHUB_TOKEN_NORTHWIND: 'n' })
+        assert.deepEqual(problems, [])
+        assert.deepEqual([...tokens], [['acme', 'a'], ['northwind', 'n']])
+    })
+
+    // The default token is not a named one: it has no suffix, and every project without a credential
+    // key already reaches it through the global helper.
+    it('leaves GITHUB_TOKEN itself out of the named list', () => {
+        const { tokens } = readCredentials({ GITHUB_TOKEN: 'default' })
+        assert.equal(tokens.size, 0)
+    })
+
+    // Loud, not skipped: a name that is silently ignored surfaces days later as a deploy that cannot
+    // read a repository, with nothing anywhere saying why.
+    it('reports a suffix that is not a name this registry could ever hold', () => {
+        const { problems } = readCredentials({ GITHUB_TOKEN_Acme: 'a' })
+        assert.deepEqual(problems, ['GITHUB_TOKEN_Acme is not a credential name: use capitals, digits and underscores'])
+    })
+
+    it('reports an empty value rather than writing a credential file with no token in it', () => {
+        const { problems } = readCredentials({ GITHUB_TOKEN_ACME: '' })
+        assert.deepEqual(problems, ['GITHUB_TOKEN_ACME is empty'])
+    })
+})
+
+describe('credentialArgs', () => {
+    // The empty first value is the whole point. git reads credential.helper as a LIST and tries the
+    // entries in config order, with command-line -c entries last, so without the reset the global
+    // helper written at boot answers first and the DEFAULT token is used against the other account:
+    // silently succeeding on a public repo, silently failing on a private one, with no wrong-token
+    // error anywhere to read. Nothing else in this change can regress this quietly.
+    it('resets the helper list before naming its own, so the global default cannot answer first', () => {
+        assert.deepEqual(credentialArgs('acme'), [
+            '-c', 'credential.helper=',
+            '-c', 'credential.helper=store --file=/root/.git-credentials.acme',
+        ])
+    })
+
+    it('adds nothing at all for the default credential, leaving the global helper in charge', () => {
+        assert.deepEqual(credentialArgs(null), [])
     })
 })
