@@ -1671,10 +1671,12 @@ git commit -m "Document adding a second GitHub account to the fetcher"
 The one thing no test in this plan can prove is that git itself honours the reset entry, because the
 hostd Dockerfile runs `npm test` in the `base` stage and git is only installed in the `fetcher` stage
 (the same reason `credentialLine` is pinned by shape rather than by shelling out). After deploying, on
-the dedi:
+the dedi, run this against a PRIVATE repository on the other account: a public one would list refs
+whether or not the reset worked (git uses the first helper that answers, not the first that
+authenticates), so only a private repo, unreadable by the default token, actually discriminates:
 
 ```bash
-docker compose exec fetcher git -c credential.helper= -c 'credential.helper=store --file=/root/.git-credentials.acme' ls-remote --heads https://github.com/<the other account>/<repo>.git
+docker compose exec fetcher git -c credential.helper= -c 'credential.helper=store --file=/root/.git-credentials.acme' ls-remote --heads https://github.com/<the other account>/<private repo>.git
 ```
 
 It should list refs. If it asks for a username or fails to authenticate, the credential file or the

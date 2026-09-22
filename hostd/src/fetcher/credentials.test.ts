@@ -93,21 +93,25 @@ function fakeRunner() {
 
 describe('writeCredentials', () => {
     it('writes the default token where the global helper reads it, as it always has', async () => {
-        const { fs, written } = fakeFs()
+        const { fs, written, chmodded } = fakeFs()
         const { run, runs } = fakeRunner()
         await writeCredentials('default', new Map(), run, fs)
 
         assert.deepEqual(written, [{ path: '/root/.git-credentials', text: credentialLine('default'), mode: 0o600 }])
         assert.deepEqual(runs[0], ['git', 'config', '--global', 'credential.helper', 'store --file=/root/.git-credentials'])
         assert.deepEqual(runs[1], ['git', 'config', '--global', 'url.https://github.com/.insteadOf', 'git@github.com:'])
+        // writeFile's mode is only honoured when it is the call that creates the file, so the chmod
+        // re-application is what actually keeps the credential file private on every boot, not just the first.
+        assert.deepEqual(chmodded, [{ path: '/root/.git-credentials', mode: 0o600 }])
     })
 
     it('writes one file per named token, beside the default and just as private', async () => {
-        const { fs, written } = fakeFs()
+        const { fs, written, chmodded } = fakeFs()
         const { run } = fakeRunner()
         await writeCredentials('default', new Map([['acme', 'a']]), run, fs)
 
         assert.deepEqual(written[1], { path: '/root/.git-credentials.acme', text: credentialLine('a'), mode: 0o600 })
+        assert.deepEqual(chmodded[1], { path: '/root/.git-credentials.acme', mode: 0o600 })
     })
 
     // Only the default is ever made global. A named file is reached by the -c pair credentialArgs

@@ -1,3 +1,6 @@
+import { CREDENTIAL_NAME } from '../shared/registry.ts'
+import type { Runner } from '../agent/compose.ts'
+
 // The one line the fetcher's Git credential file holds. Split out of index.ts, which runs the whole
 // fetcher the moment it is imported and so can never be read by a test, because the exact shape of this
 // line is the difference between every private repo being readable and none of them being.
@@ -11,8 +14,6 @@
 export function credentialLine(token: string): string {
     return `https://x-access-token:${token}@github.com\n`
 }
-
-import { CREDENTIAL_NAME } from '../shared/registry.ts'
 
 // Where git's "store" helper reads the default token from, and where each named one goes beside it. Named
 // explicitly with --file everywhere rather than relied on via $HOME, so the location never depends on how
@@ -29,7 +30,7 @@ export function readCredentials(env: Record<string, string | undefined>): { toke
     const tokens = new Map<string, string>()
     const problems: string[] = []
     for (const key of Object.keys(env).sort()) {
-        if (!key.startsWith(PREFIX) || key === 'GITHUB_TOKEN') continue
+        if (!key.startsWith(PREFIX)) continue
         const suffix = key.slice(PREFIX.length)
         const name = suffix.toLowerCase()
         if (suffix !== suffix.toUpperCase() || !CREDENTIAL_NAME.test(name)) {
@@ -53,8 +54,6 @@ export function readCredentials(env: Record<string, string | undefined>): { toke
 export function credentialArgs(name: string | null): string[] {
     return name === null ? [] : ['-c', 'credential.helper=', '-c', `credential.helper=store --file=${credentialFile(name)}`]
 }
-
-import type { Runner } from '../agent/compose.ts'
 
 const GIT_CONFIG_TIMEOUT_MS = 10_000
 

@@ -50,6 +50,17 @@ value never leaves the dedi: the registry and the portal only ever hold its name
    `docker compose logs --tail 20 fetcher`.
 4. In the portal, open the site, go to Settings, and pick the account (the lowercased name, `acme`) in
    the Account field. Save.
+5. Prove the new token is the one being used, against a PRIVATE repository on that account
+   (a public one would list refs either way and prove nothing):
+
+   ```bash
+   docker compose exec fetcher git -c credential.helper= \
+     -c 'credential.helper=store --file=/root/.git-credentials.acme' \
+     ls-remote --heads https://github.com/<the other account>/<private repo>.git
+   ```
+
+   It should list refs. An authentication failure means the credential file or the token is
+   wrong, not the plumbing.
 
 The Account field offers exactly the names the fetcher answered with, and a name it does not hold is
 refused on save rather than at the next deploy.
