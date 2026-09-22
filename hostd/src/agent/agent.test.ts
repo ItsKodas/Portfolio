@@ -704,7 +704,9 @@ describe('the branches verb', () => {
         const { agent } = setup({ registry: () => deployRegistry, fetcher })
         const reply = replyOf(await agent.handle(branches('acme')))
         assert.deepEqual(reply, { ok: true, branches: ['main', 'develop'] })
-        assert.deepEqual(fetched, [{ verb: 'branches', repo: 'git@github.com:ItsKodas/acme.git' }])
+        // deployRegistry's acme has no credential key, so the entry's own credential (null, the default
+        // token) is what travels, not something the caller could have supplied.
+        assert.deepEqual(fetched, [{ verb: 'branches', repo: 'git@github.com:ItsKodas/acme.git', credential: null }])
     })
 
     it('passes a fetcher failure through as a refusal', async () => {
@@ -712,6 +714,80 @@ describe('the branches verb', () => {
         const { agent } = setup({ registry: () => deployRegistry, fetcher })
         const reply = replyOf(await agent.handle(branches('acme')))
         assert.deepEqual(reply, { ok: false, code: 'failed', message: 'repository not found' })
+    })
+})
+
+// A credential is the NAME of one of the fetcher's GitHub tokens; the token itself never reaches this
+// process. These registries exist only to give branches() a project with, and without, one set.
+const withCredential = parseRegistry(`
+projects:
+  acme:
+    client: cl_1
+    name: Acme
+    repo: git@github.com:acme/site.git
+    dir: /var/www/acme
+    upstream: 127.0.0.1:5010
+    services: { web: { role: site } }
+    credential: acme
+`)
+const withoutCredential = parseRegistry(`
+projects:
+  acme:
+    client: cl_1
+    name: Acme
+    repo: git@github.com:acme/site.git
+    dir: /var/www/acme
+    upstream: 127.0.0.1:5010
+    services: { web: { role: site } }
+`)
+
+describe('credentials', () => {
+    it("answers the fetcher's list, with no project needed", async () => {
+        const fetcher = { call: async () => ({ ok: true as const, credentials: ['acme'] }) }
+        const { agent } = setup({ fetcher })
+        const reply = replyOf(await agent.handle({ verb: 'credentials' }))
+        assert.deepEqual(reply, { ok: true, credentials: ['acme'] })
+    })
+
+    it('says so when there is no fetcher to ask', async () => {
+        const { agent } = setup({ fetcher: undefined })
+        const reply = replyOf(await agent.handle({ verb: 'credentials' }))
+        assert.deepEqual(reply, { ok: false, code: 'unavailable', message: 'the fetcher is not configured' })
+    })
+
+    it("sends the project's own credential when listing branches", async () => {
+        const fetched: FetchRequest[] = []
+        const fetcher = { call: async (request: FetchRequest) => { fetched.push(request); return { ok: true as const, branches: ['main'] } } }
+        const { agent } = setup({ registry: () => withCredential, fetcher })
+        await agent.handle({ verb: 'branches', project: 'acme' })
+        assert.deepEqual(fetched, [{ verb: 'branches', repo: 'git@github.com:acme/site.git', credential: 'acme' }])
+    })
+
+    it('sends null for a project with no credential, which is the default token', async () => {
+        const fetched: FetchRequest[] = []
+        const fetcher = { call: async (request: FetchRequest) => { fetched.push(request); return { ok: true as const, branches: ['main'] } } }
+        const { agent } = setup({ registry: () => withoutCredential, fetcher })
+        await agent.handle({ verb: 'branches', project: 'acme' })
+        assert.deepEqual(fetched, [{ verb: 'branches', repo: 'git@github.com:acme/site.git', credential: null }])
+    })
+
+    // Checked here, where the name is being SET, so the registry can never hold a name that cannot
+    // work. Without this the save succeeds and the next deploy is what discovers the typo.
+    it('refuses a configure naming a credential the fetcher does not hold, and writes nothing', async () => {
+        const fetcher = { call: async () => ({ ok: true as const, credentials: ['acme'] }) }
+        const written: Change[] = []
+        const { agent } = setup({ fetcher, writer: { write: async (change: Change) => { written.push(change); return { ok: true as const } } } })
+        const reply = replyOf(await agent.handle({ verb: 'configure', project: 'acme', args: { credential: 'nope' } }))
+        assert.deepEqual(reply, { ok: false, code: 'bad-request', message: 'no credential named nope' })
+        assert.deepEqual(written, [])
+    })
+
+    it('does not ask the fetcher anything when the configure clears the credential', async () => {
+        const fetched: FetchRequest[] = []
+        const fetcher = { call: async (request: FetchRequest) => { fetched.push(request); return { ok: true as const, credentials: ['acme'] } } }
+        const { agent } = setup({ fetcher })
+        await agent.handle({ verb: 'configure', project: 'acme', args: { credential: null } })
+        assert.deepEqual(fetched, [])
     })
 })
 

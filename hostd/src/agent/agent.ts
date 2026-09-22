@@ -127,6 +127,7 @@ export class Agent {
 
     async handle(request: AgentRequest): Promise<Outcome> {
         if (request.verb === 'health') return reply(await this.health())
+        if (request.verb === 'credentials') return reply(await this.credentials())
         // Its own branch before the check below: statuses names many projects, so it checks each one for
         // itself and reports the refusals among the results instead of refusing the whole request.
         if (request.verb === 'statuses') return reply(await this.statuses(request.projects))
@@ -295,18 +296,29 @@ export class Agent {
         }
     }
 
-    // The repo comes from the registry entry checkStructure just returned, never from the request: a
-    // caller names a project and that is all it is trusted with. Fills the portal's Settings form, so a
-    // project with nothing to list from is refused by name rather than asked of the fetcher for nothing.
+    // The repo and the credential both come from the registry entry checkStructure just returned, never
+    // from the request: a caller names a project and that is all it is trusted with. Fills the portal's
+    // Settings form, so a project with nothing to list from is refused by name rather than asked of the
+    // fetcher for nothing.
     private async branches(project: ProjectEntry): Promise<AgentReply> {
         if (!project.repo) return refuse('bad-request', `${project.id} has no repo to list branches from`)
         if (!this.deps.fetcher) return refuse('unavailable', 'the fetcher is not configured')
-        const result = await this.deps.fetcher.call({ verb: 'branches', repo: project.repo })
+        const result = await this.deps.fetcher.call({ verb: 'branches', repo: project.repo, credential: project.credential })
         // Collapsed to bad-request or failed exactly as the deploy verb's own commits case collapses the
         // fetcher's reply: bad-request is the fetcher itself refusing the shape of the request (which
         // means a bug here, not something the caller did), and everything else reads as failed.
         if (!result.ok) return refuse(result.code === 'bad-request' ? 'bad-request' : 'failed', result.message)
         return { ok: true, branches: result.branches ?? [] }
+    }
+
+    // Names only, straight from the fetcher, which is the only process that knows which tokens it was
+    // given. No project: this is a fact about the machine, and api's policy is what makes it the
+    // operator's alone.
+    private async credentials(): Promise<AgentReply> {
+        if (!this.deps.fetcher) return refuse('unavailable', 'the fetcher is not configured')
+        const result = await this.deps.fetcher.call({ verb: 'credentials' })
+        if (!result.ok) return refuse(result.code === 'bad-request' ? 'bad-request' : 'failed', result.message)
+        return { ok: true, credentials: result.credentials ?? [] }
     }
 
     private async deploy(project: ProjectEntry, args: DeployArgs): Promise<AgentReply> {
@@ -384,11 +396,23 @@ export class Agent {
             if (existing && existing !== domain) replacing.push(name as EnvironmentName)
         }
 
+        // Validated where it is SET, not only where it is used: a name the fetcher does not hold would
+        // otherwise sit in the registry until the next deploy discovered it. A null is clearing the key
+        // and needs nothing checked, so the fetcher is not asked at all.
+        if (args.credential) {
+            const held = await this.credentials()
+            if (!('credentials' in held)) return held
+            if (!held.credentials.includes(args.credential)) {
+                return refuse('bad-request', `no credential named ${args.credential}`)
+            }
+        }
+
         const written = await this.deps.writer.write({
             kind: 'configure',
             id: project.id,
             ...(args.capabilities === undefined ? {} : { capabilities: args.capabilities }),
             ...(args.repo === undefined ? {} : { repo: args.repo }),
+            ...(args.credential === undefined ? {} : { credential: args.credential }),
             ...(args.branches === undefined ? {} : { branches: args.branches }),
         })
         // The writer's problem is the registry validator's own words about what the operator asked for, so
