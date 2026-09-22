@@ -410,8 +410,10 @@ async function main(): Promise<void> {
             lastSitesEnabledRun = Date.now()
             // Logged rather than thrown: this loop is also the registry refresh, the guard, the deploy
             // poller and the status file, and none of those should stop because a vhost could not be
-            // read. read() only throws on a read this deliberately refuses to treat as "nothing there",
-            // such as EACCES, which is a permissions problem on the host worth a line in the log.
+            // read. read() only throws on a read it deliberately refuses to treat as "nothing there",
+            // such as EACCES. The log line is not the only record of that: read() puts the failure into
+            // its own warnings before throwing, so /health carries it too, which is the whole point of
+            // sweeping on a clock rather than waiting for somebody to trip over it.
             await sitesEnabled.read().catch(error => log(`could not read ${APACHE_SITES_ENABLED}: ${describeError(error)}`))
         }
         const current = warnings()

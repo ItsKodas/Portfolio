@@ -149,6 +149,17 @@ export async function setAliases(
     // hostd's won, the site would silently lose whatever the hand-written file carried, a custom
     // rewrite, basic auth, a bespoke error page, which is exactly what adopt's preview exists to put in
     // front of the operator before it happens.
+    //
+    // This guard is not authoritative and must not be read as though it were. It sees sites-enabled as it
+    // is on disk right now; Apache is serving the configuration it loaded the last time it was reloaded,
+    // which may be an older view of the same directory. In the window where a symlink has been deleted
+    // but Apache has not reloaded since, the file is gone from this reading while the hostname it names
+    // is still genuinely being served, so this passes and the vhost is written anyway. Nothing bad
+    // reaches production when that happens: the rail's own apache2ctl configtest fails on the dangling
+    // entry and writeVhost puts the previous file back. The cost is only that the operator gets Apache's
+    // words about a configuration it refused instead of the purpose-built refusal below, which would have
+    // named the file and told them to adopt. Closing the race would mean asking Apache what it currently
+    // has loaded rather than reading the directory, which is a much larger thing than this check is.
     const primaryClaim = findClaims(sitesEnabled, [environment.domain])[0]
     if (primaryClaim) {
         return refuse(

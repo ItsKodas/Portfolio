@@ -1,7 +1,14 @@
 import { describe, it } from 'node:test'
 import assert from 'node:assert/strict'
 
-import { parseServerNames, findClaims, SitesEnabledReader, unreadableWarnings } from './sites-enabled.ts'
+import {
+    parseServerNames,
+    findClaims,
+    SitesEnabledReader,
+    unreadableWarnings,
+    unlistableWarning,
+    unopenableWarning,
+} from './sites-enabled.ts'
 
 describe('parseServerNames', () => {
     it('reads a ServerName and every ServerAlias, including several on one line', () => {
@@ -221,5 +228,126 @@ describe('unreadableWarnings', () => {
         for (const paths of [['/a.conf'], ['/a.conf', '/b.conf']]) {
             assert.equal(unreadableWarnings(paths)[0]!.includes('—'), false)
         }
+    })
+})
+
+// A sweep that fails is the one thing /health used to miss. read() throws on EACCES, which is the right
+// answer for the caller, but the agent's periodic sweep only logs what it catches, so the error class
+// deliberately treated as the serious one was the class nobody could see without reading agent logs.
+describe('a sweep that fails, rather than an entry with nothing behind it', () => {
+    const DIR = '/etc/apache2/sites-enabled'
+
+    function fs(entries: Record<string, string | null>, code: string) {
+        return {
+            async readdir() { return Object.keys(entries) },
+            async readFile(path: string) {
+                const text = entries[path.slice(path.lastIndexOf('/') + 1)]
+                if (text === null || text === undefined) {
+                    const error = new Error(`${code}: permission denied, open ${path}`) as NodeJS.ErrnoException
+                    error.code = code
+                    throw error
+                }
+                return text
+            },
+        }
+    }
+
+    it('warns, naming the file and the directory, when a file could not be opened at all', async () => {
+        const reader = new SitesEnabledReader(DIR, fs({ 'locked.conf': null }, 'EACCES'))
+        await assert.rejects(reader.read(), /EACCES/)
+        const [warning] = reader.warnings()
+        assert.match(warning ?? '', /\/etc\/apache2\/sites-enabled\/locked\.conf/)
+        assert.match(warning ?? '', /\/etc\/apache2\/sites-enabled was not read either/)
+        assert.match(warning ?? '', /permissions fault on the host/)
+    })
+
+    // The two classes are not the same problem and do not want the same action: one is cleaned up by
+    // removing a dangling entry, the other by fixing permissions on the host.
+    it('does not describe it as a name with nothing behind it', async () => {
+        const reader = new SitesEnabledReader(DIR, fs({ 'locked.conf': null }, 'EACCES'))
+        await assert.rejects(reader.read(), /EACCES/)
+        const [warning] = reader.warnings()
+        assert.match(warning ?? '', /not a name with nothing behind it/)
+        assert.equal((warning ?? '').includes('symlink whose target was deleted'), false)
+    })
+
+    // The blind spot in full: a good sweep, then a failing one, must not leave /health still saying all
+    // is well because the last reading happened to be clean.
+    it('replaces a previous all-clear rather than preserving it', async () => {
+        const entries: Record<string, string | null> = { 'acme.conf': 'ServerName acme.com\n' }
+        const reader = new SitesEnabledReader(DIR, fs(entries, 'EACCES'))
+        await reader.read()
+        assert.deepEqual(reader.warnings(), [])
+
+        entries['acme.conf'] = null
+        await assert.rejects(reader.read(), /EACCES/)
+        assert.equal(reader.warnings().length, 1)
+        assert.match(reader.warnings()[0] ?? '', /could not open it/)
+    })
+
+    it('clears again once the sweep works, so a fixed permission stops being reported', async () => {
+        const entries: Record<string, string | null> = { 'acme.conf': null }
+        const reader = new SitesEnabledReader(DIR, fs(entries, 'EACCES'))
+        await assert.rejects(reader.read(), /EACCES/)
+        assert.equal(reader.warnings().length, 1)
+        entries['acme.conf'] = 'ServerName acme.com\n'
+        await reader.read()
+        assert.deepEqual(reader.warnings(), [])
+    })
+
+    // The entries already found are real and stay reported; the failure is added to them rather than
+    // replacing them.
+    it('keeps the dangling entries it had already found, and adds the failure to them', async () => {
+        const reader = new SitesEnabledReader(DIR, {
+            async readdir() { return ['a-dangling.conf', 'b-locked.conf'] },
+            async readFile(path: string) {
+                const error = new Error(path.includes('dangling') ? 'ENOENT' : 'EACCES') as NodeJS.ErrnoException
+                error.code = path.includes('dangling') ? 'ENOENT' : 'EACCES'
+                throw error
+            },
+        })
+        await assert.rejects(reader.read(), /EACCES/)
+        const warnings = reader.warnings()
+        assert.equal(warnings.length, 2)
+        assert.match(warnings[0] ?? '', /b-locked\.conf/)
+        assert.match(warnings[1] ?? '', /a-dangling\.conf/)
+    })
+
+    // Treating an unlistable directory as empty is older than this change and stays, but it is no longer
+    // silent: a directory hostd cannot list is a sweep that failed like any other.
+    it('warns when the directory itself cannot be listed, while still answering empty', async () => {
+        const reader = new SitesEnabledReader(DIR, {
+            async readdir() {
+                const error = new Error('EACCES: permission denied, scandir') as NodeJS.ErrnoException
+                error.code = 'EACCES'
+                throw error
+            },
+            async readFile() { return '' },
+        })
+        assert.deepEqual(await reader.read(), { files: [], unreadable: [] })
+        const [warning] = reader.warnings()
+        assert.match(warning ?? '', /\/etc\/apache2\/sites-enabled could not be listed at all/)
+        assert.match(warning ?? '', /cannot tell whether a hostname is already served/)
+    })
+
+    it('does not leave a stale all-clear when the directory stops being listable', async () => {
+        let listable = true
+        const reader = new SitesEnabledReader(DIR, {
+            async readdir() {
+                if (!listable) throw new Error('gone')
+                return ['acme.conf']
+            },
+            async readFile() { return 'ServerName acme.com\n' },
+        })
+        await reader.read()
+        assert.deepEqual(reader.warnings(), [])
+        listable = false
+        await reader.read()
+        assert.equal(reader.warnings().length, 1)
+    })
+
+    it('has no em dash in either message', () => {
+        assert.equal(unlistableWarning('/etc/apache2/sites-enabled', 'EACCES').includes('—'), false)
+        assert.equal(unopenableWarning('/a.conf', '/etc/apache2/sites-enabled', 'EACCES').includes('—'), false)
     })
 })
