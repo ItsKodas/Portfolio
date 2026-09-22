@@ -36,6 +36,24 @@ site depends on) keep working, and only provisioning and env editing are unavail
    saying so; the fetcher never reads it, so it starts regardless. If that happens, remove the directory
    it created in place of the file, create the file, and start again.
 
+### Adding a second GitHub account
+
+A site whose repository lives under another GitHub account needs that account's own token. The token
+value never leaves the dedi: the registry and the portal only ever hold its name.
+
+1. On that account, create a fine-grained personal access token, read-only, limited to the repositories
+   this machine deploys.
+2. Add it to `hostd/.env.fetcher` as `GITHUB_TOKEN_<NAME>`, where `<NAME>` is capitals, digits and
+   underscores (for example `GITHUB_TOKEN_ACME`).
+3. Restart the fetcher: `docker compose up -d --force-recreate fetcher`. It refuses to boot on a
+   malformed name or an empty value and says which variable is at fault, so check it came up:
+   `docker compose logs --tail 20 fetcher`.
+4. In the portal, open the site, go to Settings, and pick the account (the lowercased name, `acme`) in
+   the Account field. Save.
+
+The Account field offers exactly the names the fetcher answered with, and a name it does not hold is
+refused on save rather than at the next deploy.
+
 ## Editing the registry
 
 `hostd/registry/projects.yaml` is hand-edited and read every ten seconds. Any editor will do: the
@@ -1138,6 +1156,7 @@ shows them.
 | A `create` refusal `"... is already registered"`, or an `add-environment` refusal naming a folder that `"already exists"` | The id is already taken, or its folder is already on disk under a different registration. |
 | A `create` or `add-environment` refusal `"... is already used by another project"` | The domain is already registered to a different project's environment. |
 | A `create` or `add-environment` refusal naming a Git failure | The fetcher could not clone. Check the branch exists on the remote, and that `GITHUB_TOKEN` in `.env.fetcher` can read the repo. |
+| `unknown credential <name>`, or `no credential named <name>` on a save | The registry names a credential `.env.fetcher` does not have. Add `GITHUB_TOKEN_<NAME>` there and restart the fetcher, or pick another account on the site's Settings tab. |
 | A `create` or `add-environment` refusal `"the compose file declares no services"` | The compose file has no services in it at all, not merely none marked site. The cloned folder was removed and nothing was registered. |
 | A `create` or `add-environment` refusal `"at least one service must have role site"` | hostd's own image guess (see Creating a site) marked every service database, most likely because the compose file genuinely has no service that is not a database, or an app image happens to contain one of the five matched names by coincidence. The cloned folder was removed and nothing was registered; fix the compose file if the guess was wrong, or enroll the project by hand instead (see Enrolling a real site) if it genuinely has no site-role service under this scheme. |
 | A `create` or `add-environment` refusal naming a `docker compose config` error directly (a missing `env_file`, a syntax error) | hostd creates an empty file for any `.env.example` it finds with nothing real beside it yet, but only in the folders and depth a later env listing would itself reach; something the compose file needs still was not there. Fix the compose file or the repo, and try again. |
