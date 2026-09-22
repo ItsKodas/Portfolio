@@ -1,7 +1,7 @@
 import { describe, it } from 'node:test'
 import assert from 'node:assert/strict'
 import {
-    parseAgentRequest, checkStructure, parseDomainsArgs, VERB_CAPABILITY, MAX_REQUEST_BYTES, MAX_COMMITS, DEFAULT_COMMITS, SNAPSHOT_ID,
+    parseAgentRequest, checkStructure, parseDomainsArgs, parseConfigureArgs, VERB_CAPABILITY, MAX_REQUEST_BYTES, MAX_COMMITS, DEFAULT_COMMITS, SNAPSHOT_ID,
     type ProjectRequest,
 } from './protocol.ts'
 import { parseRegistry } from './registry.ts'
@@ -101,6 +101,16 @@ describe('parseAgentRequest', () => {
         assert.deepEqual(parsed({ verb: 'provision', args: createArgs }), { ok: true, request: { verb: 'provision', args: createArgs } })
     })
 
+    // credential is optional, unlike repo: a project created without one uses the default token.
+    it('parses a provision create request carrying a credential, and refuses a malformed one', () => {
+        const createArgs = { action: 'create', id: 'bakery', client: 'cl_2', name: 'Bakery', repo: 'git@github.com:x/bakery.git', credential: 'acme', branch: 'main', domain: 'bakery.com', certificate: 'letsencrypt' }
+        assert.deepEqual(parsed({ verb: 'provision', args: createArgs }), { ok: true, request: { verb: 'provision', args: createArgs } })
+        assert.equal(
+            refusalOf({ verb: 'provision', args: { ...createArgs, credential: 'Acme-1' } }),
+            'bad-request: credential must be 1 to 32 lowercase letters, digits or underscores',
+        )
+    })
+
     it('parses provision add-environment and remove, which carry a project', () => {
         const addArgs = { action: 'add-environment', environment: 'test', branch: 'develop', domain: 'test.acme.com', certificate: null }
         assert.deepEqual(
@@ -122,7 +132,7 @@ describe('parseAgentRequest', () => {
         assert.equal(refusalOf({ verb: 'provision', project: 'acme', args: createArgs }), 'bad-request: provision create takes only args')
         assert.equal(refusalOf({ verb: 'provision', args: { ...createArgs, id: 5 } }), 'bad-request: id is malformed')
         assert.equal(refusalOf({ verb: 'provision', args: { ...createArgs, certificate: 'self-signed' } }), 'bad-request: certificate is malformed')
-        assert.equal(refusalOf({ verb: 'provision', args: { ...createArgs, extra: true } }), 'bad-request: create takes only id, client, name, repo, branch, domain and certificate')
+        assert.equal(refusalOf({ verb: 'provision', args: { ...createArgs, extra: true } }), 'bad-request: create takes only id, client, name, repo, credential, branch, domain and certificate')
     })
 
     it('refuses provision add-environment for anything other than test, and remove for an unknown environment', () => {
@@ -246,7 +256,7 @@ describe('parseAgentRequest', () => {
         assert.equal(refusalOf({ verb: 'configure', project: 'acme', args: { capabilities: ['teleport'] } }), 'bad-request: capabilities must be a list of known capabilities')
         assert.equal(refusalOf({ verb: 'configure', project: 'acme', args: { branches: { live: 'a branch' } } }), 'bad-request: live branch must be null or a plain branch name')
         assert.equal(refusalOf({ verb: 'configure', project: 'acme', args: { branches: { staging: 'main' } } }), 'bad-request: staging is not an environment')
-        assert.equal(refusalOf({ verb: 'configure', project: 'acme', args: { capabilities: [], extra: true } }), 'bad-request: configure takes only capabilities, repo, branches and domains')
+        assert.equal(refusalOf({ verb: 'configure', project: 'acme', args: { capabilities: [], extra: true } }), 'bad-request: configure takes only capabilities, repo, credential, branches and domains')
     })
 
     it('parses a branches request', () => {
@@ -256,6 +266,35 @@ describe('parseAgentRequest', () => {
     it('refuses a branches request with a malformed project or an extra field', () => {
         assert.equal(refusalOf({ verb: 'branches', project: 'Not An Id' }), 'bad-request: project is malformed')
         assert.equal(refusalOf({ verb: 'branches', project: 'acme', extra: true }), 'bad-request: branches takes only project')
+    })
+})
+
+describe('configure credential', () => {
+    it('takes a name', () => {
+        assert.deepEqual(parseConfigureArgs({ credential: 'acme' }), { credential: 'acme' })
+    })
+
+    // null is how the Settings form says "back to the default token", so it must survive the parse
+    // rather than being dropped as absent: absent means "leave it alone".
+    it('keeps a null, which clears the key, apart from an absent one, which leaves it alone', () => {
+        assert.deepEqual(parseConfigureArgs({ credential: null }), { credential: null })
+        assert.deepEqual(parseConfigureArgs({}), {})
+    })
+
+    it('refuses a malformed name', () => {
+        const parsed = parseConfigureArgs({ credential: 'Acme-1' })
+        assert.deepEqual(parsed, { ok: false, code: 'bad-request', message: 'credential must be 1 to 32 lowercase letters, digits or underscores' })
+    })
+})
+
+describe('the credentials verb', () => {
+    it('is parsed with no project, like health', () => {
+        assert.deepEqual(parseAgentRequest(JSON.stringify({ verb: 'credentials' })), { ok: true, request: { verb: 'credentials' } })
+    })
+
+    it('takes nothing else', () => {
+        const parsed = parseAgentRequest(JSON.stringify({ verb: 'credentials', project: 'acme' }))
+        assert.deepEqual(parsed, { ok: false, code: 'bad-request', message: 'credentials takes no other keys' })
     })
 })
 

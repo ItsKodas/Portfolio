@@ -75,6 +75,7 @@ function describe(request: AgentRequest): string {
         // registry diff, not to a log line api itself could have written.
         case 'configure': return `configure ${request.project}`
         case 'branches': return `branches ${request.project}`
+        case 'credentials': return 'credentials'
     }
 }
 

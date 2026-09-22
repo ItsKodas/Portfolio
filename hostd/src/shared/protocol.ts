@@ -4,7 +4,7 @@
 
 import { PROJECT_ID, SERVICE_NAME, isRecord } from './formats.ts'
 import {
-    isComposeService, environmentOf, ENVIRONMENTS, CAPABILITIES, CERTIFICATE_MODES, GIT_REF,
+    isComposeService, environmentOf, ENVIRONMENTS, CAPABILITIES, CERTIFICATE_MODES, GIT_REF, CREDENTIAL_NAME,
     type Capability, type CertificateMode, type EnvironmentName, type Keep, type ProjectEntry, type Registry,
 } from './registry.ts'
 import { normaliseHostname } from './hostnames.ts'
@@ -53,6 +53,9 @@ export type ProvisionCreateArgs = {
     client: string
     name: string
     repo: string
+    // Optional, unlike repo: a project created without one uses the default token, which is every
+    // project on the operator's own GitHub account.
+    credential?: string
     branch: string
     domain: string | null
     certificate: CertificateMode | null
@@ -154,6 +157,9 @@ export type AdoptPreview = {
 export type ConfigureArgs = {
     capabilities?: Capability[]
     repo?: string | null
+    // The name of one of the fetcher's tokens, never a token. null clears the key, which puts the
+    // project back on the default GITHUB_TOKEN.
+    credential?: string | null
     branches?: Partial<Record<EnvironmentName, string | null>>
     // No null member, unlike branches: this gives an environment an address or moves it to another one,
     // and never takes one away. Moving it rewrites the vhost hostd owns (see the agent's configure), so
@@ -166,10 +172,14 @@ export type ConfigureRequest = { verb: 'configure', project: string, args: Confi
 // is a project-level field and both environments draw from the one list.
 export type BranchesRequest = { verb: 'branches', project: string }
 
+// Which credential names the fetcher holds, for the Settings form's Account select. No project: this is
+// a fact about the machine, not about a site.
+export type CredentialsRequest = { verb: 'credentials' }
+
 export type ProjectRequest =
     | StatusRequest | LifecycleRequest | LogsRequest | ProvisionOnProjectRequest | EnvRequest | DeployRequest
     | BackupRequest | DomainsRequest | ConfigureRequest | BranchesRequest
-export type AgentRequest = HealthRequest | StatusesRequest | ProvisionCreateRequest | ProjectRequest
+export type AgentRequest = HealthRequest | StatusesRequest | ProvisionCreateRequest | CredentialsRequest | ProjectRequest
 export type Verb = AgentRequest['verb']
 
 export type RefusalCode =
@@ -226,6 +236,7 @@ export type DeployHistoryReply = {
 }
 export type DeployCommitsReply = { ok: true, commits: Commit[] }
 export type BranchesReply = { ok: true, branches: string[] }
+export type CredentialsReply = { ok: true, credentials: string[] }
 // What configure put on the host, one entry per environment whose address moved onto a vhost hostd
 // already owned. Deliberately the same hostnames-and-path shape DomainsWritten carries, with the
 // environment added because configure takes several at once: api turns both into the same records, so a
@@ -238,7 +249,7 @@ export type ConfigureReply = { ok: true, output: string, written: ConfigureWritt
 export type StreamHeader = { ok: true, stream: true }
 export type AgentReply =
     | HealthReply | StatusReply | StatusesReply | LifecycleReply | ProvisionReply | EnvListReply | EnvReadReply
-    | DeployStartedReply | DeployHistoryReply | DeployCommitsReply | BranchesReply | ConfigureReply
+    | DeployStartedReply | DeployHistoryReply | DeployCommitsReply | BranchesReply | CredentialsReply | ConfigureReply
     | BackupStartedReply | BackupListReply | BackupRunReply
     | DomainsWritten | AdoptPreview | Refusal
 export type LogLine = { stream: 'stdout' | 'stderr', ts: string | null, text: string, truncated: boolean }
@@ -265,6 +276,9 @@ export const VERB_CAPABILITY: Record<Verb, Capability | null> = {
     // capability would leave it empty on exactly the site an operator is setting deploys up on. Guarded
     // the same way configure is, by api's policy rather than by a capability.
     branches: null,
+    // Null for the same reason branches is: it fills the Settings form, and api's policy is what makes
+    // it admin-only.
+    credentials: null,
 }
 
 type Parsed = { ok: true, request: AgentRequest } | Refusal
@@ -307,13 +321,16 @@ function parseLogsArgs(args: unknown): LogsArgs | Refusal {
 function parseProvisionCreate(raw: Record<string, unknown>): Parsed {
     if (!onlyKeys(raw, ['verb', 'args'])) return refuse('bad-request', 'provision create takes only args')
     const args = raw.args as Record<string, unknown>
-    if (!onlyKeys(args, ['action', 'id', 'client', 'name', 'repo', 'branch', 'domain', 'certificate'])) {
-        return refuse('bad-request', 'create takes only id, client, name, repo, branch, domain and certificate')
+    if (!onlyKeys(args, ['action', 'id', 'client', 'name', 'repo', 'credential', 'branch', 'domain', 'certificate'])) {
+        return refuse('bad-request', 'create takes only id, client, name, repo, credential, branch, domain and certificate')
     }
     if (typeof args.id !== 'string') return refuse('bad-request', 'id is malformed')
     if (typeof args.client !== 'string') return refuse('bad-request', 'client is malformed')
     if (typeof args.name !== 'string') return refuse('bad-request', 'name is malformed')
     if (typeof args.repo !== 'string') return refuse('bad-request', 'repo is malformed')
+    if (args.credential !== undefined && (typeof args.credential !== 'string' || !CREDENTIAL_NAME.test(args.credential))) {
+        return refuse('bad-request', 'credential must be 1 to 32 lowercase letters, digits or underscores')
+    }
     if (typeof args.branch !== 'string') return refuse('bad-request', 'branch is malformed')
     const domain = args.domain
     if (domain !== null && typeof domain !== 'string') return refuse('bad-request', 'domain is malformed')
@@ -324,8 +341,9 @@ function parseProvisionCreate(raw: Record<string, unknown>): Parsed {
         request: {
             verb: 'provision',
             args: {
-                action: 'create', id: args.id, client: args.client, name: args.name, repo: args.repo, branch: args.branch,
-                domain: domain as string | null, certificate: certificate as CertificateMode | null,
+                action: 'create', id: args.id, client: args.client, name: args.name, repo: args.repo,
+                ...(args.credential !== undefined ? { credential: args.credential as string } : {}),
+                branch: args.branch, domain: domain as string | null, certificate: certificate as CertificateMode | null,
             },
         },
     }
@@ -551,8 +569,8 @@ export function parseDomainsArgs(args: unknown): { ok: true, args: DomainsArgs }
 // body it could not read is refused in exactly one place. See policy.ts and routes.ts in api for how the
 // route bridges this Refusal shape onto its own parsers' { ok: false, message }.
 export function parseConfigureArgs(raw: unknown): ConfigureArgs | Refusal {
-    if (!isRecord(raw) || !onlyKeys(raw, ['capabilities', 'repo', 'branches', 'domains'])) {
-        return refuse('bad-request', 'configure takes only capabilities, repo, branches and domains')
+    if (!isRecord(raw) || !onlyKeys(raw, ['capabilities', 'repo', 'credential', 'branches', 'domains'])) {
+        return refuse('bad-request', 'configure takes only capabilities, repo, credential, branches and domains')
     }
 
     let capabilities: Capability[] | undefined
@@ -567,6 +585,14 @@ export function parseConfigureArgs(raw: unknown): ConfigureArgs | Refusal {
     if (raw.repo !== undefined) {
         if (raw.repo !== null && typeof raw.repo !== 'string') return refuse('bad-request', 'repo is malformed')
         repo = raw.repo as string | null
+    }
+
+    let credential: string | null | undefined
+    if (raw.credential !== undefined) {
+        if (raw.credential !== null && (typeof raw.credential !== 'string' || !CREDENTIAL_NAME.test(raw.credential))) {
+            return refuse('bad-request', 'credential must be 1 to 32 lowercase letters, digits or underscores')
+        }
+        credential = raw.credential as string | null
     }
 
     let branches: Partial<Record<EnvironmentName, string | null>> | undefined
@@ -603,6 +629,7 @@ export function parseConfigureArgs(raw: unknown): ConfigureArgs | Refusal {
     return {
         ...(capabilities !== undefined ? { capabilities } : {}),
         ...(repo !== undefined ? { repo } : {}),
+        ...(credential !== undefined ? { credential } : {}),
         ...(branches !== undefined ? { branches } : {}),
         ...(domains !== undefined ? { domains } : {}),
     }
@@ -622,6 +649,11 @@ export function parseAgentRequest(line: string): Parsed {
         case 'health':
             if (!onlyKeys(raw, ['verb'])) return refuse('bad-request', 'health takes no other fields')
             return { ok: true, request: { verb: 'health' } }
+
+        case 'credentials': {
+            if (!onlyKeys(raw, ['verb'])) return refuse('bad-request', 'credentials takes no other keys')
+            return { ok: true, request: { verb: 'credentials' } }
+        }
 
         case 'status': {
             if (!onlyKeys(raw, ['verb', 'project'])) return refuse('bad-request', 'status takes only project')
