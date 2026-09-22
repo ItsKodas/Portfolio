@@ -33,6 +33,7 @@ import { handleConnection } from './server.ts'
 import { ApacheRail, type RailFs } from './apache-rail.ts'
 import type { DomainsConfig, DomainsDeps } from './domains.ts'
 import { SitesEnabledReader } from './sites-enabled.ts'
+import { siblingDirProblem } from './boot-checks.ts'
 
 const REGISTRY_FILE = process.env.HOSTD_REGISTRY_FILE ?? '/etc/hostd/registry/projects.yaml'
 const SOCKET_PATH = process.env.HOSTD_AGENT_SOCKET ?? '/run/hostd/agent.sock'
@@ -59,6 +60,11 @@ const APACHE_RAIL_DIR = process.env.HOSTD_APACHE_RAIL_DIR ?? '/etc/hostd/apache'
 // hand-wrote before hostd existed: adoption reads the latter, never writes it.
 const APACHE_INCLUDE_DIR = process.env.HOSTD_APACHE_INCLUDE_DIR ?? '/etc/apache2/hostd'
 const APACHE_SITES_ENABLED = process.env.HOSTD_APACHE_SITES_ENABLED ?? '/etc/apache2/sites-enabled'
+// Where hostd-apache.sh moves a disabled site's sites-enabled entry during an adopt. Not read by this
+// process for anything but the boot check below: the host script is the one that actually moves files
+// there, and it reads the same env var itself. Kept in sync here purely so the two never drift apart
+// without hostd noticing at boot, before any adoption is mid-move.
+const APACHE_ADOPTED_DIR = process.env.HOSTD_APACHE_ADOPTED_DIR ?? '/etc/apache2/hostd-adopted'
 // The origin certificate every vhost's :443 block names. Not defaulted to a real path: a missing value is
 // caught by the boot gate below rather than silently producing a vhost Apache will refuse.
 const ORIGIN_CERT = process.env.HOSTD_ORIGIN_CERT ?? ''
@@ -129,6 +135,11 @@ async function main(): Promise<void> {
             failures.push(`${name} (${path}) does not exist`)
         }
     }
+    // hostd-apache.sh's disable loop moves a relative symlink; see boot-checks.ts for why that only
+    // survives the move when sites-enabled and the adopted directory are siblings. Caught here rather
+    // than left to surface as a dangling symlink discovered during a live adoption, months later.
+    const dirProblem = siblingDirProblem(APACHE_SITES_ENABLED, APACHE_ADOPTED_DIR)
+    if (dirProblem) failures.push(dirProblem)
     if (failures.length > 0) fail(failures)
 
     const docker = createDockerApi()

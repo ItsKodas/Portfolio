@@ -104,6 +104,16 @@ if [ "$ACTION" = "adopt" ]; then
         mv "$path" "$target"
         MOVED="$MOVED$path|$target
 "
+        # sites-enabled entries on Debian are relative symlinks a2ensite wrote, of the form
+        # ../sites-available/<name>.conf, and a relative symlink only keeps resolving from wherever it
+        # lands. "[ -e ]" follows symlinks, so it fails here exactly when the move broke one: the two
+        # directories are not siblings, and "../sites-available" no longer means the same thing from
+        # both. MOVED already carries this entry, appended just above, so the trap's restore() (which
+        # runs on any failure from here on) puts it straight back without a second recovery path here.
+        if [ ! -e "$target" ]; then
+            STAGE="disabling $path: $target would be a broken symlink, because $(dirname "$path") and $ADOPTED are not sibling directories; a relative symlink only survives this move when both sit at the same depth"
+            exit 1
+        fi
     done <<DISABLE
 $(jq -r '.disable[]?' "$REQUEST")
 DISABLE
