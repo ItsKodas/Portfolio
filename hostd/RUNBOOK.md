@@ -828,8 +828,10 @@ reloading a real Apache is not something CI can run. This section is what stands
 suite: read it in full before the first domain change on a new dedi, not only when something breaks.
 
 The request and result shapes are defined once, in `hostd/src/shared/apache.ts`: a request carries `seq`,
-`action` (`reload` or `adopt`), `write` (a single `{path, text}` or null), `remove` (paths to delete) and
-`disable` (paths to move out of `sites-enabled`, only ever populated alongside `adopt`); a result carries
+`action` (`reload`, `adopt` or `restore`), `write` (a single `{path, text}` or null), `remove` (paths to
+delete), `disable` (paths to move out of `sites-enabled`, only ever populated alongside `adopt`) and
+`restore` (paths to move back in, only ever populated alongside `restore`, and naming the original
+`sites-enabled` path rather than the `.bak` the unit parked it at); a result carries
 `seq`, `ok` and `output`. `hostd/src/agent/apache-rail.ts` is the agent's half: it writes the request by
 writing to a `.tmp` file and renaming it into place, so the path unit (which fires on the file's name
 appearing) never sees a half-written request, then polls for a result carrying the same `seq` for up to 30
@@ -1129,26 +1131,49 @@ verification** above for that case worked through end to end.) Do it in this ord
    renders the vhost hostd would write and lists every file in `sites-enabled` that claims one of the
    environment's hostnames, with `adoptable: true` only if every one of them can be read well enough to
    adopt.
-2. **Read the whole existing file yourself**, not just the preview's summary of it. The preview only ever
-   reports `ServerName` and `ServerAlias` lines (`hostd/src/agent/sites-enabled.ts`); it is not an Apache
-   parser and does not claim to be one.
-3. **Look for anything the template has no equivalent for**: a `RewriteRule` that is not the plain
-   maintenance/ACME/https redirects hostd's own template renders, `Require` or other auth directives, a
-   `ProxyPass` to somewhere other than the site's own port, anything under `Include`, `IncludeOptional` or
-   `Use` (which the preview already refuses to adopt, since a hostname could be defined somewhere it
-   cannot see). Anything found here has to be reconciled by hand, outside hostd, before adopting: adoption
-   replaces the file whole, and nothing it does not render survives.
+2. **Read the whole existing file yourself**, not just the preview's summary of it. The preview reads
+   `ServerName` and `ServerAlias`, and it refuses a file that does any of the things listed in step 3
+   (`hostd/src/agent/sites-enabled.ts`). It is not an Apache parser and does not claim to be one, so
+   everything it says nothing about is still yours to check.
+3. **Look for anything the template has no equivalent for.** The preview now refuses the file outright,
+   naming what it found, for each of these:
+   - a `RewriteRule` carrying the `[P]` flag, which proxies rather than redirects; hostd's template has
+     no rewrite of its own and cannot carry it,
+   - any `ws://` or `wss://` target, served by `mod_proxy_wstunnel`; hostd's template proxies plain HTTP
+     only, so the upgrade handshake would go unanswered,
+   - a `ProxyPass` whose target disagrees with the upstream the registry gives this environment,
+   - no port 443 block at all, which means the origin is HTTP-only behind something terminating TLS on
+     its own (Cloudflare Flexible); hostd's template redirects port 80 to https and serves 443 itself,
+     so the visitor would be sent back through the CDN to the same HTTP origin and round again forever,
+   - anything under `Include`, `IncludeOptional` or `Use`, since a hostname could be defined somewhere
+     the preview cannot see.
+
+   It still says nothing about `Require` or other auth directives, a bespoke `ErrorDocument`, custom
+   `Header` rules, or a `DocumentRoot` serving files rather than proxying. Anything found there has to be
+   reconciled by hand, outside hostd, before adopting: adoption replaces the file whole, and nothing it
+   does not render survives.
 4. **Adopt.** `hc -X POST http://hostd-api:8080/projects/<id>/<env>/adopt -d '{"confirm":"<project
    name>"}'`, typing the project's name back, the same confirmation a delete asks for. This is one rail
    request: the old file moves to `/etc/apache2/hostd-adopted/<name>.bak`, the new one is written, and
    only then does the single configtest run, so there is never a moment with both files loaded (which
    Apache would resolve by file order, silently) or a moment with neither.
+
+   `hostd-api` requests `https://<domain>/` once just before the adopt and once just after the reload,
+   and rolls the whole thing back if the second answer is materially worse than the first (a page that
+   became a redirect, an error or nothing at all). `hostd-agent` cannot make that request: it runs
+   `network_mode: none`. A rollback answers the call with a 502 saying what both requests got, puts the
+   hand-written file back and removes hostd's own, in one further rail request. The check is skipped when
+   the environment had no hand-written file to begin with, because the only rollback available would then
+   leave the hostname with no vhost at all.
 5. **Confirm the site serves**, exactly as it did before: `curl -sSI https://<domain>/` against whatever
-   the site actually answers with.
+   the site actually answers with. The check above is a single request at the bare path and grades only
+   how the origin answered; it is not a substitute for looking.
 6. **Confirm verification passes within the minute**, the same check as the end of **Live verification**
    above.
 
-**The undo**, if adoption needs to be reversed:
+**The undo**, if adoption needs to be reversed. hostd does this itself when its own post-adoption check
+fails, using the same moves by hand below; what follows is for every other case, including one where
+hostd's rollback itself reported a problem and you need to finish it.
 
 ```bash
 ls /etc/apache2/hostd-adopted/
