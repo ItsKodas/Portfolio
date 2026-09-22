@@ -2,7 +2,7 @@ import { describe, it } from 'node:test'
 import assert from 'node:assert/strict'
 
 import { parseRegistry } from '../shared/registry.ts'
-import { writeVhost, removeVhost, setAliases, previewAdopt, adopt, type DomainsDeps } from './domains.ts'
+import { writeVhost, removeVhost, setAliases, previewAdopt, adopt, restoreAdopted, type DomainsDeps } from './domains.ts'
 import type { VhostFile } from './sites-enabled.ts'
 
 // What listSitesEnabled answers with: the files that were read, and the paths of any that could not be.
@@ -25,7 +25,13 @@ projects:
 `
 
 function setup(options: { railOk?: boolean, existing?: string | null } = {}) {
-    const sent: { action: string, write: { path: string, text: string } | null, remove: string[], disable: string[] }[] = []
+    const sent: {
+        action: string
+        write: { path: string, text: string } | null
+        remove: string[]
+        disable: string[]
+        restore?: string[]
+    }[] = []
     const railOk = options.railOk ?? true
     const deps: DomainsDeps = {
         rail: {
@@ -369,6 +375,57 @@ describe('adopt', () => {
         const result = await adopt(deps, project, environment, 'abc123', [handWritten.path])
         assert.equal(result.ok, false)
         assert.equal(sent.length, 2)
+    })
+})
+
+// Adoption undone. api decides when, because api is the process with a network and can ask the hostname
+// whether the adoption left it answering; this is the half only the agent can do, because only the agent
+// can move a file on the host.
+describe('restoreAdopted', () => {
+    const handWritten = '/etc/apache2/sites-enabled/acme.conf'
+
+    it('removes hostd\'s own vhost and puts the operator\'s file back in one request', async () => {
+        const { deps, sent, project, environment } = setup()
+        const result = await restoreAdopted(deps, project, environment, [handWritten])
+        assert.equal(result.ok, true)
+        assert.equal(sent.length, 1, 'two requests would mean a moment with neither file loaded')
+        assert.equal(sent[0]!.action, 'restore')
+        assert.deepEqual(sent[0]!.remove, ['/etc/apache2/hostd/acme-live.conf'])
+        assert.deepEqual(sent[0]!.restore, [handWritten])
+        assert.equal(sent[0]!.write, null, 'a restore renders nothing')
+    })
+
+    // The verifier proves a hostname against a token in hostd's vhost. That file has just been removed,
+    // so naming hostnames here would start a 72 hour countdown against nothing.
+    it('reports no hostnames, because it took a vhost away rather than writing one', async () => {
+        const { deps, project, environment } = setup()
+        const result = await restoreAdopted(deps, project, environment, [handWritten])
+        assert.deepEqual(result.ok && result.written.hostnames, [])
+    })
+
+    it('still takes hostd\'s vhost away when the adoption displaced nothing', async () => {
+        const { deps, sent, project, environment } = setup()
+        const result = await restoreAdopted(deps, project, environment, [])
+        assert.equal(result.ok, true)
+        assert.deepEqual(sent[0]!.remove, ['/etc/apache2/hostd/acme-live.conf'])
+        assert.deepEqual(sent[0]!.restore, [])
+    })
+
+    // Every other verb here reverts on a failed configtest. This one must not: the file it removed is
+    // the one that took the site down, and putting it back is the opposite of what was asked.
+    it('does not put its own vhost back when the reload fails, and says where to look', async () => {
+        const { deps, sent, project, environment } = setup({ railOk: false })
+        const result = await restoreAdopted(deps, project, environment, [handWritten])
+        assert.equal(result.ok, false)
+        assert.equal(sent.length, 1, 'a second request would be hostd undoing the recovery')
+        assert.match(result.ok === false ? result.message : '', /acme\.conf/)
+        assert.equal(result.ok === false && result.output, 'AH00526: Syntax error on line 9')
+    })
+
+    it('has no em dash in what it tells the operator', async () => {
+        const { deps, project, environment } = setup({ railOk: false })
+        const result = await restoreAdopted(deps, project, environment, [handWritten])
+        assert.equal(result.ok === false && result.message.includes('—'), false)
     })
 })
 

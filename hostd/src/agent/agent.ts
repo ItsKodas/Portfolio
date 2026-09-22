@@ -20,7 +20,7 @@ import { deployTrees, repositoryIn } from './deploy-compose.ts'
 import type { DeployDeps } from './deploy.ts'
 import type { DeployRunner } from './deploy-runner.ts'
 import type { DeployStore } from './deploy-state.ts'
-import { adopt, previewAdopt, removeVhost, setAliases, writeVhost, type DomainsDeps } from './domains.ts'
+import { adopt, previewAdopt, removeVhost, restoreAdopted, setAliases, writeVhost, type DomainsDeps } from './domains.ts'
 import type { FetchClient } from './fetch-client.ts'
 import { buildServiceStatuses, groupByProject, pickPerService, type ContainerInspect, type ContainerSummary, type DockerApi } from './docker.ts'
 import { createLogDecoder } from './logframes.ts'
@@ -291,6 +291,8 @@ export class Agent {
                 return previewAdopt(domains, checked.project, environment, request.args.token)
             case 'adopt':
                 return adopt(domains, checked.project, environment, request.args.token, request.args.disable)
+            case 'restore':
+                return restoreAdopted(domains, checked.project, environment, request.args.restore)
             case 'set-aliases':
                 return setAliases(domains, checked.project, environment, request.args.aliases, request.args.token)
         }

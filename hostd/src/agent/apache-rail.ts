@@ -17,7 +17,9 @@ export type RailFs = {
     unlink(path: string): Promise<void>
 }
 
-export type RailParts = { write: ApacheWrite | null, remove: string[], disable: string[] }
+// `restore` is optional here and always sent: every caller but the adoption rollback has nothing to put
+// back, and making them all spell out an empty list would be noise at a dozen call sites for one.
+export type RailParts = { write: ApacheWrite | null, remove: string[], disable: string[], restore?: string[] }
 
 const sleepReal = (ms: number) => new Promise<void>(resolve => setTimeout(resolve, ms))
 
@@ -87,7 +89,9 @@ export class ApacheRail {
         // Inside the queue, so the read happens once and before any request is numbered.
         await this.seed()
         const seq = this.seq++
-        const request: ApacheRequest = { seq, action, ...parts }
+        // The key is always present on the wire, even empty, so the host unit never has to tell an
+        // older agent's request apart from one that genuinely has nothing to put back.
+        const request: ApacheRequest = { seq, action, ...parts, restore: parts.restore ?? [] }
         const target = posix.join(this.dir, REQUEST_FILE)
         const staging = `${target}.tmp`
         // Rename, so the unit never sees a half-written request. A path unit fires on the name appearing,

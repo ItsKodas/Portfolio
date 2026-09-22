@@ -300,3 +300,42 @@ export async function adopt(
     }
     return { ok: true, written: { hostnames, path } }
 }
+
+// Adoption undone: hostd's own vhost goes away and the files adopt moved aside come back, in the single
+// reload the rail already gives. This is the rollback deploy.ts's swapBack is to a deploy, and it exists
+// for the same reason: a change can be reported a success by everything that was watching and still have
+// taken the site down.
+//
+// It is an agent verb even though nothing but api can decide to call it, because only the agent can move
+// a file on the host. api is the process with a network, so api is what asks the hostname whether the
+// adoption left it answering; the agent is the process with the rail, so the agent is what puts the
+// operator's own configuration back when the answer is no. Neither half can do the other's work.
+//
+// Note what is NOT here: no render, no registry write, no claim check against sites-enabled. Adoption's
+// guards exist to stop hostd replacing a file it does not understand. This call only ever puts back a
+// file the operator wrote themselves, so there is nothing left to protect them from; refusing it because
+// the file it is about to restore is unreadable would be refusing to end an outage.
+export async function restoreAdopted(
+    deps: DomainsDeps,
+    project: ProjectEntry,
+    environment: EnvironmentEntry,
+    restore: string[],
+): Promise<DomainsWritten | Refusal> {
+    const path = vhostPath(deps.config.includeDir, project.id, environment.name)
+    const result = await deps.rail.send('restore', { write: null, remove: [path], disable: [], restore })
+    if (!result.ok) {
+        // Nothing is reverted here, unlike every other verb above. The file this removed is the one that
+        // took the site down, and putting it back is the opposite of what the caller asked for. The
+        // operator is told what Apache said and what is now on disk, which is as much of their own
+        // configuration as the host unit managed to put back.
+        return refuse(
+            'failed',
+            `hostd removed its own vhost for ${project.id} ${environment.name} and could not reload Apache afterwards. `
+            + `Apache is still serving what it last loaded. Check ${restore.join(', ') || deps.config.sitesEnabled} on the server.`,
+            result.output,
+        )
+    }
+    // No hostnames: this call took a vhost away rather than writing one, and saying otherwise would
+    // start a 72 hour verification countdown against a file that is no longer there.
+    return { ok: true, written: { hostnames: [], path } }
+}

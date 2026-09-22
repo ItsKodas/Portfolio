@@ -125,13 +125,23 @@ export type DomainsRemoveArgs = { action: 'remove', environment: EnvironmentName
 // what adopt will actually write, rather than differing from it in every security-relevant line.
 export type DomainsPreviewArgs = { action: 'preview', environment: EnvironmentName, token: string }
 export type DomainsAdoptArgs = { action: 'adopt', environment: EnvironmentName, token: string, disable: string[] }
+// Adoption undone: the vhost hostd wrote goes away and the files adopt moved aside come back, in one
+// reload. `restore` carries the same sites-enabled paths adopt was given as `disable`.
+//
+// It exists because an adoption can pass Apache's configtest, reload cleanly, be reported a success and
+// still take the site off the internet, which is exactly what thebackroom.dev did. Whether that happened
+// can only be decided by asking the hostname, and the agent runs network_mode: none, so api is what
+// asks and this is what api calls when the answer is worse than it was. No token, because nothing is
+// rendered: this call only takes files away and puts files back.
+export type DomainsRestoreArgs = { action: 'restore', environment: EnvironmentName, restore: string[] }
 // set-aliases is how an alias is added or removed. It carries the whole list the environment should end
 // up with rather than one hostname and a direction, because the agent writes the registry and then
 // rewrites the vhost from it: a list makes the pair idempotent, so a retry after a half-failure lands in
 // the same place instead of adding the alias twice. It carries the token too, because the vhost is
 // rewritten in the same call and the token has to survive that rewrite.
 export type DomainsSetAliasesArgs = { action: 'set-aliases', environment: EnvironmentName, aliases: string[], token: string }
-export type DomainsArgs = DomainsWriteArgs | DomainsRemoveArgs | DomainsPreviewArgs | DomainsAdoptArgs | DomainsSetAliasesArgs
+export type DomainsArgs =
+    DomainsWriteArgs | DomainsRemoveArgs | DomainsPreviewArgs | DomainsAdoptArgs | DomainsRestoreArgs | DomainsSetAliasesArgs
 export type DomainsRequest = { verb: 'domains', project: string, args: DomainsArgs }
 
 // The domains verb's own replies. Defined here rather than in agent/domains.ts, which is what builds
@@ -549,6 +559,21 @@ export function parseDomainsArgs(args: unknown): { ok: true, args: DomainsArgs }
             }
             return { ok: true, args: { action: 'adopt', environment: name, token: value, disable: disable as string[] } }
         }
+        case 'restore': {
+            if (!onlyKeys(args, ['action', 'environment', 'restore'])) {
+                return refuse('bad-request', 'restore takes only environment and restore')
+            }
+            const restore = args.restore
+            // An empty list is allowed for the same reason adopt's is: an adoption that displaced
+            // nothing is still an adoption, and undoing it still means taking hostd's own vhost away.
+            if (!Array.isArray(restore)) return refuse('bad-request', 'restore must be a list of files to put back')
+            for (const path of restore) {
+                if (typeof path !== 'string' || !path.startsWith(SITES_ENABLED) || path.includes('/..') || path.includes('/.')) {
+                    return refuse('bad-request', 'every restore entry must be a plain path inside sites-enabled')
+                }
+            }
+            return { ok: true, args: { action: 'restore', environment: name, restore: restore as string[] } }
+        }
         case 'set-aliases': {
             if (!onlyKeys(args, ['action', 'environment', 'aliases', 'token'])) {
                 return refuse('bad-request', 'set-aliases takes only environment, aliases and token')
@@ -571,7 +596,7 @@ export function parseDomainsArgs(args: unknown): { ok: true, args: DomainsArgs }
             return { ok: true, args: { action: 'set-aliases', environment: name, aliases, token: value } }
         }
         default:
-            return refuse('bad-request', 'domains action must be write, remove, preview, adopt or set-aliases')
+            return refuse('bad-request', 'domains action must be write, remove, preview, adopt, restore or set-aliases')
     }
 }
 
