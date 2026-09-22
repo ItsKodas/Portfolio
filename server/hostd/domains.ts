@@ -33,8 +33,11 @@ export type AdoptPreview = {
     proposed: string
     // text is the claiming file verbatim, and it is the point of the preview rather than a detail of it:
     // adoption switches this file off and puts hostd's own in its place on a site serving somebody right
-    // now, and the two directives hostd's parser reads are not the whole of what the file does.
-    claims: { path: string, text: string, names: string[], unsupported: string | null }[]
+    // now, and the handful of directives hostd's parser reads are not the whole of what the file does.
+    //
+    // unsupported is every reason this file cannot be adopted, empty when none was found. A file can be
+    // several kinds of unadoptable at once, so they all travel rather than only the first.
+    claims: { path: string, text: string, names: string[], unsupported: string[] }[]
     extraNames: string[]
     // Files in Apache's sites-enabled that could not be opened at all, so nothing at all is known about
     // them. Usually a symlink whose target has gone. They claim no hostname and block no write, but

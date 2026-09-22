@@ -22,6 +22,7 @@ import { AgentUnavailableError, type AgentClient } from './agent-client.ts'
 import { MAX_AUDIT_READ, type AuditLog, type AuditOutcome } from './audit.ts'
 import { domainKey, newRecord, type DomainRecord } from './domain-state.ts'
 import { newToken } from './verify.ts'
+import { probeSite, rolledBackReason, wentDark, type Answer } from './adopt-check.ts'
 import { sseEvent, SSE_KEEPALIVE } from './sse.ts'
 import type { ScheduleStore } from './schedule.ts'
 
@@ -59,6 +60,11 @@ export type ApiDeps = {
     now?: () => number
     keepaliveMs?: number
     schedules?: ScheduleStore
+    // How the adopt route asks a hostname whether it is still answering, before and after it replaces
+    // the vhost. The global fetch in production; a test hands over its own, since the whole point of
+    // this dependency is that it leaves the process. See adopt-check.ts for why the check is api's and
+    // not the agent's.
+    fetch?: typeof fetch
 }
 
 export type Route =
@@ -745,7 +751,7 @@ export function createHandler(deps: ApiDeps): (req: IncomingMessage, res: Server
             const tokens = new Map<EnvironmentName, string>()
             // And which hostnames hostd was already serving. Anything else starts its 72 hour countdown;
             // these do not, because the rewrite kept the token, so an alias that was answering a moment
-            // ago still is and has nothing new to prove. Making it pending would put "waiting for DNS" on
+            // ago still is and has nothing new to prove. Making it pending would put "not verified yet" on
             // a client's screen for a name that never stopped working.
             const already = new Map<EnvironmentName, Set<string>>()
             for (const wrote of rewritten) {
@@ -1294,18 +1300,64 @@ export function createHandler(deps: ApiDeps): (req: IncomingMessage, res: Server
                 // registry and no vhost forever.
                 const { claims, adoptable } = preview.preview
                 if (!adoptable) {
-                    const unreadable = claims.filter(claim => claim.unsupported !== null).map(claim => `${claim.path} (${claim.unsupported})`)
-                    return refuseRoute(400, 'bad-request', `these cannot be read well enough to adopt: ${unreadable.join(', ')}`, entry.id, 'domains', target)
+                    // Every reason of every file, rather than a count or the first one: the operator's
+                    // next move is to edit those files by hand, and each reason names a different edit.
+                    const blocked = claims
+                        .filter(claim => claim.unsupported.length > 0)
+                        .map(claim => `${claim.path}: ${claim.unsupported.join(' ')}`)
+                    return refuseRoute(400, 'bad-request', `these cannot be adopted as they stand. ${blocked.join(' ')}`, entry.id, 'domains', target)
                 }
+
+                const disable = claims.map(claim => claim.path)
+
+                // The baseline, and it is taken HERE, before anything on the host moves. Without it the
+                // check after the reload cannot tell "still broken" from "newly broken", and would
+                // refuse an adoption meant to fix a site that was already down.
+                //
+                // Skipped, and the whole check with it, when there is nothing to put back. Rolling an
+                // adoption back means restoring the operator's own file; on an environment that had none
+                // (a newly provisioned site, which is the only other shape adopt takes) the only
+                // rollback available would leave the hostname with no vhost at all, which is worse than
+                // whatever the probe is complaining about. Skipped too when the environment has no
+                // domain, which the agent refuses on its own a moment later.
+                const checking = environment.domain !== null && disable.length > 0 ? environment.domain : null
+                const before: Answer | null = checking === null ? null : await probeSite(deps.fetch ?? fetch, checking)
 
                 const reply = await callAgentAudited(
                     {
                         verb: 'domains', project: entry.id,
-                        args: { action: 'adopt', environment: environment.name, token, disable: claims.map(claim => claim.path) },
+                        args: { action: 'adopt', environment: environment.name, token, disable },
                     },
                     entry.id, 'domains', target,
                 )
                 if (!reply) return
+
+                // The rail said the configtest passed and the reload succeeded. That is exactly what it
+                // said when thebackroom.dev went dark, so it is not the last word: ask the hostname.
+                if (reply.ok && checking !== null && before !== null) {
+                    const after = await probeSite(deps.fetch ?? fetch, checking)
+                    if (wentDark(before, after)) {
+                        const undo = await callAgentAudited(
+                            { verb: 'domains', project: entry.id, args: { action: 'restore', environment: environment.name, restore: disable } },
+                            entry.id, 'domains', target,
+                        )
+                        if (!undo) return
+                        const problem = undo.ok ? null : undo.message
+                        // Answered as a 'failed' refusal rather than a 200, and routed through
+                        // respondDomains so recordVhost fires: that is what puts the environment on
+                        // /health's alarm and turns needsYou true in the portal. The hostnames are
+                        // deliberately NOT recorded as written, because after the rollback hostd's
+                        // vhost is gone and there is nothing for the verifier to prove against.
+                        const message = rolledBackReason(checking, before, after, disable, problem)
+                        // Apache's own words only when there are any: this rollback's failure output,
+                        // never the adopt's, which was a configtest that passed and says nothing.
+                        const rolledBack: Refusal = undo.ok || undo.output === undefined
+                            ? { ok: false, code: 'failed', message }
+                            : { ok: false, code: 'failed', message, output: undo.output }
+                        return respondDomains(rolledBack, entry, environment, target, async () => {})
+                    }
+                }
+
                 // The hostnames the agent says it wrote, rather than the registry's own copy: api polls
                 // the registry every ten seconds, and the reply is what the vhost actually carries. The
                 // Array.isArray test is what tells this reply's single `written` apart from configure's

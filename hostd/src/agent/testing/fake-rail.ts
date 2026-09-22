@@ -24,6 +24,7 @@ export type FakeRailRequest = {
     write: { path: string, text: string } | null
     remove?: string[]
     disable?: string[]
+    restore?: string[]
 }
 
 export type FakeRailResult = { ok: boolean, output: string }
@@ -66,6 +67,18 @@ export function startFakeRail(dir: string, options: FakeRailOptions = {}) {
                     const target = join(adopted, `${basename(path)}.bak`)
                     await rename(path, target)
                     moved.push({ from: path, to: target })
+                }
+            }
+            // An adoption run backwards, gated on the action exactly as the script gates it. Nothing
+            // restored here joins `moved`, for the script's own reason: undoing a half-done restore
+            // would take the operator's file back out of sites-enabled on a site whose hostd file has
+            // already been removed, leaving the hostname with no vhost at all.
+            if (request.action === 'restore') {
+                for (const path of request.restore ?? []) {
+                    const adopted = adoptedDir ?? join(dirname(path), '..', 'hostd-adopted')
+                    const source = join(adopted, `${basename(path)}.bak`)
+                    // Missing is skipped, not fatal: it means the file is already back.
+                    await rename(source, path).catch(() => undefined)
                 }
             }
             if (request.write) {

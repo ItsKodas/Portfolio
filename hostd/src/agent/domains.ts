@@ -11,7 +11,7 @@ import { refuse, type AdoptPreview, type DomainsWritten, type Refusal } from '..
 import type { Change } from '../shared/registry-write.ts'
 import type { ApacheRail } from './apache-rail.ts'
 import { blindWarning, findClaims, readNothing, type SitesEnabled } from './sites-enabled.ts'
-import { renderVhost, vhostPath } from './vhost.ts'
+import { renderVhost, upstreamFor, vhostPath } from './vhost.ts'
 
 export type DomainsConfig = {
     includeDir: string
@@ -231,7 +231,9 @@ export async function previewAdopt(
     const listing = await sweep(deps)
     if (!listing.ok) return listing
     const { files, unreadable } = listing.sites
-    const claims = findClaims(files, hostnames)
+    // The upstream is handed to the parser rather than left for it to work out: the port belongs to the
+    // registry entry, which this function holds and sites-enabled.ts deliberately does not.
+    const claims = findClaims(files, hostnames, upstreamFor(environment.port))
     // Names the old file serves that the registry has never heard of. Offered rather than taken: adopting
     // without carrying these across would silently stop serving hostnames that work today, and adding
     // them automatically would put hostnames in the registry nobody asked for.
@@ -247,7 +249,7 @@ export async function previewAdopt(
             // open" is exactly the sort of thing an operator should see before confirming, not least
             // because Apache will refuse the reload the adopt ends with while it is there.
             unreadable,
-            adoptable: claims.every(claim => claim.unsupported === null),
+            adoptable: claims.every(claim => claim.unsupported.length === 0),
         },
     }
 }
@@ -269,7 +271,7 @@ export async function adopt(
     // hostd's vhost over a site still being served by its own, so it is the one that must not run blind.
     const listing = await sweep(deps)
     if (!listing.ok) return listing
-    const claims = findClaims(listing.sites.files, hostnames)
+    const claims = findClaims(listing.sites.files, hostnames, upstreamFor(environment.port))
 
     // Every named file has to be one this environment's hostnames actually reach. api chose these from a
     // preview, and the preview could be minutes old, so the claim is re-established here against the
@@ -277,7 +279,11 @@ export async function adopt(
     for (const path of disable) {
         const claim = claims.find(entry => entry.path === path)
         if (!claim) return refuse('bad-request', `${path} does not serve any hostname of ${project.id} ${environment.name}`)
-        if (claim.unsupported) return refuse('bad-request', `${path} cannot be read well enough to adopt: ${claim.unsupported}`)
+        // Every reason, not the first: this is the last gate before the file is moved aside, and the
+        // operator is going to act on what it says rather than on a preview they read minutes ago.
+        if (claim.unsupported.length > 0) {
+            return refuse('bad-request', `${path} cannot be adopted: ${claim.unsupported.join(' ')}`)
+        }
     }
 
     const path = vhostPath(deps.config.includeDir, project.id, environment.name)
@@ -293,4 +299,43 @@ export async function adopt(
         return refuse('failed', `Apache refused the configuration adopting ${project.id} ${environment.name}.${also}`, result.output)
     }
     return { ok: true, written: { hostnames, path } }
+}
+
+// Adoption undone: hostd's own vhost goes away and the files adopt moved aside come back, in the single
+// reload the rail already gives. This is the rollback deploy.ts's swapBack is to a deploy, and it exists
+// for the same reason: a change can be reported a success by everything that was watching and still have
+// taken the site down.
+//
+// It is an agent verb even though nothing but api can decide to call it, because only the agent can move
+// a file on the host. api is the process with a network, so api is what asks the hostname whether the
+// adoption left it answering; the agent is the process with the rail, so the agent is what puts the
+// operator's own configuration back when the answer is no. Neither half can do the other's work.
+//
+// Note what is NOT here: no render, no registry write, no claim check against sites-enabled. Adoption's
+// guards exist to stop hostd replacing a file it does not understand. This call only ever puts back a
+// file the operator wrote themselves, so there is nothing left to protect them from; refusing it because
+// the file it is about to restore is unreadable would be refusing to end an outage.
+export async function restoreAdopted(
+    deps: DomainsDeps,
+    project: ProjectEntry,
+    environment: EnvironmentEntry,
+    restore: string[],
+): Promise<DomainsWritten | Refusal> {
+    const path = vhostPath(deps.config.includeDir, project.id, environment.name)
+    const result = await deps.rail.send('restore', { write: null, remove: [path], disable: [], restore })
+    if (!result.ok) {
+        // Nothing is reverted here, unlike every other verb above. The file this removed is the one that
+        // took the site down, and putting it back is the opposite of what the caller asked for. The
+        // operator is told what Apache said and what is now on disk, which is as much of their own
+        // configuration as the host unit managed to put back.
+        return refuse(
+            'failed',
+            `hostd removed its own vhost for ${project.id} ${environment.name} and could not reload Apache afterwards. `
+            + `Apache is still serving what it last loaded. Check ${restore.join(', ') || deps.config.sitesEnabled} on the server.`,
+            result.output,
+        )
+    }
+    // No hostnames: this call took a vhost away rather than writing one, and saying otherwise would
+    // start a 72 hour verification countdown against a file that is no longer there.
+    return { ok: true, written: { hostnames: [], path } }
 }

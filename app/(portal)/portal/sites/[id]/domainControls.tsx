@@ -404,9 +404,11 @@ export function AdoptSite({ id, environment, projectName }: AdoptProps) {
                         {!preview.adoptable && (
                             <div className={styles.said}>
                                 <Callout tone="crit" title="This one cannot be taken over from here">
-                                    One of the files below uses a directive this parser will not follow,
-                                    so what it serves cannot be established. hostd refuses the change
-                                    rather than guessing, and the file has to be simplified by hand first.
+                                    One of the files below does something the configuration hostd writes
+                                    cannot do, or uses a directive this parser will not follow. Each
+                                    reason is spelled out under the file it came from. hostd refuses the
+                                    change rather than replacing the file and hoping, so those have to be
+                                    settled by hand on the server first.
                                 </Callout>
                             </div>
                         )}
@@ -450,10 +452,15 @@ export function AdoptSite({ id, environment, projectName }: AdoptProps) {
                                                     ? `serves ${claim.names.join(', ')}`
                                                     : 'serves no name this could read'}
                                             </p>
-                                            {claim.unsupported && (
-                                                <p className={styles.stateBad}>{claim.unsupported}</p>
-                                            )}
-                                            {/* The file itself, whole and unedited. hostd reads two
+                                            {/* Every reason, one per line. A file can be several kinds
+                                                of unadoptable at once, and each one is a different edit
+                                                the operator has to make, so showing only the first
+                                                means being told them one at a time across as many
+                                                attempts. */}
+                                            {claim.unsupported.map(reason => (
+                                                <p className={styles.stateBad} key={reason}>{reason}</p>
+                                            ))}
+                                            {/* The file itself, whole and unedited. hostd reads a few
                                                 directives out of it and this replaces all of them, so a
                                                 rewrite, a basic auth block or a bespoke error page is
                                                 only ever visible here. It is the reason the pane

@@ -119,6 +119,33 @@ $(jq -r '.disable[]?' "$REQUEST")
 DISABLE
 fi
 
+# An adoption run backwards. The request names the original sites-enabled paths, the same ones the adopt
+# named in its disable list, and this is the only place that knows where they were parked, which is why
+# the agent never has to say.
+#
+# Nothing here is appended to MOVED, and that is deliberate rather than an oversight. MOVED exists so a
+# half-done adoption can be undone, and undoing a half-done RESTORE means putting the operator's file
+# back out of sites-enabled again, on a site that by this point has no hostd file either (the removals
+# above ran first). That leaves the hostname with no vhost at all, which is the one outcome worse than a
+# configuration Apache refused. So a restore that fails stops where it got to, with as much of the
+# operator's own configuration back on disk as could be put back, and says so. Apache is still serving
+# what it loaded last either way: nothing below this point has reloaded.
+#
+# A .bak that is not there is skipped rather than fatal. It means the file was already restored, by an
+# earlier attempt or by the operator's own hand, and failing the whole request over it would leave the
+# rest of the list un-restored for no gain.
+if [ "$ACTION" = "restore" ]; then
+    STAGE="restoring files"
+    while IFS= read -r path; do
+        [ -n "$path" ] || continue
+        source="$ADOPTED/$(basename "$path").bak"
+        [ -e "$source" ] || continue
+        mv "$source" "$path"
+    done <<RESTORE_LIST
+$(jq -r '.restore[]?' "$REQUEST")
+RESTORE_LIST
+fi
+
 if [ "$(jq -r '.write // "null"' "$REQUEST")" != "null" ]; then
     STAGE="writing the new file"
     WRITE_PATH=$(jq -r '.write.path' "$REQUEST")

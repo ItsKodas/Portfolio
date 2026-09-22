@@ -19,7 +19,7 @@ import { formatWhen } from '../../format'
 import styles from './site.module.css'
 
 // ui/StatusDot draws container states, and a domain is not a container. The tone is the thing both have
-// in common, so it is what maps: green for a name that answers, amber for one still waiting on DNS, red
+// in common, so it is what maps: green for a name that answers, amber for one not verified yet, red
 // for one that gave up, grey for one hostd does not own. The word beside the dot is stateWord's, and it
 // is the word that carries the meaning; the dot is colour.
 const DOTS: Record<'good' | 'warn' | 'crit' | 'idle', DotState> = {

@@ -11,10 +11,19 @@ const domain = (over: Partial<Domain> = {}): Domain => ({
 describe('stateWord', () => {
     it('says what each state means in the operator\'s language', () => {
         expect(stateWord('active')).toBe('working')
-        expect(stateWord('pending')).toBe('waiting for DNS')
+        expect(stateWord('pending')).toBe('not verified yet')
         expect(stateWord('broken')).toBe('stopped answering')
         expect(stateWord('failed')).toBe('gave up')
         expect(stateWord('unmanaged')).toBe('set up by hand')
+    })
+
+    // It read "waiting for DNS" the day adopting thebackroom.dev took it off the internet. The DNS was
+    // correct: hostd's own generated vhost was the problem, and the panel sent the operator to
+    // Cloudflare. pending means the check has not passed, and nothing more is actually known here.
+    it('names no cause for a pending domain, because it does not know one', () => {
+        for (const cause of ['DNS', 'CNAME', 'Cloudflare', 'proxy', 'certificate']) {
+            expect(stateWord('pending')).not.toContain(cause)
+        }
     })
 })
 

@@ -24,6 +24,13 @@ export function vhostPath(dir: string, id: string, environment: EnvironmentName)
     return posix.join(dir, `${id}-${environment}.conf`)
 }
 
+// Where the generated vhost proxies an environment to, in the exact spelling it renders. Exported
+// because adoption compares a hand-written file's own ProxyPass against it, and a second spelling of the
+// same address written out by hand there would drift from this one the first time either changed.
+export function upstreamFor(port: number): string {
+    return `http://127.0.0.1:${port}/`
+}
+
 // Every name a block answers for, in the one shape Apache actually reads: the first as ServerName and
 // the rest as ServerAlias. ServerName is single-valued, so a second occurrence in the same container
 // silently replaces the first and every name but the last matches no vhost at all, falling through to
@@ -112,8 +119,8 @@ function port443(input: VhostInput): string {
     ProxyPreserveHost On
     ProxyPass ${HOLDING_PAGE} !
     ProxyPass /.well-known/hostd/${input.token} !
-    ProxyPass / http://127.0.0.1:${input.port}/
-    ProxyPassReverse / http://127.0.0.1:${input.port}/
+    ProxyPass / ${upstreamFor(input.port)}
+    ProxyPassReverse / ${upstreamFor(input.port)}
 </VirtualHost>`
 }
 

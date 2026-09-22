@@ -55,7 +55,7 @@ const preview = (over: Partial<AdoptPreview> = {}): AdoptPreview => ({
         path: '/etc/apache2/sites-enabled/acme.conf',
         text: HAND_WRITTEN,
         names: ['acme.com'],
-        unsupported: null,
+        unsupported: [],
     }],
     extraNames: [],
     unreadable: [],
@@ -74,7 +74,7 @@ describe('DomainsPanel, for the operator', () => {
         render(<DomainsPanel {...props} domains={[domain(), domain({ hostname: 'www.acme.com', primary: false, state: 'pending' })]} />)
         expect(screen.getByText('acme.com')).toBeInTheDocument()
         expect(screen.getByText('www.acme.com')).toBeInTheDocument()
-        expect(screen.getByText('waiting for DNS')).toBeInTheDocument()
+        expect(screen.getByText('not verified yet')).toBeInTheDocument()
     })
 
     it('marks which one is the primary, since every other name redirects to it', () => {
@@ -120,7 +120,7 @@ describe('DomainsPanel, for the operator', () => {
                     path: '/etc/apache2/sites-enabled/acme.conf',
                     text: HAND_WRITTEN,
                     names: ['acme.com'],
-                    unsupported: 'Use is used, so the hostnames this file serves cannot be read here',
+                    unsupported: ['Use is used, so the hostnames this file serves cannot be read here'],
                 }],
             }),
         })
