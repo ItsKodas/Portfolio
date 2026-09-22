@@ -10,7 +10,7 @@ import {
     type RefusalCode, type ProvisionCreateArgs, type ProvisionAddEnvironmentArgs,
 } from '../shared/protocol.ts'
 import {
-    ENVIRONMENTS, CERTIFICATE_MODES, hostnamesOf,
+    ENVIRONMENTS, CERTIFICATE_MODES, CREDENTIAL_NAME, hostnamesOf,
     type CertificateMode, type EnvironmentEntry, type EnvironmentName, type ProjectEntry, type Registry,
 } from '../shared/registry.ts'
 import { envPathProblem } from '../shared/envfiles.ts'
@@ -65,6 +65,7 @@ export type Route =
     | { verb: 'list' }
     | { verb: 'health' }
     | { verb: 'audit-all' }
+    | { verb: 'credentials' }
     | { verb: 'status', project: string }
     | { verb: 'lifecycle', project: string, action: LifecycleAction }
     | { verb: 'logs', project: string }
@@ -123,6 +124,7 @@ export function matchRoute(method: string, pathname: string): Route {
     }
     if (parts.length === 1 && parts[0] === 'audit') return only('GET', { verb: 'audit-all' })
     if (parts.length === 1 && parts[0] === 'health') return only('GET', { verb: 'health' })
+    if (parts.length === 1 && parts[0] === 'credentials') return only('GET', { verb: 'credentials' })
     if (parts[0] !== 'projects' || parts.length < 2) return { verb: 'not-found' }
 
     const project = parts[1] ?? ''
@@ -324,8 +326,8 @@ async function readJsonBody(req: IncomingMessage, maxBytes: number): Promise<{ o
 }
 
 function parseCreateBody(value: Record<string, unknown>): { ok: true, args: ProvisionCreateArgs } | { ok: false, message: string } {
-    if (!onlyKeys(value, ['id', 'client', 'name', 'repo', 'branch', 'domain', 'certificate'])) {
-        return { ok: false, message: 'create takes only id, client, name, repo, branch, domain and certificate' }
+    if (!onlyKeys(value, ['id', 'client', 'name', 'repo', 'credential', 'branch', 'domain', 'certificate'])) {
+        return { ok: false, message: 'create takes only id, client, name, repo, credential, branch, domain and certificate' }
     }
     // Validated against the same grammar as everywhere else an id is trusted, not just typeof: an
     // unvalidated id is what would otherwise end up as the project field of an audit entry below.
@@ -333,6 +335,9 @@ function parseCreateBody(value: Record<string, unknown>): { ok: true, args: Prov
     if (typeof value.client !== 'string' || !CLIENT_ID.test(value.client)) return { ok: false, message: 'client is malformed' }
     if (typeof value.name !== 'string') return { ok: false, message: 'name is malformed' }
     if (typeof value.repo !== 'string') return { ok: false, message: 'repo is malformed' }
+    if (value.credential !== undefined && (typeof value.credential !== 'string' || !CREDENTIAL_NAME.test(value.credential))) {
+        return { ok: false, message: 'credential must be 1 to 32 lowercase letters, digits or underscores' }
+    }
     if (typeof value.branch !== 'string') return { ok: false, message: 'branch is malformed' }
     const domain = value.domain
     if (domain !== null && typeof domain !== 'string') return { ok: false, message: 'domain is malformed' }
@@ -341,7 +346,9 @@ function parseCreateBody(value: Record<string, unknown>): { ok: true, args: Prov
     return {
         ok: true,
         args: {
-            action: 'create', id: value.id, client: value.client, name: value.name, repo: value.repo, branch: value.branch,
+            action: 'create', id: value.id, client: value.client, name: value.name, repo: value.repo,
+            ...(value.credential === undefined ? {} : { credential: value.credential as string }),
+            branch: value.branch,
             domain: domain as string | null, certificate: certificate as CertificateMode | null,
         },
     }
@@ -873,7 +880,7 @@ export function createHandler(deps: ApiDeps): (req: IncomingMessage, res: Server
                         // for the URL of a repository they cannot reach, and it is the kind of detail that
                         // belongs to the machine rather than to their site, so it is absent rather than
                         // null, exactly as environmentsFor withholds dir, composePaths and port.
-                        ...(caller.actor.kind === 'admin' ? { repo: project.repo } : {}),
+                        ...(caller.actor.kind === 'admin' ? { repo: project.repo, credential: project.credential } : {}),
                         environments: environmentsFor(project, caller.actor),
                         valid: reason === undefined,
                         ...(reason === undefined ? {} : { reason }),
@@ -936,6 +943,17 @@ export function createHandler(deps: ApiDeps): (req: IncomingMessage, res: Server
                 const limit = parseLimit(url.searchParams)
                 if (limit === null) return sendJson(res, 400, { ok: false, code: 'bad-request', message: `limit must be 1 to ${MAX_AUDIT_READ}` })
                 return sendJson(res, 200, { ok: true, events: await deps.audit.read({ limit }) })
+            }
+
+            case 'credentials': {
+                // Gated like audit-all rather than through authorize: there is no project in this
+                // question, so there is no ownership to decide. The list fills the Settings form, which
+                // is the operator's alone end to end.
+                if (caller.actor.kind !== 'admin') return refuseRoute(403, 'admin-only', 'only the admin can read the credential list', null, 'configure')
+                const reply = await callAgent({ verb: 'credentials' })
+                if (!reply) return
+                if (!reply.ok) return refuseRoute(AGENT_STATUS[reply.code], reply.code, reply.message, null, 'configure')
+                return sendJson(res, 200, reply)
             }
 
             case 'audit': {
