@@ -13,6 +13,12 @@ reserved: [horizons.gg]
 # rejects the whole file.
 # allowed: [test.hostd.horizons.gg]
 
+# Every name strictly below these may be a site's main domain, which only the operator sets. A client's
+# own aliases get no such opening, so a client still cannot add panel.horizons.gg to their site. The
+# entry itself stays reserved (this opens spotondrones.horizons.gg, never horizons.gg), and nothing under
+# dev.horizons.gg is ever opened: listing it rejects the whole file.
+# openSubdomains: [horizons.gg]
+
 # Offsite backup retention, which only the operator sets (phase 2).
 offsite:
   keep: { daily: 14, weekly: 8, monthly: 6 }
