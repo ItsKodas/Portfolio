@@ -16,6 +16,7 @@ import { ENVIRONMENTS } from '../shared/registry.ts'
 import { deployKey } from '../shared/deploys.ts'
 import { createDockerApi, publishedHostPorts } from './docker.ts'
 import { createSpawnRunner, resolveNewProject } from './compose.ts'
+import { createHostPortReader } from './host-ports.ts'
 import { GuardTracker } from './guard-tracker.ts'
 import { createFetchClient, socketConnect } from './fetch-client.ts'
 import { Agent } from './agent.ts'
@@ -153,6 +154,12 @@ async function main(): Promise<void> {
     if (!reachable) fail(['the Docker socket is not answering'])
 
     const runner = createSpawnRunner()
+    // Every port listening on the host, for choosing and checking ports. See host-ports.ts.
+    const listening = createHostPortReader({
+        runner,
+        container: process.env.HOSTD_AGENT_CONTAINER ?? 'hostd-agent',
+        published: async () => publishedHostPorts(await docker.listAllContainers()),
+    })
     const guard = new GuardTracker(runner)
     await guard.checkAll(store.current())
 
@@ -197,8 +204,11 @@ async function main(): Promise<void> {
         refreshRegistry: async () => { await store.refresh() },
         writer,
         fetcher,
-        // Docker's published ports alone for now; host-ports.ts adds everything else listening on the host.
-        choosePort: async () => choosePort(store.current(), publishedHostPorts(await docker.listAllContainers())),
+        // A refusal rather than a guess when the host cannot be read: see host-ports.ts.
+        choosePort: async () => {
+            const seen = await listening()
+            return seen.ok ? choosePort(store.current(), seen.ports) : { ok: false, problem: seen.problem }
+        },
         mkdir: dir => mkdir(dir),
         rmdir: dir => rm(dir, { recursive: true, force: true }),
         exists,
