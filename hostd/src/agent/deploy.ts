@@ -24,6 +24,7 @@ import type { FetchClient } from './fetch-client.ts'
 import type { Runner } from './compose.ts'
 import type { DockerApi } from './docker.ts'
 import { listEnvFiles, readEnvFile, writeEnvFile, type EnvFs } from './env-files.ts'
+import { isExampleName } from '../shared/envfiles.ts'
 import {
     buildArgv, composeNameOf, deployTrees, downArgv, locationIn, repositoryIn, runCompose, upArgv,
     BUILD_TIMEOUT_MS, SWAP_TIMEOUT_MS, type DeployTrees,
@@ -171,6 +172,9 @@ async function carryEnvFiles(
 ): Promise<{ ok: true } | { ok: false, problem: string }> {
     const files = await listEnvFiles(environment, deps.envFs)
     for (const file of files) {
+        // The checkout already has the committed copy, and it is the one that belongs with this commit.
+        // See isExampleName for why this is a skip and not a write that needed permitting.
+        if (isExampleName(file.path)) continue
         const read = await readEnvFile(environment, file.path, deps.envFs)
         // The path is named, never the contents: an env value must not reach a log line or a record.
         if (!read.ok) return { ok: false, problem: `${file.path} could not be read from the running copy` }

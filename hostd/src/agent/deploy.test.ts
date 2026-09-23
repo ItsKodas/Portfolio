@@ -312,6 +312,22 @@ describe('runDeploy, before the swap', () => {
         assert.equal(context.files.get('/var/www/acme/.env'), 'DATABASE_URL=postgres://live\n')
     })
 
+    // listEnvFiles deliberately lists an .example alongside the real file, so the portal can show the two
+    // together, but envWriteProblem refuses to write one: a repo commits its .example, so writing it
+    // would dirty a tracked file. A carry that reads the list and writes every entry therefore failed
+    // every deploy of every repo that commits one, with ".env.example could not be written into the new
+    // tree". There is nothing to carry in the first place: the checkout already has the committed copy,
+    // and it belongs to the commit being deployed, unlike the one in the tree being replaced.
+    it('leaves an .example to the checkout, which already has the copy that belongs with this commit', async () => {
+        const context = setup({
+            envTree: { '/var/www/acme/.env': 'DATABASE_URL=postgres://live\n', '/var/www/acme/.env.example': 'DATABASE_URL=\n' },
+        })
+        const record = await runDeploy(context.project(), context.environment(), { ...request, commit: TIP }, context.deps)
+        assert.equal(record.outcome, 'ok', record.reason ?? '')
+        assert.equal(context.files.get('/var/www/acme.next/.env'), 'DATABASE_URL=postgres://live\n')
+        assert.equal(context.files.has('/var/www/acme.next/.env.example'), false)
+    })
+
     it('fails the deploy when an env file cannot be carried, naming the path and never its contents', async () => {
         const context = setup()
         context.deps.envFs!.writeFile = async () => { throw new Error('read-only file system') }

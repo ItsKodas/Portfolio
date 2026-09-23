@@ -553,6 +553,21 @@ describe('addEnvironment', () => {
         assert.equal(calls.includes('write'), false)
     })
 
+    // The same rule the deploy's carry follows, and for the same reason: listEnvFiles lists an .example
+    // on purpose, envWriteProblem refuses to write one, and the clone has already put the repo's own
+    // committed copy in the test folder. Copying it over is both refused and pointless, and here the
+    // refusal surfaces as a file reported to the operator as one that could not be copied.
+    it('leaves an .example to the clone, rather than reporting one it was never going to copy', async () => {
+        const { deps, envFs, envFsFiles } = setup({
+            envTree: { '/var/www/acme/.env': 'A=1\n', '/var/www/acme/.env.example': 'A=\n' },
+        })
+        const reply = await addEnvironment(project(), args(), deps, envFs)
+        assert.equal(reply.ok, true)
+        assert.equal(envFsFiles.get('/var/www/acme-test/.env'), 'A=1\n')
+        assert.equal(envFsFiles.has('/var/www/acme-test/.env.example'), false)
+        assert.equal(JSON.stringify(reply).includes('could not be copied'), false, JSON.stringify(reply))
+    })
+
     it('copies live env files into a new test environment, pointing the site URL and database at test', async () => {
         const { deps, envFs, envFsFiles } = setup({
             envTree: {
