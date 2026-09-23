@@ -68,7 +68,7 @@ export function Shell({ brand, tabs, bar, nav, rail, fill, children }: Props) {
                     {bar && <span className={styles.barExtra}>{bar}</span>}
                 </header>
 
-                <div className={styles.shell}>
+                <div className={[styles.shell, !rail && styles.railless].filter(Boolean).join(' ')}>
                     <nav
                         ref={navRef}
                         className={[styles.nav, open && styles.open].filter(Boolean).join(' ')}

@@ -35,7 +35,22 @@ export function DeployLog({ id, environment }: { id: string, environment: 'live'
     // Bumped to reopen the stream by hand after a refusal, which is the only thing Try again does
     const [attempt, setAttempt] = useState(0)
     const startedAt = useRef<string | null>(null)
+    const list = useRef<HTMLOListElement>(null)
+    // Whether the reader is at the bottom. Scrolled up to read something earlier, they are left there
+    // rather than yanked back down by every line that arrives.
+    const following = useRef(true)
     const router = useRouter()
+
+    useEffect(() => {
+        // Newest at the bottom, like every log anyone has ever read
+        const pane = list.current
+        if (pane && following.current) pane.scrollTop = pane.scrollHeight
+    }, [lines])
+
+    function onScroll() {
+        const pane = list.current
+        if (pane) following.current = pane.scrollHeight - pane.scrollTop - pane.clientHeight < 24
+    }
 
     useEffect(() => {
         let stopped = false
@@ -140,7 +155,7 @@ export function DeployLog({ id, environment }: { id: string, environment: 'live'
                 </>
             )}
             {!problem && lines.length === 0 && !dropped && <p className={styles.deployLogIdle}>Nothing has deployed yet.</p>}
-            <ol className={styles.deployLogLines}>
+            <ol ref={list} className={styles.deployLogLines} onScroll={onScroll}>
                 {lines.map((line, index) => (
                     <li key={`${line.at}-${index}`} className={styles[line.kind]}>{line.text}</li>
                 ))}

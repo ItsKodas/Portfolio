@@ -177,13 +177,16 @@ export async function DeployPanel({ id, environments, environment, enabled }: Pr
                             History
                             {view.deploys.length > 0 && <span className={styles.count}>{view.deploys.length}</span>}
                         </h2>
-                        {view.deploys.length === 0
-                            ? <p className={styles.empty}>
-                                Nothing has been deployed yet. hostd keeps the last twenty, newest first.
-                            </p>
-                            : view.deploys.map(record => (
-                                <Deploy key={`${record.commit}-${record.startedAt}`} record={record} />
-                            ))}
+                        {/* Scrolls on its own on a wide window, so the controls above it stay put */}
+                        <div className={styles.historyList}>
+                            {view.deploys.length === 0
+                                ? <p className={styles.empty}>
+                                    Nothing has been deployed yet. hostd keeps the last twenty, newest first.
+                                </p>
+                                : view.deploys.map(record => (
+                                    <Deploy key={`${record.commit}-${record.startedAt}`} record={record} />
+                                ))}
+                        </div>
                     </section>
                 </div>
 
