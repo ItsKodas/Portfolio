@@ -15,6 +15,7 @@ import {
 import { writeEnvFile, type EnvironmentName } from '@/server/hostd/env'
 import type { Caller } from '@/server/hostd/actor'
 import { forAdmin, forClient } from '@/server/hostd/errors'
+import { setPort } from '@/server/hostd/ports'
 import { assertOwned, lifecycle } from '@/server/hostd/projects'
 import { removeProject } from '@/server/hostd/remove'
 import { callerFromSession } from '@/server/hostd/session'
@@ -210,6 +211,24 @@ export async function setBranchAction(id: string, environment: string, branch: s
     // Switching branch deploys its tip, and it is also what resumes an environment hostd has paused, so
     // both are said here rather than leaving the second one to be discovered.
     return { ok: true, message: `Now following ${branch}. A deploy of it has started.` }
+}
+
+// Moving an environment to another port recreates its containers, so it is its own action rather than
+// part of the Settings save, which never starts or stops anything. The operator's alone, as every other
+// change to the registry entry is.
+export async function setPortAction(id: string, environment: string, port: number): Promise<SiteActionResult> {
+    const name = environmentOf(environment)
+    if (!name || typeof port !== 'number' || !Number.isInteger(port)) return { ok: false, error: 'That is not something this page can do.' }
+
+    const allowed = await allow(id, true)
+    if (!allowed.ok) return allowed
+
+    const result = await setPort(allowed.config, allowed.caller, id, name, port)
+    if (!result.ok) return refused(`port ${name} on ${id}`, allowed.isAdmin, result)
+
+    revalidatePath(`/portal/sites/${id}`)
+    // hostd's own output already names the environment and the port, and says whether it restarted
+    return { ok: true, message: `${result.value.output}.` }
 }
 
 // Domains. Every one of these is the operator's alone: hostd keeps 'domains' among its admin-only policy

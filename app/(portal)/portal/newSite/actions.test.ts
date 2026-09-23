@@ -22,6 +22,7 @@ const FORM = {
     name: 'Bakery', id: 'bakery', dir: 'bakery', client: '', repo: 'git@github.com:ItsKodas/bakery.git', credential: '',
     branch: 'main', compose: ['docker-compose.yml'], capabilities: ['lifecycle', 'deploy'],
     websockets: false, flexibleSsl: true, domain: 'Bakery.com', certificate: 'letsencrypt', deploy: false,
+    port: '5012',
 }
 
 beforeEach(() => {
@@ -52,7 +53,7 @@ describe('createSiteAction', () => {
         expect(createProject.mock.calls[0][2]).toEqual({
             id: 'bakery', name: 'Bakery', repo: 'git@github.com:ItsKodas/bakery.git', branch: 'main',
             domain: 'bakery.com', certificate: 'letsencrypt', dir: 'bakery', compose: ['docker-compose.yml'],
-            capabilities: ['lifecycle', 'deploy'], websockets: false, flexibleSsl: true,
+            capabilities: ['lifecycle', 'deploy'], websockets: false, flexibleSsl: true, port: 5012,
         })
         expect(clients.createSite).not.toHaveBeenCalled()
         expect(startDeploy).not.toHaveBeenCalled()

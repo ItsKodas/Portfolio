@@ -14,6 +14,7 @@ import { Dialog } from '@/ui/Dialog/Dialog'
 import { Field } from '@/ui/Field/Field'
 import { CAPABILITIES, NOT_BUILT, SWITCHES, type SwitchKey } from '../features'
 import { deleteSiteAction, saveSettingsAction, type SiteActionResult } from './actions'
+import { PortControl } from './portControl'
 import styles from './site.module.css'
 
 // A deploy checks nothing before it is asked to run, because there is nothing here to check it with: it
@@ -195,7 +196,7 @@ export function SiteSettingsForm({ id, name, capabilities, repo, credential, env
                     <div key={env.name} className={styles.envSettings}>
                         <p className={styles.envName}>{env.name}</p>
                         {env.dir && <p className={styles.mono}>{env.dir}</p>}
-                        {env.port !== undefined && <p className={styles.envMeta}>port {env.port}</p>}
+                        {env.port !== undefined && <PortControl id={id} environment={env.name} port={env.port} />}
                         {branches ? (
                             // A <select>, not the <input list> this used to be: a datalist only offers its
                             // options once the operator starts typing, so it read as a plain text field

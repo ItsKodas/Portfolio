@@ -83,6 +83,7 @@ export async function createSiteAction(input: unknown): Promise<NewSiteResult> {
         capabilities: site.capabilities,
         websockets: site.websockets,
         flexibleSsl: site.flexibleSsl,
+        port: site.port,
     })
     if (!result.ok) {
         console.error(`[portal] creating ${site.id} failed: ${forAdmin(result.code, result.message)}`)

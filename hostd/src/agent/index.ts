@@ -8,14 +8,16 @@ import { randomBytes } from 'node:crypto'
 import { posix } from 'node:path'
 import { RegistryStore, explainRegistryError } from '../shared/registry-store.ts'
 import { RegistryWriter } from '../shared/registry-write.ts'
-import { choosePort } from '../shared/ports.ts'
+import { choosePort, portProblem } from '../shared/ports.ts'
 import { buildStatus, writeStatus } from '../shared/status.ts'
 import { readSystemUsage, systemSource, DEFAULT_SYSTEM_DISK_PATH } from '../shared/system.ts'
 import { describeError } from '../shared/formats.ts'
 import { ENVIRONMENTS } from '../shared/registry.ts'
 import { deployKey } from '../shared/deploys.ts'
-import { createDockerApi, dockerPortCheck } from './docker.ts'
+import { createDockerApi, publishedHostPorts } from './docker.ts'
 import { createSpawnRunner, resolveNewProject } from './compose.ts'
+import { createHostPortReader } from './host-ports.ts'
+import { writePortEnv } from './port-env.ts'
 import { GuardTracker } from './guard-tracker.ts'
 import { createFetchClient, socketConnect } from './fetch-client.ts'
 import { Agent } from './agent.ts'
@@ -153,6 +155,12 @@ async function main(): Promise<void> {
     if (!reachable) fail(['the Docker socket is not answering'])
 
     const runner = createSpawnRunner()
+    // Every port listening on the host, for choosing and checking ports. See host-ports.ts.
+    const listening = createHostPortReader({
+        runner,
+        container: process.env.HOSTD_AGENT_CONTAINER ?? 'hostd-agent',
+        published: async () => publishedHostPorts(await docker.listAllContainers()),
+    })
     const guard = new GuardTracker(runner)
     await guard.checkAll(store.current())
 
@@ -197,9 +205,18 @@ async function main(): Promise<void> {
         refreshRegistry: async () => { await store.refresh() },
         writer,
         fetcher,
-        // A fresh dockerPortCheck per call, so it takes its own snapshot of every container's published
-        // ports rather than reusing one from an earlier provisioning action.
-        choosePort: async () => choosePort(store.current(), dockerPortCheck(docker)),
+        // A refusal rather than a guess when the host cannot be read: see host-ports.ts.
+        choosePort: async () => {
+            const seen = await listening()
+            return seen.ok ? choosePort(store.current(), seen.ports) : { ok: false, problem: seen.problem }
+        },
+        checkPort: async (port, own) => {
+            const seen = await listening()
+            if (!seen.ok) return { ok: false, code: 'unavailable', problem: seen.problem }
+            const problem = portProblem(port, store.current(), seen.ports, own)
+            return problem ? { ok: false, code: 'bad-request', problem } : { ok: true }
+        },
+        setPortEnv: (environment, key, port) => writePortEnv(environment, key, port),
         mkdir: dir => mkdir(dir),
         rmdir: dir => rm(dir, { recursive: true, force: true }),
         exists,

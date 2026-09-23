@@ -6,7 +6,7 @@ import { PROJECT_ID, SERVICE_NAME, isRecord, describeError } from '../shared/for
 import {
     LIFECYCLE_ACTIONS, MAX_TAIL, DEFAULT_TAIL, MAX_REQUEST_BYTES, MAX_COMMITS, DEFAULT_COMMITS,
     SNAPSHOT_ID, RUN_ID, CREATE_KEYS, parseConfigureArgs, parseCreateExtras,
-    type AgentReply, type AgentRequest, type LifecycleAction, type LogsArgs, type ProjectStatus, type Refusal,
+    type AgentReply, type AgentRequest, type LifecycleAction, type LogsArgs, type PortsArgs, type ProjectStatus, type Refusal,
     type RefusalCode, type ProvisionCreateArgs, type ProvisionAddEnvironmentArgs,
 } from '../shared/protocol.ts'
 import {
@@ -72,6 +72,7 @@ export type Route =
     | { verb: 'health' }
     | { verb: 'audit-all' }
     | { verb: 'credentials' }
+    | { verb: 'ports' }
     | { verb: 'status', project: string }
     | { verb: 'lifecycle', project: string, action: LifecycleAction }
     | { verb: 'logs', project: string }
@@ -88,6 +89,7 @@ export type Route =
     | { verb: 'deploy-watch', project: string, environment: EnvironmentName }
     | { verb: 'rollback', project: string, environment: EnvironmentName }
     | { verb: 'branch', project: string, environment: EnvironmentName }
+    | { verb: 'port', project: string, environment: EnvironmentName }
     | { verb: 'deploys', project: string, environment: EnvironmentName }
     | { verb: 'commits', project: string, environment: EnvironmentName }
     | { verb: 'backups', project: string }
@@ -132,6 +134,7 @@ export function matchRoute(method: string, pathname: string): Route {
     if (parts.length === 1 && parts[0] === 'audit') return only('GET', { verb: 'audit-all' })
     if (parts.length === 1 && parts[0] === 'health') return only('GET', { verb: 'health' })
     if (parts.length === 1 && parts[0] === 'credentials') return only('GET', { verb: 'credentials' })
+    if (parts.length === 1 && parts[0] === 'ports') return only('GET', { verb: 'ports' })
     if (parts[0] !== 'projects' || parts.length < 2) return { verb: 'not-found' }
 
     const project = parts[1] ?? ''
@@ -208,6 +211,7 @@ export function matchRoute(method: string, pathname: string): Route {
                     return { verb: 'method-not-allowed' }
                 case 'rollback': return only('POST', { verb: 'rollback', project, environment })
                 case 'branch': return only('PUT', { verb: 'branch', project, environment })
+                case 'port': return only('PUT', { verb: 'port', project, environment })
                 case 'deploys': return only('GET', { verb: 'deploys', project, environment })
                 case 'commits': return only('GET', { verb: 'commits', project, environment })
                 case 'domains':
@@ -398,12 +402,37 @@ function parseBranchBody(value: Record<string, unknown>): { ok: true, branch: st
     return { ok: true, branch: value.branch }
 }
 
+function parsePortBody(value: Record<string, unknown>): { ok: true, port: number } | { ok: false, message: string } {
+    if (!onlyKeys(value, ['port'])) return { ok: false, message: 'changing a port takes only port' }
+    // The range and whether it is free are the agent's to say; this only refuses a shape it could not read
+    if (typeof value.port !== 'number' || !Number.isInteger(value.port)) return { ok: false, message: 'port must be a whole number' }
+    return { ok: true, port: value.port }
+}
+
 // Bounded far below the audit log's own limit: this is a page of a commit list, not an export.
 function parseCommitsLimit(params: URLSearchParams): number | null {
     const raw = params.get('limit')
     if (raw === null) return DEFAULT_COMMITS
     const limit = /^\d{1,4}$/.test(raw) ? Number(raw) : 0
     return limit >= 1 && limit <= MAX_COMMITS ? limit : null
+}
+
+// Both halves of own or neither: a port checked for "some environment" would not know which port is its own.
+function parsePortsQuery(params: URLSearchParams): { ok: true, args: PortsArgs } | { ok: false, message: string } {
+    const raw = params.get('port')
+    if (raw !== null && !/^\d{1,5}$/.test(raw)) return { ok: false, message: 'port must be a number' }
+    const project = params.get('project')
+    const environment = params.get('environment')
+    if ((project === null) !== (environment === null)) return { ok: false, message: 'project and environment go together' }
+    if (project !== null && !PROJECT_ID.test(project)) return { ok: false, message: 'project is malformed' }
+    if (environment !== null && !(ENVIRONMENTS as readonly string[]).includes(environment)) return { ok: false, message: 'environment must be live or test' }
+    return {
+        ok: true,
+        args: {
+            port: raw === null ? null : Number(raw),
+            own: project !== null && environment !== null ? { project, environment: environment as EnvironmentName } : null,
+        },
+    }
 }
 
 // Normalised here rather than merely type-checked: normaliseHostname is the one thing in hostd that
@@ -1016,6 +1045,17 @@ export function createHandler(deps: ApiDeps): (req: IncomingMessage, res: Server
                 return sendJson(res, 200, reply)
             }
 
+            case 'ports': {
+                // Gated like credentials: a question about the machine, answered for the operator's forms
+                if (caller.actor.kind !== 'admin') return refuseRoute(403, 'admin-only', 'only the admin can check ports', null, 'provision')
+                const parsed = parsePortsQuery(url.searchParams)
+                if (!parsed.ok) return refuseRoute(400, 'bad-request', parsed.message, null, 'provision')
+                const reply = await callAgent({ verb: 'ports', args: parsed.args })
+                if (!reply) return
+                if (!reply.ok) return refuseRoute(AGENT_STATUS[reply.code], reply.code, reply.message, null, 'provision')
+                return sendJson(res, 200, reply)
+            }
+
             case 'audit': {
                 if (!(await decide(route.project, 'audit', null))) return
                 const limit = parseLimit(url.searchParams)
@@ -1209,6 +1249,28 @@ export function createHandler(deps: ApiDeps): (req: IncomingMessage, res: Server
                 // (the agent's own set-branch calls its refreshRegistry for exactly this reason, in
                 // agent.ts), so api's copy needs catching up here too.
                 return respondAgentAction('deploy', reply, route.project, named, true)
+            }
+
+            case 'port': {
+                // configure's policy: admin only, whatever the project's capabilities, like every other
+                // change to the registry entry itself
+                const target = `${route.environment} port`
+                const entry = await authorizeProject(route.project, 'configure', target)
+                if (!entry) return
+
+                const body = await readJsonBody(req, MAX_REQUEST_BYTES)
+                if (!body.ok) return refuseRoute(400, 'bad-request', body.message, route.project, 'configure', target)
+                const parsed = parsePortBody(body.value)
+                if (!parsed.ok) return refuseRoute(400, 'bad-request', parsed.message, route.project, 'configure', target)
+
+                const named = `${target} ${parsed.port}`
+                const reply = await callAgentAudited(
+                    { verb: 'port', project: route.project, args: { environment: route.environment, port: parsed.port } },
+                    route.project, 'configure', named,
+                )
+                if (!reply) return
+                // The registry changed, so api's copy catches up before answering, as a branch switch does
+                return respondAgentAction('configure', reply, route.project, named, true)
             }
 
             case 'deploys':

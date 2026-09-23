@@ -1,7 +1,7 @@
 import { describe, it } from 'node:test'
 import assert from 'node:assert/strict'
 import { PassThrough } from 'node:stream'
-import { Agent, MAX_FOLLOWS_PER_PROJECT, type AgentDeps, type Outcome } from './agent.ts'
+import { Agent, MAX_FOLLOWS_PER_PROJECT, PORT_CHANGE_UP_TIMEOUT_MS, type AgentDeps, type Outcome } from './agent.ts'
 import { lifecycleArgv, type Runner, type RunResult } from './compose.ts'
 import type { ContainerInspect, ContainerSummary, DockerApi } from './docker.ts'
 import type { EnvFs } from './env-files.ts'
@@ -449,6 +449,8 @@ function fakeProvisionDeps(overrides: Partial<ProvisionDeps> = {}): ProvisionDep
         writer: { write: async () => ({ ok: true }) } as unknown as ProvisionDeps['writer'],
         fetcher: { call: async () => ({ ok: true }) },
         choosePort: async () => ({ ok: true, port: 5100 }),
+        checkPort: async () => ({ ok: true }),
+        setPortEnv: async () => ({ ok: true, previous: null }),
         mkdir: async () => {},
         rmdir: async () => {},
         exists: async () => false,
@@ -456,7 +458,7 @@ function fakeProvisionDeps(overrides: Partial<ProvisionDeps> = {}): ProvisionDep
         // two only have to succeed here, since what provisioning does with them is provision.test.ts's.
         owner: async () => ({ uid: 1000, gid: 1000, mode: 0o775 }),
         own: async () => {},
-        resolve: async () => ({ ok: true, services: { web: { role: 'site' } } }),
+        resolve: async () => ({ ok: true, services: { web: { role: 'site' } }, published: [5100] }),
         runner: async () => ({ exitCode: 0, stdout: '', stderr: '', timedOut: false }),
         log: () => {},
         ...overrides,
@@ -545,6 +547,9 @@ describe('provisioning and env', () => {
             },
             // Only the first call blocks: once serialised, the second is free to run to completion.
             fetcher: { call: async () => { calls++; if (calls === 1) await blocked; return { ok: true, commit: 'abc1234' } } },
+            // Whatever choosePort has handed out so far, so each attempt's own port is published by the
+            // time resolve runs for it, regardless of which of the two ports it was given.
+            resolve: async () => ({ ok: true, services: { web: { role: 'site' } }, published: [...ports] }),
         })
         const { agent } = setup({ provision })
 
@@ -599,7 +604,7 @@ describe('provisioning and env', () => {
         })
         const writes: Array<{ path: string, text: string }> = []
         const provision = fakeProvisionDeps({
-            resolve: async () => ({ ok: true, services: { web: { role: 'site' } } }),
+            resolve: async () => ({ ok: true, services: { web: { role: 'site' } }, published: [5100] }),
         })
         const { agent } = setup({
             provision,
@@ -663,6 +668,7 @@ function fakeDeploys(options: {
                 started.push({ id: project.id, environment: environment.name, request })
                 return { ok: true as const, started: { environment: environment.name as 'live', trigger: request.trigger } }
             },
+            isRunning: () => false,
             watch,
         },
         store: {
@@ -722,6 +728,35 @@ describe('the branches verb', () => {
         const { agent } = setup({ registry: () => deployRegistry, fetcher })
         const reply = replyOf(await agent.handle(branches('acme')))
         assert.deepEqual(reply, { ok: false, code: 'failed', message: 'repository not found' })
+    })
+})
+
+describe('ports', () => {
+    const ask = (port: number | null, own: { project: string, environment: 'live' | 'test' } | null = null): AgentRequest => ({ verb: 'ports', args: { port, own } })
+
+    it('suggests the lowest free port when asked about none', async () => {
+        const { agent } = setup({ provision: fakeProvisionDeps({ choosePort: async () => ({ ok: true, port: 5012 }) }) })
+        assert.deepEqual(replyOf(await agent.handle(ask(null))), { ok: true, suggested: 5012, problem: null })
+    })
+
+    it('says what is wrong with the port it was asked about, as an answer rather than a refusal', async () => {
+        const provision = fakeProvisionDeps({ checkPort: async () => ({ ok: false, code: 'bad-request', problem: 'port 5004 is in use on the host' }) })
+        const { agent } = setup({ provision })
+        assert.deepEqual(replyOf(await agent.handle(ask(5004))), { ok: true, suggested: 5100, problem: 'port 5004 is in use on the host' })
+    })
+
+    it('passes the environment the port is for, so its own port is not counted', async () => {
+        const seen: unknown[] = []
+        const provision = fakeProvisionDeps({ checkPort: async (port, own) => { seen.push([port, own]); return { ok: true } } })
+        const { agent } = setup({ provision })
+        await agent.handle(ask(5010, { project: 'acme', environment: 'live' }))
+        assert.deepEqual(seen, [[5010, { project: 'acme', environment: 'live' }]])
+    })
+
+    it('refuses as unavailable when the host could not be read', async () => {
+        const provision = fakeProvisionDeps({ choosePort: async () => ({ ok: false, problem: 'could not read the host\'s ports: the probe timed out' }) })
+        const { agent } = setup({ provision })
+        assert.deepEqual(replyOf(await agent.handle(ask(null))), { ok: false, code: 'unavailable', message: 'could not read the host\'s ports: the probe timed out' })
     })
 })
 
@@ -1601,5 +1636,144 @@ projects:
         const reply = replyOf(await agent.handle(configure({ capabilities: [] })))
         assert.equal(reply?.ok, false)
         assert.deepEqual(written, [])
+    })
+})
+
+describe('port', () => {
+    const change = (port: number, environment: 'live' | 'test' = 'live'): AgentRequest => ({ verb: 'port', project: 'acme', args: { environment, port } })
+
+    it('refuses when provisioning is not configured', async () => {
+        const { agent } = setup()
+        assert.deepEqual(replyOf(await agent.handle(change(5012))), { ok: false, code: 'unavailable', message: 'provisioning is not configured' })
+    })
+
+    it('refuses an environment the project does not have', async () => {
+        const { agent } = setup({ provision: fakeProvisionDeps() })
+        assert.equal((replyOf(await agent.handle(change(5012, 'test'))) as { code?: string }).code, 'unknown-environment')
+    })
+
+    it('refuses while another provisioning action holds the lock', async () => {
+        let release!: () => void
+        const slow = fakeProvisionDeps({ checkPort: () => new Promise(resolve => { release = () => resolve({ ok: true }) }) })
+        const { agent } = setup({ provision: slow })
+        const first = agent.handle(change(5012))
+        assert.deepEqual(replyOf(await agent.handle(change(5013))), { ok: false, code: 'busy', message: 'another provisioning action is in progress' })
+        release()
+        await first
+    })
+
+    // A deploy's swap runs up on the same compose project, so the two must never overlap
+    it('refuses while a deploy is running for that environment', async () => {
+        const deploys = { runner: { start: () => { throw new Error('not in this test') }, isRunning: (key: string) => key === 'acme:live' } }
+        const { agent } = setup({ provision: fakeProvisionDeps(), deploys: deploys as unknown as AgentDeps['deploys'] })
+        assert.deepEqual(replyOf(await agent.handle(change(5012))), { ok: false, code: 'busy', message: 'acme live has a deploy running' })
+    })
+
+    it('refuses while a lifecycle action is running for the project', async () => {
+        let release: () => void = () => {}
+        const blocked = new Promise<void>(resolve => { release = resolve })
+        const { agent } = setup({
+            provision: fakeProvisionDeps(),
+            runner: async () => {
+                await blocked
+                return { exitCode: 0, stdout: '', stderr: '', timedOut: false }
+            },
+        })
+        const running = agent.handle(lifecycle('acme', 'restart'))
+        await new Promise(resolve => setImmediate(resolve))
+        assert.deepEqual(replyOf(await agent.handle(change(5012))), { ok: false, code: 'busy', message: 'acme already has a lifecycle action running' })
+        release()
+        await running
+    })
+
+    // The change writes .env and may put back the whole file it read, so a portal save must wait for it
+    it('holds the env write slot for the environment until the change is done', async () => {
+        let release!: () => void
+        const slow = fakeProvisionDeps({ checkPort: () => new Promise(resolve => { release = () => resolve({ ok: false, code: 'bad-request', problem: 'port 5012 is in use on the host' }) }) })
+        const { agent } = setup({ provision: slow, envFs: fakeEnvFs() })
+        const first = agent.handle(change(5012))
+        const write: AgentRequest = { verb: 'env', project: 'acme', args: { action: 'write', environment: 'live', path: '.env', text: 'A=1' } }
+        assert.deepEqual(replyOf(await agent.handle(write)), { ok: false, code: 'busy', message: 'acme already has an env write running for live' })
+        release()
+        await first
+        assert.equal(replyOf(await agent.handle(write))?.ok, true)
+    })
+
+    // And the reverse: nothing that runs up or rewrites .env may start while a change is in progress
+    function heldChange(options: SetupOptions = {}) {
+        let release!: () => void
+        const slow = fakeProvisionDeps({ checkPort: () => new Promise(resolve => { release = () => resolve({ ok: false, code: 'bad-request', problem: 'port 5012 is in use on the host' }) }) })
+        const context = setup({ provision: slow, ...options })
+        return { ...context, first: context.agent.handle(change(5012)), release: () => release() }
+    }
+
+    it('refuses a lifecycle action for the project while a change is in progress', async () => {
+        const { agent, first, release, runs } = heldChange()
+        assert.deepEqual(replyOf(await agent.handle(lifecycle('acme', 'restart'))), { ok: false, code: 'busy', message: 'acme already has a lifecycle action running' })
+        release()
+        await first
+        assert.deepEqual(runs, [])
+        assert.equal(replyOf(await agent.handle(lifecycle('acme', 'restart')))?.ok, true)
+    })
+
+    it('refuses a deploy of the environment while a change is in progress', async () => {
+        const context = fakeDeploys()
+        const { agent, first, release } = heldChange({ registry: () => deployRegistry, deploys: context.deploys })
+        const deploy: AgentRequest = { verb: 'deploy', project: 'acme', args: { action: 'deploy', environment: 'live' } }
+        assert.deepEqual(replyOf(await agent.handle(deploy)), { ok: false, code: 'busy', message: 'acme live is moving to another port' })
+        assert.deepEqual(context.started, [])
+        release()
+        await first
+        assert.equal(replyOf(await agent.handle(deploy))?.ok, true)
+    })
+
+    // configure and domains both write the registry and may rewrite the vhost the change is rewriting
+    it('refuses configure for the project while a change is in progress', async () => {
+        const { agent, first, release } = heldChange()
+        const configure: AgentRequest = { verb: 'configure', project: 'acme', args: { capabilities: ['lifecycle'] } }
+        assert.deepEqual(replyOf(await agent.handle(configure)), { ok: false, code: 'busy', message: 'acme is moving an environment to another port' })
+        release()
+        await first
+        assert.equal(replyOf(await agent.handle(configure))?.ok, true)
+    })
+
+    it('refuses the domains verb for the project while a change is in progress', async () => {
+        // A vhost hostd wrote, so the change gets as far as the port check and holds there
+        const domains = { ...fakeDomains(domainsRegistry).domains, readFile: async () => '# hostd' }
+        const { agent, first, release } = heldChange({ registry: () => domainsRegistry, domains })
+        const request = { verb: 'domains' as const, project: 'acme', args: { action: 'write' as const, environment: 'live' as const, token: 'abc123' } }
+        assert.deepEqual(await agent.domains(request), { ok: false, code: 'busy', message: 'acme is moving an environment to another port' })
+        // The vhost read comes first, so the port check that holds the change starts a tick later
+        await new Promise(resolve => setImmediate(resolve))
+        release()
+        await first
+    })
+
+    // Apache would go on proxying to the old port behind a file hostd did not write
+    it('refuses a domain served by a hand-written vhost, and without a rail at all', async () => {
+        const refusal = { ok: false, code: 'bad-request', message: 'acme.com is served by a hand-written vhost; adopt it from the Domains tab first, or move the port by hand' }
+        const handWritten = setup({ registry: () => domainsRegistry, provision: fakeProvisionDeps(), domains: fakeDomains(domainsRegistry).domains, envFs: fakeEnvFs() })
+        assert.deepEqual(replyOf(await handWritten.agent.handle(change(5012))), refusal)
+        assert.deepEqual(handWritten.runs, [])
+        const noRail = setup({ registry: () => domainsRegistry, provision: fakeProvisionDeps(), envFs: fakeEnvFs() })
+        assert.deepEqual(replyOf(await noRail.agent.handle(change(5012))), refusal)
+    })
+
+    // up, an undo's up and the rail all fit inside api's 150 second call to the agent
+    it('gives the recreate a shorter timeout than a lifecycle action', async () => {
+        const timeouts: Array<{ args: string[], timeoutMs: number }> = []
+        const { agent } = setup({
+            provision: fakeProvisionDeps(),
+            envFs: fakeEnvFs({ readFile: async () => 'WEB_PORT=5010' }),
+            runner: async (_command, args, timeoutMs) => {
+                timeouts.push({ args, timeoutMs })
+                const stdout = args.includes('config') ? JSON.stringify({ name: 'acme', services: { web: { ports: [{ published: '5012', target: 3000 }] } } }) : ''
+                return { exitCode: 0, stdout, stderr: '', timedOut: false }
+            },
+        })
+        assert.equal(replyOf(await agent.handle(change(5012)))?.ok, true)
+        const up = timeouts.find(call => call.args.includes('up'))
+        assert.equal(up?.timeoutMs, PORT_CHANGE_UP_TIMEOUT_MS)
+        assert.equal(PORT_CHANGE_UP_TIMEOUT_MS, 60_000)
     })
 })

@@ -159,7 +159,7 @@ describe('parseAgentRequest', () => {
         assert.equal(refusalOf({ verb: 'provision', project: 'acme', args: createArgs }), 'bad-request: provision create takes only args')
         assert.equal(refusalOf({ verb: 'provision', args: { ...createArgs, id: 5 } }), 'bad-request: id is malformed')
         assert.equal(refusalOf({ verb: 'provision', args: { ...createArgs, certificate: 'self-signed' } }), 'bad-request: certificate is malformed')
-        assert.equal(refusalOf({ verb: 'provision', args: { ...createArgs, extra: true } }), 'bad-request: create takes only id, client, name, repo, credential, branch, domain, certificate, dir, compose, capabilities, websockets, flexibleSsl')
+        assert.equal(refusalOf({ verb: 'provision', args: { ...createArgs, extra: true } }), 'bad-request: create takes only id, client, name, repo, credential, branch, domain, certificate, dir, compose, capabilities, websockets, flexibleSsl, port')
     })
 
     it('refuses provision add-environment for anything other than test, and remove for an unknown environment', () => {
@@ -176,6 +176,23 @@ describe('parseAgentRequest', () => {
 
     it('refuses an unknown provision action', () => {
         assert.equal(refusalOf({ verb: 'provision', args: { action: 'destroy' } }), 'bad-request: action must be create, add-environment or remove')
+    })
+
+    describe('create port', () => {
+        const base = { action: 'create', id: 'bakery', name: 'Bakery', repo: 'git@github.com:a/b.git', branch: 'main', domain: null, certificate: null }
+
+        it('carries a port through', () => {
+            const parsed = parseAgentRequest(JSON.stringify({ verb: 'provision', args: { ...base, port: 5012 } }))
+            assert.equal(parsed.ok, true)
+            assert.equal(parsed.ok && parsed.request.verb === 'provision' ? (parsed.request.args as { port?: number }).port : null, 5012)
+        })
+
+        it('refuses a port outside 5000 to 65535 or one that is not a whole number', () => {
+            for (const port of [80, 70000, 5012.5, '5012']) {
+                const parsed = parseAgentRequest(JSON.stringify({ verb: 'provision', args: { ...base, port } }))
+                assert.deepEqual(parsed, { ok: false, code: 'bad-request', message: 'port must be a whole number from 5000 to 65535' })
+            }
+        })
     })
 
     it('parses every env action, defaulting nothing', () => {
@@ -328,6 +345,25 @@ describe('the credentials verb', () => {
     it('takes nothing else', () => {
         const parsed = parseAgentRequest(JSON.stringify({ verb: 'credentials', project: 'acme' }))
         assert.deepEqual(parsed, { ok: false, code: 'bad-request', message: 'credentials takes no other keys' })
+    })
+})
+
+describe('ports', () => {
+    it('parses a check with and without a port and an own environment', () => {
+        assert.deepEqual(parseAgentRequest('{"verb":"ports","args":{"port":null,"own":null}}'), { ok: true, request: { verb: 'ports', args: { port: null, own: null } } })
+        assert.deepEqual(
+            parseAgentRequest('{"verb":"ports","args":{"port":5012,"own":{"project":"acme","environment":"live"}}}'),
+            { ok: true, request: { verb: 'ports', args: { port: 5012, own: { project: 'acme', environment: 'live' } } } },
+        )
+    })
+
+    it('refuses anything else', () => {
+        for (const line of [
+            '{"verb":"ports"}',
+            '{"verb":"ports","args":{"port":"5012","own":null}}',
+            '{"verb":"ports","args":{"port":null,"own":{"project":"acme","environment":"prod"}}}',
+            '{"verb":"ports","args":{"port":null,"own":null,"extra":1}}',
+        ]) assert.equal(parseAgentRequest(line).ok, false)
     })
 })
 
@@ -645,6 +681,20 @@ projects:
         assert.equal(VERB_CAPABILITY.branches, null)
         const result = checkStructure(registry, { verb: 'branches', project: 'acme' }, none)
         assert.equal(result.ok, true)
+    })
+})
+
+describe('port', () => {
+    it('parses a port change for one environment', () => {
+        assert.deepEqual(
+            parseAgentRequest('{"verb":"port","project":"acme","args":{"environment":"live","port":5012}}'),
+            { ok: true, request: { verb: 'port', project: 'acme', args: { environment: 'live', port: 5012 } } },
+        )
+    })
+
+    it('refuses a port outside the range, and an unknown environment', () => {
+        assert.equal(parseAgentRequest('{"verb":"port","project":"acme","args":{"environment":"live","port":80}}').ok, false)
+        assert.equal(parseAgentRequest('{"verb":"port","project":"acme","args":{"environment":"prod","port":5012}}').ok, false)
     })
 })
 

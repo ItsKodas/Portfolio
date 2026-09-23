@@ -181,6 +181,9 @@ export type ResolvedService = {
     env_file?: Array<string | { path?: string }>
     build?: string | { context?: string, dockerfile?: string }
     image?: string
+    // As `docker compose config --format json` writes them: published is a string ("5012", or a range
+    // like "6000-6002") or, from some compose versions, a number. Absent when the port is not published.
+    ports?: Array<{ target?: number, published?: string | number, host_ip?: string, protocol?: string }>
 }
 export type ResolvedCompose = { name: string, services: Record<string, ResolvedService> }
 
@@ -198,6 +201,27 @@ export async function resolveCompose(
     } catch {
         return { ok: false, problem: 'docker compose config returned unreadable output' }
     }
+}
+
+// Every single host port some service publishes. A range is skipped: hostd hands out one port per
+// environment, and a range cannot be the one the portal chose.
+export function publishedPortsOf(resolved: ResolvedCompose): number[] {
+    const ports: number[] = []
+    for (const service of Object.values(resolved.services)) {
+        for (const port of service.ports ?? []) {
+            const published = typeof port.published === 'number' ? String(port.published) : port.published
+            if (published !== undefined && /^\d{1,5}$/.test(published)) ports.push(Number(published))
+        }
+    }
+    return ports
+}
+
+// What an environment already on disk publishes, for a port change: the same config call create makes.
+export async function resolvePublished(
+    location: ComposeLocation, run: Runner,
+): Promise<{ ok: true, ports: number[] } | { ok: false, problem: string }> {
+    const result = await resolveCompose(location, run)
+    return result.ok ? { ok: true, ports: publishedPortsOf(result.resolved) } : result
 }
 
 // Shared by guard.ts (the ongoing sweep, over an already-registered project) and resolveNewProject below
@@ -271,12 +295,12 @@ export async function resolveNewProject(
     expectedName: string,
     run: Runner,
     collidesWith?: string,
-): Promise<{ ok: true, services: Record<string, GuessedService> } | { ok: false, problem: string }> {
+): Promise<{ ok: true, services: Record<string, GuessedService>, published: number[] } | { ok: false, problem: string }> {
     const result = await resolveCompose(location, run)
     if (!result.ok) return result
     const nameProblem = composeNameProblem(result.resolved.name, expectedName, collidesWith)
     if (nameProblem) return { ok: false, problem: nameProblem }
     const services: Record<string, GuessedService> = {}
     for (const [name, service] of Object.entries(result.resolved.services)) services[name] = guessRole(service)
-    return { ok: true, services }
+    return { ok: true, services, published: publishedPortsOf(result.resolved) }
 }

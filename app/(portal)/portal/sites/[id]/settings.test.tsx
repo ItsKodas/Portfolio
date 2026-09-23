@@ -11,7 +11,9 @@ vi.mock('next/navigation', () => ({ useRouter: () => ({ refresh: () => refresh()
 vi.mock('./actions', () => ({
     saveSettingsAction: (...args: unknown[]) => saveSettingsAction(...args),
     deleteSiteAction: (...args: unknown[]) => deleteSiteAction(...args),
+    setPortAction: vi.fn(),
 }))
+vi.mock('../portActions', () => ({ checkPortAction: async () => ({ ok: true, suggested: 5012, problem: null }) }))
 
 const { SiteSettingsForm } = await import('./settings')
 
@@ -175,6 +177,11 @@ describe('the settings form', () => {
         render(<SiteSettingsForm {...props} />)
         expect(screen.getByText('/var/www/arbysauto')).toBeInTheDocument()
         expect(screen.queryByLabelText(/dir/i)).toBeNull()
+    })
+
+    it('shows each environment\'s port in its own control', () => {
+        render(<SiteSettingsForm {...props} />)
+        expect(screen.getByLabelText('live port')).toHaveValue('5011')
     })
 
     it('re-reads the page once the save lands, so the tabs it gates come back enabled', async () => {

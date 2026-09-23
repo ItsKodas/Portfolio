@@ -12,6 +12,7 @@ import { Dialog } from '@/ui/Dialog/Dialog'
 import { Field } from '@/ui/Field/Field'
 import { CAPABILITIES, NOT_BUILT, SWITCHES } from '../sites/features'
 import site from '../sites/[id]/site.module.css'
+import { usePortCheck } from '../sites/usePortCheck'
 import { createSiteAction, newSiteOptionsAction, type NewSiteOptions } from './actions'
 import { newSiteSchema, slugOf, type NewSiteInput } from './schema'
 import styles from './newSite.module.css'
@@ -22,7 +23,7 @@ const DEFAULT_CAPABILITIES = ['lifecycle', 'logs', 'domains', 'env', 'deploy']
 const blank = (): NewSiteInput => ({
     name: '', id: '', dir: '', client: '', repo: '', credential: '', branch: 'main',
     compose: ['docker-compose.yml'], capabilities: DEFAULT_CAPABILITIES,
-    websockets: false, flexibleSsl: false, domain: '', certificate: 'letsencrypt', deploy: false,
+    websockets: false, flexibleSsl: false, domain: '', certificate: 'letsencrypt', port: '', deploy: false,
 })
 
 type Loaded = NewSiteOptions & { ok: true }
@@ -48,6 +49,8 @@ function NewSiteDialog({ onClose }: { onClose: () => void }) {
     // Whether the id and folder still follow the name, which they do until either is typed into
     const [idTyped, setIdTyped] = useState(false)
     const [dirTyped, setDirTyped] = useState(false)
+    // Whether the port still follows hostd's suggestion, which it does until it is typed into
+    const [portTyped, setPortTyped] = useState(false)
     const [options, setOptions] = useState<Loaded | null>(null)
     const [loadError, setLoadError] = useState<string | null>(null)
     const [loading, setLoading] = useState(true)
@@ -55,6 +58,11 @@ function NewSiteDialog({ onClose }: { onClose: () => void }) {
     const [pending, setPending] = useState(false)
     const [error, setError] = useState<string | null>(null)
     const [created, setCreated] = useState<{ id: string, warnings: string[] } | null>(null)
+    const portCheck = usePortCheck(values.port, null)
+
+    useEffect(() => {
+        if (!portTyped && portCheck.suggested !== null) setValues(prev => ({ ...prev, port: String(portCheck.suggested) }))
+    }, [portTyped, portCheck.suggested])
 
     // On open: this component only exists while the dialog is open
     useEffect(() => {
@@ -107,6 +115,7 @@ function NewSiteDialog({ onClose }: { onClose: () => void }) {
         setTried(true)
         setError(null)
         if (!parsed.success) return
+        if (portCheck.problem || portCheck.checking) return
         setPending(true)
         try {
             const result = await createSiteAction(values)
@@ -159,7 +168,7 @@ function NewSiteDialog({ onClose }: { onClose: () => void }) {
             footer={(
                 <>
                     <Button onClick={onClose} disabled={pending}>Cancel</Button>
-                    <Button variant="primary" onClick={submit} disabled={pending || loading}>
+                    <Button variant="primary" onClick={submit} disabled={pending || loading || portCheck.checking}>
                         {pending ? 'Creating...' : 'Create site'}
                     </Button>
                 </>
@@ -309,6 +318,16 @@ function NewSiteDialog({ onClose }: { onClose: () => void }) {
                     {hasDomain && !values.capabilities.includes('domains') && (
                         <p className={site.note}>The domains feature is off, so hostd will record the domain but cannot write its vhost.</p>
                     )}
+                    <Field
+                        label="Port"
+                        inputMode="numeric"
+                        hint={portCheck.error
+                            ? `The dedi's ports could not be checked: ${portCheck.error}`
+                            : 'The port the site listens on, written into its .env as WEB_PORT. Its compose file has to publish ${WEB_PORT}.'}
+                        value={values.port}
+                        onChange={event => { setPortTyped(true); set('port', event.target.value) }}
+                        error={portCheck.problem ?? problem('port')}
+                    />
                 </section>
 
                 <label className={site.capability}>

@@ -6,7 +6,7 @@ import {
     type AdoptPreview, type AgentReply, type AgentRequest, type BackupArgs, type ConfigureArgs,
     type ConfigureWritten, type DeployArgs, type DomainsRequest, type DomainsWritten, type EnvArgs,
     type HealthReply, type LifecycleAction,
-    type LifecycleReply, type LogLine, type LogsArgs, type ProjectStatus, type ProvisionAddEnvironmentArgs,
+    type LifecycleReply, type LogLine, type LogsArgs, type PortsArgs, type PortsReply, type ProjectStatus, type ProvisionAddEnvironmentArgs,
     type ProvisionCreateArgs, type ProvisionRemoveArgs, type Refusal, type ServiceStatus, type StatusesReply,
 } from '../shared/protocol.ts'
 import { environmentOf, ENVIRONMENT_FLAGS, type EnvironmentFlag, type EnvironmentName, type ProjectEntry, type Registry } from '../shared/registry.ts'
@@ -15,8 +15,8 @@ import { deployKey, lastHealthyCommit, MAX_WATCH_BYTES, type DeployEvent } from 
 import { diskProblem, manualProblem } from '../shared/backups.ts'
 import type { RegistryWriter } from '../shared/registry-write.ts'
 import type { DiskUsage, SystemUsage } from '../shared/system.ts'
-import { runLifecycle, type Runner } from './compose.ts'
-import { deployTrees, repositoryIn } from './deploy-compose.ts'
+import { resolvePublished, runLifecycle, tail, type Runner } from './compose.ts'
+import { composeNameOf, deployTrees, locationIn, repositoryIn, upArgv } from './deploy-compose.ts'
 import type { DeployDeps } from './deploy.ts'
 import type { DeployRunner } from './deploy-runner.ts'
 import type { DeployStore } from './deploy-state.ts'
@@ -26,6 +26,8 @@ import { buildServiceStatuses, groupByProject, pickPerService, type ContainerIns
 import { createLogDecoder } from './logframes.ts'
 import { listEnvFiles, readEnvFile, writeEnvFile, type EnvFs } from './env-files.ts'
 import { createProject, addEnvironment, removeProject, type ProvisionDeps } from './provision.ts'
+import { changePort } from './port-change.ts'
+import { restorePortEnv, writePortEnv } from './port-env.ts'
 import type { BackupRunner } from './backup-runner.ts'
 import type { BackupStore } from './backup-state.ts'
 import { repoPath, type Restic } from './restic.ts'
@@ -33,6 +35,10 @@ import { tokenFromVhost, vhostPath } from './vhost.ts'
 
 export const MAX_FOLLOWS_PER_PROJECT = 4
 export const FOLLOW_MAX_MS = 60 * 60_000
+// A port change's recreate, shorter than a lifecycle action's: the change can run up twice (the move and
+// the undo's move back) and then the rail, and all of it has to fit inside api's 150 second call to the
+// agent, or the portal reports a timeout while the change is still running.
+export const PORT_CHANGE_UP_TIMEOUT_MS = 60_000
 
 export type AgentDeps = {
     registry: () => Registry
@@ -65,7 +71,8 @@ export type AgentDeps = {
     // then refuses unavailable instead of crashing, exactly like provision does. Structural types, not
     // the classes themselves, so the tests can hand this a recorder.
     deploys?: {
-        runner: Pick<DeployRunner, 'start' | 'watch'>
+        // isRunning too, so a port change can refuse while a deploy's swap owns the same compose project
+        runner: Pick<DeployRunner, 'start' | 'isRunning' | 'watch'>
         store: Pick<DeployStore, 'get' | 'resume'>
         deps: DeployDeps
     }
@@ -120,8 +127,17 @@ export class Agent {
     // same free domain, before either has written). Serialising every provisioning action against every
     // other one is the honest fix for that, not a lock keyed narrowly enough to miss it.
     private provisioningBusy = false
+    // Keyed <project>:<environment> while a port change runs, so the deploy verb refuses to run up on
+    // the same compose project, or rewrite the registry entry, halfway through one.
+    private readonly portChanging = new Set<string>()
 
     constructor(private readonly deps: AgentDeps) {}
+
+    // Whether any environment of the project is moving to another port
+    private portChangingIn(id: string): boolean {
+        for (const key of this.portChanging) if (key.startsWith(`${id}:`)) return true
+        return false
+    }
 
     followCount(project: string): number {
         return this.follows.get(project) ?? 0
@@ -130,6 +146,7 @@ export class Agent {
     async handle(request: AgentRequest): Promise<Outcome> {
         if (request.verb === 'health') return reply(await this.health())
         if (request.verb === 'credentials') return reply(await this.credentials())
+        if (request.verb === 'ports') return reply(await this.ports(request.args))
         // Its own branch before the check below: statuses names many projects, so it checks each one for
         // itself and reports the refusals among the results instead of refusing the whole request.
         if (request.verb === 'statuses') return reply(await this.statuses(request.projects))
@@ -165,6 +182,8 @@ export class Agent {
                 return reply(await this.configure(checked.project, request.args))
             case 'branches':
                 return reply(await this.branches(checked.project))
+            case 'port':
+                return reply(await this.port(checked.project, request.args.environment, request.args.port))
         }
     }
 
@@ -277,6 +296,9 @@ export class Agent {
     // project handle() already produced from its own (merely per-connection) registry() snapshot.
     async domains(request: DomainsRequest): Promise<DomainsWritten | AdoptPreview | Refusal> {
         if (!this.deps.domains) return refuse('unavailable', 'domains is not configured')
+        // Every action writes a vhost or the registry, which a port change on the project is doing too.
+        // The whole project rather than the one environment, for simplicity: a change takes seconds.
+        if (this.portChangingIn(request.project)) return refuse('busy', `${request.project} is moving an environment to another port`)
         const domains = this.deps.domains
         const registry = await domains.reloadRegistry()
         const checked = checkStructure(registry, request, this.deps.guardInvalid())
@@ -327,6 +349,20 @@ export class Agent {
         return { ok: true, credentials: result.credentials ?? [] }
     }
 
+    // The portal's live check. Not under the provisioning lock: it changes nothing, and a create that
+    // is running would otherwise make the form say "busy" while the operator is typing. A port that is
+    // not free is an answer, not a refusal; only a host that could not be read is refused.
+    private async ports(args: PortsArgs): Promise<PortsReply | Refusal> {
+        if (!this.deps.provision) return refuse('unavailable', 'provisioning is not configured')
+        const suggested = await this.deps.provision.choosePort()
+        if (!suggested.ok) return refuse('unavailable', suggested.problem)
+        if (args.port === null) return { ok: true, suggested: suggested.port, problem: null }
+        const verdict = await this.deps.provision.checkPort(args.port, args.own ?? undefined)
+        if (verdict.ok) return { ok: true, suggested: suggested.port, problem: null }
+        if (verdict.code === 'unavailable') return refuse('unavailable', verdict.problem)
+        return { ok: true, suggested: suggested.port, problem: verdict.problem }
+    }
+
     private async deploy(project: ProjectEntry, args: DeployArgs): Promise<AgentReply> {
         if (!this.deps.deploys) return refuse('unavailable', 'deploys are not configured')
         const { runner, store, deps } = this.deps.deploys
@@ -354,6 +390,10 @@ export class Agent {
             if (!log.ok) return refuse(log.code === 'bad-request' ? 'bad-request' : 'failed', log.message)
             return { ok: true, commits: log.commits ?? [] }
         }
+
+        // Every action from here on runs up or writes the registry, which a port change in progress on
+        // this environment is doing too
+        if (this.portChanging.has(key)) return refuse('busy', `${project.id} ${environment.name} is moving to another port`)
 
         if (args.action === 'rollback') {
             const target = lastHealthyCommit(store.get(key), environment.deployed)
@@ -439,6 +479,8 @@ export class Agent {
     // widens to include it and stops compiling). { ok: true, output } is the shape the codebase already
     // uses for "nothing else to carry" (see env()'s write case and provision.ts's removeProject above).
     private async configure(project: ProjectEntry, args: ConfigureArgs): Promise<AgentReply> {
+        // It writes the registry entry and may rewrite the vhost a port change is rewriting too
+        if (this.portChangingIn(project.id)) return refuse('busy', `${project.id} is moving an environment to another port`)
         // Which environments are having an address REPLACED rather than given one for the first time.
         // Read before the writes below, because they are what makes the old value unreadable, and it is
         // the old value that decides whether Apache has a file to rewrite afterwards.
@@ -551,6 +593,68 @@ export class Agent {
                 ? `${project.id}'s registry entry was updated`
                 : `${project.id}'s registry entry was updated and its Apache configuration was rewritten`,
         }
+    }
+
+    // Under the provisioning lock, because the port check reads the same registry snapshot a create does:
+    // a create and a port change racing could otherwise both take one free port.
+    private async port(project: ProjectEntry, environment: EnvironmentName, port: number): Promise<AgentReply> {
+        const provision = this.deps.provision
+        if (!provision) return refuse('unavailable', 'provisioning is not configured')
+        if (this.provisioningBusy) return refuse('busy', 'another provisioning action is in progress')
+        // Nor alongside anything else that touches this environment's containers or .env: a deploy's swap
+        // runs up on the same compose project, a lifecycle action would read a half-changed .env, and an
+        // env write would be lost when an undo puts back the whole .env it read. Every check and every
+        // slot taken before the first await, so nothing can slip in between the two.
+        if (this.deps.deploys?.runner.isRunning(deployKey(project.id, environment))) {
+            return refuse('busy', `${project.id} ${environment} has a deploy running`)
+        }
+        if (this.lifecycleBusy.has(project.id)) return refuse('busy', `${project.id} already has a lifecycle action running`)
+        const envKey = `${project.id}:${environment}`
+        if (this.envBusy.has(envKey)) return refuse('busy', `${project.id} already has an env write running for ${environment}`)
+        this.provisioningBusy = true
+        this.envBusy.add(envKey)
+        // Held, not just checked, so a lifecycle action or a deploy arriving mid-change is refused too
+        this.lifecycleBusy.add(project.id)
+        this.portChanging.add(envKey)
+        try {
+            return await changePort(project, environment, port, {
+                checkPort: provision.checkPort,
+                setPortEnv: (entry, key, value) => writePortEnv(entry, key, value, this.deps.envFs),
+                restorePortEnv: (entry, previous) => restorePortEnv(entry, previous, this.deps.envFs),
+                published: entry => resolvePublished({ dir: entry.dir, composePaths: entry.composePaths }, this.deps.runner),
+                writePort: async value => {
+                    const written = await this.deps.writer.write({ kind: 'set-port', id: project.id, environment, port: value })
+                    if (!written.ok) return written
+                    await this.deps.refreshRegistry()
+                    return { ok: true }
+                },
+                running: async entry => (await this.deps.docker.listProjectContainers(composeNameOf(entry)))
+                    .some(container => container.State === 'running'),
+                // The same up a deploy's swap runs, in the environment's own folder: compose recreates
+                // exactly the containers whose ports changed, and never builds or pulls.
+                up: async entry => {
+                    const result = await this.deps.runner('docker', upArgv(locationIn(entry, entry.dir), composeNameOf(entry)), PORT_CHANGE_UP_TIMEOUT_MS)
+                    if (result.timedOut) return { ok: false, message: 'up timed out' }
+                    if (result.exitCode !== 0) return { ok: false, message: `up exited with code ${result.exitCode}: ${tail(result.stderr.trim(), 300)}` }
+                    return { ok: true }
+                },
+                rewriteVhost: async () => (await this.rewriteMovedVhost(project.id, environment)).problem,
+                hasOwnVhost: () => this.ownsVhost(project.id, environment),
+            })
+        } finally {
+            this.provisioningBusy = false
+            this.envBusy.delete(envKey)
+            this.lifecycleBusy.delete(project.id)
+            this.portChanging.delete(envKey)
+        }
+    }
+
+    // Whether hostd wrote the vhost for this environment, read off the same file rewriteMovedVhost reads.
+    // With no rail wired up hostd has never written one, so an environment with an address is served by
+    // hand. A read that throws is left to the caller, which refuses rather than guessing.
+    private async ownsVhost(id: string, name: EnvironmentName): Promise<boolean> {
+        if (!this.deps.domains) return false
+        return (await this.deps.domains.readFile(vhostPath(this.deps.domains.config.includeDir, id, name))) !== null
     }
 
     // The vhost behind an address that has just moved. hostd only owns a file it wrote itself, so the

@@ -44,6 +44,12 @@ export const newSiteSchema = z.object({
     // '' is no domain yet
     domain: z.union([z.literal(''), z.string().trim().toLowerCase().regex(HOSTNAME, 'Use a plain domain name, like example.com.')]),
     certificate: z.enum(['letsencrypt', 'cloudflare-origin']),
+    // hostd's own range (hostd/src/shared/ports.ts). Whether the port is free is asked live, and hostd
+    // checks it again when the site is created.
+    port: z.string().trim()
+        .regex(/^\d{1,5}$/, 'Use a port from 5000 to 65535.')
+        .transform(Number)
+        .refine(port => port >= 5000 && port <= 65535, 'Use a port from 5000 to 65535.'),
     deploy: z.boolean(),
 })
 
