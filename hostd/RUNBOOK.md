@@ -434,6 +434,14 @@ the repo does commit the file, the checkout's copy wins: that one belongs with t
 the running tree's is the commit being replaced. A file that cannot be copied fails the deploy before the
 build, because compose cannot describe the site without it.
 
+**Watching one.** The Deploys tab carries a column showing what the deploy is doing: its own phase lines,
+with `docker compose` output beneath the build step. It is there whether or not a deploy is running, and
+when none is it shows what the last one printed, until the next one starts. A deploy the poller started
+is watchable exactly like one somebody pressed, and a reload mid-deploy picks up where it was, because
+what a watcher attaches to is a buffer rather than a live pipe. Nothing of it is written to disk: an
+agent restart loses the buffer, and loses the deploy with it, since a deploy is an in-process promise.
+The history stays the durable record.
+
 **What the health check actually checks.** Every registered compose service has a running container, and
 any container that declares a healthcheck reports `healthy`, within 60 seconds. It is deliberately not an
 HTTP request to the site's port: the agent runs `network_mode: none` and has no network namespace to make
