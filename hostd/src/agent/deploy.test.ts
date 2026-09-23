@@ -915,8 +915,8 @@ describe('nested layout', () => {
         const before = t.calls.slice(0, t.calls.indexOf('fetcher fetch'))
         assert.deepEqual(before.filter(call => call.startsWith('compose')), ['compose up'])
         assert.ok(before.indexOf('compose up') < before.indexOf('registry-write'))
-        assert.deepEqual(t.composeRuns[0].slice(0, 5), ['compose', '--project-name', 'acme', '--project-directory', '/var/www/acme/live'])
-        assert.ok(t.composeRuns[0].includes('--no-build'))
+        assert.deepEqual(t.composeRuns[0]!.slice(0, 5), ['compose', '--project-name', 'acme', '--project-directory', '/var/www/acme/live'])
+        assert.ok(t.composeRuns[0]!.includes('--no-build'))
     })
 
     it('logs a resumed move that will not start, and deploys anyway', async () => {
