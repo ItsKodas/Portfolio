@@ -37,31 +37,27 @@ entries still refuse provisioning, as today.
 
 ## Seeing the host's ports
 
-`hostd/src/agent/host-ports.ts`. The agent already holds the Docker socket, so it asks Docker to run a
-short-lived container in the host's network namespace:
+`hostd/src/agent/host-ports.ts`. The agent already holds the Docker socket, so it runs a short-lived
+container in the host's network namespace, through the `docker` CLI, the same way the rest of the agent
+shells out to Docker:
 
-- Image: the agent's own. The agent inspects its own container (`hostd-agent`) for its image id and runs
-  that, so nothing is ever pulled (the agent is offline) and a rebuild never leaves the probe on a stale
-  tag.
-- `HostConfig.NetworkMode: host`, no mounts, no capabilities, read-only root, `AutoRemove` off so the
-  agent removes it itself in a `finally`.
-- Command: `cat /proc/net/tcp /proc/net/tcp6`. Run in the host namespace, that lists every socket on the
-  machine: Docker's proxies, Apache, databases, and whatever holds 5004 and 5006.
+- Image: the agent's own. `docker inspect --format {{.Image}} <container>` reads its image id (the
+  container name is `hostd-agent`, overridable with `HOSTD_AGENT_CONTAINER`), so nothing is ever pulled
+  (the agent is offline) and a rebuild never leaves the probe on a stale tag.
+- `docker run --rm --name hostd-port-probe-<hex> --network host --read-only --cap-drop ALL
+  --security-opt no-new-privileges --pull never --entrypoint cat <image> /proc/net/tcp /proc/net/tcp6`.
+  Run in the host namespace, that lists every socket on the machine: Docker's proxies, Apache, databases,
+  and whatever holds 5004 and 5006. `--rm` cleans up a container that exits on its own; one left behind by
+  a timeout or a non-zero exit is removed with a follow-up `docker rm -f`.
 - `parseProcNetTcp(text)` keeps rows in state `0A` (LISTEN) and returns their local ports as a
   `Set<number>`. Pure, tested on fixtures.
 - 10 second timeout. A probe that times out, exits non-zero or returns nothing parseable is a failure,
   and a failure refuses the create or change (`unavailable`, "could not read the host's ports"). hostd
   never assumes a port is free.
-
-The probe runs through the `docker` CLI, the same way the rest of the agent shells out to Docker, rather
-than through new `DockerApi` calls: `docker inspect --format {{.Image}} hostd-agent` for the image id
-(the container name is `HOSTD_AGENT_CONTAINER`, overridable), then
-`docker run --rm --name hostd-port-probe-<hex> --network host --read-only --cap-drop ALL
---security-opt no-new-privileges --pull never --entrypoint cat <image> /proc/net/tcp /proc/net/tcp6`.
-A reading is cached for 2 seconds, so the portal's live check asking for a suggestion and a verdict back
-to back costs one probe, not two. Docker's own published ports are added on top of what the probe reads: a
-container that is starting may have its port reserved by Docker before it is listening, and the union of
-both is what counts.
+- Docker's own published ports are added on top of what the probe reads: a container that is starting
+  may have its port reserved by Docker before it is listening, and the union of both is what counts.
+- A reading is cached for 2 seconds, so the portal's live check asking for a suggestion and a verdict
+  back to back costs one probe, not two.
 
 ## Writing the port into the site
 
@@ -72,13 +68,15 @@ entry names another variable). The site's compose file is expected to publish it
 ports: ["127.0.0.1:${WEB_PORT}:3000"]
 ```
 
-`setPortInEnv(environment, port)` in the agent rewrites the one line (or appends it, or creates `.env`)
-through `env-files.ts`, so it stays inside the env-file boundary. Deploys already carry env files into
-the next tree (`carryEnvFiles` in `deploy.ts`), so the port survives every deploy.
+`writePortEnv(environment, key, port)` in `hostd/src/agent/port-env.ts` rewrites the one line (or appends
+it, or creates `.env`) through `env-files.ts`, so it stays inside the env-file boundary, and hands back the
+previous text so a failed step can restore it. Deploys already carry env files into the next tree
+(`carryEnvFiles` in `deploy.ts`), so the port survives every deploy.
 
 After writing it, the agent runs `docker compose config` for the environment and requires that some
-service publishes that port on the host. If none does, the step fails with: `no service publishes
-${WEB_PORT}; publish it like "127.0.0.1:${WEB_PORT}:3000"`. `ResolvedService` gains `ports`.
+service publishes that port on the host. If none does, the step fails with `notPublishedProblem(key,
+port)` from `provision.ts`, for example: `no service publishes port 5010; publish $WEB_PORT in the
+compose file, like "127.0.0.1:$WEB_PORT:3000"`. `ResolvedService` gains `ports`.
 
 ## New site
 
@@ -93,9 +91,10 @@ ${WEB_PORT}; publish it like "127.0.0.1:${WEB_PORT}:3000"`. `ResolvedService` ga
   one was given. `project` and `environment` go together and name the environment being changed, so its
   own current port is not counted as taken. It takes no lock and is advice only; the create and change
   check again under the lock.
-- Portal: `server/hostd/ports.ts` (`checkPort(config, caller, port?)`), and a Port field in the New site
-  modal. When the modal opens it fills in `suggested`. As the admin types (debounced) it shows the
-  problem under the field. The zod schema gains `port: 5000 to 65535`, and `createSiteAction` passes it.
+- Portal: `server/hostd/ports.ts` (`checkPort(config, caller, { port?, own? })`), and a Port field in the
+  New site modal. When the modal opens it fills in `suggested`. As the admin types (debounced) it shows
+  the problem under the field. The zod schema gains `port: 5000 to 65535`, and `createSiteAction` passes
+  it.
 
 ## Changing it in Settings
 

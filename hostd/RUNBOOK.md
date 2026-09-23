@@ -81,7 +81,8 @@ then pick the port in Settings.
 
 How the check sees host services: the agent runs a throwaway `--network host` container from its own
 image that reads `/proc/net/tcp` and `/proc/net/tcp6`. If that fails, provisioning and port changes are
-refused; check `docker compose logs agent` and that `docker image inspect hostd-agent` works.
+refused; check `docker compose logs agent` and that `docker inspect --format '{{.Image}}' hostd-agent`
+works.
 
 A quick check from the dedi that the probe sees what `ss` sees:
 
