@@ -34,6 +34,12 @@ const NOT_BUILT = 'files, backups, domains and provision are designed but not bu
     + 'them, so ticking one here does not switch anything on. Provision, once it is built, will let this '
     + 'project be re-provisioned and removed through the API.'
 
+// Said under each environment's checkbox. What it does to a site hostd already serves, and what it does
+// to one still on a hand-written file, because those are different and the operator may have either.
+const WEBSOCKETS = 'Passes WebSocket connections (socket.io and the like) through to the site. On a site hostd '
+    + 'already serves, saving rewrites its Apache configuration straight away. On a site still served by its own '
+    + 'hand-written file, this is what lets adoption carry that file\'s WebSocket rules.'
+
 // A deploy checks nothing before it is asked to run, because there is nothing here to check it with: it
 // needs a git repository already at the environment's dir, and hostd only finds that out when it runs.
 const CANNOT_CHECK = 'A deploy needs a git repository already at the environment\'s dir (dir/.git). hostd '
@@ -44,7 +50,7 @@ export function SiteSettingsForm({ id, capabilities, repo, credential, environme
     capabilities: string[]
     repo: string | null
     credential: string | null
-    environments: Array<{ name: string, branch: string | null, dir?: string, port?: number }>
+    environments: Array<{ name: string, branch: string | null, websockets?: boolean, dir?: string, port?: number }>
     // The repository's branches, fetched for the repo as it stands saved, not for whatever is currently
     // typed into the Repo field above: editing that field without saving leaves this offering the old
     // repo's branches, which is the one thing left as it is rather than fixed, because re-fetching on
@@ -63,6 +69,8 @@ export function SiteSettingsForm({ id, capabilities, repo, credential, environme
     const [credentialValue, setCredentialValue] = useState(credential ?? '')
     const [branchValues, setBranchValues] = useState<Record<string, string>>(() =>
         Object.fromEntries(environments.map(env => [env.name, env.branch ?? ''])))
+    const [websocketValues, setWebsocketValues] = useState<Record<string, boolean>>(() =>
+        Object.fromEntries(environments.map(env => [env.name, env.websockets ?? false])))
     const [pending, setPending] = useState(false)
     const [said, setSaid] = useState<SiteActionResult | null>(null)
     // Set instead of said on a no-op save: said is what a call to hostd came back with, and a save that
@@ -104,17 +112,26 @@ export function SiteSettingsForm({ id, capabilities, repo, credential, environme
             const nextBranch = blankToNull(branchValues[env.name])
             if (nextBranch !== (env.branch ?? null)) changedBranches[env.name] = nextBranch
         }
+        // Per environment for the same reason as branches: switching this rewrites a vhost, so an
+        // environment nobody touched must not be sent at all.
+        const changedWebsockets: Record<string, boolean> = {}
+        for (const env of environments) {
+            const next = websocketValues[env.name] ?? false
+            if (next !== (env.websockets ?? false)) changedWebsockets[env.name] = next
+        }
 
         const payload: {
             capabilities?: string[]
             repo?: string | null
             credential?: string | null
             branches?: Record<string, string | null>
+            websockets?: Record<string, boolean>
         } = {}
         if (!sameList(nextCapabilities, capabilities)) payload.capabilities = nextCapabilities
         if (nextRepo !== repo) payload.repo = nextRepo
         if (nextCredential !== credential) payload.credential = nextCredential
         if (Object.keys(changedBranches).length > 0) payload.branches = changedBranches
+        if (Object.keys(changedWebsockets).length > 0) payload.websockets = changedWebsockets
 
         if (Object.keys(payload).length === 0) {
             setNothingChanged(true)
@@ -228,6 +245,18 @@ export function SiteSettingsForm({ id, capabilities, repo, credential, environme
                                 {`"${branchValue}" is not one of this repository's branches, so the next deploy on ${env.name} will fail until this is changed.`}
                             </p>
                         )}
+                        <label className={styles.capability}>
+                            <input
+                                type="checkbox"
+                                checked={websocketValues[env.name] ?? false}
+                                onChange={event => {
+                                    const enabled = event.target.checked
+                                    setWebsocketValues(prev => ({ ...prev, [env.name]: enabled }))
+                                }}
+                            />
+                            {`${env.name} WebSockets`}
+                        </label>
+                        <p className={styles.note}>{WEBSOCKETS}</p>
                     </div>
                 )
             })}

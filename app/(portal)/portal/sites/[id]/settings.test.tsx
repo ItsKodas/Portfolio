@@ -1,4 +1,4 @@
-import { render, screen } from '@testing-library/react'
+import { render, screen, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
@@ -29,7 +29,32 @@ describe('the settings form', () => {
         expect(screen.getByRole('checkbox', { name: /lifecycle/ })).toBeChecked()
         expect(screen.getByRole('checkbox', { name: /deploy/ })).not.toBeChecked()
         // All eight, including the four hostd cannot act on yet
-        expect(screen.getAllByRole('checkbox')).toHaveLength(8)
+        const capabilities = screen.getByRole('group', { name: /capabilities/i })
+        expect(within(capabilities).getAllByRole('checkbox')).toHaveLength(8)
+    })
+
+    it('shows each environment\'s WebSockets switch as the registry has it', () => {
+        const environments = [
+            { name: 'live', branch: null, websockets: true },
+            { name: 'test', branch: null },
+        ]
+        render(<SiteSettingsForm {...props} environments={environments} />)
+        expect(screen.getByRole('checkbox', { name: /live WebSockets/ })).toBeChecked()
+        expect(screen.getByRole('checkbox', { name: /test WebSockets/ })).not.toBeChecked()
+    })
+
+    // Switching it rewrites that environment's vhost, so the environment left alone is not sent at all.
+    it('sends only the environment whose WebSockets switch changed', async () => {
+        const environments = [
+            { name: 'live', branch: null },
+            { name: 'test', branch: null, websockets: true },
+        ]
+        render(<SiteSettingsForm {...props} environments={environments} />)
+
+        await userEvent.click(screen.getByRole('checkbox', { name: /live WebSockets/ }))
+        await userEvent.click(screen.getByRole('button', { name: /save/i }))
+
+        expect(saveSettingsAction).toHaveBeenCalledWith('arbysauto', { websockets: { live: true } })
     })
 
     it('marks the ones hostd cannot act on yet, so ticking one is not mistaken for switching it on', () => {

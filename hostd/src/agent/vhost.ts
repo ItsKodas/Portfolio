@@ -13,6 +13,7 @@ export type VhostInput = {
     primary: string
     aliases: string[]
     port: number
+    websockets: boolean
     token: string
     certificate: { chain: string, key: string }
     maintenanceDir: string
@@ -72,6 +73,16 @@ ${serverNames([input.primary, ...input.aliases])}
 </VirtualHost>`
 }
 
+// upgrade=websocket is mod_proxy_http's own WebSocket support (Apache 2.4.47 and later; the dedi runs
+// 2.4.58). A request asking to upgrade is tunnelled to the same upstream on the same connection, and any
+// other request is proxied exactly as it would be without it, so one ProxyPass carries both. That is
+// what a hand-written file does with a RewriteCond on the Upgrade header, a [P] rule onto ws:// and
+// mod_proxy_wstunnel, in one parameter and without a second route to the upstream that the maintenance
+// rules below would have to know about.
+function proxyPass(input: VhostInput): string {
+    return `ProxyPass / ${upstreamFor(input.port)}${input.websockets ? ' upgrade=websocket' : ''}`
+}
+
 // The maintenance rules come before the proxy so that a deploy in progress, or an upstream that is not
 // answering, both meet the holding page rather than a proxy error. ErrorDocument 503 is what turns a
 // failed proxy into the same page, which is the half of this that covers an unplanned outage.
@@ -119,7 +130,7 @@ function port443(input: VhostInput): string {
     ProxyPreserveHost On
     ProxyPass ${HOLDING_PAGE} !
     ProxyPass /.well-known/hostd/${input.token} !
-    ProxyPass / ${upstreamFor(input.port)}
+    ${proxyPass(input)}
     ProxyPassReverse / ${upstreamFor(input.port)}
 </VirtualHost>`
 }

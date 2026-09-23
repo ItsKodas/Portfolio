@@ -408,6 +408,26 @@ projects:
         assert.match(invalidEnvironmentReason('repo: git@github.com:x/y.git\n    environments: { live: { dir: /var/www/a, port: 5010, branch: "main..other-ref" } }')!, /branch/)
     })
 
+    it('reads websockets as off unless an environment says true', () => {
+        const registry = parseRegistry(`
+projects:
+  acme:
+    client: cl_1
+    name: Acme
+    services: { web: { role: site } }
+    environments:
+      live: { dir: /var/www/acme, port: 5010, websockets: true }
+      test: { dir: /var/www/acme-test, port: 5110 }
+`)
+        const acme = registry.projects.get('acme')!
+        assert.equal(acme.environments.get('live')!.websockets, true)
+        assert.equal(acme.environments.get('test')!.websockets, false)
+    })
+
+    it('refuses websockets that is not true or false', () => {
+        assert.match(invalidEnvironmentReason('environments: { live: { dir: /var/www/a, port: 5010, websockets: "yes" } }')!, /websockets/)
+    })
+
     it('refuses a repo that is not an ssh or https git URL', () => {
         assert.match(invalidEnvironmentReason('repo: "file:///etc/passwd"\n    environments: { live: { dir: /var/www/a, port: 5010 } }')!, /repo/)
     })

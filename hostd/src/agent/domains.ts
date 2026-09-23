@@ -47,6 +47,7 @@ function render(deps: DomainsDeps, project: ProjectEntry, environment: Environme
         primary: environment.domain!,
         aliases: environment.aliases,
         port: environment.port,
+        websockets: environment.websockets,
         token,
         certificate: { chain: deps.config.originCert, key: deps.config.originKey },
         maintenanceDir: deps.config.maintenancePageDir,
@@ -233,7 +234,7 @@ export async function previewAdopt(
     const { files, unreadable } = listing.sites
     // The upstream is handed to the parser rather than left for it to work out: the port belongs to the
     // registry entry, which this function holds and sites-enabled.ts deliberately does not.
-    const claims = findClaims(files, hostnames, upstreamFor(environment.port))
+    const claims = findClaims(files, hostnames, upstreamFor(environment.port), environment.websockets)
     // Names the old file serves that the registry has never heard of. Offered rather than taken: adopting
     // without carrying these across would silently stop serving hostnames that work today, and adding
     // them automatically would put hostnames in the registry nobody asked for.
@@ -271,7 +272,7 @@ export async function adopt(
     // hostd's vhost over a site still being served by its own, so it is the one that must not run blind.
     const listing = await sweep(deps)
     if (!listing.ok) return listing
-    const claims = findClaims(listing.sites.files, hostnames, upstreamFor(environment.port))
+    const claims = findClaims(listing.sites.files, hostnames, upstreamFor(environment.port), environment.websockets)
 
     // Every named file has to be one this environment's hostnames actually reach. api chose these from a
     // preview, and the preview could be minutes old, so the claim is re-established here against the

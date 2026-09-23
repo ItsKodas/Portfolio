@@ -185,6 +185,10 @@ export type ConfigureArgs = {
     // and never takes one away. Moving it rewrites the vhost hostd owns (see the agent's configure), so
     // the caller is expected to have confirmed it with whoever asked for it.
     domains?: Partial<Record<EnvironmentName, string>>
+    // Whether each environment's vhost passes WebSocket upgrades through. Changing it rewrites the vhost
+    // hostd owns, if it owns one yet; an environment still served by hand only has it recorded, for the
+    // adoption that writes hostd's file to render.
+    websockets?: Partial<Record<EnvironmentName, boolean>>
 }
 export type ConfigureRequest = { verb: 'configure', project: string, args: ConfigureArgs }
 
@@ -604,8 +608,8 @@ export function parseDomainsArgs(args: unknown): { ok: true, args: DomainsArgs }
 // body it could not read is refused in exactly one place. See policy.ts and routes.ts in api for how the
 // route bridges this Refusal shape onto its own parsers' { ok: false, message }.
 export function parseConfigureArgs(raw: unknown): ConfigureArgs | Refusal {
-    if (!isRecord(raw) || !onlyKeys(raw, ['capabilities', 'repo', 'credential', 'branches', 'domains'])) {
-        return refuse('bad-request', 'configure takes only capabilities, repo, credential, branches and domains')
+    if (!isRecord(raw) || !onlyKeys(raw, ['capabilities', 'repo', 'credential', 'branches', 'domains', 'websockets'])) {
+        return refuse('bad-request', 'configure takes only capabilities, repo, credential, branches, domains and websockets')
     }
 
     let capabilities: Capability[] | undefined
@@ -661,12 +665,25 @@ export function parseConfigureArgs(raw: unknown): ConfigureArgs | Refusal {
         domains = parsed
     }
 
+    let websockets: Partial<Record<EnvironmentName, boolean>> | undefined
+    if (raw.websockets !== undefined) {
+        if (!isRecord(raw.websockets)) return refuse('bad-request', 'websockets is malformed')
+        const parsed: Partial<Record<EnvironmentName, boolean>> = {}
+        for (const [name, enabled] of Object.entries(raw.websockets)) {
+            if (!(ENVIRONMENTS as readonly string[]).includes(name)) return refuse('bad-request', `${name} is not an environment`)
+            if (typeof enabled !== 'boolean') return refuse('bad-request', `${name} websockets must be true or false`)
+            parsed[name as EnvironmentName] = enabled
+        }
+        websockets = parsed
+    }
+
     return {
         ...(capabilities !== undefined ? { capabilities } : {}),
         ...(repo !== undefined ? { repo } : {}),
         ...(credential !== undefined ? { credential } : {}),
         ...(branches !== undefined ? { branches } : {}),
         ...(domains !== undefined ? { domains } : {}),
+        ...(websockets !== undefined ? { websockets } : {}),
     }
 }
 

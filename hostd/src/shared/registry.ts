@@ -41,6 +41,9 @@ export type EnvironmentEntry = {
     port: number
     certificate: CertificateMode | null
     deployed: string | null
+    // Whether hostd's generated vhost passes WebSocket upgrades through to the upstream. Off unless the
+    // registry says so, which is the shape every entry written before this existed is already in.
+    websockets: boolean
 }
 
 // A git ref or branch name that cannot be read as an option or a path traversal. Git itself also
@@ -118,7 +121,7 @@ const PROJECT_KEYS = new Set([
     'client', 'name', 'dir', 'compose', 'upstream', 'services', 'storage', 'capabilities', 'maxDomains', 'backups',
     'repo', 'credential', 'portEnv', 'limits', 'environments',
 ])
-const ENVIRONMENT_KEYS = new Set(['dir', 'compose', 'branch', 'domain', 'aliases', 'port', 'certificate', 'deployed'])
+const ENVIRONMENT_KEYS = new Set(['dir', 'compose', 'branch', 'domain', 'aliases', 'port', 'certificate', 'deployed', 'websockets'])
 const DIR = /^\/var\/www\/[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/
 const UPSTREAM = /^(localhost|\d{1,3}(?:\.\d{1,3}){3}):(\d{1,5})$/
 const MEMORY_LIMIT = /^[0-9]+(b|k|m|g)$/i
@@ -428,8 +431,14 @@ function parseEnvironment(name: EnvironmentName, raw: unknown, rules: HostRules,
         else problems.push(`${where}.deployed must be a commit hash`)
     }
 
+    let websockets = false
+    if (raw.websockets !== undefined) {
+        if (typeof raw.websockets === 'boolean') websockets = raw.websockets
+        else problems.push(`${where}.websockets must be true or false`)
+    }
+
     if (!dir || port === null) return null
-    return { name, dir, composePaths: compose.map(file => posix.join(dir, file)), branch, domain, aliases, port, certificate, deployed }
+    return { name, dir, composePaths: compose.map(file => posix.join(dir, file)), branch, domain, aliases, port, certificate, deployed, websockets }
 }
 
 // When environments is absent, the caller synthesises a single live entry from the project-level
@@ -505,6 +514,7 @@ function parseProject(id: string, raw: unknown, rules: HostRules): ParsedProject
             environments.set('live', {
                 name: 'live', dir, composePaths: compose.map(file => posix.join(dir, file)),
                 branch: null, domain: null, aliases: [], port: upstream.port, certificate: null, deployed: null,
+                websockets: false,
             })
         }
     }

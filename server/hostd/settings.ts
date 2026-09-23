@@ -18,6 +18,9 @@ export type SiteSettings = {
     // address or moves it to another one, and never clears one. Moving it makes hostd rewrite the vhost
     // it owns, so the page that sends one is expected to have confirmed it first.
     domains?: Record<string, string>
+    // Whether each environment's vhost passes WebSocket upgrades through. hostd rewrites the vhost it owns
+    // when this changes; a site still served by hand only has it recorded until it is adopted.
+    websockets?: Record<string, boolean>
 }
 
 // Matches hostd's registry id rule

@@ -65,6 +65,7 @@ export type Change =
     // race with the operator's own editor; handing over the list that should be there makes the write
     // idempotent and lets the existing conflict check do its job.
     | { kind: 'set-aliases', id: string, environment: EnvironmentName, aliases: string[] }
+    | { kind: 'set-websockets', id: string, environment: EnvironmentName, enabled: boolean }
     // One kind rather than three, because a write takes one Change: three would be three reads, three
     // validations, three files on disk and a half-applied save if the second failed. Absent fields are
     // left alone; a null repo or branch deletes that key.
@@ -233,6 +234,15 @@ function edit(doc: Document, change: Change): EditResult {
             // aliases: [] behind, the same way domain and certificate are only ever present when set.
             if (change.aliases.length === 0) doc.deleteIn(['projects', change.id, 'environments', change.environment, 'aliases'])
             else doc.setIn(['projects', change.id, 'environments', change.environment, 'aliases'], change.aliases)
+            return null
+        case 'set-websockets':
+            if (!doc.hasIn(['projects', change.id, 'environments', change.environment])) {
+                return { problem: `${change.id} has no ${change.environment} environment` }
+            }
+            // Off is the default, so switching it off removes the key rather than writing false, the same
+            // way the last alias going away leaves no empty list behind.
+            if (change.enabled) doc.setIn(['projects', change.id, 'environments', change.environment, 'websockets'], true)
+            else doc.deleteIn(['projects', change.id, 'environments', change.environment, 'websockets'])
             return null
         case 'configure': {
             if (!has(change.id)) return { problem: `${change.id} is not registered` }

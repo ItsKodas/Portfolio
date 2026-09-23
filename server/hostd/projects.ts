@@ -43,6 +43,9 @@ export type Environment = {
     certificate: 'letsencrypt' | 'cloudflare-origin' | null
     // The commit serving right now, null before the first deploy
     deployed: string | null
+    // Whether hostd's vhost passes WebSocket upgrades through. Optional because a hostd from before the
+    // flag existed does not send it, which means off.
+    websockets?: boolean
     dir?: string
     composePaths?: string[]
     port?: number
