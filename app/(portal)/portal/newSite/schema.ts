@@ -14,7 +14,10 @@ const GIT_REPO = /^(git@[A-Za-z0-9.-]+:[A-Za-z0-9._\/-]+\.git|https:\/\/[A-Za-z0
 const GIT_REF = /^(?!.*\.\.)(?!.*\.lock$)(?!.*\.$)[A-Za-z0-9][A-Za-z0-9._\/-]{0,127}$/
 const CREDENTIAL_NAME = /^[a-z0-9_]{1,32}$/
 const CLIENT_ID = /^[A-Za-z0-9_-]{1,64}$/
-const MAX_COMPOSE_FILES = 8
+// One short of hostd's limit of 8: hostd adds hostd.ports.yml, the file that publishes the site's port,
+// to every list it creates
+const MAX_COMPOSE_FILES = 7
+const PORT_OVERRIDE_FILE = 'hostd.ports.yml'
 
 // A compose file's path relative to the site's folder: no absolute path, no way out of the folder, and
 // one spelling of each path, the same rule hostd's relativePathProblem applies.
@@ -22,6 +25,7 @@ const composeFile = z.string().trim().min(1, 'Name each compose file, or remove 
     .refine(path => !path.startsWith('/'), 'Compose files are relative to the site folder.')
     .refine(path => path.split('/').every(segment => segment !== '' && segment !== '.' && segment !== '..'),
         'A compose file path cannot contain empty, . or .. segments.')
+    .refine(path => path.split('/').at(-1) !== PORT_OVERRIDE_FILE, `${PORT_OVERRIDE_FILE} is the file hostd writes; name your own compose files.`)
 
 export const newSiteSchema = z.object({
     name: z.string().trim().min(1, 'Enter a name.').max(100, 'Keep the name under 100 characters.'),
@@ -35,7 +39,7 @@ export const newSiteSchema = z.object({
     // '' is the default token
     credential: z.union([z.literal(''), z.string().regex(CREDENTIAL_NAME, 'Pick an account from the list.')]),
     branch: z.string().trim().regex(GIT_REF, 'Use a plain branch name, like main.'),
-    compose: z.array(composeFile).min(1, 'List at least one compose file.').max(MAX_COMPOSE_FILES, `List at most ${MAX_COMPOSE_FILES} compose files.`)
+    compose: z.array(composeFile).min(1, 'List at least one compose file.').max(MAX_COMPOSE_FILES, 'List at most 7 compose files.')
         .refine(list => new Set(list).size === list.length, 'Each compose file only once.'),
     capabilities: z.array(z.enum(CAPABILITIES.map(cap => cap.key) as [string, ...string[]]))
         .refine(list => new Set(list).size === list.length, 'Each feature only once.'),

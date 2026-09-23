@@ -4,11 +4,12 @@
 
 import { CLIENT_ID, DIR_NAME, PROJECT_ID, SERVICE_NAME, isRecord, relativePathProblem } from './formats.ts'
 import {
-    isComposeService, environmentOf, ENVIRONMENTS, ENVIRONMENT_FLAGS, CAPABILITIES, CERTIFICATE_MODES, GIT_REF, CREDENTIAL_NAME, MAX_COMPOSE_FILES,
+    isComposeService, environmentOf, ENVIRONMENTS, ENVIRONMENT_FLAGS, CAPABILITIES, CERTIFICATE_MODES, GIT_REF, CREDENTIAL_NAME, MAX_COMPOSE_FILES, PORT_OVERRIDE_FILE,
     type Capability, type CertificateMode, type EnvironmentFlag, type EnvironmentName, type Keep, type ProjectEntry, type Registry,
 } from './registry.ts'
 import { normaliseHostname } from './hostnames.ts'
 import { PORT_RANGE, type OwnPort } from './ports.ts'
+import { posix } from 'node:path'
 import type { Commit } from './fetch-protocol.ts'
 import type { DeployRecord, DeployTrigger } from './deploys.ts'
 import type { EnvFileList } from './envfiles.ts'
@@ -406,13 +407,18 @@ export function parseCreateExtras(raw: Record<string, unknown>): { ok: true, ext
     }
     if (raw.compose !== undefined) {
         const list = raw.compose
-        if (!Array.isArray(list) || list.length === 0 || list.length > MAX_COMPOSE_FILES) {
-            return { ok: false, message: `compose must name 1 to ${MAX_COMPOSE_FILES} files` }
+        // One short of the registry's limit: hostd adds hostd.ports.yml to every list it creates
+        const most = MAX_COMPOSE_FILES - 1
+        if (!Array.isArray(list) || list.length === 0 || list.length > most) {
+            return { ok: false, message: `compose must name 1 to ${most} files` }
         }
         for (const file of list) {
             if (typeof file !== 'string') return { ok: false, message: 'compose is malformed' }
             const problem = relativePathProblem(file)
             if (problem) return { ok: false, message: `compose file ${file}: ${problem}` }
+            if (posix.basename(file) === PORT_OVERRIDE_FILE) {
+                return { ok: false, message: `${PORT_OVERRIDE_FILE} is the file hostd writes; name your own compose files` }
+            }
         }
         if (new Set(list).size !== list.length) return { ok: false, message: 'compose names a file twice' }
         extras.compose = list as string[]
