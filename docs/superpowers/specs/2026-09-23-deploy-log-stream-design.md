@@ -134,9 +134,12 @@ sit silent for minutes pulling layers and an idle proxy would otherwise close th
 A new client component beside `deployPanel.tsx`. The Deploys tab becomes a two-column grid in
 `site.module.css`, stacking below roughly 900px.
 
-It consumes the stream the way `logs.tsx` does: a pre-flight `fetch` to surface a refusal, because
-`EventSource` swallows HTTP errors, then the `EventSource`. The same `MAX_LINES` cap of 2000 and the same
-tail slice, and scroll-follow matching the log view rather than a second behaviour invented here.
+It consumes the stream the way `logs.tsx` does, including the order, which is not the obvious one. It
+does not pre-flight. It opens the `EventSource` first, and only if that errors before it has opened does
+it ask the same endpoint again plainly, because `EventSource` reports an HTTP error without handing over
+the body and the relay's refusal document is already in the caller's language. The same `MAX_LINES` cap
+of 2000 and the same tail slice, and scroll-follow matching the log view rather than a second behaviour
+invented here.
 
 The three kinds render differently: `step` as the narrative, `output` monospaced and dimmer beneath it,
 `end` closing with the outcome and duration. A change of `startedAt` clears the column.
