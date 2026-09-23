@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
-import { relayLogs } from './relay'
+import { relayDeployWatch, relayLogs } from './relay'
 
 const config = { url: 'http://hostd-api:8080', token: 'a'.repeat(32) }
 const admin = { actor: 'admin', user: 'koda@horizons.gg' }
@@ -12,6 +12,7 @@ function deps(open: unknown, owns = true) {
         clientId: null as string | null,
         assertOwned: async () => owns,
         openLogStream: open as never,
+        openDeployStream: open as never,
     }
 }
 
@@ -44,5 +45,14 @@ describe('relayLogs', () => {
         const response = await relayLogs(deps(open), 'acme-bakery', new URLSearchParams({ service: 'acme-web' }))
         expect(response.status).toBe(503)
         expect(await response.text()).not.toContain('/run/hostd')
+    })
+})
+
+describe('relayDeployWatch', () => {
+    it('refuses a site belonging to another client, before hostd is asked', async () => {
+        const open = async () => { throw new Error('should not be called') }
+        const withClient = { ...deps(open, false), clientId: 'cl_8F2K1ABC' }
+        const response = await relayDeployWatch(withClient, 'acme-bakery', new URLSearchParams({ environment: 'live' }))
+        expect(response.status).toBe(404)
     })
 })
