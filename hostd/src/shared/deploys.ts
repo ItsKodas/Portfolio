@@ -10,6 +10,24 @@ export const PAUSE_AFTER_FAILURES = 3
 // Enough for the portal to draw a history without this file growing without bound.
 export const MAX_DEPLOY_RECORDS = 20
 
+// One line of a deploy as it happens. `step` is the deploy narrating itself (the deps.log calls
+// runDeploy already makes), `output` is a line docker compose printed, and `end` is the last event of a
+// deploy: its text is the outcome, the reason when there is one, and the duration, so a watcher knows it
+// is over and how it went without polling the history.
+//
+// startedAt identifies the deploy. One stream carries a sequence of deploys, so this is what tells a
+// watcher that the lines arriving now belong to a different one from the lines above them.
+export type DeployEvent = {
+    at: string
+    startedAt: string
+    kind: 'step' | 'output' | 'end'
+    text: string
+}
+
+// How much of one deploy is kept for a watcher who has not attached yet. Most deploys are started by the
+// poller with nobody watching, so this is what stops a chatty build costing anything unbounded.
+export const MAX_WATCH_BYTES = 256 * 1024
+
 export const DEPLOY_TRIGGERS = ['poll', 'manual', 'rollback', 'branch'] as const
 export type DeployTrigger = typeof DEPLOY_TRIGGERS[number]
 export type DeployOutcome = 'ok' | 'failed' | 'rolled-back'
