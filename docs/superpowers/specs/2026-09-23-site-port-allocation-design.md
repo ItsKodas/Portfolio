@@ -75,8 +75,8 @@ previous text so a failed step can restore it. Deploys already carry env files i
 
 After writing it, the agent runs `docker compose config` for the environment and requires that some
 service publishes that port on the host. If none does, the step fails with `notPublishedProblem(key,
-port)` from `provision.ts`, for example: `no service publishes port 5010; publish $WEB_PORT in the
-compose file, like "127.0.0.1:$WEB_PORT:3000"`. `ResolvedService` gains `ports`.
+port)` from `provision.ts`, for example: `no service publishes port 5010; publish ${WEB_PORT} in the
+compose file, like "127.0.0.1:${WEB_PORT}:3000"`. `ResolvedService` gains `ports`.
 
 ## New site
 
