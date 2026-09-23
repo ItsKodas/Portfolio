@@ -17,6 +17,7 @@ vi.mock('next/navigation', () => ({
     notFound: () => { throw new Error('NEXT_NOT_FOUND') },
     redirect: (url: string) => { throw new Error(`NEXT_REDIRECT:${url}`) },
     useRouter: () => ({ push: () => {}, refresh: () => {} }),
+    usePathname: () => '/portal/sites/asot',
 }))
 vi.mock('@/server/hostd/session', () => ({ callerFromSession: () => callerFromSession() }))
 vi.mock('@/server/hostd/projects', () => ({

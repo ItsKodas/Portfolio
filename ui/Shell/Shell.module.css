@@ -9,7 +9,7 @@
     background: var(--night);
     z-index: 20;
 }
-.brand { font-weight: 600; font-size: 14.5px; letter-spacing: -.01em; }
+.brand { flex: none; font-weight: 600; font-size: 14.5px; letter-spacing: -.01em; }
 .barExtra { margin-left: auto; display: flex; align-items: center; gap: 12px; }
 
 .menu { display: none; }
