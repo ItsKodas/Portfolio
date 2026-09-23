@@ -21,7 +21,8 @@ import type { RegistryWriter } from '../shared/registry-write.ts'
 import type { Commit } from '../shared/fetch-protocol.ts'
 import { maintenanceKey, type DeployRecord, type DeployTrigger } from '../shared/deploys.ts'
 import type { FetchClient } from './fetch-client.ts'
-import type { Runner } from './compose.ts'
+import type { ComposeLocation, Runner } from './compose.ts'
+import { isPortOverride, type PortOverrideResult } from './port-override.ts'
 import type { DockerApi } from './docker.ts'
 import { listEnvFiles, readEnvFile, writeEnvFile, type EnvFs } from './env-files.ts'
 import { isExampleName } from '../shared/envfiles.ts'
@@ -72,6 +73,8 @@ export type DeployDeps = {
     docker: DockerApi
     runner: Runner
     fs: DeployFs
+    // Rebuilds hostd.ports.yml in the new tree from the commit going out (port-override.ts)
+    portOverride: (location: ComposeLocation, portEnv: string) => Promise<PortOverrideResult>
     envFs?: EnvFs
     now: () => number
     sleep: (ms: number) => Promise<void>
@@ -347,6 +350,19 @@ export async function runDeploy(
         if (!named.ok) {
             await deps.fs.rmdir(trees.next).catch(() => {})
             return fail(named.problem)
+        }
+
+        // hostd.ports.yml is rebuilt from the commit going out, over the copy carryComposeFiles brought
+        // across: a commit that adds a service publishing a host port, or moves the site's container
+        // port, is then covered at this deploy, not at the next port change. Before own, so the file is
+        // owned with the rest of the tree, and before the build, so a refusal leaves the site untouched.
+        if (nextEnvironment.composePaths.some(isPortOverride)) {
+            const override = await deps.portOverride({ dir: trees.next, composePaths: nextEnvironment.composePaths }, project.portEnv)
+            if (!override.ok) {
+                await deps.fs.rmdir(trees.next).catch(() => {})
+                return fail(`the port could not be published: ${override.problem}`)
+            }
+            deps.log(`deploy ${project.id} ${environment.name} ${commit.slice(0, 7)}: published ${environment.port} to ${override.service}:${override.target}`)
         }
 
         // The checkout above runs as root, in the fetcher, and the env files just carried across run as

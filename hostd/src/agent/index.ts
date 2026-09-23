@@ -249,6 +249,7 @@ async function main(): Promise<void> {
         fetcher,
         docker,
         runner,
+        portOverride: (location, portEnv) => buildPortOverride(location, portEnv, runner, writeOwnedFile),
         fs: {
             exists,
             mkdir: async dir => { await mkdir(dir, { recursive: true }) },
