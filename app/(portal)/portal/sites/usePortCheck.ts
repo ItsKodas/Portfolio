@@ -4,7 +4,7 @@
 // number from 5000 up is asked about: anything else is the form's own validation to say, without a round
 // trip. The suggestion comes back with every answer, including the first one for an empty field.
 
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 
 import { checkPortAction } from './portActions'
 
@@ -16,6 +16,9 @@ export function usePortCheck(value: string, own: Own, options: { skip?: boolean,
     const [state, setState] = useState<PortCheckState>({ suggested: null, problem: null, error: null, checking: false })
     const project = own?.project ?? null
     const environment = own?.environment ?? null
+    // The last suggestion hostd gave, kept outside state so reading it never itself re-triggers the effect
+    // below (only `value` and the rest of its own deps do).
+    const suggestedRef = useRef<number | null>(null)
 
     useEffect(() => {
         if (skip) {
@@ -27,14 +30,26 @@ export function usePortCheck(value: string, own: Own, options: { skip?: boolean,
         // A value that is there but not a port in range: no question to ask about it, only the suggestion
         if (trimmed !== '' && port === null) setState(prev => ({ ...prev, problem: null }))
 
+        // The field just filled with hostd's own suggestion (an unowned field only, since a project's
+        // environment could have moved on since that answer): nothing has changed since hostd said so, so
+        // there is nothing to ask again.
+        if (project === null && environment === null && port !== null && port === suggestedRef.current) {
+            setState(prev => ({ ...prev, problem: null, checking: false }))
+            return
+        }
+
         let live = true
         setState(prev => ({ ...prev, checking: true }))
         const timer = setTimeout(() => {
             checkPortAction(port, project && environment ? { project, environment } : null)
                 .then(result => {
                     if (!live) return
-                    if (result.ok) setState({ suggested: result.suggested, problem: result.problem, error: null, checking: false })
-                    else setState(prev => ({ ...prev, error: result.error, checking: false }))
+                    if (result.ok) {
+                        suggestedRef.current = result.suggested
+                        setState({ suggested: result.suggested, problem: result.problem, error: null, checking: false })
+                    } else {
+                        setState(prev => ({ ...prev, error: result.error, checking: false }))
+                    }
                 })
                 .catch(() => { if (live) setState(prev => ({ ...prev, error: 'The port could not be checked.', checking: false })) })
         }, trimmed === '' ? 0 : delayMs)

@@ -68,6 +68,7 @@ describe('the New site form', () => {
         await userEvent.click(screen.getByRole('checkbox', { name: 'WebSockets' }))
         await userEvent.type(screen.getByLabelText('Domain'), 'bakery.com')
         await userEvent.click(screen.getByRole('checkbox', { name: 'Deploy after creating' }))
+        await waitFor(() => expect(screen.getByRole('button', { name: 'Create site' })).toBeEnabled())
         await userEvent.click(screen.getByRole('button', { name: 'Create site' }))
 
         expect(createSiteAction).toHaveBeenCalledWith({
@@ -84,6 +85,13 @@ describe('the New site form', () => {
     it('fills the port in with the lowest free one', async () => {
         await open()
         expect(await screen.findByDisplayValue('5012')).toBe(screen.getByLabelText('Port'))
+    })
+
+    it('does not ask hostd again once the field fills with the port it suggested, and leaves Create enabled', async () => {
+        await open()
+        await screen.findByDisplayValue('5012')
+        expect(checkPortAction).toHaveBeenCalledTimes(1)
+        expect(screen.getByRole('button', { name: 'Create site' })).toBeEnabled()
     })
 
     it('says a taken port is taken, and does not send it', async () => {
@@ -120,6 +128,7 @@ describe('the New site form', () => {
         await screen.findByDisplayValue('5012')
         await userEvent.type(screen.getByLabelText('Name'), 'The Bakery')
         await userEvent.type(screen.getByLabelText('Repo'), 'git@github.com:ItsKodas/bakery.git')
+        await waitFor(() => expect(screen.getByRole('button', { name: 'Create site' })).toBeEnabled())
         await userEvent.click(screen.getByRole('button', { name: 'Create site' }))
 
         expect(await screen.findByText('The vhost was not written: x.conf serves it.')).toBeInTheDocument()
@@ -134,6 +143,7 @@ describe('the New site form', () => {
         await screen.findByDisplayValue('5012')
         await userEvent.type(screen.getByLabelText('Name'), 'The Bakery')
         await userEvent.type(screen.getByLabelText('Repo'), 'git@github.com:ItsKodas/bakery.git')
+        await waitFor(() => expect(screen.getByRole('button', { name: 'Create site' })).toBeEnabled())
         await userEvent.click(screen.getByRole('button', { name: 'Create site' }))
 
         expect(await screen.findByText('/var/www/the-bakery already exists')).toBeInTheDocument()
