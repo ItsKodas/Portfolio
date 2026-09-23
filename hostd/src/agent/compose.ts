@@ -163,7 +163,9 @@ export type LifecycleResult = { ok: true, output: string } | { ok: false, messag
 
 export async function runLifecycle(project: ProjectEntry, action: LifecycleAction, run: Runner): Promise<LifecycleResult> {
     const result = await run('docker', lifecycleArgv(project, action), LIFECYCLE_TIMEOUT_MS)
-    // Compose writes its progress to stderr, so both streams are the output.
+    // Compose splits itself across both streams, so both are the output. A spike against compose v5.1.3
+    // found the build progress on stdout and only the closing summary on stderr, so neither stream on its
+    // own is what the command printed.
     const output = tail([result.stdout, result.stderr].filter(text => text !== '').join('\n'))
     if (result.timedOut) return { ok: false, message: `${action} timed out after ${LIFECYCLE_TIMEOUT_MS / 1000} seconds`, output }
     if (result.exitCode === null) return { ok: false, message: `${action} could not run`, output }

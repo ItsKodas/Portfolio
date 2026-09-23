@@ -411,9 +411,8 @@ function fakeChild() {
 }
 
 describe('createSpawnRunner line sink', () => {
-    // Both streams, not just stderr. deploy-compose.ts carries a comment saying compose writes its
-    // progress to stderr; a spike against compose v5.1.3 found progress on stdout and only the closing
-    // summary on stderr. Listening to one would have shown a single line per deploy.
+    // Both streams, not just stderr: a spike against compose v5.1.3 found the build progress on stdout
+    // and only the closing summary on stderr. Listening to one would have shown a single line per deploy.
     it('hands lines from stdout and stderr to the sink, in arrival order', async () => {
         const child = fakeChild()
         const runner = createSpawnRunner(() => child as never)
