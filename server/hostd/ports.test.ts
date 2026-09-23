@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { checkPort, setPort } from './ports'
 
@@ -14,12 +14,23 @@ function fakeFetch(body: unknown, status = 200) {
     return { fetchImpl, calls }
 }
 
+afterEach(() => vi.restoreAllMocks())
+
 describe('checkPort', () => {
     it('asks for a suggestion alone', async () => {
         const { fetchImpl, calls } = fakeFetch({ ok: true, suggested: 5012, problem: null })
         const result = await checkPort(config, admin, {}, fetchImpl)
         expect(calls[0].url).toBe('http://hostd-api:8080/ports')
         expect(result).toEqual({ ok: true, value: { suggested: 5012, problem: null } })
+    })
+
+    // The first probe after an agent restart looks up the agent's own image as well, which can take
+    // most of 25 seconds: the client's usual 10 would report a free port as unreadable
+    it('waits 30 seconds for an answer', async () => {
+        const timeout = vi.spyOn(AbortSignal, 'timeout')
+        const { fetchImpl } = fakeFetch({ ok: true, suggested: 5012, problem: null })
+        await checkPort(config, admin, { port: 5004 }, fetchImpl)
+        expect(timeout).toHaveBeenCalledWith(30_000)
     })
 
     it('asks about a port for one environment', async () => {

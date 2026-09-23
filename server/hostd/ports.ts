@@ -19,6 +19,9 @@ const PROJECT_ID = /^[a-z0-9][a-z0-9-]{1,30}$/
 
 // Longer than hostd's own call to the agent: a port change recreates the site's containers first.
 const PORT_TIMEOUT_MS = 180_000
+// The live check probes the host, and the first probe after an agent restart looks up the agent's own
+// image too, which can take about 25 seconds: the client's usual 10 would call the port unreadable.
+const CHECK_TIMEOUT_MS = 30_000
 
 export async function checkPort(
     config: HostdConfig,
@@ -33,7 +36,7 @@ export async function checkPort(
         params.set('environment', query.own.environment)
     }
     const search = params.size > 0 ? `?${params}` : ''
-    const result = await hostdRequest<PortCheck>(config, caller, `/ports${search}`, {}, fetchImpl)
+    const result = await hostdRequest<PortCheck>(config, caller, `/ports${search}`, {}, fetchImpl, CHECK_TIMEOUT_MS)
     return result.ok ? { ok: true, value: { suggested: result.value.suggested, problem: result.value.problem } } : result
 }
 

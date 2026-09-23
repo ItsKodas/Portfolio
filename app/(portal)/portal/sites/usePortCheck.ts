@@ -2,7 +2,8 @@
 
 // Asks hostd about the port in a field as the operator types, a moment after they stop. Only a whole
 // number from 5000 up is asked about: anything else is the form's own validation to say, without a round
-// trip. The suggestion comes back with every answer, including the first one for an empty field.
+// trip. The suggestion comes back with every answer, including the first one for an empty field of a new
+// site. A field for an environment that already has a port never asks for a suggestion at all.
 
 import { useEffect, useRef, useState } from 'react'
 
@@ -29,6 +30,12 @@ export function usePortCheck(value: string, own: Own, options: { skip?: boolean,
         const port = /^\d{1,5}$/.test(trimmed) && Number(trimmed) >= 5000 && Number(trimmed) <= 65535 ? Number(trimmed) : null
         // A value that is there but not a port in range: no question to ask about it, only the suggestion
         if (trimmed !== '' && port === null) setState(prev => ({ ...prev, problem: null }))
+        // And for an environment that already has a port, not even that: a suggestion is only for a new
+        // site's empty field, so there is nothing to ask hostd at all
+        if (project !== null && environment !== null && port === null) {
+            setState(prev => ({ ...prev, problem: null, checking: false }))
+            return
+        }
 
         // The field just filled with hostd's own suggestion (an unowned field only, since a project's
         // environment could have moved on since that answer): nothing has changed since hostd said so, so

@@ -50,6 +50,24 @@ describe('the port control', () => {
         expect(refresh).toHaveBeenCalled()
     })
 
+    // Nothing to ask hostd about a value that is not a port in range: the field says so itself
+    it('does not ask hostd about a port out of range', async () => {
+        render(<PortControl id="acme" environment="live" port={5010} />)
+        await userEvent.clear(screen.getByLabelText('live port'))
+        await userEvent.type(screen.getByLabelText('live port'), '3000')
+        expect(screen.getByText('Use a port from 5000 to 65535.')).toBeInTheDocument()
+        await new Promise(resolve => setTimeout(resolve, 600))
+        expect(checkPortAction).not.toHaveBeenCalled()
+        expect(screen.getByRole('button', { name: 'Change port' })).toBeDisabled()
+    })
+
+    it('names the port variable without assuming it is WEB_PORT', async () => {
+        render(<PortControl id="acme" environment="live" port={5010} />)
+        await userEvent.clear(screen.getByLabelText('live port'))
+        await userEvent.type(screen.getByLabelText('live port'), '5013')
+        expect(screen.getByText(/the site's port variable \(WEB_PORT unless the registry names another\)/)).toBeInTheDocument()
+    })
+
     it('shows hostd\'s refusal', async () => {
         setPortAction.mockResolvedValue({ ok: false, error: 'no service publishes port 5013' })
         render(<PortControl id="acme" environment="live" port={5010} />)

@@ -92,12 +92,12 @@ describe('setPortAction', () => {
 
     it('sends the admin\'s call through to setPort, answering with hostd\'s own output', async () => {
         callerFromSession.mockResolvedValue({ caller: { kind: 'admin' }, clientId: null })
-        setPort.mockResolvedValue({ ok: true, value: { output: 'containers recreated' } })
+        setPort.mockResolvedValue({ ok: true, value: { output: 'acme live now uses port 5013, and its containers were recreated on it' } })
 
         const result = await setPortAction('acme', 'live', 5013)
 
         expect(setPort).toHaveBeenCalledWith(expect.anything(), expect.anything(), 'acme', 'live', 5013)
-        expect(result).toEqual({ ok: true, message: 'live now uses port 5013. containers recreated.' })
+        expect(result).toEqual({ ok: true, message: 'acme live now uses port 5013, and its containers were recreated on it.' })
     })
 })
 

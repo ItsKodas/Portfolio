@@ -226,7 +226,8 @@ export async function setPortAction(id: string, environment: string, port: numbe
     if (!result.ok) return refused(`port ${name} on ${id}`, allowed.isAdmin, result)
 
     revalidatePath(`/portal/sites/${id}`)
-    return { ok: true, message: `${name} now uses port ${port}. ${result.value.output}.` }
+    // hostd's own output already names the environment and the port, and says whether it restarted
+    return { ok: true, message: `${result.value.output}.` }
 }
 
 // Domains. Every one of these is the operator's alone: hostd keeps 'domains' among its admin-only policy
