@@ -468,6 +468,41 @@ describe('GET /credentials', () => {
     })
 })
 
+describe('GET /ports', () => {
+    it('routes at the top level and allows only GET', () => {
+        assert.deepEqual(matchRoute('GET', '/ports'), { verb: 'ports' })
+        assert.equal(matchRoute('POST', '/ports').verb, 'method-not-allowed')
+    })
+
+    it('asks the agent about the port and the environment it is for', async () => {
+        agent.reply = () => ({ ok: true, suggested: 5012, problem: null })
+        const response = await request('/ports?port=5010&project=acme&environment=live', { actor: 'admin' })
+        assert.equal(response.status, 200)
+        assert.deepEqual(await response.json(), { ok: true, suggested: 5012, problem: null })
+        assert.deepEqual(agent.calls, [{ verb: 'ports', args: { port: 5010, own: { project: 'acme', environment: 'live' } } }])
+    })
+
+    it('asks about no port when none is given', async () => {
+        agent.reply = () => ({ ok: true, suggested: 5012, problem: null })
+        await request('/ports', { actor: 'admin' })
+        assert.deepEqual(agent.calls, [{ verb: 'ports', args: { port: null, own: null } }])
+    })
+
+    it('refuses a malformed query without asking the agent', async () => {
+        for (const query of ['?port=abc', '?port=5012&project=acme', '?environment=live', '?project=acme&environment=prod']) {
+            const response = await request(`/ports${query}`, { actor: 'admin' })
+            assert.equal(response.status, 400)
+        }
+        assert.deepEqual(agent.calls, [])
+    })
+
+    it('refuses a client, and never calls the agent', async () => {
+        const response = await request('/ports')
+        assert.equal(response.status, 403)
+        assert.deepEqual(agent.calls, [])
+    })
+})
+
 describe('the credential on a project', () => {
     it('carries a settings credential through to the agent, null included rather than dropped', async () => {
         agent.reply = () => ({ ok: true, output: 'configured' })

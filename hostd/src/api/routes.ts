@@ -6,7 +6,7 @@ import { PROJECT_ID, SERVICE_NAME, isRecord, describeError } from '../shared/for
 import {
     LIFECYCLE_ACTIONS, MAX_TAIL, DEFAULT_TAIL, MAX_REQUEST_BYTES, MAX_COMMITS, DEFAULT_COMMITS,
     SNAPSHOT_ID, RUN_ID, CREATE_KEYS, parseConfigureArgs, parseCreateExtras,
-    type AgentReply, type AgentRequest, type LifecycleAction, type LogsArgs, type ProjectStatus, type Refusal,
+    type AgentReply, type AgentRequest, type LifecycleAction, type LogsArgs, type PortsArgs, type ProjectStatus, type Refusal,
     type RefusalCode, type ProvisionCreateArgs, type ProvisionAddEnvironmentArgs,
 } from '../shared/protocol.ts'
 import {
@@ -72,6 +72,7 @@ export type Route =
     | { verb: 'health' }
     | { verb: 'audit-all' }
     | { verb: 'credentials' }
+    | { verb: 'ports' }
     | { verb: 'status', project: string }
     | { verb: 'lifecycle', project: string, action: LifecycleAction }
     | { verb: 'logs', project: string }
@@ -131,6 +132,7 @@ export function matchRoute(method: string, pathname: string): Route {
     if (parts.length === 1 && parts[0] === 'audit') return only('GET', { verb: 'audit-all' })
     if (parts.length === 1 && parts[0] === 'health') return only('GET', { verb: 'health' })
     if (parts.length === 1 && parts[0] === 'credentials') return only('GET', { verb: 'credentials' })
+    if (parts.length === 1 && parts[0] === 'ports') return only('GET', { verb: 'ports' })
     if (parts[0] !== 'projects' || parts.length < 2) return { verb: 'not-found' }
 
     const project = parts[1] ?? ''
@@ -397,6 +399,24 @@ function parseCommitsLimit(params: URLSearchParams): number | null {
     if (raw === null) return DEFAULT_COMMITS
     const limit = /^\d{1,4}$/.test(raw) ? Number(raw) : 0
     return limit >= 1 && limit <= MAX_COMMITS ? limit : null
+}
+
+// Both halves of own or neither: a port checked for "some environment" would not know which port is its own.
+function parsePortsQuery(params: URLSearchParams): { ok: true, args: PortsArgs } | { ok: false, message: string } {
+    const raw = params.get('port')
+    if (raw !== null && !/^\d{1,5}$/.test(raw)) return { ok: false, message: 'port must be a number' }
+    const project = params.get('project')
+    const environment = params.get('environment')
+    if ((project === null) !== (environment === null)) return { ok: false, message: 'project and environment go together' }
+    if (project !== null && !PROJECT_ID.test(project)) return { ok: false, message: 'project is malformed' }
+    if (environment !== null && !(ENVIRONMENTS as readonly string[]).includes(environment)) return { ok: false, message: 'environment must be live or test' }
+    return {
+        ok: true,
+        args: {
+            port: raw === null ? null : Number(raw),
+            own: project !== null && environment !== null ? { project, environment: environment as EnvironmentName } : null,
+        },
+    }
 }
 
 // Normalised here rather than merely type-checked: normaliseHostname is the one thing in hostd that
@@ -1006,6 +1026,17 @@ export function createHandler(deps: ApiDeps): (req: IncomingMessage, res: Server
                 const reply = await callAgent({ verb: 'credentials' })
                 if (!reply) return
                 if (!reply.ok) return refuseRoute(AGENT_STATUS[reply.code], reply.code, reply.message, null, 'configure')
+                return sendJson(res, 200, reply)
+            }
+
+            case 'ports': {
+                // Gated like credentials: a question about the machine, answered for the operator's forms
+                if (caller.actor.kind !== 'admin') return refuseRoute(403, 'admin-only', 'only the admin can check ports', null, 'provision')
+                const parsed = parsePortsQuery(url.searchParams)
+                if (!parsed.ok) return refuseRoute(400, 'bad-request', parsed.message, null, 'provision')
+                const reply = await callAgent({ verb: 'ports', args: parsed.args })
+                if (!reply) return
+                if (!reply.ok) return refuseRoute(AGENT_STATUS[reply.code], reply.code, reply.message, null, 'provision')
                 return sendJson(res, 200, reply)
             }
 

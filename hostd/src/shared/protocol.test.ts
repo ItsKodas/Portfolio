@@ -348,6 +348,25 @@ describe('the credentials verb', () => {
     })
 })
 
+describe('ports', () => {
+    it('parses a check with and without a port and an own environment', () => {
+        assert.deepEqual(parseAgentRequest('{"verb":"ports","args":{"port":null,"own":null}}'), { ok: true, request: { verb: 'ports', args: { port: null, own: null } } })
+        assert.deepEqual(
+            parseAgentRequest('{"verb":"ports","args":{"port":5012,"own":{"project":"acme","environment":"live"}}}'),
+            { ok: true, request: { verb: 'ports', args: { port: 5012, own: { project: 'acme', environment: 'live' } } } },
+        )
+    })
+
+    it('refuses anything else', () => {
+        for (const line of [
+            '{"verb":"ports"}',
+            '{"verb":"ports","args":{"port":"5012","own":null}}',
+            '{"verb":"ports","args":{"port":null,"own":{"project":"acme","environment":"prod"}}}',
+            '{"verb":"ports","args":{"port":null,"own":null,"extra":1}}',
+        ]) assert.equal(parseAgentRequest(line).ok, false)
+    })
+})
+
 describe('parseDomainsArgs', () => {
     const ok = (args: unknown) => {
         const parsed = parseDomainsArgs(args)

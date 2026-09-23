@@ -8,7 +8,7 @@ import {
     type Capability, type CertificateMode, type EnvironmentFlag, type EnvironmentName, type Keep, type ProjectEntry, type Registry,
 } from './registry.ts'
 import { normaliseHostname } from './hostnames.ts'
-import { PORT_RANGE } from './ports.ts'
+import { PORT_RANGE, type OwnPort } from './ports.ts'
 import type { Commit } from './fetch-protocol.ts'
 import type { DeployRecord, DeployTrigger } from './deploys.ts'
 import type { EnvFileList } from './envfiles.ts'
@@ -219,10 +219,16 @@ export type BranchesRequest = { verb: 'branches', project: string }
 // a fact about the machine, not about a site.
 export type CredentialsRequest = { verb: 'credentials' }
 
+// Whether a port is free, for the portal's live check, and the lowest one that is. No project: this is a
+// question about the machine. own names the environment the port is for, whose current port is its own.
+// Advice only: a create or a port change checks again, under the provisioning lock.
+export type PortsArgs = { port: number | null, own: OwnPort | null }
+export type PortsRequest = { verb: 'ports', args: PortsArgs }
+
 export type ProjectRequest =
     | StatusRequest | LifecycleRequest | LogsRequest | ProvisionOnProjectRequest | EnvRequest | DeployRequest
     | BackupRequest | DomainsRequest | ConfigureRequest | BranchesRequest
-export type AgentRequest = HealthRequest | StatusesRequest | ProvisionCreateRequest | CredentialsRequest | ProjectRequest
+export type AgentRequest = HealthRequest | StatusesRequest | ProvisionCreateRequest | CredentialsRequest | PortsRequest | ProjectRequest
 export type Verb = AgentRequest['verb']
 
 export type RefusalCode =
@@ -280,6 +286,7 @@ export type DeployHistoryReply = {
 export type DeployCommitsReply = { ok: true, commits: Commit[] }
 export type BranchesReply = { ok: true, branches: string[] }
 export type CredentialsReply = { ok: true, credentials: string[] }
+export type PortsReply = { ok: true, suggested: number, problem: string | null }
 // What configure put on the host, one entry per environment whose address moved onto a vhost hostd
 // already owned. Deliberately the same hostnames-and-path shape DomainsWritten carries, with the
 // environment added because configure takes several at once: api turns both into the same records, so a
@@ -292,7 +299,7 @@ export type ConfigureReply = { ok: true, output: string, written: ConfigureWritt
 export type StreamHeader = { ok: true, stream: true }
 export type AgentReply =
     | HealthReply | StatusReply | StatusesReply | LifecycleReply | ProvisionReply | EnvListReply | EnvReadReply
-    | DeployStartedReply | DeployHistoryReply | DeployCommitsReply | BranchesReply | CredentialsReply | ConfigureReply
+    | DeployStartedReply | DeployHistoryReply | DeployCommitsReply | BranchesReply | CredentialsReply | PortsReply | ConfigureReply
     | BackupStartedReply | BackupListReply | BackupRunReply
     | DomainsWritten | AdoptPreview | Refusal
 export type LogLine = { stream: 'stdout' | 'stderr', ts: string | null, text: string, truncated: boolean }
@@ -322,6 +329,8 @@ export const VERB_CAPABILITY: Record<Verb, Capability | null> = {
     // Null for the same reason branches is: it fills the Settings form, and api's policy is what makes
     // it admin-only.
     credentials: null,
+    // Null for the same reason: api's policy makes it admin-only.
+    ports: null,
 }
 
 type Parsed = { ok: true, request: AgentRequest } | Refusal
@@ -789,6 +798,22 @@ export function parseAgentRequest(line: string): Parsed {
         case 'credentials': {
             if (!onlyKeys(raw, ['verb'])) return refuse('bad-request', 'credentials takes no other keys')
             return { ok: true, request: { verb: 'credentials' } }
+        }
+
+        case 'ports': {
+            if (!onlyKeys(raw, ['verb', 'args'])) return refuse('bad-request', 'ports takes only args')
+            if (!isRecord(raw.args) || !onlyKeys(raw.args, ['port', 'own'])) return refuse('bad-request', 'ports takes only args.port and args.own')
+            const { port, own } = raw.args
+            // Any whole port number: the range is part of the answer (portProblem says it), not a refusal
+            if (port !== null && (typeof port !== 'number' || !Number.isInteger(port) || port < 1 || port > 65535)) {
+                return refuse('bad-request', 'port must be null or a whole number from 1 to 65535')
+            }
+            if (own !== null && (!isRecord(own) || !onlyKeys(own, ['project', 'environment'])
+                || typeof own.project !== 'string' || !PROJECT_ID.test(own.project)
+                || !(ENVIRONMENTS as readonly unknown[]).includes(own.environment))) {
+                return refuse('bad-request', 'own must be null or a project and one of its environments')
+            }
+            return { ok: true, request: { verb: 'ports', args: { port: port as number | null, own: own as OwnPort | null } } }
         }
 
         case 'status': {

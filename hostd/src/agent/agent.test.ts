@@ -722,6 +722,35 @@ describe('the branches verb', () => {
     })
 })
 
+describe('ports', () => {
+    const ask = (port: number | null, own: { project: string, environment: 'live' | 'test' } | null = null): AgentRequest => ({ verb: 'ports', args: { port, own } })
+
+    it('suggests the lowest free port when asked about none', async () => {
+        const { agent } = setup({ provision: fakeProvisionDeps({ choosePort: async () => ({ ok: true, port: 5012 }) }) })
+        assert.deepEqual(replyOf(await agent.handle(ask(null))), { ok: true, suggested: 5012, problem: null })
+    })
+
+    it('says what is wrong with the port it was asked about, as an answer rather than a refusal', async () => {
+        const provision = fakeProvisionDeps({ checkPort: async () => ({ ok: false, code: 'bad-request', problem: 'port 5004 is in use on the host' }) })
+        const { agent } = setup({ provision })
+        assert.deepEqual(replyOf(await agent.handle(ask(5004))), { ok: true, suggested: 5100, problem: 'port 5004 is in use on the host' })
+    })
+
+    it('passes the environment the port is for, so its own port is not counted', async () => {
+        const seen: unknown[] = []
+        const provision = fakeProvisionDeps({ checkPort: async (port, own) => { seen.push([port, own]); return { ok: true } } })
+        const { agent } = setup({ provision })
+        await agent.handle(ask(5010, { project: 'acme', environment: 'live' }))
+        assert.deepEqual(seen, [[5010, { project: 'acme', environment: 'live' }]])
+    })
+
+    it('refuses as unavailable when the host could not be read', async () => {
+        const provision = fakeProvisionDeps({ choosePort: async () => ({ ok: false, problem: 'could not read the host\'s ports: the probe timed out' }) })
+        const { agent } = setup({ provision })
+        assert.deepEqual(replyOf(await agent.handle(ask(null))), { ok: false, code: 'unavailable', message: 'could not read the host\'s ports: the probe timed out' })
+    })
+})
+
 // A credential is the NAME of one of the fetcher's GitHub tokens; the token itself never reaches this
 // process. These registries exist only to give branches() a project with, and without, one set.
 const withCredential = parseRegistry(`

@@ -6,7 +6,7 @@ import {
     type AdoptPreview, type AgentReply, type AgentRequest, type BackupArgs, type ConfigureArgs,
     type ConfigureWritten, type DeployArgs, type DomainsRequest, type DomainsWritten, type EnvArgs,
     type HealthReply, type LifecycleAction,
-    type LifecycleReply, type LogLine, type LogsArgs, type ProjectStatus, type ProvisionAddEnvironmentArgs,
+    type LifecycleReply, type LogLine, type LogsArgs, type PortsArgs, type PortsReply, type ProjectStatus, type ProvisionAddEnvironmentArgs,
     type ProvisionCreateArgs, type ProvisionRemoveArgs, type Refusal, type ServiceStatus, type StatusesReply,
 } from '../shared/protocol.ts'
 import { environmentOf, ENVIRONMENT_FLAGS, type EnvironmentFlag, type EnvironmentName, type ProjectEntry, type Registry } from '../shared/registry.ts'
@@ -128,6 +128,7 @@ export class Agent {
     async handle(request: AgentRequest): Promise<Outcome> {
         if (request.verb === 'health') return reply(await this.health())
         if (request.verb === 'credentials') return reply(await this.credentials())
+        if (request.verb === 'ports') return reply(await this.ports(request.args))
         // Its own branch before the check below: statuses names many projects, so it checks each one for
         // itself and reports the refusals among the results instead of refusing the whole request.
         if (request.verb === 'statuses') return reply(await this.statuses(request.projects))
@@ -321,6 +322,20 @@ export class Agent {
         const result = await this.deps.fetcher.call({ verb: 'credentials' })
         if (!result.ok) return refuse(result.code === 'bad-request' ? 'bad-request' : 'failed', result.message)
         return { ok: true, credentials: result.credentials ?? [] }
+    }
+
+    // The portal's live check. Not under the provisioning lock: it changes nothing, and a create that
+    // is running would otherwise make the form say "busy" while the operator is typing. A port that is
+    // not free is an answer, not a refusal; only a host that could not be read is refused.
+    private async ports(args: PortsArgs): Promise<PortsReply | Refusal> {
+        if (!this.deps.provision) return refuse('unavailable', 'provisioning is not configured')
+        const suggested = await this.deps.provision.choosePort()
+        if (!suggested.ok) return refuse('unavailable', suggested.problem)
+        if (args.port === null) return { ok: true, suggested: suggested.port, problem: null }
+        const verdict = await this.deps.provision.checkPort(args.port, args.own ?? undefined)
+        if (verdict.ok) return { ok: true, suggested: suggested.port, problem: null }
+        if (verdict.code === 'unavailable') return refuse('unavailable', verdict.problem)
+        return { ok: true, suggested: suggested.port, problem: verdict.problem }
     }
 
     private async deploy(project: ProjectEntry, args: DeployArgs): Promise<AgentReply> {

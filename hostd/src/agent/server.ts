@@ -76,6 +76,9 @@ function describe(request: AgentRequest): string {
         case 'configure': return `configure ${request.project}`
         case 'branches': return `branches ${request.project}`
         case 'credentials': return 'credentials'
+        // Never the port itself here beyond this: the number is exactly what a form typed, and this line
+        // is written for every keystroke of the portal's live check.
+        case 'ports': return `ports ${request.args.port ?? 'suggest'}`
     }
 }
 
