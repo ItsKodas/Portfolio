@@ -386,8 +386,15 @@ function parseEnvironmentDir(raw: unknown): string | null {
     return typeof raw === 'string' && (isFlatDir(raw) || isNestedDir(raw)) ? raw : null
 }
 
+// The project name compose itself gave a flat site, from its folder: lowercased, with every character
+// outside [a-z0-9_-] dropped. A default that kept the folder name as it is (/var/www/Foo.com) would name a
+// project compose never created, and the next down would find none of the site's containers.
+function flatComposeName(dir: string): string {
+    return posix.basename(dir).toLowerCase().replace(/[^a-z0-9_-]/g, '')
+}
+
 function defaultComposeName(id: string, name: EnvironmentName, dir: string): string {
-    if (!isNestedDir(dir)) return posix.basename(dir)
+    if (!isNestedDir(dir)) return flatComposeName(dir)
     return name === 'live' ? id : `${id}-${name}`
 }
 
@@ -557,7 +564,7 @@ function parseProject(id: string, raw: unknown, rules: HostRules): ParsedProject
         environments = new Map<EnvironmentName, EnvironmentEntry>()
         if (dir && upstream) {
             environments.set('live', {
-                name: 'live', dir, composePaths: compose.map(file => posix.join(dir, file)), composeName: posix.basename(dir),
+                name: 'live', dir, composePaths: compose.map(file => posix.join(dir, file)), composeName: flatComposeName(dir),
                 branch: null, domain: null, aliases: [], port: upstream.port, certificate: null, deployed: null,
                 websockets: false, flexibleSsl: false,
             })

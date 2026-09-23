@@ -720,6 +720,17 @@ describe('nested layout', () => {
         assert.equal(registry.projects.get('acme')!.environments.get('test')!.composeName, 'acme-test')
     })
 
+    // Compose derived the project name from the folder the same way: lowercased, and everything outside
+    // [a-z0-9_-] dropped. The default has to be that same name, or the next down finds no containers.
+    it('normalises a flat default the way compose normalises a folder name', () => {
+        const registry = parseRegistry(envProject(`      live: { dir: /var/www/Foo.com, port: 5010 }
+      test: { dir: /var/www/foo_bar-test, port: 5011 }
+`))
+        const project = registry.projects.get('acme')!
+        assert.equal(project.environments.get('live')!.composeName, 'foocom')
+        assert.equal(project.environments.get('test')!.composeName, 'foo_bar-test')
+    })
+
     it('takes an explicit composeName over the default', () => {
         const registry = parseRegistry(envProject(`      live: { dir: /var/www/acme/live, port: 5010, composeName: acme }
       test: { dir: /var/www/acme/test, port: 5011, composeName: acme-staging }
