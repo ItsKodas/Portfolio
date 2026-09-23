@@ -85,6 +85,7 @@ export type Route =
     | { verb: 'env-list', project: string, environment: EnvironmentName }
     | { verb: 'env-file', project: string, environment: EnvironmentName, path: string }
     | { verb: 'deploy', project: string, environment: EnvironmentName }
+    | { verb: 'deploy-watch', project: string, environment: EnvironmentName }
     | { verb: 'rollback', project: string, environment: EnvironmentName }
     | { verb: 'branch', project: string, environment: EnvironmentName }
     | { verb: 'deploys', project: string, environment: EnvironmentName }
@@ -198,7 +199,13 @@ export function matchRoute(method: string, pathname: string): Route {
         if (parts.length === 4) {
             switch (parts[3]) {
                 case 'env': return only('GET', { verb: 'env-list', project, environment })
-                case 'deploy': return only('POST', { verb: 'deploy', project, environment })
+                case 'deploy':
+                    // POST starts one, GET watches the one that is running. Same path on purpose: they
+                    // are the same subject, and a second segment would only be a different spelling of
+                    // the same thing.
+                    if (method === 'POST') return { verb: 'deploy', project, environment }
+                    if (method === 'GET') return { verb: 'deploy-watch', project, environment }
+                    return { verb: 'method-not-allowed' }
                 case 'rollback': return only('POST', { verb: 'rollback', project, environment })
                 case 'branch': return only('PUT', { verb: 'branch', project, environment })
                 case 'deploys': return only('GET', { verb: 'deploys', project, environment })
@@ -1435,6 +1442,55 @@ export function createHandler(deps: ApiDeps): (req: IncomingMessage, res: Server
                     clearInterval(keepalive)
                     res.off('close', stop)
                     logStream.close()
+                    res.end()
+                }
+                return
+            }
+
+            // Mirrors 'logs' above exactly: same SSE framing, same keepalive (more load-bearing here,
+            // since a build can sit silent for minutes pulling layers, and without it an idle proxy
+            // closes the connection mid-deploy), same drain and close wiring. The differences are the
+            // verb, the target text and the policy verb: 'deploy-read' rather than 'logs', because
+            // watching a deploy is the same kind of read as the history the owner may already make (see
+            // readDeploy above, which uses the same verb).
+            case 'deploy-watch': {
+                const target = `${route.environment} watch`
+                if (!(await decide(route.project, 'deploy-read', target))) return
+
+                let stream: Awaited<ReturnType<AgentClient['stream']>>
+                try {
+                    stream = await deps.agent.stream({ verb: 'deploy-watch', project: route.project, args: { environment: route.environment } })
+                } catch (error) {
+                    if (!(error instanceof AgentUnavailableError)) throw error
+                    await audit(who, { project: route.project, verb: 'deploy-watch', target, outcome: 'failed', reason: error.message })
+                    return sendJson(res, 503, { ok: false, code: 'agent-unavailable', message: error.message })
+                }
+                if (!stream.ok) return refuseRoute(AGENT_STATUS[stream.code], stream.code, stream.message, route.project, 'deploy-watch', target)
+                await audit(who, { project: route.project, verb: 'deploy-watch', target, outcome: 'ok' })
+
+                res.writeHead(200, {
+                    'content-type': 'text/event-stream; charset=utf-8',
+                    'cache-control': 'no-store',
+                    connection: 'keep-alive',
+                    'x-accel-buffering': 'no',
+                })
+                const deployStream = stream
+                const stop = () => deployStream.close()
+                res.on('close', stop)
+                const keepalive = setInterval(() => res.write(SSE_KEEPALIVE), deps.keepaliveMs ?? KEEPALIVE_MS)
+                try {
+                    for await (const line of deployStream.lines) {
+                        if (!res.write(sseEvent('line', line))) await waitForDrain(res)
+                        if (res.destroyed) break
+                    }
+                    res.write(sseEvent('end', {}))
+                } catch (error) {
+                    console.error(`[api] ${new Date().toISOString()} deploy watch for ${route.project} failed: ${describeError(error)}`)
+                    res.write(sseEvent('error', { message: 'the deploy watch stream failed' }))
+                } finally {
+                    clearInterval(keepalive)
+                    res.off('close', stop)
+                    deployStream.close()
                     res.end()
                 }
                 return
