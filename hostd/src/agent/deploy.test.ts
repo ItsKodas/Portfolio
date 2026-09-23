@@ -388,6 +388,29 @@ describe('runDeploy, before the swap', () => {
         assert.ok(copied < owned && owned < built)
     })
 
+    // Compose names the build file `Dockerfile` whenever a service does not name one itself, and the
+    // legacy builder (the agent has no buildx, see the agent stage in hostd/Dockerfile) looks for exactly
+    // that name, so a repo that commits `dockerfile` failed every build with "unable to evaluate symlinks
+    // in Dockerfile path". The checkout gets a `Dockerfile` copy of it, beside the compose file.
+    it('gives a lowercase dockerfile the name compose asks for, before ownership and the build', async () => {
+        const context = setup({ existsPaths: ['/var/www/acme/.git', '/var/www/acme.next/docker-compose.yml', '/var/www/acme.next/dockerfile'] })
+        const record = await runDeploy(context.project(), context.environment(), { ...request, commit: TIP }, context.deps)
+        assert.equal(record.outcome, 'ok', record.reason ?? '')
+        const copied = context.calls.indexOf('copy /var/www/acme.next/dockerfile /var/www/acme.next/Dockerfile')
+        const owned = context.calls.findIndex(call => call.startsWith('own /var/www/acme.next'))
+        const built = context.calls.indexOf('compose build')
+        assert.ok(copied !== -1 && owned !== -1 && built !== -1, context.calls.join(', '))
+        assert.ok(copied < owned && owned < built)
+    })
+
+    it('leaves a checkout that has its own Dockerfile alone', async () => {
+        const context = setup({
+            existsPaths: ['/var/www/acme/.git', '/var/www/acme.next/docker-compose.yml', '/var/www/acme.next/Dockerfile', '/var/www/acme.next/dockerfile'],
+        })
+        await runDeploy(context.project(), context.environment(), { ...request, commit: TIP }, context.deps)
+        assert.equal(context.calls.some(call => call.startsWith('copy ')), false, context.calls.join(', '))
+    })
+
     it('fails the deploy naming the file when it cannot be carried, and never builds', async () => {
         const context = setup({ registryYaml: REGISTRY_YAML_OVERRIDE, copyFails: true, existsPaths: ['/var/www/acme/.git', '/var/www/acme.next/docker-compose.yml'] })
         const record = await runDeploy(context.project(), context.environment(), { ...request, commit: TIP }, context.deps)

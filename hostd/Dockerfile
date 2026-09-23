@@ -19,11 +19,11 @@ CMD ["node", "--import", "tsx", "src/api/index.ts"]
 FROM base AS agent
 # restic takes the backups; sqlite3 is how a sqlite database is copied safely under a concurrent writer.
 # Neither belongs in api or fetcher: only the agent ever runs them.
-# buildx is what makes compose build with BuildKit rather than the legacy builder. The legacy builder
-# only ever looks for a file named exactly `Dockerfile`, so a repo that names it `dockerfile` failed every
-# deploy in the build step ("unable to evaluate symlinks in Dockerfile path"), while the same build by hand
-# on the host, which has buildx, went through.
-RUN apk add --no-cache docker-cli docker-cli-buildx docker-cli-compose restic sqlite
+# No buildx, deliberately. With it compose builds through BuildKit, which fetches registry tokens from
+# the client, and this container has no network, so every base image not already on the host failed to
+# pull. The legacy builder has the daemon pull instead. Its one gap, a repo that names its build file
+# `dockerfile`, is covered by nameDockerfiles in src/agent/deploy.ts.
+RUN apk add --no-cache docker-cli docker-cli-compose restic sqlite
 CMD ["node", "--import", "tsx", "src/agent/index.ts"]
 
 FROM base AS fetcher
