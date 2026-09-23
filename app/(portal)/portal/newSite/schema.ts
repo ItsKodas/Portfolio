@@ -39,7 +39,7 @@ export const newSiteSchema = z.object({
     // '' is the default token
     credential: z.union([z.literal(''), z.string().regex(CREDENTIAL_NAME, 'Pick an account from the list.')]),
     branch: z.string().trim().regex(GIT_REF, 'Use a plain branch name, like main.'),
-    compose: z.array(composeFile).min(1, 'List at least one compose file.').max(MAX_COMPOSE_FILES, 'List at most 7 compose files.')
+    compose: z.array(composeFile).min(1, 'List at least one compose file.').max(MAX_COMPOSE_FILES, `List at most ${MAX_COMPOSE_FILES} compose files.`)
         .refine(list => new Set(list).size === list.length, 'Each compose file only once.'),
     capabilities: z.array(z.enum(CAPABILITIES.map(cap => cap.key) as [string, ...string[]]))
         .refine(list => new Set(list).size === list.length, 'Each feature only once.'),
