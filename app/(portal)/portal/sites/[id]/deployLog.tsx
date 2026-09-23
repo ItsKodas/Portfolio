@@ -29,10 +29,22 @@ export function DeployLog({ id, environment }: { id: string, environment: 'live'
 
     useEffect(() => {
         let stopped = false
+        // Never opened means the error arrived before any line did, which is what a refused request
+        // looks like from here; opened-then-error is a dropped connection EventSource is about to retry
+        // on its own.
+        let opened = false
         const url = `/api/sites/${id}/deploy?environment=${environment}`
         const stream = new EventSource(url)
 
-        stream.onopen = () => { if (!stopped) setProblem(null) }
+        stream.onopen = () => {
+            opened = true
+            if (stopped) return
+            setProblem(null)
+            // hostd replays its whole buffer to every new subscriber, including a reconnect after a
+            // dropped connection. Without this, the replayed lines carry the same startedAt as what is
+            // already on screen and get appended again instead of read as a repeat of it.
+            startedAt.current = null
+        }
 
         stream.addEventListener('line', event => {
             const raw: unknown = JSON.parse((event as MessageEvent<string>).data)
@@ -50,7 +62,7 @@ export function DeployLog({ id, environment }: { id: string, environment: 'live'
         })
 
         stream.onerror = () => {
-            if (stopped) return
+            if (stopped || opened) return
             // EventSource does not hand over the body of an HTTP error, so ask plainly for the message.
             void fetch(url, { cache: 'no-store' }).then(async response => {
                 if (stopped) return

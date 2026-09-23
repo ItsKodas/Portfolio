@@ -1,7 +1,13 @@
 import { act, render, screen } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-vi.mock('next/navigation', () => ({ useRouter: () => ({ refresh: () => {} }) }))
+// One object for the life of the module, not a new one per call: real next/navigation hands back a
+// stable router, and the effect below closes over it in its dependency array. A fresh object on every
+// render would make the effect tear down and reopen the stream on every line, which is not what the
+// component it stands in for does. vi.hoisted, because vi.mock's factory runs before this file's own
+// top-level code and cannot otherwise close over a variable declared here.
+const { mockRouter } = vi.hoisted(() => ({ mockRouter: { refresh: () => {} } }))
+vi.mock('next/navigation', () => ({ useRouter: () => mockRouter }))
 
 const { DeployLog, MAX_LINES } = await import('./deployLog')
 
@@ -98,6 +104,37 @@ describe('the deploy column', () => {
         render(<DeployLog id="acme" environment="live" />)
         await act(async () => { open().onerror?.() })
         expect(await screen.findByText(/not available for this site/)).toBeInTheDocument()
+    })
+
+    // EventSource reconnects on its own after any dropped connection, and hostd replays its whole buffer
+    // to every new subscriber, which is the buffer's whole purpose. Without clearing startedAt on open,
+    // the replayed line would carry the same startedAt as the one already on screen and be appended
+    // instead of read as a repeat of it.
+    it('does not duplicate a line when the stream reconnects mid-deploy', () => {
+        render(<DeployLog id="acme" environment="live" />)
+        open().open()
+        open().event({ at: AT, startedAt: AT, kind: 'step', text: 'building' })
+        open().open()
+        open().event({ at: AT, startedAt: AT, kind: 'step', text: 'building' })
+
+        expect(screen.getAllByText('building')).toHaveLength(1)
+    })
+
+    // The plain fetch is only for a refusal, which is an error before the stream ever opens. An error
+    // after a healthy open is a dropped connection EventSource is about to retry by itself, and neither
+    // asking again nor painting a refusal banner over a column that is still streaming is warranted.
+    it('does not treat a drop after a healthy open as a refusal', () => {
+        const fetched = vi.fn()
+        vi.stubGlobal('fetch', fetched)
+        render(<DeployLog id="acme" environment="live" />)
+        open().open()
+        open().event({ at: AT, startedAt: AT, kind: 'step', text: 'building' })
+
+        act(() => { open().onerror?.() })
+
+        expect(fetched).not.toHaveBeenCalled()
+        expect(screen.queryByText(/cannot be watched/)).toBeNull()
+        expect(screen.getByText('building')).toBeInTheDocument()
     })
 
     // MAX_LINES + 10 renders of a growing, then 2000-deep, list is slow under jsdom on its own merits, not
