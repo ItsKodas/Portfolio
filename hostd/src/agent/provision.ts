@@ -20,6 +20,7 @@ import { RegistryWriter, type Change } from '../shared/registry-write.ts'
 import type { FetchClient } from './fetch-client.ts'
 import { runLifecycle, type GuessedService, type Runner } from './compose.ts'
 import { listEnvFiles, readEnvFile, writeEnvFile, createMissingEnvFiles, type EnvFs } from './env-files.ts'
+import { isExampleName } from '../shared/envfiles.ts'
 import {
     refuse,
     type AgentReply, type ProvisionAddEnvironmentArgs, type ProvisionCreateArgs, type Refusal,
@@ -150,6 +151,9 @@ async function copyEnvFiles(
     const testDatabase = `${projectId}-test`
     const failures: string[] = []
     for (const file of files) {
+        // The clone has already put the repo's own committed copy in place, which is the point of an
+        // example: there is nothing here to copy over it. See isExampleName.
+        if (isExampleName(file.path)) continue
         const read = await readEnvFile(live, file.path, envFs)
         if (!read.ok) {
             failures.push(file.path)

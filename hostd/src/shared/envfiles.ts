@@ -32,5 +32,17 @@ export function envPathProblem(relative: string): string | null {
 export function envWriteProblem(relative: string): string | null {
     const problem = envPathProblem(relative)
     if (problem) return problem
-    return relative.endsWith('.example') ? 'an .example file is read-only; edit the real env file instead' : null
+    return isExampleName(relative) ? 'an .example file is read-only; edit the real env file instead' : null
 }
+
+// The other half of the same rule, for the two places that copy env files from one tree into another
+// rather than taking them from a client: a deploy carrying them into the new checkout, and provisioning
+// copying them into a fresh test folder. Both work from listEnvFiles, which lists examples on purpose,
+// and both must skip them.
+//
+// Not merely because envWriteProblem refuses one (though it does, and a copy that did not skip them
+// failed outright): there is nothing to copy. An .example is committed, so the tree being copied INTO
+// already has it, and its copy is the one that belongs with the commit going out. The copy sitting in
+// the tree being replaced is the previous commit's, so writing it would not preserve a file, it would
+// revert one.
+export const isExampleName = (relative: string) => relative.endsWith('.example')
