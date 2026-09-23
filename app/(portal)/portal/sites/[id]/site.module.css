@@ -401,3 +401,23 @@
     color: var(--ink-2);
     font-size: 12.5px;
 }
+
+/* No tab is taller than the window. Where ui/Shell fixes the frame to the window (the same 1081px it uses),
+   the panel takes exactly the height left under the tab strip instead of at least its content's, and the
+   long parts of a tab scroll inside themselves: the deploy history, the deploy log and the site log. A tab
+   with no region of its own to scroll (settings, domains, env) scrolls inside the panel, so the heading
+   and the tab strip stay where they are either way. */
+@media (min-width: 1081px) {
+    .panel { flex: 1 1 0; min-height: 0; overflow-y: auto; }
+    /* The panel clips now, so the focus ring goes inside its edge rather than outside it */
+    .panel:focus-visible { outline-offset: -2px; }
+
+    .split { flex: 1 1 0; min-height: 0; }
+
+    .deployLayout { flex: 1 1 0; min-height: 0; grid-template-rows: minmax(0, 1fr); }
+    .deployMain { display: flex; flex-direction: column; min-height: 0; }
+    .history { flex: 1 1 0; min-height: 0; display: flex; flex-direction: column; }
+    .historyList { flex: 1 1 0; min-height: 0; overflow-y: auto; }
+    .deployLog { min-height: 0; }
+    .deployLogLines { flex: 1 1 0; min-height: 0; max-height: none; }
+}

@@ -162,15 +162,18 @@ export async function DeployPanel({ id, environments, environment, enabled }: Pr
                         latest={latest}
                     />
 
-                    <section className={styles.block}>
+                    <section className={`${styles.block} ${styles.history}`}>
                         <h2>History</h2>
-                        {view.deploys.length === 0
-                            ? <p className={styles.empty}>
-                                Nothing has been deployed yet. hostd keeps the last twenty, newest first.
-                            </p>
-                            : view.deploys.map(record => (
-                                <Deploy key={`${record.commit}-${record.startedAt}`} record={record} />
-                            ))}
+                        {/* Scrolls on its own on a wide window, so the controls above it stay put */}
+                        <div className={styles.historyList}>
+                            {view.deploys.length === 0
+                                ? <p className={styles.empty}>
+                                    Nothing has been deployed yet. hostd keeps the last twenty, newest first.
+                                </p>
+                                : view.deploys.map(record => (
+                                    <Deploy key={`${record.commit}-${record.startedAt}`} record={record} />
+                                ))}
+                        </div>
                     </section>
                 </div>
 
