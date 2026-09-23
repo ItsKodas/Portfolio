@@ -434,7 +434,7 @@ the repo does commit the file, the checkout's copy wins: that one belongs with t
 the running tree's is the commit being replaced. A file that cannot be copied fails the deploy before the
 build, because compose cannot describe the site without it.
 
-**Watching one.** The Deploys tab carries a column showing what the deploy is doing: its own phase lines,
+**Watching one.** The Deploys tab carries an operator-only column showing what the deploy is doing: its own phase lines,
 with `docker compose` output beneath the build step. It is there whether or not a deploy is running, and
 when none is it shows what the last one printed, until the next one starts. A deploy the poller started
 is watchable exactly like one somebody pressed, and a reload mid-deploy picks up where it was, because
