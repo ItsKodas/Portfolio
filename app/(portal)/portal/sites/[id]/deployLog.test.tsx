@@ -101,6 +101,35 @@ describe('the deploy column', () => {
         expect(screen.getByText('the new deploy')).toBeInTheDocument()
     })
 
+    // jsdom lays nothing out, so the list's geometry is given by hand: 1000px of lines in a 200px box.
+    function sized(list: HTMLElement): HTMLElement {
+        Object.defineProperty(list, 'scrollHeight', { configurable: true, get: () => 1000 })
+        Object.defineProperty(list, 'clientHeight', { configurable: true, get: () => 200 })
+        return list
+    }
+
+    it('follows the newest line to the bottom', () => {
+        render(<DeployLog id="acme" environment="live" />)
+        open().open()
+        const list = sized(screen.getByRole('list'))
+        open().event({ at: AT, startedAt: AT, kind: 'step', text: 'building' })
+        expect(list.scrollTop).toBe(1000)
+    })
+
+    // Scrolled up to read something earlier, the reader stays where they are
+    it('leaves the reader where they are once they scroll up', () => {
+        render(<DeployLog id="acme" environment="live" />)
+        open().open()
+        const list = sized(screen.getByRole('list'))
+        open().event({ at: AT, startedAt: AT, kind: 'step', text: 'building' })
+        act(() => {
+            list.scrollTop = 100
+            list.dispatchEvent(new Event('scroll'))
+        })
+        open().event({ at: AT, startedAt: AT, kind: 'output', text: '#7 [4/9] RUN npm ci' })
+        expect(list.scrollTop).toBe(100)
+    })
+
     it('shows the outcome when the end event arrives', () => {
         render(<DeployLog id="acme" environment="live" />)
         open().open()
