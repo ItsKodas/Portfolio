@@ -62,7 +62,7 @@ export function PortControl({ id, environment, port }: { id: string, environment
             />
             {!unchanged && (
                 <p className={styles.note}>
-                    Changing it rewrites WEB_PORT in the site's .env, recreates this environment's containers and points its vhost at the new port. The site is down for a few seconds.
+                    Changing it rewrites WEB_PORT in the site&apos;s .env, recreates this environment&apos;s containers and points its vhost at the new port. The site is down for a few seconds.
                 </p>
             )}
             <Button disabled={unchanged || problem !== null || check.checking || pending} onClick={save}>
