@@ -213,6 +213,10 @@ async function carryComposeFiles(
     for (const [index, from] of environment.composePaths.entries()) {
         const to = next.composePaths[index]
         if (!to) continue
+        // hostd.ports.yml is rebuilt a few steps down, not carried: a running tree that predates this
+        // feature, or one whose override was removed by hand, has none, and carrying would fail the
+        // deploy one step before the rebuild that recreates it anyway.
+        if (isPortOverride(from)) continue
         if (await deps.fs.exists(to)) continue
         try {
             await deps.fs.copyFile(from, to)

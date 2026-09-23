@@ -162,7 +162,15 @@ function setup(options: SetupOptions = {}) {
         exists: async path => exists.has(path),
         mkdir: async dir => { calls.push(`mkdir ${dir}`); exists.add(dir) },
         rmdir: async dir => { calls.push(`rmdir ${dir}`); exists.delete(dir) },
-        copyFile: async (from, to) => { calls.push(`copy ${from} ${to}`); if (copyFails) throw new Error('read-only file system'); exists.add(to) },
+        copyFile: async (from, to) => {
+            calls.push(`copy ${from} ${to}`)
+            if (copyFails) throw new Error('read-only file system')
+            // hostd.ports.yml is the one compose file this fake ever models as absent from the running
+            // tree: real copyFile throws ENOENT on a missing source, and carryComposeFiles is meant to
+            // skip this particular name rather than ever attempt the copy in the first place.
+            if (from.endsWith('hostd.ports.yml') && !exists.has(from)) throw new Error(`ENOENT: no such file, open '${from}'`)
+            exists.add(to)
+        },
         move: async (from, to) => {
             calls.push(`move ${from} ${to}`)
             if (from.endsWith('.prev')) rolledBack = true
@@ -411,6 +419,18 @@ describe('runDeploy, before the swap', () => {
         const override = context.calls.indexOf('override /var/www/acme.next WEB_PORT')
         assert.ok(override !== -1, context.calls.join(', '))
         assert.ok(override < context.calls.findIndex(call => call.startsWith('own /var/www/acme.next')), context.calls.join(', '))
+    })
+
+    // hostd.ports.yml need not exist in the running tree at all: a site provisioned before this feature
+    // existed, or one whose override was removed by hand, has none. The rebuild step above recreates it
+    // from the commit going out, so a missing copy in the running tree is never a reason to fail a
+    // deploy one step earlier trying to carry a file that is not there.
+    it('deploys fine when hostd.ports.yml is missing from the running tree, never copying it and still rebuilding it', async () => {
+        const context = setup({ registryYaml: REGISTRY_YAML_PORTS, existsPaths: ['/var/www/acme/.git', '/var/www/acme.next/docker-compose.yml'] })
+        const record = await runDeploy(context.project(), context.environment(), { ...request, commit: TIP }, context.deps)
+        assert.equal(record.outcome, 'ok', record.reason ?? '')
+        assert.equal(context.calls.some(call => call.startsWith('copy') && call.includes('hostd.ports.yml')), false, context.calls.join(', '))
+        assert.ok(context.calls.includes('override /var/www/acme.next WEB_PORT'), context.calls.join(', '))
     })
 
     it('fails the deploy before building when the override cannot be rebuilt', async () => {
