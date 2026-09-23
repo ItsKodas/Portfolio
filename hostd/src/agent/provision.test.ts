@@ -1,5 +1,6 @@
 import { describe, it } from 'node:test'
 import assert from 'node:assert/strict'
+import { posix } from 'node:path'
 
 import { createProject, addEnvironment, removeProject, notPublishedProblem, type ProvisionDeps } from './provision.ts'
 import { RegistryWriter, type RegistryWriteFs } from '../shared/registry-write.ts'
@@ -9,6 +10,7 @@ import { lifecycleArgv, type GuessedService, type Runner, type RunResult } from 
 import type { ProvisionCreateArgs, ProvisionAddEnvironmentArgs } from '../shared/protocol.ts'
 import type { FetchReply, FetchRequest } from '../shared/fetch-protocol.ts'
 import type { PortVerdict } from '../shared/ports.ts'
+import type { PortOverrideResult } from './port-override.ts'
 
 const REGISTRY_PATH = '/etc/hostd/projects.yaml'
 
@@ -91,6 +93,7 @@ type SetupOptions = {
     envTree?: Record<string, string>
     runnerResult?: Partial<RunResult>
     owners?: Record<string, { uid: number, gid: number, mode: number }>
+    overrideResult?: PortOverrideResult
 }
 
 // Every dependency is a plain recorder, in the style the rest of hostd's tests use: no mocking library,
@@ -109,6 +112,7 @@ function setup(options: SetupOptions = {}) {
     const ownerPaths: string[] = []
     const ownCalls: Array<{ dir: string, like: { uid: number, gid: number, mode: number } }> = []
     const portEnvCalls: Array<{ dir: string, key: string, port: number }> = []
+    const overrideCalls: Array<{ dir: string, composePaths: string[], portEnv: string }> = []
 
     const registryFiles = new Map<string, string>([[REGISTRY_PATH, yaml]])
     const registryFs: RegistryWriteFs = {
@@ -161,6 +165,12 @@ function setup(options: SetupOptions = {}) {
             portEnvCalls.push({ dir: environment.dir, key, port })
             return options.setPortResult ?? { ok: true, previous: null }
         },
+        portOverride: async (location, portEnv) => {
+            calls.push('portOverride')
+            overrideCalls.push({ dir: location.dir, composePaths: location.composePaths, portEnv })
+            return options.overrideResult ?? { ok: true, composePaths: [...location.composePaths, posix.join(location.dir, 'hostd.ports.yml')], service: 'web', target: 3000 }
+        },
+        removePortOverride: async () => { calls.push('removePortOverride') },
         mkdir: async dir => { calls.push('mkdir'); mkdirs.push(dir) },
         rmdir: async dir => { calls.push('rmdir'); rmdirs.push(dir) },
         exists: async dir => { calls.push('exists'); return exists.has(dir) },
@@ -184,7 +194,7 @@ function setup(options: SetupOptions = {}) {
         log: message => logs.push(message),
     }
 
-    return { deps, registry, calls, mkdirs, rmdirs, cloneRequests, logs, registryFiles, envFs, envFsFiles, runnerCalls, resolveCalls, ownerPaths, ownCalls, portEnvCalls }
+    return { deps, registry, calls, mkdirs, rmdirs, cloneRequests, logs, registryFiles, envFs, envFsFiles, runnerCalls, resolveCalls, ownerPaths, ownCalls, portEnvCalls, overrideCalls }
 }
 
 const createArgs = (overrides: Partial<ProvisionCreateArgs> = {}): ProvisionCreateArgs => ({
@@ -208,7 +218,7 @@ describe('createProject', () => {
         assert.deepEqual(cloneRequests, [{ verb: 'clone', repo: 'git@github.com:ItsKodas/bakery.git', dir: '/var/www/bakery', branch: 'main', credential: null }])
         // The expected compose name is the folder's own basename, with no collision to guard against:
         // live has no other environment yet.
-        assert.deepEqual(resolveCalls, [{ expectedName: 'bakery', dir: '/var/www/bakery', composePaths: ['/var/www/bakery/docker-compose.yml'], collidesWith: undefined }])
+        assert.deepEqual(resolveCalls, [{ expectedName: 'bakery', dir: '/var/www/bakery', composePaths: ['/var/www/bakery/docker-compose.yml', '/var/www/bakery/hostd.ports.yml'], collidesWith: undefined }])
 
         const written = parseRegistry(registryFiles.get(REGISTRY_PATH)!)
         const bakery = written.projects.get('bakery')
@@ -231,7 +241,7 @@ describe('createProject', () => {
         // The folder's name, not the id: that is what an unpinned compose file resolves to
         assert.deepEqual(resolveCalls, [{
             expectedName: 'bakery_site', dir: '/var/www/bakery_site',
-            composePaths: ['/var/www/bakery_site/docker-compose.yml', '/var/www/bakery_site/docker-compose.prod.yml'], collidesWith: undefined,
+            composePaths: ['/var/www/bakery_site/docker-compose.yml', '/var/www/bakery_site/docker-compose.prod.yml', '/var/www/bakery_site/hostd.ports.yml'], collidesWith: undefined,
         }])
 
         const bakery = parseRegistry(registryFiles.get(REGISTRY_PATH)!).projects.get('bakery')!
@@ -239,7 +249,7 @@ describe('createProject', () => {
         assert.deepEqual([...bakery.capabilities], ['lifecycle', 'logs', 'deploy'])
         const live = bakery.environments.get('live')!
         assert.equal(live.dir, '/var/www/bakery_site')
-        assert.deepEqual(live.composePaths, ['/var/www/bakery_site/docker-compose.yml', '/var/www/bakery_site/docker-compose.prod.yml'])
+        assert.deepEqual(live.composePaths, ['/var/www/bakery_site/docker-compose.yml', '/var/www/bakery_site/docker-compose.prod.yml', '/var/www/bakery_site/hostd.ports.yml'])
         assert.equal(live.websockets, true)
         assert.equal(live.flexibleSsl, true)
     })
@@ -277,7 +287,7 @@ describe('createProject', () => {
     it('does those in order, so nothing is registered before it exists on disk', async () => {
         const { deps, calls } = setup()
         await createProject(createArgs(), deps)
-        assert.deepEqual(calls, ['exists', 'choosePort', 'mkdir', 'clone', 'setPortEnv', 'owner', 'own', 'resolve', 'write'])
+        assert.deepEqual(calls, ['exists', 'choosePort', 'mkdir', 'clone', 'setPortEnv', 'portOverride', 'owner', 'own', 'resolve', 'write'])
     })
 
     it('writes the chosen port into .env under WEB_PORT before resolving', async () => {
@@ -313,8 +323,33 @@ describe('createProject', () => {
     it('rolls back when no service publishes the port', async () => {
         const { deps, rmdirs, calls } = setup({ resolveResult: { ok: true, services: { web: { role: 'site' } }, published: [3000] } })
         const reply = await createProject(createArgs(), deps)
-        assert.deepEqual(reply, { ok: false, code: 'invalid-project', message: notPublishedProblem('WEB_PORT', 5100) })
+        assert.deepEqual(reply, { ok: false, code: 'invalid-project', message: notPublishedProblem('/var/www/bakery', 5100) })
         assert.deepEqual(rmdirs, ['/var/www/bakery'])
+        assert.ok(!calls.includes('write'))
+    })
+
+    it('writes the override from the repo\'s own files after the port is in .env', async () => {
+        const { deps, overrideCalls, calls, logs } = setup()
+        await createProject(createArgs(), deps)
+        assert.deepEqual(overrideCalls, [{ dir: '/var/www/bakery', composePaths: ['/var/www/bakery/docker-compose.yml'], portEnv: 'WEB_PORT' }])
+        assert.ok(calls.indexOf('setPortEnv') < calls.indexOf('portOverride'))
+        assert.ok(calls.indexOf('portOverride') < calls.indexOf('own'))
+        assert.ok(logs.includes('provision bakery: published 5100 to web:3000'), logs.join('\n'))
+    })
+
+    it('records the override as the last compose file', async () => {
+        const { deps, registryFiles } = setup()
+        await createProject(createArgs(), deps)
+        assert.deepEqual(parseRegistry(registryFiles.get(REGISTRY_PATH)!).projects.get('bakery')?.environments.get('live')?.composePaths,
+            ['/var/www/bakery/docker-compose.yml', '/var/www/bakery/hostd.ports.yml'])
+    })
+
+    it('rolls back when the override cannot be built', async () => {
+        const problem = 'web does not say which port it listens on; add expose: ["3000"] (the port inside the container) to it in the compose file'
+        const { deps, rmdirs, calls } = setup({ overrideResult: { ok: false, problem } })
+        assert.deepEqual(await createProject(createArgs(), deps), { ok: false, code: 'invalid-project', message: problem })
+        assert.deepEqual(rmdirs, ['/var/www/bakery'])
+        assert.ok(!calls.includes('resolve'))
         assert.ok(!calls.includes('write'))
     })
 
@@ -433,7 +468,7 @@ describe('createProject', () => {
         assert.equal(reply.ok, false)
         assert.equal(reply.ok === false && reply.code, 'failed')
         assert.deepEqual(rmdirs, ['/var/www/bakery'])
-        assert.deepEqual(calls, ['exists', 'choosePort', 'mkdir', 'clone', 'setPortEnv', 'owner', 'own', 'resolve', 'rmdir'])
+        assert.deepEqual(calls, ['exists', 'choosePort', 'mkdir', 'clone', 'setPortEnv', 'portOverride', 'owner', 'own', 'resolve', 'rmdir'])
     })
 
     it('refuses an id that is taken, reserved or malformed, before touching the disk', async () => {
@@ -616,8 +651,16 @@ describe('addEnvironment', () => {
         const { deps, resolveCalls } = setup()
         await addEnvironment(project(), args(), deps)
         assert.deepEqual(resolveCalls, [{
-            expectedName: 'acme-test', dir: '/var/www/acme-test', composePaths: ['/var/www/acme-test/docker-compose.yml'], collidesWith: 'acme',
+            expectedName: 'acme-test', dir: '/var/www/acme-test', composePaths: ['/var/www/acme-test/docker-compose.yml', '/var/www/acme-test/hostd.ports.yml'], collidesWith: 'acme',
         }])
+    })
+
+    it('records the test environment\'s own compose list, override last', async () => {
+        const { deps, registryFiles } = setup()
+        const reply = await addEnvironment(project(), args(), deps)
+        assert.equal(reply.ok, true)
+        assert.deepEqual(parseRegistry(registryFiles.get(REGISTRY_PATH)!).projects.get('acme')?.environments.get('test')?.composePaths,
+            ['/var/www/acme-test/docker-compose.yml', '/var/www/acme-test/hostd.ports.yml'])
     })
 
     // Unlike a create, this one does have a sibling to read: the live environment's own folder, which is
