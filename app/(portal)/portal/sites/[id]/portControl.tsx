@@ -4,7 +4,7 @@
 // recreates the environment's containers, and nothing else on that form starts or stops anything.
 
 import { useRouter } from 'next/navigation'
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 
 import { Button } from '@/ui/Button/Button'
 import { Callout } from '@/ui/Callout/Callout'
@@ -18,9 +18,16 @@ export function PortControl({ id, environment, port }: { id: string, environment
     const [value, setValue] = useState(String(port))
     const [pending, setPending] = useState(false)
     const [said, setSaid] = useState<SiteActionResult | null>(null)
+    // The port this control treats as already saved. Set from the prop, and ahead of it the moment a
+    // change succeeds: router.refresh() is async, so the prop itself does not catch up until the page
+    // re-reads, and until then the value just saved must not read as changed again (that would re-enable
+    // the button and bring the restart note back beside the success callout it is sitting next to).
+    // Re-synced whenever the prop moves, which is what actually happens once the refresh lands.
+    const [current, setCurrent] = useState(port)
+    useEffect(() => setCurrent(port), [port])
 
     const trimmed = value.trim()
-    const unchanged = trimmed === String(port)
+    const unchanged = trimmed === String(current)
     const inRange = /^\d{1,5}$/.test(trimmed) && Number(trimmed) >= 5000 && Number(trimmed) <= 65535
     const check = usePortCheck(value, { project: id, environment }, { skip: unchanged })
     const problem = unchanged ? null : !inRange ? 'Use a port from 5000 to 65535.' : check.problem
@@ -29,9 +36,13 @@ export function PortControl({ id, environment, port }: { id: string, environment
         setSaid(null)
         setPending(true)
         try {
-            const result = await setPortAction(id, environment, Number(trimmed))
+            const asked = Number(trimmed)
+            const result = await setPortAction(id, environment, asked)
             setSaid(result)
-            if (result.ok) router.refresh()
+            if (result.ok) {
+                setCurrent(asked)
+                router.refresh()
+            }
         } catch {
             setSaid({ ok: false, error: 'That did not work. Try reloading the page.' })
         } finally {

@@ -60,4 +60,25 @@ describe('the port control', () => {
         await userEvent.click(button)
         expect(await screen.findByText('no service publishes port 5013')).toBeInTheDocument()
     })
+
+    // router.refresh() is async, so the page's own `port` prop does not update the instant a save
+    // succeeds. Until it does, the value just saved must not read as "changed" again: that would
+    // re-enable the button and bring the restart note back beside the success callout it is sitting
+    // next to, inviting a second needless container recreation of a port the site is already on.
+    it('treats the value it just saved as current, before the page re-reads and after', async () => {
+        const { rerender } = render(<PortControl id="acme" environment="live" port={5010} />)
+        await userEvent.clear(screen.getByLabelText('live port'))
+        await userEvent.type(screen.getByLabelText('live port'), '5013')
+        const button = screen.getByRole('button', { name: 'Change port' })
+        await vi.waitFor(() => expect(button).toBeEnabled())
+        await userEvent.click(button)
+        expect(await screen.findByText('live now uses port 5013.')).toBeInTheDocument()
+
+        expect(screen.getByRole('button', { name: 'Change port' })).toBeDisabled()
+        expect(screen.queryByText(/recreates this environment's containers/)).toBeNull()
+
+        rerender(<PortControl id="acme" environment="live" port={5013} />)
+        expect(screen.getByLabelText('live port')).toHaveValue('5013')
+        expect(screen.getByRole('button', { name: 'Change port' })).toBeDisabled()
+    })
 })
