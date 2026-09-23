@@ -12,7 +12,7 @@
 
 ## Global Constraints
 
-- Never use em dashes (U+2014) in docs, messages, commit messages or PR text. Code comments may use them, but match the surrounding comments, which do not. Check with Python, not a bash `$'—'` grep.
+- Never use em dashes (U+2014) in docs, messages, commit messages or PR text. Code comments may use them, but match the surrounding comments, which do not. Check with Python, not a bash `$'\u2014'` grep.
 - Every test runs with no Docker, no network and no filesystem: all effects go through injected deps, as the existing tests do.
 - Run tests from `hostd/`: one file with `node --import tsx --test src/<path>.test.ts`, everything with `npm test`, types with `npm run typecheck`.
 - Environment names stay `live` and `test` in this plan (piece 2 widens them).
@@ -1559,7 +1559,7 @@ In `hostd/RUNBOOK.md`:
 Check the file for em dashes with Python before committing:
 
 ```bash
-python -c "import sys;t=open('hostd/RUNBOOK.md',encoding='utf-8').read();print('emdash' if '—' in t else 'clean')"
+python -c "import sys;t=open('hostd/RUNBOOK.md',encoding='utf-8').read();print('emdash' if '\u2014' in t else 'clean')"
 ```
 
 Expected: `clean`.
