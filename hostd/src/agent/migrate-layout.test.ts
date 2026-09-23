@@ -115,6 +115,19 @@ describe('windowSteps', () => {
     })
 })
 
+describe('resumeSteps', () => {
+    // The build is left where it is: the resume serves the old tree again, never a build no health
+    // check has seen, so where the build went is deploy.ts's to sort out, not a step of the layout.
+    it('finishes the layout forward, without moving the build into live', () => {
+        assert.deepEqual(resumeSteps(liveFrom, liveTo), [
+            { kind: 'mkdir', dir: '/var/www/acme', like: '/var/www/acme.migrating' },
+            { kind: 'mkdir', dir: '/var/www/acme/prev', like: '/var/www/acme.migrating' },
+            { kind: 'move', from: '/var/www/acme.migrating', to: '/var/www/acme/prev/live' },
+            { kind: 'move', from: '/var/www/acme.git', to: '/var/www/acme/git' },
+        ])
+    })
+})
+
 describe('executeSteps', () => {
     it('runs every step and owns each folder it makes like its pattern', async () => {
         const { fs, calls } = disk(['/var/www/acme', '/var/www/acme.next', '/var/www/acme.git'])

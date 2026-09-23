@@ -752,14 +752,98 @@ describe('nested layout', () => {
         assert.equal(t.deps.registry().projects.get('acme')!.environments.get('live')!.dir, '/var/www/acme/live')
     })
 
-    it('finishes an interrupted migration before deploying', async () => {
-        const t = setup({ existsPaths: ['/var/www/acme.migrating', '/var/www/acme.next', '/var/www/acme.git', '/var/www/acme.git/.git'] })
+    // What the resume does before the deploy's own work starts: everything up to the first fetch.
+    const resumeOf = (calls: string[]) => calls.slice(0, calls.indexOf('fetcher fetch'))
+    const neverRemovesTheSite = (calls: string[]) => {
+        for (const path of ['/var/www/acme', '/var/www/acme/live', '/var/www/acme/prev', '/var/www/acme/prev/live']) {
+            assert.equal(calls.includes(`rmdir ${path}`), false, `rmdir ${path}`)
+        }
+    }
+
+    // The resume serves the old tree again, never the build the window was about to swap in, which no
+    // health check has seen. The build is thrown away (it is never client data) and the deploy rebuilds.
+    it('finishes a move interrupted in <site>.migrating, and serves the old tree rather than the build', async () => {
+        const t = setup({ existsPaths: ['/var/www/acme.migrating', '/var/www/acme.migrating/docker-compose.yml', '/var/www/acme.next', '/var/www/acme.git', '/var/www/acme.git/.git'] })
         const project = t.deps.registry().projects.get('acme')!
         const record = await runDeploy(project, project.environments.get('live')!, manual, t.deps)
-        assert.equal(record.outcome, 'ok')
-        assert.ok(t.calls.includes('move /var/www/acme.migrating /var/www/acme/prev/live'))
+        assert.equal(record.outcome, 'ok', record.reason ?? '')
+        const resume = resumeOf(t.calls)
+        assert.deepEqual(resume.filter(call => call.startsWith('move') || call.startsWith('rmdir') || call.startsWith('compose')), [
+            'move /var/www/acme.migrating /var/www/acme/prev/live',
+            'move /var/www/acme.git /var/www/acme/git',
+            'rmdir /var/www/acme.next',
+            'move /var/www/acme/prev/live /var/www/acme/live',
+            'compose up',
+        ])
+        neverRemovesTheSite(resume)
         assert.equal(t.deps.registry().projects.get('acme')!.environments.get('live')!.dir, '/var/www/acme/live')
         assert.ok(t.fetchRequests.some(request => request.verb === 'checkout' && request.worktree === '/var/www/acme/next/live'))
+    })
+
+    // A first deploy moved the repository out to <site>.git before its window, so the old tree at
+    // prev/live has no .git, and the undo stopped with the build back at <site>.next.
+    it('finishes a stopped undo whose build is still at <site>.next, and serves the old tree', async () => {
+        const t = setup({
+            existsPaths: [
+                '/var/www/acme', '/var/www/acme/prev', '/var/www/acme/prev/live', '/var/www/acme/prev/live/docker-compose.yml',
+                '/var/www/acme.next', '/var/www/acme.git', '/var/www/acme.git/.git',
+            ],
+        })
+        const project = t.deps.registry().projects.get('acme')!
+        const record = await runDeploy(project, project.environments.get('live')!, manual, t.deps)
+        assert.equal(record.outcome, 'ok', record.reason ?? '')
+        const resume = resumeOf(t.calls)
+        assert.deepEqual(resume.filter(call => call.startsWith('move') || call.startsWith('rmdir') || call.startsWith('compose')), [
+            'move /var/www/acme.git /var/www/acme/git',
+            'rmdir /var/www/acme.next',
+            'move /var/www/acme/prev/live /var/www/acme/live',
+            'compose up',
+        ])
+        neverRemovesTheSite(resume)
+        assert.equal(t.deps.registry().projects.get('acme')!.environments.get('live')!.dir, '/var/www/acme/live')
+    })
+
+    it('parks a build that already reached <site>/live in next/live, and serves the old tree', async () => {
+        const t = setup({
+            existsPaths: [
+                '/var/www/acme', '/var/www/acme/prev', '/var/www/acme/prev/live', '/var/www/acme/prev/live/docker-compose.yml',
+                '/var/www/acme/live', '/var/www/acme/live/docker-compose.yml', '/var/www/acme.git', '/var/www/acme.git/.git',
+            ],
+        })
+        const project = t.deps.registry().projects.get('acme')!
+        const record = await runDeploy(project, project.environments.get('live')!, manual, t.deps)
+        assert.equal(record.outcome, 'ok', record.reason ?? '')
+        const resume = resumeOf(t.calls)
+        assert.deepEqual(resume.filter(call => /^(move|rmdir|mkdir|own |compose)/.test(call)), [
+            'move /var/www/acme.git /var/www/acme/git',
+            'mkdir /var/www/acme/next', 'own /var/www/acme/next 1000:1000 775',
+            'move /var/www/acme/live /var/www/acme/next/live',
+            'move /var/www/acme/prev/live /var/www/acme/live',
+            'compose up',
+        ])
+        neverRemovesTheSite(resume)
+    })
+
+    it('removes a stale next/live before parking the build there', async () => {
+        const t = setup({
+            existsPaths: [
+                '/var/www/acme', '/var/www/acme/prev', '/var/www/acme/prev/live', '/var/www/acme/prev/live/docker-compose.yml',
+                '/var/www/acme/live', '/var/www/acme/next', '/var/www/acme/next/live', '/var/www/acme.next', '/var/www/acme.git', '/var/www/acme.git/.git',
+            ],
+        })
+        const project = t.deps.registry().projects.get('acme')!
+        const record = await runDeploy(project, project.environments.get('live')!, manual, t.deps)
+        assert.equal(record.outcome, 'ok', record.reason ?? '')
+        const resume = resumeOf(t.calls)
+        assert.deepEqual(resume.filter(call => /^(move|rmdir|mkdir|compose)/.test(call)), [
+            'move /var/www/acme.git /var/www/acme/git',
+            'rmdir /var/www/acme/next/live',
+            'move /var/www/acme/live /var/www/acme/next/live',
+            'rmdir /var/www/acme.next',
+            'move /var/www/acme/prev/live /var/www/acme/live',
+            'compose up',
+        ])
+        neverRemovesTheSite(resume)
     })
 
     it('builds a waiting test from the shared repository, then moves it beside live', async () => {

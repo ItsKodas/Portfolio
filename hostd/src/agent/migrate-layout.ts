@@ -75,15 +75,16 @@ export function windowSteps(environment: EnvironmentEntry, from: DeployTrees, to
     ]
 }
 
-// Live only: the window's steps after the first, for an agent that died between them. Run in 'resume'
-// mode, which skips a move whose source is already gone.
+// Live only: the window's layout steps after the first, for an agent that died between them or an undo
+// that stopped part way. Run in 'resume' mode, which skips a move whose source is already gone. The
+// build's own move is not one of them: a resume serves the old tree again rather than a build no health
+// check has seen, so deploy.ts decides where the build goes (see finishInterruptedMove).
 export function resumeSteps(from: DeployTrees, to: DeployTrees): Step[] {
     const migrating = migratingOf(to.site!)
     return [
         { kind: 'mkdir', dir: to.site!, like: migrating },
         { kind: 'mkdir', dir: posix.dirname(to.prev), like: migrating },
         { kind: 'move', from: migrating, to: to.prev },
-        { kind: 'move', from: from.next, to: to.dir },
         { kind: 'move', from: from.repo, to: to.repo },
     ]
 }

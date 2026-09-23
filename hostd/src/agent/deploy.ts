@@ -383,11 +383,14 @@ async function startMoved(project: ProjectEntry, environment: EnvironmentEntry, 
 }
 
 // The agent stopped inside a window, after live's tree left /var/www/<site> for <site>.migrating and
-// before the move was done, so the site has been down ever since (behind the holding page, if the flag
-// survived). Resume only goes forward: once /var/www/<site>/ exists the nested layout is the true one,
-// and there is no flat tree left to go back to. So the rest of the move is finished and the site is
-// started where it now lives. A start that fails is logged, not fatal: this deploy is about to take the
-// same tree down and put a new one up in its place anyway.
+// before the move was done, or the window's undo stopped part way. Either way the site has been down
+// ever since (behind the holding page, if the flag survived). Resume only goes forward: once
+// /var/www/<site>/ exists the nested layout is the true one, and there is no flat tree left to go back
+// to. So the rest of the layout is finished, and then the tree that was serving before the window, now
+// at prev/live, is put back at live and started. The build the window was about to swap in is never
+// served: no health check has seen it. It is parked at next/live if it already reached live, or left
+// where it is and removed if it is still the flat <site>.next, either way a build tree and never client
+// data, and the deploy carrying on from here builds again anyway.
 async function finishInterruptedMove(
     project: ProjectEntry, environment: EnvironmentEntry, from: DeployTrees, to: DeployTrees, key: string, deps: DeployDeps,
 ): Promise<{ ok: true } | { ok: false, problem: string }> {
@@ -395,15 +398,41 @@ async function finishInterruptedMove(
     try {
         const moved = await executeSteps(resumeSteps(from, to), deps.fs, 'resume')
         if (!moved.ok) return { ok: false, problem: `the move to ${to.site} could not be finished at ${moved.step}: ${moved.problem}` }
-        // No new tree to put in place (the build it was waiting for is gone), so the one that was serving
-        // before the window comes back instead.
-        if (!(await deps.fs.exists(to.dir)) && await deps.fs.exists(to.prev)) await deps.fs.move(to.prev, to.dir)
+        if (await deps.fs.exists(to.prev)) {
+            const restored = await restoreOldTree(from, to, deps)
+            if (!restored.ok) return { ok: false, problem: `the move to ${to.site} is finished, but ${restored.problem}` }
+        } else if (!(await deps.fs.exists(to.dir))) {
+            // No old tree to go back to, which a resume should never meet: the build is then all there
+            // is, so it is served, as the window would have.
+            const build = await executeSteps([{ kind: 'move', from: from.next, to: to.dir }], deps.fs, 'resume')
+            if (!build.ok) return { ok: false, problem: `the move to ${to.site} is finished, but ${build.step} failed: ${build.problem}` }
+        }
         await startMoved(project, environment, to, deps)
         return { ok: true }
     } finally {
         // Always, for the same reason as the window's own: a flag left behind would serve the holding
         // page over a site that is running.
         await deps.fs.clearMaintenance(key).catch(() => {})
+    }
+}
+
+// Puts live's old tree back at live, out of prev/live. Only ever removes a build tree (next/live, or the
+// flat <site>.next): whatever is at live is moved aside first, never removed, so the one tree a client's
+// site depends on is always somewhere on disk.
+async function restoreOldTree(from: DeployTrees, to: DeployTrees, deps: DeployDeps): Promise<{ ok: true } | { ok: false, problem: string }> {
+    try {
+        if (await deps.fs.exists(to.dir)) {
+            // A rename cannot make the folder it lands in, and a window stopped this early never made it.
+            const parent = await executeSteps([{ kind: 'mkdir', dir: posix.dirname(to.next), like: to.site! }], deps.fs, 'resume')
+            if (!parent.ok) return { ok: false, problem: `${parent.step} failed: ${parent.problem}` }
+            if (await deps.fs.exists(to.next)) await deps.fs.rmdir(to.next)
+            await deps.fs.move(to.dir, to.next)
+        }
+        if (await deps.fs.exists(from.next)) await deps.fs.rmdir(from.next)
+        await deps.fs.move(to.prev, to.dir)
+        return { ok: true }
+    } catch (error) {
+        return { ok: false, problem: `the previous copy could not be put back at ${to.dir}: ${describeError(error)}` }
     }
 }
 
