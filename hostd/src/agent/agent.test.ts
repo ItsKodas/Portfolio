@@ -9,7 +9,7 @@ import type { ProvisionDeps } from './provision.ts'
 import type { DeployRequest } from './deploy.ts'
 import { DeployWatch } from './deploy-watch.ts'
 import { parseRegistry, type ProjectEntry, type Registry } from '../shared/registry.ts'
-import { emptyDeploys, type DeployRecord, type EnvironmentDeploys } from '../shared/deploys.ts'
+import { emptyDeploys, MAX_WATCH_BYTES, type DeployRecord, type EnvironmentDeploys } from '../shared/deploys.ts'
 import type { Change } from '../shared/registry-write.ts'
 import type { FetchReply, FetchRequest } from '../shared/fetch-protocol.ts'
 import type { AgentRequest, BackupArgs, ConfigureArgs, DeployArgs, LogLine } from '../shared/protocol.ts'
@@ -928,6 +928,31 @@ describe('deploy-watch', () => {
         assert.equal(outcome.kind, 'reply')
         if (outcome.kind !== 'reply') return
         assert.equal(outcome.reply.ok === false && outcome.reply.code, 'unavailable')
+    })
+
+    // The ring bounds what an unattached watcher replays, but once attached the events are pushed into a
+    // queue instead, and a consumer that has stopped reading is exactly what the ring was written for: api
+    // suspends its generator at waitForDrain while a socket backs up, and a chatty build would otherwise
+    // pile the whole of its output into the agent's heap behind it.
+    it('holds a fixed amount for a watcher that has stopped reading', async () => {
+        const context = fakeDeploys()
+        const { agent } = setup({ registry: () => deployRegistry, deploys: context.deploys })
+        context.watch.begin('acme:live', '2026-09-23T05:00:00.000Z')
+
+        const outcome = await agent.handle(watch('live'))
+        assert.equal(outcome.kind, 'stream')
+        if (outcome.kind !== 'stream') return
+
+        // Nothing is read from the stream while these arrive, which is the stalled consumer.
+        const chunk = 'x'.repeat(4096)
+        for (let i = 0; i < 200; i += 1) context.watch.output('acme:live', `${i} ${chunk}`)
+
+        outcome.close()
+        const held = await collect(outcome.lines)
+        const bytes = held.reduce((total, line) => total + Buffer.byteLength(line.text), 0)
+        assert.ok(bytes <= MAX_WATCH_BYTES, `held ${bytes} bytes, cap is ${MAX_WATCH_BYTES}`)
+        // Newest kept, oldest dropped: a live column is read from the bottom.
+        assert.ok(held.at(-1)?.text.startsWith('199 '), String(held.at(-1)?.text.slice(0, 8)))
     })
 
     it('stops feeding a stream that has been closed', async () => {

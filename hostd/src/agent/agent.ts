@@ -11,7 +11,7 @@ import {
 } from '../shared/protocol.ts'
 import { environmentOf, type EnvironmentName, type ProjectEntry, type Registry } from '../shared/registry.ts'
 import { describeError } from '../shared/formats.ts'
-import { deployKey, lastHealthyCommit, type DeployEvent } from '../shared/deploys.ts'
+import { deployKey, lastHealthyCommit, MAX_WATCH_BYTES, type DeployEvent } from '../shared/deploys.ts'
 import { diskProblem, manualProblem } from '../shared/backups.ts'
 import type { RegistryWriter } from '../shared/registry-write.ts'
 import type { DiskUsage, SystemUsage } from '../shared/system.ts'
@@ -384,14 +384,27 @@ export class Agent {
 
         const key = deployKey(project.id, args.environment)
         const watch = deploys.runner.watch
-        // Everything printed before this watcher arrived, then everything after. The queue is what joins the
-        // two without a gap: subscribing first and replaying second would duplicate, the other way round
-        // would drop whatever landed in between.
+        // Everything printed before this watcher arrived, then everything after, with no gap between them:
+        // there is no await between the replay and the subscribe, so nothing can be printed in between for
+        // either of them to miss.
         const queue: DeployEvent[] = watch.replay(key)
+        let queued = queue.reduce((total, event) => total + Buffer.byteLength(event.text), 0)
+        const take = (): DeployEvent | undefined => {
+            const next = queue.shift()
+            if (next) queued -= Buffer.byteLength(next.text)
+            return next
+        }
         let closed = false
         let wake: (() => void) | null = null
         const unsubscribe = watch.subscribe(key, event => {
             queue.push(event)
+            queued += Buffer.byteLength(event.text)
+            // The same drop-oldest discipline, and the same bound, as the ring this queue drains from.
+            // Without it the ring bounds only what an unattached watcher replays: once attached, a consumer
+            // that has stopped reading (api suspends its generator at waitForDrain while the socket backs
+            // up) would hold the whole of a chatty build here instead, which is the case the bound exists
+            // for. A live column is read from the bottom, so the newest is what survives.
+            while (queued > MAX_WATCH_BYTES && queue.length > 1) take()
             wake?.()
         })
         const close = () => {
@@ -403,7 +416,7 @@ export class Agent {
             try {
                 for (;;) {
                     while (queue.length > 0) {
-                        const next = queue.shift()
+                        const next = take()
                         if (next) yield next
                     }
                     if (closed) return
