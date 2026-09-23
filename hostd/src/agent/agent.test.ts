@@ -1412,6 +1412,54 @@ projects:
         }])
     })
 
+    // Switching WebSockets changes nothing but the vhost, so it has to reach Apache the same way a moved
+    // address does, with the same token, and without making any hostname prove itself again.
+    it('rewrites the vhost with upgrade=websocket when WebSockets is switched on', async () => {
+        const switched = parseRegistry(`
+projects:
+  acme:
+    client: cl_1
+    name: Acme
+    services: { web: { role: site } }
+    capabilities: [domains]
+    environments:
+      live:
+        dir: /var/www/acme
+        port: 5010
+        domain: acme.com
+        aliases: [www.acme.com]
+        websockets: true
+`)
+        const context = fakeDomains(switched)
+        const written: Change[] = []
+        const { agent } = setup({
+            registry: () => moved('acme.com'),
+            domains: { ...context.domains, readFile: async () => EXISTING_VHOST },
+            writer: { write: async (change: Change) => { written.push(change); return { ok: true as const } } },
+        })
+
+        const reply = replyOf(await agent.handle(configure({ websockets: { live: true } })))
+
+        assert.equal(reply?.ok, true)
+        assert.deepEqual(written, [
+            { kind: 'configure', id: 'acme' },
+            { kind: 'set-websockets', id: 'acme', environment: 'live', enabled: true },
+        ])
+        assert.equal(context.sent.length, 1)
+        assert.match(context.sent[0]?.write?.text ?? '', /ProxyPass \/ http:\/\/127\.0\.0\.1:5010\/ upgrade=websocket/)
+        assert.match(context.sent[0]?.write?.text ?? '', /\/\.well-known\/hostd\/abc123def456/)
+    })
+
+    it('writes nothing and asks Apache for nothing when WebSockets is already how it was asked to be', async () => {
+        const { agent, written, sent } = movingSetup({ readFile: async () => EXISTING_VHOST })
+
+        const reply = replyOf(await agent.handle(configure({ websockets: { live: false } })))
+
+        assert.equal(reply?.ok, true)
+        assert.deepEqual(written, [{ kind: 'configure', id: 'acme' }])
+        assert.equal(sent.length, 0)
+    })
+
     // Every site enrolled by hand is in this state: the registry knows its address, but the file serving
     // it is somebody's hand-written vhost in sites-enabled. Rewriting nothing is the right answer, and
     // the operator displaces that file by adopting the site, which is its own previewed decision.

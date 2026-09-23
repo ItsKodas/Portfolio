@@ -1150,8 +1150,10 @@ verification** above for that case worked through end to end.) Do it in this ord
    naming what it found, for each of these:
    - a `RewriteRule` carrying the `[P]` flag, which proxies rather than redirects; hostd's template has
      no rewrite of its own and cannot carry it,
-   - any `ws://` or `wss://` target, served by `mod_proxy_wstunnel`; hostd's template proxies plain HTTP
-     only, so the upgrade handshake would go unanswered,
+   - a WebSocket tunnel (a `[P]` rule onto `ws://`, the usual socket.io setup) while the environment
+     has WebSockets switched off; tick "WebSockets" for that environment in the site's Settings and the
+     template carries it with `ProxyPass / ... upgrade=websocket`, so the line stops being a reason. A
+     tunnel to any other upstream, or any `wss://` target, is still refused either way,
    - a `ProxyPass` whose target disagrees with the upstream the registry gives this environment,
    - no port 443 block at all, which means the origin is HTTP-only behind something terminating TLS on
      its own (Cloudflare Flexible); hostd's template redirects port 80 to https and serves 443 itself,

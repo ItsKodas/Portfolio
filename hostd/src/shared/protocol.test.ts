@@ -256,7 +256,7 @@ describe('parseAgentRequest', () => {
         assert.equal(refusalOf({ verb: 'configure', project: 'acme', args: { capabilities: ['teleport'] } }), 'bad-request: capabilities must be a list of known capabilities')
         assert.equal(refusalOf({ verb: 'configure', project: 'acme', args: { branches: { live: 'a branch' } } }), 'bad-request: live branch must be null or a plain branch name')
         assert.equal(refusalOf({ verb: 'configure', project: 'acme', args: { branches: { staging: 'main' } } }), 'bad-request: staging is not an environment')
-        assert.equal(refusalOf({ verb: 'configure', project: 'acme', args: { capabilities: [], extra: true } }), 'bad-request: configure takes only capabilities, repo, credential, branches and domains')
+        assert.equal(refusalOf({ verb: 'configure', project: 'acme', args: { capabilities: [], extra: true } }), 'bad-request: configure takes only capabilities, repo, credential, branches, domains and websockets')
     })
 
     it('parses a branches request', () => {
@@ -279,6 +279,12 @@ describe('configure credential', () => {
     it('keeps a null, which clears the key, apart from an absent one, which leaves it alone', () => {
         assert.deepEqual(parseConfigureArgs({ credential: null }), { credential: null })
         assert.deepEqual(parseConfigureArgs({}), {})
+    })
+
+    it('accepts websockets per environment, and only as true or false', () => {
+        assert.deepEqual(parseConfigureArgs({ websockets: { live: true } }), { websockets: { live: true } })
+        assert.equal('ok' in parseConfigureArgs({ websockets: { live: 'yes' } }), true)
+        assert.equal('ok' in parseConfigureArgs({ websockets: { staging: true } }), true)
     })
 
     it('refuses a malformed name', () => {

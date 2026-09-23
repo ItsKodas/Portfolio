@@ -397,6 +397,13 @@ export class Agent {
             const existing = environmentOf(project, name)?.domain
             if (existing && existing !== domain) replacing.push(name as EnvironmentName)
         }
+        // And which are having WebSockets switched, read for the same reason: the vhost has to follow the
+        // registry, and only the old value says whether this call changes anything.
+        const switching: EnvironmentName[] = []
+        for (const [name, enabled] of Object.entries(args.websockets ?? {})) {
+            const existing = environmentOf(project, name)
+            if (existing && existing.websockets !== enabled) switching.push(name as EnvironmentName)
+        }
 
         // Validated where it is SET, not only where it is used: a name the fetcher does not hold would
         // otherwise sit in the registry until the next deploy discovered it. A null is clearing the key
@@ -436,6 +443,12 @@ export class Agent {
             })
             if (!set.ok) return refuse('bad-request', set.problem)
         }
+        for (const name of switching) {
+            const set = await this.deps.writer.write({
+                kind: 'set-websockets', id: project.id, environment: name, enabled: args.websockets![name]!,
+            })
+            if (!set.ok) return refuse('bad-request', set.problem)
+        }
         // The registry store only reloads on its own ten second timer, so without this the next request
         // answers from the entry this write has already replaced: the capability just granted would still
         // look absent. set-branch and both provisioning paths refresh for the same reason.
@@ -447,7 +460,9 @@ export class Agent {
         // reason setAliases writes the registry first.
         const problems: string[] = []
         const rewritten: ConfigureWritten[] = []
-        for (const name of replacing) {
+        // Once per environment, even when one save both moves its address and switches WebSockets: the
+        // rewrite renders from the registry as it now is, so a single pass carries both.
+        for (const name of new Set([...replacing, ...switching])) {
             const result = await this.rewriteMovedVhost(project.id, name)
             if (result.problem !== null) problems.push(result.problem)
             else if (result.written !== null) rewritten.push(result.written)

@@ -91,7 +91,14 @@ describe('parseServerNames: what the template cannot carry', () => {
         const found = reasons('    ProxyPass /socket ws://127.0.0.1:3002/socket')
         assert.equal(found.length, 1)
         assert.match(found[0]!, /ws:\/\/127\.0\.0\.1:3002\/socket/)
-        assert.match(found[0]!, /mod_proxy_wstunnel/)
+        assert.match(found[0]!, /WebSocket upstream/)
+    })
+
+    it('refuses a WebSocket tunnel to another upstream even with WebSockets on, because upgrade=websocket only reaches its own', () => {
+        const found = parseServerNames(wrap('    RewriteRule ^/?(.*) ws://127.0.0.1:4000/$1 [P,L]'), 'http://127.0.0.1:3002/', true).unsupported
+        assert.equal(found.length, 2, found.join('\n'))
+        assert.match(found.join('\n'), /\[P\] flag/)
+        assert.match(found.join('\n'), /other than this environment's own/)
     })
 
     it('refuses wss:// too', () => {
@@ -155,7 +162,8 @@ describe('parseServerNames: what the template cannot carry', () => {
 // operator put the file back by hand. Two things did it, and both are in this text: the [P] rewrite onto
 // a ws:// upstream, which the template has no equivalent for, and the absence of any :443 block, which
 // means the origin is HTTP-only behind a CDN in Flexible mode and hostd's forced redirect to https loops
-// forever. This fixture is the regression test for that outage and must keep failing adoption.
+// forever. This fixture is the regression test for that outage and must keep failing adoption, and it
+// still does with WebSockets switched on: that carries the tunnel, but nothing carries a missing 443.
 describe('the vhost that took thebackroom.dev off the internet', () => {
     const THE_BACKROOM = `<VirtualHost *:80>
     ServerName thebackroom.dev
@@ -186,13 +194,26 @@ describe('the vhost that took thebackroom.dev off the internet', () => {
         assert.deepEqual(findClaims(file, ['thebackroom.dev'], expected)[0]!.names, ['thebackroom.dev'])
     })
 
-    it('refuses it, naming the proxying rewrite, the WebSocket upstream and the missing 443 block', () => {
+    it('refuses it, naming the WebSocket tunnel with the switch that carries it, and the missing 443 block', () => {
         const reasons = findClaims(file, ['thebackroom.dev'], expected)[0]!.unsupported
-        assert.equal(reasons.length, 3, reasons.join('\n'))
-        assert.match(reasons.join('\n'), /\[P\] flag/)
+        assert.equal(reasons.length, 2, reasons.join('\n'))
         assert.match(reasons.join('\n'), /ws:\/\/127\.0\.0\.1:3002\//)
-        assert.match(reasons.join('\n'), /mod_proxy_wstunnel/)
+        assert.match(reasons.join('\n'), /Switch on WebSockets for this environment in Settings/)
         assert.match(reasons.join('\n'), /no port 443 block/)
+    })
+
+    // The tunnel goes to the environment's own upstream, which is exactly what upgrade=websocket does,
+    // so it is not also reported as a [P] rewrite the template cannot reproduce.
+    it('drops the tunnel from the reasons once WebSockets is on, and still refuses the missing 443 block', () => {
+        const reasons = findClaims(file, ['thebackroom.dev'], expected, true)[0]!.unsupported
+        assert.equal(reasons.length, 1, reasons.join('\n'))
+        assert.match(reasons[0]!, /no port 443 block/)
+    })
+
+    it('adopts once WebSockets is on and the file has a 443 block of its own', () => {
+        const fixed = THE_BACKROOM.replace('<VirtualHost *:80>', '<VirtualHost *:443>')
+        const claim = findClaims([{ path: file[0]!.path, text: fixed }], ['thebackroom.dev'], expected, true)[0]!
+        assert.deepEqual(claim.unsupported, [])
     })
 
     // The proxy target was right all along: the registry says 3002 and so does the file. A refusal that

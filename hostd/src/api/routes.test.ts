@@ -54,10 +54,10 @@ projects:
 // domain, certificate and deployed commit, and nothing about the machine underneath. quiet is the
 // single-environment shape, where the registry synthesises one live environment out of dir and upstream.
 const acmeEnvironmentsForClient = [
-    { name: 'live', branch: 'main', domain: 'acme.example', certificate: 'letsencrypt', deployed: 'abc1234' },
-    { name: 'test', branch: 'develop', domain: 'test.acme.example', certificate: null, deployed: null },
+    { name: 'live', branch: 'main', domain: 'acme.example', certificate: 'letsencrypt', websockets: false, deployed: 'abc1234' },
+    { name: 'test', branch: 'develop', domain: 'test.acme.example', certificate: null, websockets: false, deployed: null },
 ]
-const quietEnvironmentsForClient = [{ name: 'live', branch: null, domain: null, certificate: null, deployed: null }]
+const quietEnvironmentsForClient = [{ name: 'live', branch: null, domain: null, certificate: null, websockets: false, deployed: null }]
 
 const logLine: LogLine = { stream: 'stdout', ts: '2026-09-20T00:00:00Z', text: 'hello', truncated: false }
 const usage: SystemUsage = {
@@ -414,11 +414,11 @@ describe('GET /projects', () => {
         assert.deepEqual(body.projects.find(project => project.id === 'acme')?.environments, [
             {
                 name: 'live', dir: '/var/www/acme', composePaths: ['/var/www/acme/docker-compose.yml'], port: 5010,
-                branch: 'main', domain: 'acme.example', certificate: 'letsencrypt', deployed: 'abc1234',
+                branch: 'main', domain: 'acme.example', certificate: 'letsencrypt', websockets: false, deployed: 'abc1234',
             },
             {
                 name: 'test', dir: '/var/www/acme-test', composePaths: ['/var/www/acme-test/docker-compose.yml'], port: 5013,
-                branch: 'develop', domain: 'test.acme.example', certificate: null, deployed: null,
+                branch: 'develop', domain: 'test.acme.example', certificate: null, websockets: false, deployed: null,
             },
         ])
     })

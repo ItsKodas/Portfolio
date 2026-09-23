@@ -12,6 +12,7 @@ const input = (over: Partial<VhostInput> = {}): VhostInput => ({
     // claims all of its names and one that claims only the last.
     aliases: ['www.acme.com', 'shop.acme.com'],
     port: 5010,
+    websockets: false,
     token: 'abc123',
     certificate: { chain: '/etc/ssl/hostd/origin.pem', key: '/etc/ssl/hostd/origin.key' },
     maintenanceDir: '/var/www/hostd-maintenance',
@@ -69,6 +70,14 @@ describe('renderVhost', () => {
 
     it('proxies the primary on 443 to the environment\'s own port', () => {
         assert.match(renderVhost(input({ port: 5108 })), /ProxyPass \/ http:\/\/127\.0\.0\.1:5108\//)
+    })
+
+    it('passes WebSocket upgrades through on the same ProxyPass when the environment asks for it', () => {
+        assert.match(renderVhost(input({ websockets: true })), /^    ProxyPass \/ http:\/\/127\.0\.0\.1:5010\/ upgrade=websocket$/m)
+    })
+
+    it('leaves the ProxyPass plain when it does not', () => {
+        assert.doesNotMatch(renderVhost(input()), /upgrade=websocket/)
     })
 
     it('serves the holding page when the maintenance flag exists', () => {

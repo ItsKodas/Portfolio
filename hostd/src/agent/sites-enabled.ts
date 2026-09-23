@@ -69,6 +69,17 @@ function sameUpstream(found: string, expected: string): boolean {
     return trim(found) === trim(expected)
 }
 
+// Whether a ws:// target is the same upstream hostd would proxy to, which is the one WebSocket shape the
+// generated vhost can carry (its ProxyPass takes upgrade=websocket). Only the address is compared, host
+// and port: the path after it is the rule's own capture ($1 and the like), which ProxyPass / reproduces
+// by passing the path through. wss:// never matches, because the upstream hostd proxies to is plain
+// http on loopback and a file tunnelling TLS to it is doing something else.
+function sameWebsocketUpstream(found: string, expected: string): boolean {
+    const origin = (value: string, scheme: RegExp) => value.match(scheme)?.[1]?.toLowerCase() ?? null
+    const ws = origin(found, /^ws:\/\/([^/\s]+)/i)
+    return ws !== null && ws === origin(expected, /^http:\/\/([^/\s]+)/i)
+}
+
 // mod_rewrite accepts P and its long form proxy, in any position in the flag list, in either case.
 function proxiesTheRequest(rule: string): boolean {
     const flags = rule.match(REWRITE_FLAGS)
@@ -86,7 +97,12 @@ function proxiesTheRequest(rule: string): boolean {
 // that holds the registry. Null means the caller had none to offer (no domain, no port), and the
 // ProxyPass comparison is then skipped rather than guessed at: inventing an expectation here and
 // refusing against it would block adoptions for a mismatch nobody established.
-function unsupportedReasons(text: string, expected: string | null): string[] {
+//
+// `websockets` is whether the environment has WebSockets switched on in the registry. A file that
+// tunnels upgrades to the same upstream (a [P] rewrite onto ws://, the usual socket.io setup) is then
+// carried by the generated vhost's upgrade=websocket, so that line is no longer a reason. While it is
+// off, the reason names the switch, because that is the whole of the operator's fix.
+function unsupportedReasons(text: string, expected: string | null, websockets: boolean): string[] {
     // Keyed by kind, so a file with four [P] rewrites says the [P] thing once. The first occurrence is
     // the one quoted, which is the one an operator reading top to bottom finds first.
     const found = new Map<string, string>()
@@ -112,14 +128,23 @@ function unsupportedReasons(text: string, expected: string | null): string[] {
             if (opened[1]!.split(/\s+/).some(address => address.endsWith(':443'))) sawPort443 = true
         }
 
+        const websocket = raw.match(WEBSOCKET_URL)
+        // A tunnel to this environment's own upstream is one thing hostd can reproduce, so it is judged
+        // on its own and never also reported as a [P] rewrite or a foreign ws:// target.
+        if (websocket && expected !== null && sameWebsocketUpstream(websocket[0], expected)) {
+            if (!websockets) {
+                add('websocket', `${quoteDirective(raw)} passes WebSocket connections through to ${websocket[0]}, and this environment does not have WebSockets switched on, so hostd's generated vhost would leave the upgrade handshake unanswered and every realtime connection this site makes would stop. Switch on WebSockets for this environment in Settings, then adopt: the generated vhost will carry this.`)
+            }
+            continue
+        }
+
         const rewrite = raw.match(REWRITE_RULE)
         if (rewrite && proxiesTheRequest(rewrite[1]!)) {
             add('rewrite-proxy', `${quoteDirective(raw)} carries the [P] flag, so it proxies the request through mod_proxy instead of answering or redirecting it. hostd's generated vhost has no rewrite of its own and no way to reproduce this, so adopting would drop the rule and hand those requests to whatever ProxyPass sits below it.`)
         }
 
-        const websocket = raw.match(WEBSOCKET_URL)
         if (websocket) {
-            add('websocket', `${quoteDirective(raw)} sends traffic to ${websocket[0]}, a WebSocket upstream served by mod_proxy_wstunnel. hostd's generated vhost proxies plain HTTP only, so adopting would leave the upgrade handshake unanswered and every realtime connection this site makes would stop.`)
+            add('websocket', `${quoteDirective(raw)} sends traffic to ${websocket[0]}, a WebSocket upstream other than this environment's own. hostd's generated vhost can only pass WebSockets through to the upstream it proxies everything else to, so adopting would leave the upgrade handshake unanswered and every realtime connection this site makes would stop.`)
         }
 
         const proxy = raw.match(PROXY_PASS)
@@ -145,7 +170,7 @@ function unsupportedReasons(text: string, expected: string | null): string[] {
 
 // `expected` is hostd's own upstream for this environment, or null when there is none to compare
 // against. See unsupportedReasons for what it is used for and why it is never guessed here.
-export function parseServerNames(text: string, expected: string | null = null): ServerNames {
+export function parseServerNames(text: string, expected: string | null = null, websockets = false): ServerNames {
     const names: string[] = []
     for (const raw of text.split('\n')) {
         // Apache treats a line whose first non-space character is # as a comment in full; there is no
@@ -163,7 +188,7 @@ export function parseServerNames(text: string, expected: string | null = null): 
             if (host !== null && !names.includes(host)) names.push(host)
         }
     }
-    return { names, unsupported: unsupportedReasons(text, expected) }
+    return { names, unsupported: unsupportedReasons(text, expected, websockets) }
 }
 
 // The file itself is carried, not only what was understood of it. Adoption switches this file off and
@@ -174,10 +199,10 @@ export function parseServerNames(text: string, expected: string | null = null): 
 // their own server's configuration, and every route that can reach it is admin-only.
 export type Claim = { path: string, text: string, names: string[], unsupported: string[] }
 
-export function findClaims(files: VhostFile[], hostnames: string[], expected: string | null = null): Claim[] {
+export function findClaims(files: VhostFile[], hostnames: string[], expected: string | null = null, websockets = false): Claim[] {
     const claims: Claim[] = []
     for (const file of files) {
-        const parsed = parseServerNames(file.text, expected)
+        const parsed = parseServerNames(file.text, expected, websockets)
         if (!parsed.names.some(name => hostnames.includes(name))) continue
         claims.push({ path: file.path, text: file.text, names: parsed.names, unsupported: parsed.unsupported })
     }

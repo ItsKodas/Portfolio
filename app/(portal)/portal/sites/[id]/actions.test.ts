@@ -35,6 +35,9 @@ describe('saveSettingsAction', () => {
             { branches: 'live' },
             { branches: { live: 5 } },
             { branches: ['live'] },
+            { websockets: true },
+            { websockets: { live: 'on' } },
+            { websockets: ['live'] },
             { capabilities: [], surprise: true },
         ]
         for (const settings of nonsense) {
@@ -49,6 +52,7 @@ describe('saveSettingsAction', () => {
             capabilities: ['lifecycle', 'logs'],
             repo: null,
             branches: { live: null },
+            websockets: { live: true },
         })
         expect(result).toEqual({ ok: false, error: 'Your session has expired. Sign in again.' })
         expect(callerFromSession).toHaveBeenCalled()

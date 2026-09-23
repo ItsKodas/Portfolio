@@ -350,7 +350,7 @@ export async function createProject(args: ProvisionCreateArgs, deps: ProvisionDe
     if (!attempt.ok) return attempt
 
     const live: EnvironmentEntry = {
-        name: 'live', dir, composePaths: [attempt.composePath], branch: args.branch, domain: args.domain, aliases: [], port: port.port, certificate: args.certificate, deployed: null,
+        name: 'live', dir, composePaths: [attempt.composePath], branch: args.branch, domain: args.domain, aliases: [], port: port.port, certificate: args.certificate, deployed: null, websockets: false,
     }
     const envFiles = await listEnvFiles(live, envFs)
     return { ok: true, project: { id: args.id, state: 'needs-setup' }, envFiles }
@@ -395,7 +395,7 @@ export async function addEnvironment(project: ProjectEntry, args: ProvisionAddEn
             const live = project.environments.get('live')
             if (!live) return { ok: true }
             const test: EnvironmentEntry = {
-                name: 'test', dir, composePaths: [composePath], branch: args.branch, domain: args.domain, aliases: [], port: port.port, certificate: args.certificate, deployed: null,
+                name: 'test', dir, composePaths: [composePath], branch: args.branch, domain: args.domain, aliases: [], port: port.port, certificate: args.certificate, deployed: null, websockets: false,
             }
             const failures = await copyEnvFiles(project.id, live, test, envFs, deps)
             if (failures.length > 0) return { ok: false, problem: `could not copy ${failures.join(', ')} from the live environment` }
@@ -414,7 +414,7 @@ export async function addEnvironment(project: ProjectEntry, args: ProvisionAddEn
     if (!attempt.ok) return attempt
 
     const test: EnvironmentEntry = {
-        name: 'test', dir, composePaths: [attempt.composePath], branch: args.branch, domain: args.domain, aliases: [], port: port.port, certificate: args.certificate, deployed: null,
+        name: 'test', dir, composePaths: [attempt.composePath], branch: args.branch, domain: args.domain, aliases: [], port: port.port, certificate: args.certificate, deployed: null, websockets: false,
     }
     const envFiles = await listEnvFiles(test, envFs)
     return { ok: true, project: { id: project.id, state: 'needs-setup' }, envFiles }
