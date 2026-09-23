@@ -42,7 +42,12 @@ export function configArgv(project: ComposeLocation): string[] {
 }
 
 export type RunResult = { exitCode: number | null, stdout: string, stderr: string, timedOut: boolean }
-export type Runner = (command: string, args: string[], timeoutMs: number) => Promise<RunResult>
+// onLine is how a caller watches a command as it runs rather than after it. Optional, so every existing
+// caller is untouched, and RunResult is unchanged, which is what keeps record.output byte for byte what
+// it has always been.
+export type Runner = (
+    command: string, args: string[], timeoutMs: number, onLine?: (line: string) => void,
+) => Promise<RunResult>
 
 // Keeps the most recent bytes only, so a chatty command cannot exhaust memory.
 class Capture {
@@ -85,13 +90,34 @@ export function childEnv(keys: readonly string[]): Record<string, string> {
     return env
 }
 
+// Chunks off a pipe do not respect line boundaries: a line can arrive in two pieces, and two lines can
+// arrive in one. This holds the tail until its newline turns up. The trailing \r is stripped because a
+// command that thinks it might be on a terminal still sends them.
+function lineSplitter(emit: (line: string) => void) {
+    let rest = ''
+    return {
+        push(chunk: Buffer): void {
+            const parts = (rest + chunk.toString('utf8')).split('\n')
+            rest = parts.pop() ?? ''
+            for (const part of parts) emit(part.endsWith('\r') ? part.slice(0, -1) : part)
+        },
+        flush(): void {
+            if (rest === '') return
+            const last = rest.endsWith('\r') ? rest.slice(0, -1) : rest
+            rest = ''
+            emit(last)
+        },
+    }
+}
+
 export function createSpawnRunner(spawn: typeof nodeSpawn = nodeSpawn, envKeys: readonly string[] = DOCKER_ENV_KEYS): Runner {
-    return (command, args, timeoutMs) => new Promise(resolve => {
+    return (command, args, timeoutMs, onLine) => new Promise(resolve => {
         const child = spawn(command, args, { shell: false, stdio: ['ignore', 'pipe', 'pipe'], env: childEnv(envKeys) })
         const stdout = new Capture()
         const stderr = new Capture()
-        child.stdout?.on('data', (chunk: Buffer) => stdout.add(chunk))
-        child.stderr?.on('data', (chunk: Buffer) => stderr.add(chunk))
+        const splitter = onLine ? lineSplitter(onLine) : null
+        child.stdout?.on('data', (chunk: Buffer) => { stdout.add(chunk); splitter?.push(chunk) })
+        child.stderr?.on('data', (chunk: Buffer) => { stderr.add(chunk); splitter?.push(chunk) })
 
         let timedOut = false
         let settled = false
@@ -104,6 +130,7 @@ export function createSpawnRunner(spawn: typeof nodeSpawn = nodeSpawn, envKeys: 
             if (settled) return
             settled = true
             clearTimeout(timer)
+            splitter?.flush()
             const errorText = stderr.text()
             resolve({ exitCode, stdout: stdout.text(), stderr: error ? (errorText ? `${errorText}\n${error}` : error) : errorText, timedOut })
         }

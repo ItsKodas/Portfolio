@@ -400,3 +400,68 @@ describe('createSpawnRunner', () => {
         assert.equal((spawned as FakeChild | null)?.killedWith, 'SIGKILL')
     })
 })
+
+// A child process as far as createSpawnRunner is concerned: two streams and a close event.
+function fakeChild() {
+    const child = new EventEmitter() as EventEmitter & { stdout: EventEmitter, stderr: EventEmitter, kill: () => void }
+    child.stdout = new EventEmitter()
+    child.stderr = new EventEmitter()
+    child.kill = () => {}
+    return child
+}
+
+describe('createSpawnRunner line sink', () => {
+    // Both streams, not just stderr. deploy-compose.ts carries a comment saying compose writes its
+    // progress to stderr; a spike against compose v5.1.3 found progress on stdout and only the closing
+    // summary on stderr. Listening to one would have shown a single line per deploy.
+    it('hands lines from stdout and stderr to the sink, in arrival order', async () => {
+        const child = fakeChild()
+        const runner = createSpawnRunner(() => child as never)
+        const lines: string[] = []
+        const done = runner('docker', ['compose', 'build'], 1000, line => lines.push(line))
+        child.stdout.emit('data', Buffer.from('#6 [2/3] RUN echo A\n'))
+        child.stderr.emit('data', Buffer.from(' Image probe Built \n'))
+        child.emit('close', 0)
+        await done
+        assert.deepEqual(lines, ['#6 [2/3] RUN echo A', ' Image probe Built '])
+    })
+
+    it('joins a line split across two chunks rather than emitting half of it', async () => {
+        const child = fakeChild()
+        const runner = createSpawnRunner(() => child as never)
+        const lines: string[] = []
+        const done = runner('docker', ['compose', 'build'], 1000, line => lines.push(line))
+        child.stdout.emit('data', Buffer.from('#7 4.30 B-D'))
+        child.stdout.emit('data', Buffer.from('ONE\n'))
+        child.emit('close', 0)
+        await done
+        assert.deepEqual(lines, ['#7 4.30 B-DONE'])
+    })
+
+    // A command whose last line has no trailing newline still said it.
+    it('emits a trailing partial line when the child closes', async () => {
+        const child = fakeChild()
+        const runner = createSpawnRunner(() => child as never)
+        const lines: string[] = []
+        const done = runner('docker', ['compose', 'build'], 1000, line => lines.push(line))
+        child.stdout.emit('data', Buffer.from('no newline at the end'))
+        child.emit('close', 0)
+        await done
+        assert.deepEqual(lines, ['no newline at the end'])
+    })
+
+    // The regression that matters. RunResult is what becomes record.output, and it must not change.
+    it('leaves RunResult exactly as it is, sink or no sink', async () => {
+        const withSink = fakeChild()
+        const a = createSpawnRunner(() => withSink as never)('docker', ['x'], 1000, () => {})
+        withSink.stdout.emit('data', Buffer.from('one\ntwo\n'))
+        withSink.emit('close', 0)
+
+        const without = fakeChild()
+        const b = createSpawnRunner(() => without as never)('docker', ['x'], 1000)
+        without.stdout.emit('data', Buffer.from('one\ntwo\n'))
+        without.emit('close', 0)
+
+        assert.deepEqual(await a, await b)
+    })
+})
