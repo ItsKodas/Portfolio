@@ -135,7 +135,10 @@ An environment without `hostd.ports.yml` in its list deploys as it does today.
   hostd.ports.yml in /var/www/<id>`.
 - New site port hint (`NewSite.tsx`): `The port the site listens on. hostd publishes it to the site's
   service on 127.0.0.1, whatever the compose file says.`
-- The create's reply names what hostd chose, so the admin sees it: `published 5002 to backroom:3001`.
+- The agent's log names what hostd chose, on a create and on every deploy: `published 5002 to
+  backroom:3001`. The create's reply to the portal keeps its shape.
+- `hostd/RUNBOOK.md`'s "A site's port" section says hostd publishes the port, and moving a site that
+  hard codes its port is now just the vhost adoption and the port change.
 
 ## Not in this
 
