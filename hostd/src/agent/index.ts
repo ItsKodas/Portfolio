@@ -19,6 +19,7 @@ import { createSpawnRunner, resolveNewProject } from './compose.ts'
 import { buildPortOverride, portOverridePath } from './port-override.ts'
 import { createHostPortReader } from './host-ports.ts'
 import { writePortEnv } from './port-env.ts'
+import { writeOwnedFile } from './owned-file.ts'
 import { GuardTracker } from './guard-tracker.ts'
 import { createFetchClient, socketConnect } from './fetch-client.ts'
 import { Agent } from './agent.ts'
@@ -198,14 +199,6 @@ async function main(): Promise<void> {
         // stat can report more than that (the regular-file bit, a stray setuid bit), none of which
         // belongs on a mode this hands straight to chmod.
         return { uid: info.uid, gid: info.gid, mode: info.mode & 0o777 }
-    }
-    // hostd.ports.yml is written as root into a folder the operator owns, so it takes the folder's owner,
-    // as every other file hostd puts in a site does. A create and a deploy own the whole tree afterwards
-    // anyway; a port change writes into a folder that is already in use and has no such step.
-    const writeOwnedFile = async (path: string, text: string) => {
-        const like = await ownerOf(posix.dirname(path))
-        await writeFile(path, text, { mode: 0o644 })
-        await chown(path, like.uid, like.gid)
     }
     const provision: ProvisionDeps = {
         registry: () => store.current(),
