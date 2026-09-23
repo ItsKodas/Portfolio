@@ -464,4 +464,37 @@ describe('createSpawnRunner line sink', () => {
 
         assert.deepEqual(await a, await b)
     })
+
+    // Regression: a single lineSplitter shared between stdout and stderr let one stream's dangling
+    // partial line (no newline yet) get concatenated with the next chunk from the OTHER stream, producing
+    // a line that came from neither. stdout's "Building image" must stay separate from stderr's line.
+    it('does not merge a dangling stdout partial line with a stderr line', async () => {
+        const child = fakeChild()
+        const runner = createSpawnRunner(() => child as never)
+        const lines: string[] = []
+        const done = runner('docker', ['compose', 'build'], 1000, line => lines.push(line))
+        child.stdout.emit('data', Buffer.from('Building image'))
+        child.stderr.emit('data', Buffer.from('real progress\n'))
+        child.emit('close', 0)
+        await done
+        assert.deepEqual(lines, ['real progress', 'Building image'])
+    })
+
+    // Regression: chunk.toString('utf8') per chunk decodes a multi-byte character split across a chunk
+    // boundary into U+FFFD and loses the trailing bytes, because only the already-mangled string was
+    // buffered, never the raw bytes. Buildkit's progress output contains such glyphs. 'é' is the two bytes
+    // 0xC3 0xA9 in UTF-8; the split lands between them.
+    it('joins a multi-byte UTF-8 character split across two chunks', async () => {
+        const child = fakeChild()
+        const runner = createSpawnRunner(() => child as never)
+        const lines: string[] = []
+        const done = runner('docker', ['compose', 'build'], 1000, line => lines.push(line))
+        const bytes = Buffer.from('café ready\n', 'utf8')
+        const splitAt = bytes.indexOf(0xa9)
+        child.stdout.emit('data', bytes.subarray(0, splitAt))
+        child.stdout.emit('data', bytes.subarray(splitAt))
+        child.emit('close', 0)
+        await done
+        assert.deepEqual(lines, ['café ready'])
+    })
 })

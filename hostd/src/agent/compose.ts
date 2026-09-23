@@ -2,6 +2,7 @@
 // and every spawn is shell-free, so no value from a request can ever reach a command line.
 
 import { spawn as nodeSpawn } from 'node:child_process'
+import { StringDecoder } from 'node:string_decoder'
 import { isRecord } from '../shared/formats.ts'
 import type { Engine, ProjectEntry } from '../shared/registry.ts'
 import type { LifecycleAction } from '../shared/protocol.ts'
@@ -90,18 +91,28 @@ export function childEnv(keys: readonly string[]): Record<string, string> {
     return env
 }
 
-// Chunks off a pipe do not respect line boundaries: a line can arrive in two pieces, and two lines can
-// arrive in one. This holds the tail until its newline turns up. The trailing \r is stripped because a
-// command that thinks it might be on a terminal still sends them.
+// Chunks off a pipe do not respect line boundaries, or character boundaries: a line can arrive in two
+// pieces, two lines can arrive in one, and a multi-byte UTF-8 character (buildkit's progress glyphs, among
+// others) can have its bytes split across a chunk boundary. StringDecoder holds a dangling partial
+// sequence across writes instead of decoding each chunk on its own, which is what a plain
+// chunk.toString('utf8') per chunk would do, mangling the split character into U+FFFD twice over. This
+// holds the line tail until its newline turns up. The trailing \r is stripped because a command that
+// thinks it might be on a terminal still sends them.
+//
+// One instance of this belongs to exactly one stream. Sharing a single instance between stdout and stderr
+// would let one stream's dangling partial line (no newline yet) get concatenated with unrelated bytes
+// from the other stream's next chunk, producing a line that came from neither.
 function lineSplitter(emit: (line: string) => void) {
+    const decoder = new StringDecoder('utf8')
     let rest = ''
     return {
         push(chunk: Buffer): void {
-            const parts = (rest + chunk.toString('utf8')).split('\n')
+            const parts = (rest + decoder.write(chunk)).split('\n')
             rest = parts.pop() ?? ''
             for (const part of parts) emit(part.endsWith('\r') ? part.slice(0, -1) : part)
         },
         flush(): void {
+            rest += decoder.end()
             if (rest === '') return
             const last = rest.endsWith('\r') ? rest.slice(0, -1) : rest
             rest = ''
@@ -115,9 +126,12 @@ export function createSpawnRunner(spawn: typeof nodeSpawn = nodeSpawn, envKeys: 
         const child = spawn(command, args, { shell: false, stdio: ['ignore', 'pipe', 'pipe'], env: childEnv(envKeys) })
         const stdout = new Capture()
         const stderr = new Capture()
-        const splitter = onLine ? lineSplitter(onLine) : null
-        child.stdout?.on('data', (chunk: Buffer) => { stdout.add(chunk); splitter?.push(chunk) })
-        child.stderr?.on('data', (chunk: Buffer) => { stderr.add(chunk); splitter?.push(chunk) })
+        // Separate instances (see lineSplitter's comment): each stream's dangling partial line stays that
+        // stream's own, even though both feed the same onLine sink.
+        const stdoutSplitter = onLine ? lineSplitter(onLine) : null
+        const stderrSplitter = onLine ? lineSplitter(onLine) : null
+        child.stdout?.on('data', (chunk: Buffer) => { stdout.add(chunk); stdoutSplitter?.push(chunk) })
+        child.stderr?.on('data', (chunk: Buffer) => { stderr.add(chunk); stderrSplitter?.push(chunk) })
 
         let timedOut = false
         let settled = false
@@ -130,7 +144,8 @@ export function createSpawnRunner(spawn: typeof nodeSpawn = nodeSpawn, envKeys: 
             if (settled) return
             settled = true
             clearTimeout(timer)
-            splitter?.flush()
+            stdoutSplitter?.flush()
+            stderrSplitter?.flush()
             const errorText = stderr.text()
             resolve({ exitCode, stdout: stdout.text(), stderr: error ? (errorText ? `${errorText}\n${error}` : error) : errorText, timedOut })
         }
