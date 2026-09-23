@@ -10,7 +10,7 @@ import { posix } from 'node:path'
 
 import type { EnvironmentEntry } from '../shared/registry.ts'
 import { describeError } from '../shared/formats.ts'
-import { migratingOf, repositoryIn, type DeployTrees } from './deploy-compose.ts'
+import { locationIn, migratingOf, repositoryIn, type DeployTrees } from './deploy-compose.ts'
 import type { DeployFs } from './deploy.ts'
 
 export type Step =
@@ -34,8 +34,14 @@ export async function inspectLayout(
         if (compose && await exists(compose)) return 'flat'
         // Not flat, and live's old tree is already at prev/live: a window whose undo stopped part way
         // (see executeSteps), after the tree left <site>.migrating. Asked only once the folder is known
-        // not to be a flat tree, because a flat site could have a prev/live folder of its own.
-        if (await exists(to.prev)) return 'interrupted'
+        // not to be a flat tree, because a flat site could have a prev/live folder of its own. What
+        // proves it is the old tree is its compose file, not a .git: a first deploy moves the repository
+        // out to <site>.git before its window, so that tree arrives at prev/live with none. And <site>
+        // with a .git of its own is still a flat tree, only one that has lost its compose file, which is
+        // for the operator to look at, never a move to finish.
+        if (await exists(posix.join(site, '.git'))) return 'unknown'
+        const oldCompose = locationIn(environment, to.prev).composePaths[0]
+        if (oldCompose && await exists(oldCompose)) return 'interrupted'
         return 'unknown'
     }
     const flat = await exists(from.dir)

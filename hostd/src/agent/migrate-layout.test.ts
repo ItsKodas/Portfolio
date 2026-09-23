@@ -37,7 +37,14 @@ function disk(paths: string[], failOn: string[] = []) {
         },
         move: async (from: string, to: string) => {
             if (failOn.includes(`${from} ${to}`)) throw new Error('EXDEV')
-            calls.push(`move ${from} ${to}`); present.delete(from); present.add(to)
+            calls.push(`move ${from} ${to}`)
+            // A rename takes everything under the folder with it.
+            for (const path of [...present]) {
+                if (path !== from && !path.startsWith(`${from}/`)) continue
+                present.delete(path)
+                present.add(to + path.slice(from.length))
+            }
+            present.add(to)
         },
         owner: async () => ({ uid: 1000, gid: 1000, mode: 0o775 }),
         own: async (dir: string) => { calls.push(`own ${dir}`) },
@@ -56,7 +63,23 @@ describe('inspectLayout', () => {
         assert.equal(await inspectLayout(live, liveFrom, liveTo, disk(['/var/www/acme', '/var/www/acme/live', '/var/www/acme/git/.git']).exists), 'moved')
     })
     it('reads a live whose undo stopped after its tree reached prev/live as interrupted', async () => {
-        assert.equal(await inspectLayout(live, liveFrom, liveTo, disk(['/var/www/acme', '/var/www/acme/prev/live', '/var/www/acme.next']).exists), 'interrupted')
+        const paths = ['/var/www/acme', '/var/www/acme/prev/live', '/var/www/acme/prev/live/.git', '/var/www/acme/prev/live/docker-compose.yml', '/var/www/acme.next']
+        assert.equal(await inspectLayout(live, liveFrom, liveTo, disk(paths).exists), 'interrupted')
+    })
+    // A first deploy moves the repository out to <site>.git before its window, so the tree that reaches
+    // prev/live has no .git of its own. Its compose file is what says it is the site's old tree.
+    it('reads a stopped undo on a first-deploy move, whose old tree has no .git, as interrupted', async () => {
+        const paths = ['/var/www/acme', '/var/www/acme/prev/live', '/var/www/acme/prev/live/docker-compose.yml', '/var/www/acme.next', '/var/www/acme.git/.git']
+        assert.equal(await inspectLayout(live, liveFrom, liveTo, disk(paths).exists), 'interrupted')
+    })
+    // A flat live that has lost its root compose file, but is still a flat tree (its own .git) that keeps
+    // a prev/live folder of its own, is nothing a move left behind.
+    it('reads a broken flat live with its own prev/live folder as unknown, not interrupted', async () => {
+        const paths = ['/var/www/acme', '/var/www/acme/.git', '/var/www/acme/prev/live', '/var/www/acme/prev/live/docker-compose.yml']
+        assert.equal(await inspectLayout(live, liveFrom, liveTo, disk(paths).exists), 'unknown')
+    })
+    it('reads a prev/live folder with no compose file in it as unknown', async () => {
+        assert.equal(await inspectLayout(live, liveFrom, liveTo, disk(['/var/www/acme', '/var/www/acme/prev/live']).exists), 'unknown')
     })
     it('still reads a flat live with a prev/live folder of its own as flat', async () => {
         assert.equal(await inspectLayout(live, liveFrom, liveTo, disk(['/var/www/acme', '/var/www/acme/docker-compose.yml', '/var/www/acme/prev/live']).exists), 'flat')
@@ -124,7 +147,7 @@ describe('executeSteps', () => {
     // On the real disk rmdir is recursive, so an undo that carried on past a move it could not reverse
     // would remove /var/www/acme/prev with the site's running tree still inside it at prev/live.
     it('stops undoing at the first step it cannot reverse, and removes nothing', async () => {
-        const { fs, calls, present } = disk(['/var/www/acme', '/var/www/acme.next', '/var/www/acme.git'], [
+        const { fs, calls, present } = disk(['/var/www/acme', '/var/www/acme/docker-compose.yml', '/var/www/acme.next', '/var/www/acme.git'], [
             '/var/www/acme.next /var/www/acme/live',
             '/var/www/acme/prev/live /var/www/acme.migrating',
         ])
