@@ -52,3 +52,16 @@ export function allowedEntryProblem(host: string): string | null {
         || NEVER_ALLOWED_SUBTREE.some(entry => atOrBelow(host, entry))
     return never ? `${host} can never be exempted from reserved` : null
 }
+
+// The registry's `openSubdomains` list: every name strictly below an entry may be a site's main domain,
+// which only the operator sets. The entry itself stays reserved (opening horizons.gg opens its
+// subdomains, never the apex), and so does everything the `allowed` carve-out could never reach.
+export function isOpenSubdomain(host: string, open: string[]): boolean {
+    if (allowedEntryProblem(host) !== null) return false
+    return open.some(entry => host !== entry && atOrBelow(host, entry))
+}
+
+export function openSubdomainEntryProblem(entry: string): string | null {
+    const never = NEVER_ALLOWED_SUBTREE.some(subtree => atOrBelow(entry, subtree))
+    return never ? `${entry} can never be opened to subdomains` : null
+}

@@ -601,3 +601,54 @@ projects:
         assert.match(registry.invalid.get('acme') ?? '', /reserved/)
     })
 })
+
+describe('openSubdomains', () => {
+    const withOpen = (open: string, live: string) => `
+reserved: [horizons.gg]
+openSubdomains: [${open}]
+projects:
+  acme:
+    client: cl_1
+    name: Acme
+    services: { web: { role: site } }
+    environments:
+      live: { dir: /var/www/acme, port: 5010, ${live} }
+`
+
+    it('lets any name below an open entry be the main domain', () => {
+        const registry = parseRegistry(withOpen('horizons.gg', 'domain: spotondrones.horizons.gg'))
+        assert.equal(registry.projects.get('acme')!.environments.get('live')!.domain, 'spotondrones.horizons.gg')
+        assert.deepEqual(registry.openSubdomains, ['horizons.gg'])
+    })
+
+    it('still refuses the open entry itself as the main domain', () => {
+        const registry = parseRegistry(withOpen('horizons.gg', 'domain: horizons.gg'))
+        assert.match(registry.invalid.get('acme') ?? '', /reserved/)
+    })
+
+    it('still refuses the mail subtree as the main domain', () => {
+        const registry = parseRegistry(withOpen('horizons.gg', 'domain: mail.dev.horizons.gg'))
+        assert.match(registry.invalid.get('acme') ?? '', /reserved/)
+    })
+
+    // Aliases are what a client adds for themselves, so an open subdomain is never one: only the
+    // operator sets the main domain.
+    it('still refuses a name below an open entry as an alias', () => {
+        const registry = parseRegistry(withOpen('horizons.gg', 'domain: acme.com, aliases: [panel.horizons.gg]'))
+        assert.match(registry.invalid.get('acme') ?? '', /aliases must not be at or below a reserved domain/)
+    })
+
+    it('rejects the whole file when the mail subtree is listed', () => {
+        assert.throws(() => parseRegistry(withOpen('dev.horizons.gg', 'domain: acme.com')), /can never be opened/)
+    })
+
+    it('rejects the whole file when an entry is not a hostname', () => {
+        assert.throws(() => parseRegistry(withOpen('"*.horizons.gg"', 'domain: acme.com')), /openSubdomains must be a list of lowercase hostnames/)
+    })
+
+    it('defaults to none', () => {
+        const registry = parseRegistry(withOpen('', 'domain: acme.com'))
+        assert.deepEqual(registry.openSubdomains, [])
+        assert.deepEqual(parseRegistry('projects: {}').openSubdomains, [])
+    })
+})

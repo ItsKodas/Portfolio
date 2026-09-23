@@ -1,7 +1,7 @@
 import { describe, it } from 'node:test'
 import assert from 'node:assert/strict'
 
-import { normaliseHostname, atOrBelow, isReserved, allowedEntryProblem } from './hostnames.ts'
+import { normaliseHostname, atOrBelow, isReserved, allowedEntryProblem, isOpenSubdomain, openSubdomainEntryProblem } from './hostnames.ts'
 
 describe('normaliseHostname', () => {
     it('lowercases and keeps a plain hostname', () => {
@@ -77,5 +77,40 @@ describe('allowedEntryProblem', () => {
     it('refuses the mail subtree, at any depth', () => {
         assert.match(allowedEntryProblem('dev.horizons.gg') ?? '', /never be exempted/)
         assert.match(allowedEntryProblem('mail.dev.horizons.gg') ?? '', /never be exempted/)
+    })
+})
+
+describe('isOpenSubdomain', () => {
+    const open = ['horizons.gg']
+
+    it('opens every name below an open entry, at any depth', () => {
+        assert.equal(isOpenSubdomain('spotondrones.horizons.gg', open), true)
+        assert.equal(isOpenSubdomain('shop.acme.horizons.gg', open), true)
+    })
+
+    it('never opens the entry itself', () => {
+        assert.equal(isOpenSubdomain('horizons.gg', open), false)
+    })
+
+    it('never opens the mail subtree, even below an open entry', () => {
+        assert.equal(isOpenSubdomain('dev.horizons.gg', open), false)
+        assert.equal(isOpenSubdomain('mail.dev.horizons.gg', open), false)
+    })
+
+    it('opens nothing outside its entries', () => {
+        assert.equal(isOpenSubdomain('acme.com', open), false)
+        assert.equal(isOpenSubdomain('nothorizons.gg', open), false)
+        assert.equal(isOpenSubdomain('spotondrones.horizons.gg', []), false)
+    })
+})
+
+describe('openSubdomainEntryProblem', () => {
+    it('accepts the apex, since only names below it open', () => {
+        assert.equal(openSubdomainEntryProblem('horizons.gg'), null)
+    })
+
+    it('refuses the mail subtree, at any depth', () => {
+        assert.match(openSubdomainEntryProblem('dev.horizons.gg') ?? '', /can never be opened/)
+        assert.match(openSubdomainEntryProblem('x.dev.horizons.gg') ?? '', /can never be opened/)
     })
 })

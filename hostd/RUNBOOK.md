@@ -1015,9 +1015,11 @@ whole recovery a real failed write relies on actually happens on this host, not 
 This proves the whole chain (agent, host unit, Apache, DNS, and api's own verifier) against a name that
 belongs to nothing a client depends on: `test.hostd.horizons.gg`.
 
-Add it to the registry's `allowed` list, which is the one carve-out from `reserved: [horizons.gg]`.
-`allowed` takes exact hostnames only, never a subtree, and this file should hold only this one entry: it
-exists for exactly this check, not as a general escape hatch.
+Add it to the registry's `allowed` list, the exact-name carve-out from `reserved: [horizons.gg]`.
+`allowed` takes exact hostnames only, never a subtree. (If the registry already has
+`openSubdomains: [horizons.gg]`, this name is already accepted as a main domain and `allowed` is not
+needed: `openSubdomains` opens every name below horizons.gg as a site's main domain, which only the
+operator sets, while client aliases stay reserved.)
 
 ```yaml
 allowed: [test.hostd.horizons.gg]
