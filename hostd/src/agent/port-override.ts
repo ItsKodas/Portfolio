@@ -12,7 +12,10 @@
 // Services still reach each other over the compose network by service name, so nothing inside a site
 // changes. The port itself stays in .env: the file names the variable, never the number.
 
-import { guessRole, type ResolvedCompose, type ResolvedService } from './compose.ts'
+import { posix } from 'node:path'
+
+import { PORT_OVERRIDE_FILE } from '../shared/registry.ts'
+import { guessRole, resolveCompose, type ComposeLocation, type ResolvedCompose, type ResolvedService, type Runner } from './compose.ts'
 
 export type PortOverride = { ok: true, text: string, service: string, target: number } | { ok: false, problem: string }
 
@@ -76,4 +79,32 @@ export function portOverride(resolved: ResolvedCompose, portEnv: string): PortOv
         }
     }
     return { ok: true, text: `${lines.join('\n')}\n`, service, target }
+}
+
+export type PortOverrideResult = { ok: true, composePaths: string[], service: string, target: number } | { ok: false, problem: string }
+
+export function isPortOverride(path: string): boolean {
+    return posix.basename(path) === PORT_OVERRIDE_FILE
+}
+
+export function portOverridePath(dir: string): string {
+    return posix.join(dir, PORT_OVERRIDE_FILE)
+}
+
+// Resolves the repo's own files, never the override itself (it would hide the mappings being replaced),
+// so this is the same answer the first time and every time after. Run after the port is in .env, so any
+// ${...} in the repo's mappings resolves to what the repo would run with. Answers the environment's full
+// compose list with the override last, which is what the registry records and compose is run with.
+export async function buildPortOverride(
+    location: ComposeLocation, portEnv: string, run: Runner, writeFile: (path: string, text: string) => Promise<void>,
+): Promise<PortOverrideResult> {
+    const own = location.composePaths.filter(path => !isPortOverride(path))
+    if (own.length === 0) return { ok: false, problem: 'the environment names no compose file of its own' }
+    const resolved = await resolveCompose({ dir: location.dir, composePaths: own }, run)
+    if (!resolved.ok) return resolved
+    const override = portOverride(resolved.resolved, portEnv)
+    if (!override.ok) return override
+    const path = portOverridePath(location.dir)
+    await writeFile(path, override.text)
+    return { ok: true, composePaths: [...own, path], service: override.service, target: override.target }
 }
