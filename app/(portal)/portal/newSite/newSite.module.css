@@ -1,0 +1,76 @@
+/* Pinned to the foot of the sidebar: the nav is a flex column, and this takes the space left over above it */
+.slot {
+    margin-top: auto;
+    padding-top: 14px;
+}
+
+.button {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    width: 100%;
+    padding: 7px 8px;
+    border: 1px dashed var(--rule-hi);
+    border-radius: 5px;
+    background: none;
+    color: var(--ink-3);
+    font: inherit;
+    font-size: 12.5px;
+    cursor: pointer;
+}
+.button:hover { color: var(--ink); border-color: var(--ink-3); background: rgba(255, 255, 255, .03); }
+.button:focus-visible { outline: 2px solid var(--lake); outline-offset: 2px; }
+.plus { font-size: 15px; line-height: 1; }
+
+.form { display: flex; flex-direction: column; gap: 6px; }
+
+.section {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    padding-bottom: 14px;
+    margin-bottom: 8px;
+    border-bottom: 1px solid var(--rule);
+}
+
+.heading { font-size: 13px; color: var(--ink-2); margin: 4px 0 2px; }
+
+/* Two short fields side by side, one above the other on a phone */
+.pair {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 0 12px;
+}
+@media (max-width: 560px) {
+    .pair { grid-template-columns: 1fr; }
+}
+
+.compose {
+    border: 0;
+    margin: 6px 0 0;
+    padding: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    align-items: flex-start;
+}
+.compose legend { font-size: 13px; padding: 0; color: var(--ink-2); }
+.compose > p { margin: 0 0 4px; }
+
+.composeRow { display: flex; gap: 6px; align-items: center; width: 100%; }
+.composeInput {
+    flex: 1;
+    min-width: 0;
+    padding: 7px 9px;
+    border: 1px solid var(--rule-hi);
+    border-radius: var(--radius-control);
+    background: var(--night);
+    color: var(--ink);
+    font-family: var(--font-mono), monospace;
+    font-size: 12.5px;
+}
+.composeInput:focus-visible { outline: 2px solid var(--lake); outline-offset: 1px; }
+
+.error { color: var(--soft-red); font-size: 12px; margin: 0; }
+
+.warnings { margin: 6px 0 0; padding-left: 18px; line-height: 1.6; }

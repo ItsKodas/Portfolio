@@ -35,7 +35,8 @@
     flex: 1;
     min-height: 0;
 }
-.nav { border-right: 1px solid var(--rule); padding: 14px 10px 18px; }
+/* A column, so a page can pin something to the foot of its list with margin-top: auto */
+.nav { border-right: 1px solid var(--rule); padding: 14px 10px 18px; display: flex; flex-direction: column; }
 .main { padding: 20px 22px 34px; min-width: 0; }
 .rail { border-left: 1px solid var(--rule); padding: 20px 18px 34px; }
 

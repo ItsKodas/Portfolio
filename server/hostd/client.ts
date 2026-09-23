@@ -19,6 +19,9 @@ export async function hostdRequest<T>(
     path: string,
     init: RequestInit = {},
     fetchImpl: typeof fetch = fetch,
+    // Only ever longer, and only for a call that does real work before it answers: creating a site
+    // clones its repository first, which a short timeout would abandon while hostd carries on regardless.
+    timeoutMs: number = TIMEOUT_MS,
 ): Promise<HostdResult<T>> {
     let response: Response
     try {
@@ -31,7 +34,7 @@ export async function hostdRequest<T>(
                 'X-Hostd-User': caller.user,
             },
             cache: 'no-store',
-            signal: AbortSignal.timeout(TIMEOUT_MS),
+            signal: AbortSignal.timeout(timeoutMs),
         })
     } catch {
         // A refused connection, a DNS failure or the timeout above all mean the same thing to a caller.
