@@ -59,6 +59,41 @@ volume). New migrations apply when the site starts. It needs a `.env` beside `do
 To restore a dump: `docker compose exec db-backup pg_restore --clean --if-exists -d horizons /backups/horizons-YYYY-MM-DD.dump`
 (this replaces what's in the database).
 
+### Automatic deploys
+
+Every push to `Master` deploys itself (`.github/workflows/deploy.yml`), through a GitHub Actions runner that runs on the
+dedi. The runner connects out to GitHub and waits for jobs, so no port is opened. Each run:
+
+1. Refuses to start if `/var/www/horizons` has hand edits to tracked files, then fast-forwards it to the pushed commit.
+   Gitignored files (`.env`, `hostd/registry/projects.yaml`, hostd's env files) are untouched.
+2. Rebuilds hostd, only if the push changed something under `hostd/`. This restarts the agent, which interrupts any
+   client deploy it is in the middle of, so avoid merging hostd changes while one is running.
+3. Rebuilds the site, then waits up to 3 minutes for it to answer on port 5004.
+4. Leaves `mail/` alone. A push that changes it gets a warning in the run, and mail is deployed by hand.
+
+Runs show in the repo's Actions tab and under the `production` environment. **Run workflow** on the Deploy workflow
+redeploys the current `Master` without a push.
+
+The runner has the Docker socket, which is root on the dedi, so the workflow only ever triggers on a push to `Master` or
+a manual run. Never give it a `pull_request` trigger. The repo is private, so outside forks cannot reach it.
+
+**Setting up the runner (once, on the dedi):**
+
+1. Check which user owns the checkout (`stat -c %U /var/www/horizons`). The runner runs as that user so it can write to
+   it, and that user needs to be in the `docker` group (`id` lists it). Git refuses to work in a checkout another user
+   owns.
+2. On GitHub, open the repo's **Settings > Actions > Runners > New self-hosted runner**, pick Linux, and follow the
+   download and `./config.sh` steps it shows, as that user, in a folder outside `/var/www` such as
+   `~/actions-runner`. When `config.sh` asks for extra labels, enter `dedi`. The workflow only runs on a runner with
+   that label.
+3. Install it as a service so it survives reboots, from the same folder: `sudo ./svc.sh install <that user>`, then
+   `sudo ./svc.sh start`. `sudo ./svc.sh status` should say active.
+4. The runner should now show as Idle in the repo's runner list. Prove it end to end with **Actions > Deploy > Run
+   workflow**.
+
+The dedi needs `git` and `curl` on the host, and nothing stored for GitHub: each run fetches with the job's own
+short-lived token.
+
 ### All three stacks at once
 
 The dedi runs three separate compose projects: `hostd/`, `mail/` and the site at the repo root. They stay separate on

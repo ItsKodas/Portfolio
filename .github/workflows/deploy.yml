@@ -1,0 +1,98 @@
+# Deploys the site to the dedi on every push to Master, through a self-hosted runner that runs on the dedi
+# itself. The runner connects out to GitHub, so nothing new is exposed to the internet and the dedi's
+# dynamic IP does not matter. Setup is in the README, under "Automatic deploys".
+#
+# Never add a pull_request trigger here: the runner has the Docker socket, which is root on the dedi.
+
+name: Deploy
+
+on:
+  push:
+    branches: [Master]
+  workflow_dispatch:
+
+# One deploy at a time. A push that lands mid-deploy waits for it rather than cancelling it, since a
+# cancelled deploy could stop between the pull and the rebuild.
+concurrency:
+  group: deploy-dedi
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  deploy:
+    runs-on: [self-hosted, dedi]
+    environment:
+      name: production
+      url: https://www.horizons.gg
+    timeout-minutes: 30
+    env:
+      SITE_DIR: /var/www/horizons
+      SITE_URL: http://127.0.0.1:5004/
+    steps:
+      - name: Pull the pushed commit
+        id: pull
+        env:
+          TOKEN: ${{ github.token }}
+        run: |
+          set -eu
+          cd "$SITE_DIR"
+
+          # A tracked file edited by hand on the dedi would otherwise either block the merge or quietly
+          # outlive the deploy. Gitignored files (.env, the hostd registry) are not affected.
+          if ! git diff --quiet HEAD; then
+            echo "::error::$SITE_DIR has local changes to tracked files; commit or discard them first"
+            git status --short
+            exit 1
+          fi
+
+          # The job's own token, passed the way actions/checkout passes it: as config in the environment,
+          # so it never lands in argv or in .git/config, and the dedi needs no stored GitHub credential.
+          export GIT_CONFIG_COUNT=1
+          export GIT_CONFIG_KEY_0="http.https://github.com/.extraheader"
+          export GIT_CONFIG_VALUE_0="AUTHORIZATION: basic $(printf 'x-access-token:%s' "$TOKEN" | base64 | tr -d '\n')"
+
+          before=$(git rev-parse HEAD)
+          git fetch --quiet "https://github.com/$GITHUB_REPOSITORY.git" Master
+          git merge --ff-only "$GITHUB_SHA"
+
+          hostd=no
+          mail=no
+          if [ "$before" != "$(git rev-parse HEAD)" ]; then
+            changed=$(git diff --name-only "$before" HEAD)
+            if printf '%s\n' "$changed" | grep -q '^hostd/'; then hostd=yes; fi
+            if printf '%s\n' "$changed" | grep -q '^mail/'; then mail=yes; fi
+          fi
+          echo "hostd=$hostd" >> "$GITHUB_OUTPUT"
+          echo "mail=$mail" >> "$GITHUB_OUTPUT"
+          echo "Deploying $(git log -1 --format='%h %s')"
+
+      # Only when hostd itself changed, because recreating the agent interrupts any client deploy it is in
+      # the middle of. It goes before the site, whose compose file joins hostd's network.
+      - name: Rebuild hostd
+        if: steps.pull.outputs.hostd == 'yes'
+        run: ./scripts/stack.sh up --build hostd
+        working-directory: ${{ env.SITE_DIR }}
+
+      - name: Rebuild the site
+        run: ./scripts/stack.sh up --build site
+        working-directory: ${{ env.SITE_DIR }}
+
+      # Migrations run before the server starts, so a container that is up is not yet a site that is up.
+      - name: Wait for the site to answer
+        run: |
+          for attempt in $(seq 1 60); do
+            if curl -fsS -o /dev/null "$SITE_URL"; then
+              echo "The site is answering"
+              exit 0
+            fi
+            sleep 3
+          done
+          echo "::error::The site did not answer on $SITE_URL within 3 minutes"
+          docker logs --tail 50 horizons
+          exit 1
+
+      - name: Mail is deployed by hand
+        if: steps.pull.outputs.mail == 'yes'
+        run: echo "::warning::This push changed mail/, which is not deployed automatically. Run ./scripts/stack.sh up --build mail on the dedi when ready."
