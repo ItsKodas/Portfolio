@@ -249,6 +249,9 @@ async function main(): Promise<void> {
         },
         now: Date.now,
         sleep: async ms => { await sleep(ms) },
+        // On unless the operator sets HOSTD_MIGRATE_LAYOUT=0: the way to stop sites moving into the
+        // nested layout on their next deploy without a release. A move already under way always finishes.
+        migrateLayout: process.env.HOSTD_MIGRATE_LAYOUT !== '0',
         log,
     }
     const deployRunner = new DeployRunner({ ...deployDeps, store: deployStore })

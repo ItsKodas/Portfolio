@@ -458,11 +458,39 @@ fails the same way.
 **Three consecutive failures pause the environment.** Polling then stops until a person deploys, rolls
 back or switches branch. Otherwise a repo with a broken build rebuilds every few minutes for ever.
 
-**The trees on disk.** `<dir>` is the running copy, `<dir>.prev` the previous one (only ever one),
-`<dir>.git` the Git repository, and `<dir>.next` exists only during a deploy. The repository is moved out
-of `<dir>` into `<dir>.git` by the first deploy, once, because a swap renames `<dir>` and would otherwise
-carry the repository into `.prev` and delete it on the next deploy. A deploy refuses to start with less
+**The trees on disk.** A site is either flat, its siblings scattered directly under `/var/www`, or nested,
+gathered into one folder per site. Every site starts out flat and moves to the nested layout on its own
+next deploy; there is no separate migration step to run by hand, though a redeploy from the portal moves
+one on demand (see **Moving a site into the nested layout**, below).
+
+| | flat | nested |
+| --- | --- | --- |
+| running copy | `<dir>` | `<site>/live`, `<site>/test` |
+| previous copy | `<dir>.prev` | `<site>/prev/live`, `<site>/prev/test` |
+| build in progress | `<dir>.next` | `<site>/next/live`, `<site>/next/test` |
+| Git repository | `<dir>.git` (a separate clone for test, `<dir>-test.git`) | `<site>/git`, shared by every environment |
+
+`<site>` is the flat live folder's own name (not always the project id: `dir` at creation can differ). In
+the flat layout the repository is moved out of `<dir>` into `<dir>.git` by the first deploy, once, because
+a swap renames `<dir>` and would otherwise carry the repository into `.prev` and delete it on the next
+deploy. A nested site's `live`, `test`, `prev/live`, `prev/test`, `next/live` and `next/test` take the
+owner and mode of the flat live tree they replace, read from disk. A deploy refuses to start with less
 than 10 GB free.
+
+Compose derives its project name from the folder basename, which is useless once every environment's
+folder is called `live` or `test`. Every registry entry therefore carries a resolved `composeName`
+(defaulting to `basename(dir)` for a flat environment, the project id for a nested live, `<id>-<env>` for
+anything else nested), and hostd passes it on every compose call it makes, `-p <composeName>` alongside
+`--project-directory`. Run compose against a nested site by hand the same way, or it renames or duplicates
+the running stack instead of managing it:
+
+```bash
+docker compose -p acme --project-directory /var/www/acme/live ps
+```
+
+Check `dir` and any `composeName` in `hostd/registry/projects.yaml` for the site if you are not sure what
+name it runs under; migration always writes `composeName` explicitly, so an existing site keeps the name
+its containers and named volumes already carry, whatever its folder or id becomes.
 
 **The maintenance flag.** `/run/hostd/maintenance/<id>-<env>` exists from just before the swap until just
 after it. Apache's half of this (serving the holding page while that file exists, and when the upstream
@@ -488,6 +516,39 @@ Deploying is the supported way to start a `test` environment: it pins the compos
 environment's own folder name, so a repo whose compose file pins `name:` still gets a separate stack
 rather than taking over live's containers. Lifecycle (`start`, `stop`, `restart`) still only ever reaches
 `live`.
+
+## Moving a site into the nested layout
+
+A flat live environment moves to the nested layout inside the swap window of its next ordinary deploy, so
+the site is down for no longer than any other deploy: `down` the running copy, rename it into
+`<site>/prev/live`, rename the built `.next` tree into `<site>/live`, move the repository into `<site>/git`,
+`up` with the pinned compose name, then the health check. A flat test environment moves the same way, but
+only once its project's live environment is already nested; until then test keeps deploying flat, and the
+two never touch each other's folders. Nothing about this needs an operator: it happens on the same poll or
+manual deploy that would have run anyway, and a failed health check swaps back exactly as it would in the
+flat layout, just on the new nested paths, and records `rolled-back`.
+
+**`HOSTD_MIGRATE_LAYOUT=0`** on the agent stops a flat site from *starting* a move on its next deploy; the
+site keeps deploying flat, and a deploy of it otherwise behaves exactly as before. It does not pause a move
+already under way: once a deploy has started renaming folders inside the window, or left one of the
+in-between states below on disk, the next deploy (including the agent's own 2-minute poll) always finishes
+it forward, whatever the switch says. There is no way to abort a move once it has started; only to stop the
+next site from starting one.
+
+**Recognising an interrupted move.** If a deploy is killed or the agent restarts mid-window, one of these
+is left on disk, and every deploy checks for them, before anything else, ahead of its own normal work:
+
+| On disk | What it means | What happens next |
+| --- | --- | --- |
+| `<site>.migrating` exists | The move was renaming `<dir>` out of the way when it stopped. | The next deploy finishes the remaining renames forward, repairs the Git worktrees, and writes the registry's new `dir` and `composeName`. The deploy then continues nested. |
+| `<site>/live` and `<site>/git/.git` exist, but the registry still has the flat `dir` | The renames finished, but the registry write did not. | The next deploy redoes the worktree repair and the registry write only; nothing is renamed again. |
+| `<site>/live` is not flat, and `<site>/prev/live` is present | The window's own renames finished, but the health check failed and the undo stopped partway back. | The next deploy finishes the move forward from where the undo stopped, the same as the first row. Until then the site is down, with no holding page: the maintenance flag only covers the window itself. |
+| A folder under `/var/www/<site>` is neither a flat tree (no compose file at its root) nor one of the nested shapes above | Something else put files there, or a previous move left it in a shape none of the above expects. | The deploy refuses to move it, logs `<site> is neither flat nor nested`, and keeps deploying flat. Look at what is actually in the folder before doing anything else; nothing here guesses. |
+
+A failed move inside the window undoes its own renames in reverse, in the order above, and removes only the
+empty folders it made (a non-recursive `rmdir`, so anything left inside is never silently deleted). If the
+undo itself cannot complete a step, it stops there, records the deploy `failed`, and the middle row above is
+what the next deploy sees.
 
 ## Backups
 
@@ -688,7 +749,11 @@ whichever host directory is mounted there.
    (`<run>` is whichever run produced that snapshot; the snapshot's own `paths` field, or just `ls` the
    restored `db/` directory, will show it). Each `storage` directory lands at its real host path, for
    example `$BACKUPS/restore/acme-bakery/var/www/acme-bakery/live/uploads/`, because `/var/www`
-   is the same bind mount on the host and in every container.
+   is the same bind mount on the host and in every container. That path is `acme-bakery`'s nested one; a
+   snapshot taken before the site moved instead records the flat path, `.../var/www/acme-bakery/uploads/`.
+   Only a live move, not a restore, changes which one a given snapshot has: restic never rewrites an old
+   snapshot's paths, so a repository can hold both shapes across its history, and the restored copy lands
+   wherever the run that produced it actually wrote.
 
    The rest of this procedure is the same either way, and runs on the host regardless of which route you
    used above.
@@ -833,7 +898,9 @@ database on a timer.
   hostnames and proxying to a port `choosePort` is then free to give another project. A hand-written
   vhost that was adopted stays in `/etc/apache2/hostd-adopted/`, as it always does. If the rail cannot
   be reached the removal still succeeds and the reply names the file that is still there. Clean the rest
-  up by hand once you are sure.
+  up by hand once you are sure: a flat site leaves `<dir>`, `<dir>.git`, `<dir>.prev` and, if it ever had
+  one, `<dir>-test` and its own `.git`/`.prev` behind; a nested site leaves the single `/var/www/<site>`
+  folder (`git`, `live`, `test`, `prev/`, `next/`) instead.
 
 ## Domains
 
