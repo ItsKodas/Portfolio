@@ -815,9 +815,33 @@ describe('nested layout', () => {
         // One flag, the deploy's own window, and the move was recorded before it.
         assert.equal(t.calls.filter(call => call === 'maintenance on').length, 1)
         assert.ok(t.calls.indexOf('registry-write') < t.calls.indexOf('maintenance on'))
-        assert.equal(t.calls.slice(0, t.calls.indexOf('maintenance on')).some(call => call.startsWith('move') || call.startsWith('compose up')), false)
+        assert.equal(t.calls.slice(0, t.calls.indexOf('maintenance on')).some(call => call.startsWith('move')), false)
         assert.equal(t.deps.registry().projects.get('acme')!.environments.get('live')!.dir, '/var/www/acme/live')
         assert.ok(t.calls.includes('move /var/www/acme/next/live /var/www/acme/live'))
+    })
+
+    // A stop between the window's last rename and its up leaves the site on disk as a finished move with
+    // nothing running. The resume cannot tell that apart from a healthy move whose registry write failed,
+    // so it always starts the nested tree, which changes nothing for one already running.
+    it('starts a move that finished on disk once, where it now lives, before the deploy goes on', async () => {
+        const t = setup({ existsPaths: ['/var/www/acme', '/var/www/acme/live', '/var/www/acme/git/.git'] })
+        const project = t.deps.registry().projects.get('acme')!
+        const record = await runDeploy(project, project.environments.get('live')!, manual, t.deps)
+        assert.equal(record.outcome, 'ok', record.reason ?? '')
+        const before = t.calls.slice(0, t.calls.indexOf('fetcher fetch'))
+        assert.deepEqual(before.filter(call => call.startsWith('compose')), ['compose up'])
+        assert.ok(before.indexOf('compose up') < before.indexOf('registry-write'))
+        assert.deepEqual(t.composeRuns[0].slice(0, 5), ['compose', '--project-name', 'acme', '--project-directory', '/var/www/acme/live'])
+        assert.ok(t.composeRuns[0].includes('--no-build'))
+    })
+
+    it('logs a resumed move that will not start, and deploys anyway', async () => {
+        const t = setup({ existsPaths: ['/var/www/acme', '/var/www/acme/live', '/var/www/acme/git/.git'], composeResults: { up: { exitCode: 1 } } })
+        const project = t.deps.registry().projects.get('acme')!
+        await runDeploy(project, project.environments.get('live')!, manual, t.deps)
+        assert.ok(t.logs.some(line => line.includes('/var/www/acme/live did not start')))
+        assert.equal(t.deps.registry().projects.get('acme')!.environments.get('live')!.dir, '/var/www/acme/live')
+        assert.ok(t.fetchRequests.some(request => request.verb === 'checkout'))
     })
 
     it('fails, without deploying, when the registry cannot record a resumed move', async () => {

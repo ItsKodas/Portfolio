@@ -373,6 +373,15 @@ async function recordLayout(
     return { ok: true }
 }
 
+// Starts the tree a move left at to.dir, under the name its containers were always created under. An up
+// with --no-build is idempotent: it changes nothing for a site already running there. A start that fails
+// is logged, not fatal: the deploy that resumed the move is about to take the same tree down and put a
+// new one up in its place anyway.
+async function startMoved(project: ProjectEntry, environment: EnvironmentEntry, to: DeployTrees, deps: DeployDeps): Promise<void> {
+    const up = await runCompose(upArgv(locationIn(environment, to.dir), composeNameOf(environment)), SWAP_TIMEOUT_MS, deps.runner)
+    if (!up.ok) deps.log(`deploy ${project.id} ${environment.name}: the move to ${to.site} is finished, but ${to.dir} did not start: ${up.message}`)
+}
+
 // The agent stopped inside a window, after live's tree left /var/www/<site> for <site>.migrating and
 // before the move was done, so the site has been down ever since (behind the holding page, if the flag
 // survived). Resume only goes forward: once /var/www/<site>/ exists the nested layout is the true one,
@@ -389,8 +398,7 @@ async function finishInterruptedMove(
         // No new tree to put in place (the build it was waiting for is gone), so the one that was serving
         // before the window comes back instead.
         if (!(await deps.fs.exists(to.dir)) && await deps.fs.exists(to.prev)) await deps.fs.move(to.prev, to.dir)
-        const up = await runCompose(upArgv(locationIn(environment, to.dir), composeNameOf(environment)), SWAP_TIMEOUT_MS, deps.runner)
-        if (!up.ok) deps.log(`deploy ${project.id} ${environment.name}: finished the move to ${to.site}, but ${to.dir} did not start: ${up.message}`)
+        await startMoved(project, environment, to, deps)
         return { ok: true }
     } finally {
         // Always, for the same reason as the window's own: a flag left behind would serve the holding
@@ -426,6 +434,13 @@ async function resumeLayout(
     if (state === 'interrupted') {
         const finished = await finishInterruptedMove(project, environment, from, to, key, deps)
         if (!finished.ok) return { kind: 'failed', problem: finished.problem }
+    } else {
+        // 'moved': either a move whose registry write failed, with the site running, or an agent that
+        // stopped between the window's last rename and its up, with nothing running. The disk looks the
+        // same for both, so the tree is started either way. In the second case that is the build the
+        // window had just put in place, never health-checked: an accepted residual, because the deploy
+        // carrying on from here replaces it at once.
+        await startMoved(project, environment, to, deps)
     }
     const recorded = await recordLayout(project, environment, to, deps)
     if (!recorded.ok) return { kind: 'failed', problem: `migrated, but the registry could not be updated: ${recorded.problem}` }
