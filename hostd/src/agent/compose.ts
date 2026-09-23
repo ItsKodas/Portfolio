@@ -21,13 +21,17 @@ const LIFECYCLE_ARGS: Record<LifecycleAction, string[]> = {
 // What compose needs to resolve or run a project: every ProjectEntry has these, but so does a folder
 // that provisioning has just cloned and not registered yet, which is the whole reason this is its own
 // type rather than ProjectEntry itself.
-export type ComposeLocation = { dir: string, composePaths: string[] }
+export type ComposeLocation = { dir: string, composePaths: string[], composeName: string }
 
 export function composeBase(project: ComposeLocation): string[] {
     // One -f per registered file, in the registry's order, because compose merges them left to right.
     // An explicit -f also stops compose loading docker-compose.override.yml on its own, so a site with
-    // an override is only described correctly when the registry names it too.
-    return ['compose', '--project-directory', project.dir, ...project.composePaths.flatMap(path => ['-f', path])]
+    // an override is only described correctly when the registry names it too. The project name is
+    // always explicit: a nested site's folder is called live or test, which is no project's name.
+    return [
+        'compose', '--project-name', project.composeName, '--project-directory', project.dir,
+        ...project.composePaths.flatMap(path => ['-f', path]),
+    ]
 }
 
 export function lifecycleArgv(project: ProjectEntry, action: LifecycleAction): string[] {
@@ -216,19 +220,19 @@ function guessRole(service: ResolvedService): GuessedService {
 // same guards run at creation, and without this a repo whose compose file pins a mismatched name: would
 // clone and register cleanly, only to go invalid at the next sweep with the folder already on disk.
 //
-// expectedName is the environment's own folder basename (what an unpinned compose file resolves to by
-// default), not the registry id: those are the same thing for live (/var/www/<id>), but not for test
-// (/var/www/<id>-test), and comparing test's resolved name against the bare id would refuse the ordinary,
-// unpinned case for every repo, which is most of them. collidesWith is passed only when creating a test
-// environment, so a compose file pinning live's own name gets the specific collision message above rather
-// than a plain "not what was expected" one.
+// expectedName is the environment's own compose name, the one this call is about to pass on the command
+// line itself, not the registry id: those are the same thing for live (/var/www/<id>), but not for test
+// (/var/www/<id>-test in the flat layout), and comparing test's resolved name against the bare id would
+// refuse the ordinary, unpinned case for every repo, which is most of them. collidesWith is passed only
+// when creating a test environment, so a compose file pinning live's own name gets the specific collision
+// message above rather than a plain "not what was expected" one.
 export async function resolveNewProject(
-    location: ComposeLocation,
+    location: { dir: string, composePaths: string[] },
     expectedName: string,
     run: Runner,
     collidesWith?: string,
 ): Promise<{ ok: true, services: Record<string, GuessedService> } | { ok: false, problem: string }> {
-    const result = await resolveCompose(location, run)
+    const result = await resolveCompose({ ...location, composeName: expectedName }, run)
     if (!result.ok) return result
     const nameProblem = composeNameProblem(result.resolved.name, expectedName, collidesWith)
     if (nameProblem) return { ok: false, problem: nameProblem }

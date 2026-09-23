@@ -56,10 +56,11 @@ export type ProvisionDeps = {
     // never guesses one; `own` applies it to a whole tree this process just put on disk.
     owner(path: string): Promise<{ uid: number, gid: number, mode: number }>
     own(dir: string, like: { uid: number, gid: number, mode: number }): Promise<void>
-    // expectedName is the folder's own basename (what an unpinned compose file resolves to): resolveNewProject
-    // checks it against the compose file's own project name, the same guard the ongoing sweep runs, but
-    // here before anything is written. collidesWith, only ever passed for a test environment, is the
-    // live environment's own expected name, so pinning it there gets a message about the collision.
+    // expectedName is the environment's own compose name, the one it will actually run under:
+    // resolveNewProject checks it against the compose file's own project name, the same guard the ongoing
+    // sweep runs, but here before anything is written. collidesWith, only ever passed for a test
+    // environment, is the live environment's own expected name, so pinning it there gets a message about
+    // the collision.
     // composePaths is every file the environment runs with, in compose's merge order: whatever the
     // operator named at create (docker-compose.yml when they named nothing), so a file missing from the
     // clone, or an override that does not merge, refuses the create instead of surfacing at first deploy.
@@ -181,11 +182,13 @@ type ProvisionAttempt = {
     // Which of the fetcher's tokens the clone authenticates with. null is the default GITHUB_TOKEN, the
     // same meaning it carries on the registry entry and on the fetch protocol itself.
     credential: string | null
-    // Only ever set by addEnvironment, to the project's own id: the live environment's expected compose
-    // name, which is what a test environment's compose file must never be pinned to (see
-    // composeNameProblem in compose.ts). Absent for createProject, since live has no other environment to
-    // collide with yet.
+    // Only ever set by addEnvironment, to the live environment's own compose name, which is what a test
+    // environment's compose file must never be pinned to (see composeNameProblem in compose.ts). Absent
+    // for createProject, since live has no other environment to collide with yet.
     collidesWith?: string
+    // The compose project name this environment will run under, checked by resolve before anything is
+    // registered.
+    composeName: string
     // The existing directory whose ownership and mode the freshly cloned tree should take. Read, never
     // assumed, the same rule deploy.ts follows for a checkout and a repository directory. createProject
     // names the parent, /var/www, because a brand new project has no directory of its own anywhere yet;
@@ -261,11 +264,11 @@ async function provisionOnDisk(attempt: ProvisionAttempt, deps: ProvisionDeps): 
         const like = await deps.owner(attempt.likeDir)
         await deps.own(dir, like)
 
-        // The expected compose project name is this environment's own folder basename, what an unpinned
-        // compose file resolves to by default, not the registry id: those coincide for live
-        // (/var/www/<id>) but not for test (/var/www/<id>-test), and comparing test's resolved name
-        // against the bare id would refuse the ordinary, unpinned case for every repo.
-        const resolved = await deps.resolve(posix.basename(dir), dir, composePaths, attempt.collidesWith)
+        // The expected compose project name is the environment's own composeName, checked against what
+        // compose actually resolves before anything is registered: those coincide with the folder
+        // basename for live (/var/www/<id>) but not for test (/var/www/<id>-test), and comparing test's
+        // resolved name against the bare id would refuse the ordinary, unpinned case for every repo.
+        const resolved = await deps.resolve(attempt.composeName, dir, composePaths, attempt.collidesWith)
         if (!resolved.ok) {
             // Named plainly, both in the log and the refusal: this is docker compose's own error (a
             // missing env_file, a syntax error, a command that could not run), not "no site service",
@@ -331,6 +334,7 @@ export async function createProject(args: ProvisionCreateArgs, deps: ProvisionDe
         // directory belongs to root, so does the new site, which is no worse than today and stays
         // consistent with its neighbours either way.
         likeDir: posix.dirname(dir),
+        composeName: posix.basename(dir),
         compose,
         // A repo usually commits an example beside a gitignored real file, and its compose file usually
         // declares env_file against the real one; resolve (just below, in provisionOnDisk) would
@@ -397,11 +401,12 @@ export async function addEnvironment(project: ProjectEntry, args: ProvisionAddEn
         credential: project.credential,
         // The live environment's own expected compose name: a test environment pinning it would share
         // one compose project with live, and starting test would take over live's running containers.
-        collidesWith: project.id,
+        collidesWith: project.composeName,
         // The project's own folder, not /var/www: the test tree sits beside it and is a copy of it, so
         // whatever the operator chose for live is what test should match, the same way deploy.ts patterns
         // a checkout on <dir> rather than on anything further out.
         likeDir: project.dir,
+        composeName: posix.basename(dir),
         compose: DEFAULT_COMPOSE,
         afterClone: async composePath => {
             const live = project.environments.get('live')

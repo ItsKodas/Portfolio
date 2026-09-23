@@ -4,8 +4,14 @@
 
 import { posix } from 'node:path'
 
-import { tail, type ComposeLocation, type Runner } from './compose.ts'
+import { tail, type Runner } from './compose.ts'
 import type { EnvironmentEntry } from '../shared/registry.ts'
+
+// Unlike compose.ts's own ComposeLocation, no composeName: every function below takes the project name as
+// its own separate argument instead (see base()), which is what lets deploy.ts pin one name (the
+// environment's own) across a build in <dir>.next and the swap into <dir> that follows, two different
+// locations that must still resolve to the same compose project.
+type BuildLocation = { dir: string, composePaths: string[] }
 
 // A build runs the repo's own Dockerfile, which can legitimately take a long time on a cold cache.
 export const BUILD_TIMEOUT_MS = 30 * 60_000
@@ -46,19 +52,19 @@ export function composeNameOf(environment: EnvironmentEntry): string {
 
 // The same compose files the registry named for this environment, resolved inside another tree and in
 // the registry's own order, because compose merges -f files left to right.
-export function locationIn(environment: EnvironmentEntry, dir: string): ComposeLocation {
+export function locationIn(environment: EnvironmentEntry, dir: string): BuildLocation {
     return { dir, composePaths: environment.composePaths.map(path => posix.join(dir, posix.relative(environment.dir, path))) }
 }
 
-function base(location: ComposeLocation, name: string): string[] {
+function base(location: BuildLocation, name: string): string[] {
     return ['compose', '--project-name', name, '--project-directory', location.dir, ...location.composePaths.flatMap(path => ['-f', path])]
 }
 
-export const buildArgv = (location: ComposeLocation, name: string): string[] => [...base(location, name), 'build']
-export const upArgv = (location: ComposeLocation, name: string): string[] => [...base(location, name), 'up', '-d', '--no-build', '--pull', 'never']
+export const buildArgv = (location: BuildLocation, name: string): string[] => [...base(location, name), 'build']
+export const upArgv = (location: BuildLocation, name: string): string[] => [...base(location, name), 'up', '-d', '--no-build', '--pull', 'never']
 // --remove-orphans, because a commit that deletes a service would otherwise leave its container running
 // under this project's name for ever. Never -v: a deploy must not be able to delete a client's data.
-export const downArgv = (location: ComposeLocation, name: string): string[] => [...base(location, name), 'down', '--remove-orphans']
+export const downArgv = (location: BuildLocation, name: string): string[] => [...base(location, name), 'down', '--remove-orphans']
 
 export type ComposeResult = { ok: true, output: string } | { ok: false, message: string, output: string }
 
