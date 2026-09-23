@@ -1,7 +1,7 @@
 # Nested site layout design
 
 Date: 2026-09-23
-Status: approved design, not yet implemented
+Status: approved design, implemented
 Extends: `docs/superpowers/specs/2026-09-20-hostd-provisioning-design.md` (the deploy path it defines is
 live)
 
@@ -78,7 +78,8 @@ they replace, read from disk, never assumed, the same rule `deploy.ts` follows t
 - A new optional environment key `composeName`, matching the compose project name pattern
   (lowercase letters, digits, `-` and `_`, starting with a letter or digit).
 - When absent, it defaults to:
-  - flat: `basename(dir)`, which is exactly today's behaviour
+  - flat: `basename(dir)` normalised the way compose normalises a folder name (lowercased, every
+    character outside `[a-z0-9_-]` dropped), which is exactly today's behaviour
   - nested: the project id for live, `<id>-<env>` for anything else
 - Migration always writes `composeName` explicitly, so an existing site keeps the name its containers
   and named volumes already carry, whatever its folder or id.
@@ -185,19 +186,44 @@ The executor records each rename it completes. If a rename in the window fails, 
 renames in reverse order, removes any folder it made, runs `up` on the flat tree and records `failed`
 with a reason naming the step.
 
-At the start of every deploy, before anything else, a resume check reads the disk:
+At the start of every deploy, before anything else, a resume check reads the disk. It runs whether or
+not migration is switched on, because a move already under way has to finish either way:
 
 | On disk | Registry | Action |
 | --- | --- | --- |
 | flat only | flat | nothing (the normal path) |
-| `s.migrating` exists | flat | finish steps 4 to 7 forward, repair, `set-layout`; the deploy then continues nested |
-| `s/live` and `s/git` exist | flat | redo repair and `set-layout` only |
-| `s/` exists but is neither a flat tree (no compose file at its root) nor a nested layout | flat | refuse to migrate, naming both paths; the environment keeps deploying flat |
+| `s.migrating` exists | flat | finish the layout forward (`s/`, `s/prev/`, `s.migrating` to `prev/live`, `s.git` to `s/git`), serve the old tree (below), repair, `set-layout`; the deploy then continues nested |
+| `s/live` and `s/git/.git` exist | flat | `up -d --no-build` in `s/live` with the pinned name (a failure is logged, not fatal), then redo repair and `set-layout` |
+| `s/` has no `.git` of its own, and the environment's first compose file exists under `s/prev/live` | flat | a window whose undo stopped part way: the same as the `s.migrating` row |
+| anything else: live's `s/` is neither a flat tree (no compose file at its root) nor one of the shapes above; test has both or neither of its flat and nested trees | flat | refuse the deploy: record `failed` with "`s` is neither flat nor nested", touch nothing, and leave it to the operator |
 | nested | nested | nothing |
 
-Resume goes forward only, never back: once `/var/www/s/` exists the nested layout is the true one. The
-containers are already running from the nested paths in every forward case, so the site stays up
-throughout.
+The old-tree rule for the interrupted rows is the old tree's compose file, not a `.git`: a first deploy
+moves the repository out to `s.git` before its window, so the tree that reaches `prev/live` has none. A
+folder that still has its own `.git` is a flat tree, even one that has lost its compose file, so it is
+never mistaken for a move to finish.
+
+**Serving the old tree.** Once the layout is finished forward, and `s/prev/live` exists, the resume puts
+the tree that was serving before the window back, rather than the build the window was about to swap in,
+which no health check has seen. A build that already reached `s/live` is moved to `s/next/live` (making
+`s/next/` like the site if missing, and removing a stale `next/live` first); a build still at the flat
+`s.next` is removed. Then `s/prev/live` becomes `s/live` and is started. A build tree is never client
+data, and the deploy that resumed the move rebuilds. If `s/prev/live` is missing, whatever reached `s/live`
+(or the build at `s.next`, if nothing did) is served instead. Nothing is removed during a resume but a
+build tree: never `prev/*`, `live` or `s/`.
+
+**Refusing instead of deploying flat.** A folder that is neither shape is refused rather than deployed
+flat, because a flat deploy would rename a folder hostd cannot read to `.prev`, and the deploy after that
+would delete it. The cost is that such a site stops auto-deploying until the operator puts it right (the
+RUNBOOK says how, including putting a test tree back from `prev/test`).
+
+**Accepted residual.** A crash after the window's last rename and before its `up` leaves a disk that
+cannot be told apart from a finished move whose registry write failed, so the `s/live` row starts whatever
+is in `live`: here, the new build, unchecked. The deploy that resumed it swaps a checked build in straight
+away (and a failed health check there rolls back to that same tree). Accepted, because nothing on disk
+distinguishes the two cases and the window between the rename and the `up` is a second or two.
+
+Resume goes forward only, never back: once `/var/www/s/` exists the nested layout is the true one.
 
 The maintenance flag is cleared in the existing `finally`, so no way out of the window leaves the
 holding page up.

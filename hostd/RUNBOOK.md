@@ -498,7 +498,8 @@ flat repository only ever had one environment using it in the first place.
 
 Compose derives its project name from the folder basename, which is useless once every environment's
 folder is called `live` or `test`. Every registry entry therefore carries a resolved `composeName`
-(defaulting to `basename(dir)` for a flat environment, the project id for a nested live, `<id>-<env>` for
+(defaulting to `basename(dir)` for a flat environment, lowercased with every character outside `a-z`,
+`0-9`, `_` and `-` dropped, which is what compose itself made of the folder name, the project id for a nested live, `<id>-<env>` for
 anything else nested), and hostd passes it on every compose call it makes, `-p <composeName>` alongside
 `--project-directory`. Run compose against a nested site by hand the same way, or it renames or duplicates
 the running stack instead of managing it:
@@ -563,15 +564,64 @@ in-between states below on disk, the next deploy (including the agent's own 2-mi
 it forward, whatever the switch says. There is no way to abort a move once it has started; only to stop the
 next site from starting one.
 
-**Recognising an interrupted move.** If a deploy is killed or the agent restarts mid-window, one of these
-is left on disk, and every deploy checks for them, before anything else, ahead of its own normal work:
+**Recognising an interrupted move.** If a deploy is killed or the agent restarts mid-window, or the window's
+own undo cannot finish, one of these is left on disk. Every deploy checks for them, before anything else,
+ahead of its own normal work, whether or not `HOSTD_MIGRATE_LAYOUT` is set:
 
 | On disk | What it means | What happens next |
 | --- | --- | --- |
-| `<site>.migrating` exists | The move was renaming `<dir>` out of the way when it stopped. | The next deploy finishes the remaining renames forward, repairs the Git worktrees, and writes the registry's new `dir` and `composeName`. The deploy then continues nested. |
-| `<site>/live` and `<site>/git/.git` exist, but the registry still has the flat `dir` | The renames finished, but the registry write did not. | The next deploy redoes the worktree repair and the registry write only; nothing is renamed again. |
-| `<site>/live` is not flat, and `<site>/prev/live` is present | The window's own renames finished, but the health check failed and the undo stopped partway back. | The next deploy finishes the move forward from where the undo stopped, the same as the first row. Until then the site is down, with no holding page: the maintenance flag only covers the window itself. |
-| A folder under `/var/www/<site>` is neither a flat tree (no compose file at its root) nor one of the nested shapes above | Something else put files there, or a previous move left it in a shape none of the above expects. | The deploy refuses to move it, logs `<site> is neither flat nor nested`, and keeps deploying flat. Look at what is actually in the folder before doing anything else; nothing here guesses. |
+| `<site>.migrating` exists | The move was renaming `<dir>` out of the way when it stopped. | The next deploy finishes the layout forward and serves the old tree again (see below), repairs the Git worktrees, and writes the registry's new `dir` and `composeName`. The deploy then continues nested. |
+| `<site>/live` and `<site>/git/.git` exist, but the registry still has the flat `dir` | The renames finished, but the registry write did not (or the agent stopped between the last rename and the `up`). | The next deploy runs `up -d --no-build` on `<site>/live` with the pinned compose name (a no-op for a site already running; a failure is logged, not fatal), then redoes the worktree repair and the registry write. Nothing is renamed again. |
+| `<site>` has no `.git` of its own, and the old tree's compose file is under `<site>/prev/live` | A rename inside the window failed, and the undo that followed stopped partway back. | The next deploy finishes the move forward from where the undo stopped and serves the old tree again, the same as the first row. Until then the site is down, with no holding page: the maintenance flag only covers the window itself. |
+| Anything else: live's folder is neither a flat tree (no compose file at its root) nor one of the shapes above, or a test environment has both, or neither, of `/var/www/<site>-test` and `<site>/test` | Something else put files there, or a move left a shape none of the above expects. | The deploy is **refused**: recorded `failed` with `<site> is neither flat nor nested, so it is not being deployed`, and nothing on disk is touched. See below. |
+
+**A resumed move serves the old tree, then rebuilds.** Whichever of the first and third rows it meets, the
+resume finishes the layout forward (`<site>/`, `<site>/prev/`, the repository into `<site>/git`) and then
+puts the tree that was serving before the window back into service: the build the window was about to swap
+in is never started, because no health check has seen it. If that build had already reached
+`<site>/live`, it is moved aside to `<site>/next/live` first (replacing any stale build there); if it is
+still the flat `<site>.next`, it is removed. Then `<site>/prev/live` becomes `<site>/live` and is started,
+under the maintenance flag. A build tree is never client data, so nothing is lost: the deploy that resumed
+the move carries on and builds the same commit again from scratch, which is why a resumed deploy takes a
+full build's time. The layout still only moves forward; a resume never puts the site back into the flat
+shape.
+
+**The one accepted gap.** If the agent stops after the window's last rename but before its `up`, the disk
+looks exactly like the second row (a finished move whose registry write failed), and the two cannot be
+told apart. So the resume starts whatever is at `<site>/live`, which in that case is the new build that
+never passed a health check. The deploy that resumed it replaces it at once with a checked build; if that
+deploy's own health check fails, its rollback goes back to that same unchecked tree. This needs an agent
+crash in a window of a second or two, and is accepted rather than guarded against.
+
+**When a deploy is refused as neither flat nor nested.** hostd does not guess at a folder it cannot read,
+because deploying it flat would rename it to `.prev` and the deploy after that would delete it. Every deploy
+of that environment, including the poll's, is refused the same way until the disk is put right, and three
+refusals pause it like any other failure. Look at what is actually there first (`ls -la /var/www/<site>
+/var/www/<site>-test /var/www/<site>/prev`, and `docker compose ls` for what is running under which
+directory). Then:
+
+- **Live, a flat tree that has lost its compose file** (`/var/www/<site>` still has its own `.git`): put
+  the compose file back, or correct the entry's `compose:` list in `hostd/registry/projects.yaml` if the
+  repo renamed it, and deploy again.
+- **Live, anything else**: this is not a shape any hostd step leaves, so work out by hand which tree is the
+  site's. Put that one back at `/var/www/<site>` as a flat tree (its compose file at its root), start it
+  with `docker compose -p <composeName> --project-directory /var/www/<site> -f ... up -d`, and deploy
+  again; the next deploy moves it into the nested layout from scratch.
+- **Test, with its old tree at `/var/www/<site>/prev/test`** and neither `/var/www/<site>-test` nor
+  `/var/www/<site>/test` present (a test move whose undo stopped): put the tree back where the registry
+  still expects it, and start it under its pinned compose name, then deploy again to move it properly:
+
+  ```bash
+  sudo mv /var/www/<site>/prev/test /var/www/<site>-test
+  docker compose -p <composeName> --project-directory /var/www/<site>-test -f /var/www/<site>-test/docker-compose.yml up -d --no-build
+  ```
+
+  List every file in the entry's `compose:` key with its own `-f`, in order, and take `<composeName>` from
+  the entry (for a flat test, the folder's name the way compose normalises it: lowercased, with every
+  character outside `a-z`, `0-9`, `_` and `-` dropped).
+- **Test, with both `/var/www/<site>-test` and `/var/www/<site>/test` present**: find out which one is
+  running (`docker compose ls`), keep that one where the registry says it is, and move the other out of
+  `/var/www` (not deleted, until you are sure) before deploying again.
 
 The second row is also what the 2-minute poll itself relies on: once the tree has actually moved, the
 poller reads the repository at its new, nested path rather than the flat one it still has on record, so
@@ -581,8 +631,10 @@ whether it is that same poll or a later one, is what finally records the layout.
 
 A failed move inside the window undoes its own renames in reverse, in the order above, and removes only the
 empty folders it made (a non-recursive `rmdir`, so anything left inside is never silently deleted). If the
-undo itself cannot complete a step, it stops there, records the deploy `failed`, and the middle row above is
-what the next deploy sees.
+undo itself cannot complete a step, it stops there and records the deploy `failed`. For live, what the next
+deploy then sees is the third row above (or the first, if the undo stopped with the tree still at
+`<site>.migrating`). For test, it is the refusal above: the old tree waits at `<site>/prev/test` for the
+operator to put back.
 
 ## Backups
 
