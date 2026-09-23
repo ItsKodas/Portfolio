@@ -23,6 +23,8 @@ export type NewSite = {
     capabilities: string[]
     websockets: boolean
     flexibleSsl: boolean
+    // The live environment's port. hostd checks it is free and writes it into the site's .env.
+    port: number
 }
 
 // Only present when a domain was given. A failure here is beside a create that succeeded: the site

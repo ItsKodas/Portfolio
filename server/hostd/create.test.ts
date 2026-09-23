@@ -8,7 +8,7 @@ const admin = { actor: 'admin', user: 'koda@horizons.gg' }
 const site: NewSite = {
     id: 'bakery', name: 'Bakery', repo: 'git@github.com:ItsKodas/bakery.git', branch: 'main',
     domain: 'bakery.com', certificate: 'letsencrypt', dir: 'bakery', compose: ['docker-compose.yml'],
-    capabilities: ['lifecycle', 'deploy'], websockets: false, flexibleSsl: false,
+    capabilities: ['lifecycle', 'deploy'], websockets: false, flexibleSsl: false, port: 5012,
 }
 
 function fakeFetch(body: unknown, status = 200) {
@@ -32,6 +32,7 @@ describe('createProject', () => {
         expect(sent).toEqual(site)
         expect('client' in sent).toBe(false)
         expect('credential' in sent).toBe(false)
+        expect(sent.port).toBe(5012)
     })
 
     it('answers the vhost outcome hostd reported beside the create', async () => {
