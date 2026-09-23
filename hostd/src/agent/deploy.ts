@@ -42,6 +42,10 @@ export type DeployFs = {
     mkdir(dir: string): Promise<void>
     rmdir(dir: string): Promise<void>
     move(from: string, to: string): Promise<void>
+    // Copies one file into the new tree. Separate from the env carry's own read and write, which go
+    // through env-files.ts and are held to the env-file boundary on purpose: a compose file is not an
+    // env file and must not become reachable through the capability that edits those.
+    copyFile(from: string, to: string): Promise<void>
     freeBytes(path: string): Promise<number>
     // The flag Apache reads to serve the holding page, keyed <id>-<env> as the design names it.
     setMaintenance(key: string): Promise<void>
@@ -184,6 +188,39 @@ async function carryEnvFiles(
     return { ok: true }
 }
 
+// The compose files the registry names for this environment, for the ones a fresh checkout does not
+// have. A host-specific override is not in the repo, deliberately: it says which port this machine has
+// free, which service this box does not run, which address to publish on. None of that belongs upstream,
+// and every deployable site on the dedi has one. Without this, compose is handed `-f` pointing into the
+// new tree at a file that is not there and refuses before building anything:
+//
+//   open /var/www/<id>.next/docker-compose.override.yml: no such file or directory
+//
+// The checkout wins wherever it has its own copy, the same rule the .example skip follows: the repo's
+// file belongs with the commit going out, and the running tree's is the commit being replaced. So this
+// only ever fills a gap, never overwrites. Paired by index rather than recomputed, because
+// next.composePaths is locationIn's own mapping of the same list into the new tree.
+//
+// Unlike an env file, a failure here fails the deploy outright. A missing env file is a site that starts
+// with less configuration than it should; a missing compose file is a site compose cannot describe at
+// all, and the build would only fail on it a moment later with a worse message.
+async function carryComposeFiles(
+    environment: EnvironmentEntry, next: EnvironmentEntry, deps: DeployDeps,
+): Promise<{ ok: true } | { ok: false, problem: string }> {
+    for (const [index, from] of environment.composePaths.entries()) {
+        const to = next.composePaths[index]
+        if (!to) continue
+        if (await deps.fs.exists(to)) continue
+        try {
+            await deps.fs.copyFile(from, to)
+        } catch (error) {
+            return { ok: false, problem: `${posix.basename(from)} could not be carried into the new tree: ${describeError(error)}` }
+        }
+        deps.log(`deploy ${environment.dir}: carried ${posix.basename(from)} into the new tree`)
+    }
+    return { ok: true }
+}
+
 // The automatic return the design is emphatic about: the new tree is parked back at <dir>.next, the
 // previous one takes its place, and only once the previous copy is up and healthy is the failed tree
 // removed. Nothing is deleted before its replacement is in place, so an interrupted rollback still
@@ -270,6 +307,12 @@ export async function runDeploy(
         if (!carried.ok) {
             await deps.fs.rmdir(trees.next).catch(() => {})
             return fail(carried.problem)
+        }
+
+        const composed = await carryComposeFiles(environment, nextEnvironment, deps)
+        if (!composed.ok) {
+            await deps.fs.rmdir(trees.next).catch(() => {})
+            return fail(composed.problem)
         }
 
         // The checkout above runs as root, in the fetcher, and the env files just carried across run as
