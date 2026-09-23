@@ -7,8 +7,9 @@ import type { ContainerInspect, ContainerSummary, DockerApi } from './docker.ts'
 import type { EnvFs } from './env-files.ts'
 import type { ProvisionDeps } from './provision.ts'
 import type { DeployRequest } from './deploy.ts'
+import { DeployWatch } from './deploy-watch.ts'
 import { parseRegistry, type ProjectEntry, type Registry } from '../shared/registry.ts'
-import { emptyDeploys, type DeployRecord, type EnvironmentDeploys } from '../shared/deploys.ts'
+import { emptyDeploys, MAX_WATCH_BYTES, type DeployRecord, type EnvironmentDeploys } from '../shared/deploys.ts'
 import type { Change } from '../shared/registry-write.ts'
 import type { FetchReply, FetchRequest } from '../shared/fetch-protocol.ts'
 import type { AgentRequest, BackupArgs, ConfigureArgs, DeployArgs, LogLine } from '../shared/protocol.ts'
@@ -131,8 +132,10 @@ function replyOf(outcome: Outcome) {
 const lifecycle = (project: string, action: 'start' | 'stop' | 'restart' = 'start'): AgentRequest => ({ verb: 'lifecycle', project, args: { action } })
 const logs = (follow: boolean, project = 'acme'): AgentRequest => ({ verb: 'logs', project, args: { service: 'web', tail: 10, since: null, follow } })
 
-async function collect(lines: AsyncIterable<LogLine>): Promise<LogLine[]> {
-    const out: LogLine[] = []
+// Generic because a stream Outcome now carries LogLine | DeployEvent (deploy-watch's own lines): the
+// logs tests below still only ever hand this a LogLine iterable, so the return type narrows for them.
+async function collect<T>(lines: AsyncIterable<T>): Promise<T[]> {
+    const out: T[] = []
     for await (const line of lines) out.push(line)
     return out
 }
@@ -465,9 +468,10 @@ function fakeProvisionDeps(overrides: Partial<ProvisionDeps> = {}): ProvisionDep
 describe('provisioning and env', () => {
     const envWrite = (project = 'acme'): AgentRequest => ({ verb: 'env', project, args: { action: 'write', environment: 'live', path: '.env', text: 'A=1' } })
 
+    // Removing one environment; removing the whole project needs no capability (see checkStructure)
     it('refuses provision and env when the capability is off', async () => {
         const { agent } = setup({ provision: fakeProvisionDeps() })
-        const provisionReply = replyOf(await agent.handle({ verb: 'provision', project: 'quiet', args: { action: 'remove', environment: null } }))
+        const provisionReply = replyOf(await agent.handle({ verb: 'provision', project: 'quiet', args: { action: 'remove', environment: 'test' } }))
         assert.equal(provisionReply?.ok === false && provisionReply.code, 'capability-disabled')
 
         const envReply = replyOf(await agent.handle({ verb: 'env', project: 'quiet', args: { action: 'list', environment: 'live' } }))
@@ -655,6 +659,9 @@ function fakeDeploys(options: {
     const fetched: FetchRequest[] = []
     const changes: Change[] = []
     let registry = deployRegistry
+    // The real thing, not a recorder: deploy-watch's whole job is joining replay() and subscribe(), and a
+    // fake buffer would test nothing but the fake.
+    const watch = new DeployWatch(() => Date.now())
     const deploys = {
         runner: {
             start: (project: ProjectEntry, environment: { name: string }, request: DeployRequest) => {
@@ -662,6 +669,7 @@ function fakeDeploys(options: {
                 return { ok: true as const, started: { environment: environment.name as 'live', trigger: request.trigger } }
             },
             isRunning: () => false,
+            watch,
         },
         store: {
             get: () => options.state ?? emptyDeploys(),
@@ -685,7 +693,7 @@ function fakeDeploys(options: {
             fs: { exists: async () => options.repoExists ?? true },
         },
     }
-    return { deploys: deploys as unknown as AgentDeps['deploys'], started, fetched, changes }
+    return { deploys: deploys as unknown as AgentDeps['deploys'], started, fetched, changes, watch }
 }
 
 describe('the branches verb', () => {
@@ -918,6 +926,81 @@ describe('the deploy verb', () => {
         const reply = replyOf(await agent.handle(deploy({ action: 'set-branch', environment: 'live', branch: 'develop' })))
         assert.equal(reply?.ok === false && reply.code, 'bad-request')
         assert.deepEqual(context.started, [])
+    })
+})
+
+describe('deploy-watch', () => {
+    const watch = (environment: string, project = 'acme'): AgentRequest => ({ verb: 'deploy-watch', project, args: { environment: environment as 'live' } })
+
+    it('replays what the deploy printed before anybody attached, then goes live', async () => {
+        const context = fakeDeploys()
+        const { agent } = setup({ registry: () => deployRegistry, deploys: context.deploys })
+        context.watch.begin('acme:live', '2026-09-23T05:00:00.000Z')
+        context.watch.step('acme:live', 'building')
+
+        const outcome = await agent.handle(watch('live'))
+        assert.equal(outcome.kind, 'stream')
+        if (outcome.kind !== 'stream') return
+
+        const reader = outcome.lines[Symbol.asyncIterator]()
+        assert.equal((await reader.next()).value?.text, 'building')
+
+        context.watch.output('acme:live', '#7 RUN npm ci')
+        assert.equal((await reader.next()).value?.text, '#7 RUN npm ci')
+        outcome.close()
+    })
+
+    it('refuses an environment the project does not have, without opening a stream', async () => {
+        const { agent } = setup({ registry: () => deployRegistry, deploys: fakeDeploys().deploys })
+        const outcome = await agent.handle(watch('test'))
+        assert.equal(outcome.kind, 'reply')
+        if (outcome.kind !== 'reply') return
+        assert.equal(outcome.reply.ok, false)
+    })
+
+    it('refuses when the deploys rail is not wired, exactly as the deploy verb does', async () => {
+        const { agent } = setup({ registry: () => deployRegistry, deploys: undefined })
+        const outcome = await agent.handle(watch('live'))
+        assert.equal(outcome.kind, 'reply')
+        if (outcome.kind !== 'reply') return
+        assert.equal(outcome.reply.ok === false && outcome.reply.code, 'unavailable')
+    })
+
+    // The ring bounds what an unattached watcher replays, but once attached the events are pushed into a
+    // queue instead, and a consumer that has stopped reading is exactly what the ring was written for: api
+    // suspends its generator at waitForDrain while a socket backs up, and a chatty build would otherwise
+    // pile the whole of its output into the agent's heap behind it.
+    it('holds a fixed amount for a watcher that has stopped reading', async () => {
+        const context = fakeDeploys()
+        const { agent } = setup({ registry: () => deployRegistry, deploys: context.deploys })
+        context.watch.begin('acme:live', '2026-09-23T05:00:00.000Z')
+
+        const outcome = await agent.handle(watch('live'))
+        assert.equal(outcome.kind, 'stream')
+        if (outcome.kind !== 'stream') return
+
+        // Nothing is read from the stream while these arrive, which is the stalled consumer.
+        const chunk = 'x'.repeat(4096)
+        for (let i = 0; i < 200; i += 1) context.watch.output('acme:live', `${i} ${chunk}`)
+
+        outcome.close()
+        const held = await collect(outcome.lines)
+        const bytes = held.reduce((total, line) => total + Buffer.byteLength(line.text), 0)
+        assert.ok(bytes <= MAX_WATCH_BYTES, `held ${bytes} bytes, cap is ${MAX_WATCH_BYTES}`)
+        // Newest kept, oldest dropped: a live column is read from the bottom.
+        assert.ok(held.at(-1)?.text.startsWith('199 '), String(held.at(-1)?.text.slice(0, 8)))
+    })
+
+    it('stops feeding a stream that has been closed', async () => {
+        const context = fakeDeploys()
+        const { agent } = setup({ registry: () => deployRegistry, deploys: context.deploys })
+        context.watch.begin('acme:live', '2026-09-23T05:00:00.000Z')
+        const outcome = await agent.handle(watch('live'))
+        assert.equal(outcome.kind, 'stream')
+        if (outcome.kind !== 'stream') return
+        outcome.close()
+        const done = await outcome.lines[Symbol.asyncIterator]().next()
+        assert.equal(done.done, true)
     })
 })
 

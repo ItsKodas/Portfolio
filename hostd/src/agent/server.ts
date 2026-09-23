@@ -67,6 +67,7 @@ function describe(request: AgentRequest): string {
         // The branch is safe to name (it is a plain branch name, already validated) and is the one thing
         // that makes a set-branch line worth reading.
         case 'deploy': return `deploy ${request.args.action} ${request.project} ${request.args.environment}${request.args.action === 'set-branch' ? ` ${request.args.branch}` : ''}`
+        case 'deploy-watch': return `deploy-watch ${request.project} ${request.args.environment}`
         case 'backup': return `backup ${request.args.action} ${request.project}`
         // Never the token or the alias list here, for the same reason env write never logs text.
         case 'domains': return `domains ${request.args.action} ${request.project} ${request.args.environment}`

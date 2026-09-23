@@ -6,15 +6,18 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 const callerFromSession = vi.fn()
 const writeSettings = vi.fn()
 const setPort = vi.fn()
+const removeProject = vi.fn()
+const deleteSites = vi.fn()
 
 vi.mock('next/cache', () => ({ revalidatePath: () => {} }))
-vi.mock('@/server/db', () => ({ getDb: () => ({}) }))
+vi.mock('@/server/db', () => ({ getDb: () => ({ site: { deleteMany: (...args: unknown[]) => deleteSites(...args) } }) }))
+vi.mock('@/server/hostd/remove', () => ({ removeProject: (...args: unknown[]) => removeProject(...args) }))
 vi.mock('@/server/hostd/config', () => ({ readHostd: () => ({ url: 'http://hostd', token: 't' }) }))
 vi.mock('@/server/hostd/session', () => ({ callerFromSession: () => callerFromSession() }))
 vi.mock('@/server/hostd/settings', () => ({ writeSettings: (...args: unknown[]) => writeSettings(...args) }))
 vi.mock('@/server/hostd/ports', () => ({ setPort: (...args: unknown[]) => setPort(...args) }))
 
-const { changePrimaryDomainAction, saveSettingsAction, setPortAction, setPrimaryDomainAction } = await import('./actions')
+const { changePrimaryDomainAction, deleteSiteAction, saveSettingsAction, setPortAction, setPrimaryDomainAction } = await import('./actions')
 
 const CANNOT = { ok: false, error: 'That is not something this page can do.' }
 
@@ -183,5 +186,47 @@ describe('changePrimaryDomainAction', () => {
         expect(await changePrimaryDomainAction('acme', 'live', 'acme.com', 'acme.com'))
             .toEqual({ ok: false, error: 'This is not set up yet.' })
         expect(writeSettings).not.toHaveBeenCalled()
+    })
+})
+
+describe('deleteSiteAction', () => {
+    it('refuses a client outright, without asking hostd', async () => {
+        callerFromSession.mockResolvedValue({ caller: { kind: 'client' }, clientId: 'cl_1' })
+
+        expect(await deleteSiteAction('acme', 'Acme')).toEqual({ ok: false, error: 'This is not set up yet.' })
+        expect(removeProject).not.toHaveBeenCalled()
+        expect(deleteSites).not.toHaveBeenCalled()
+    })
+
+    it('sends the name as typed, then drops the client link', async () => {
+        callerFromSession.mockResolvedValue({ caller: { kind: 'admin' }, clientId: null })
+        removeProject.mockResolvedValue({ ok: true, value: { ok: true } })
+        deleteSites.mockResolvedValue({ count: 1 })
+
+        expect(await deleteSiteAction('acme', 'Acme')).toEqual({ ok: true, message: 'Deleted.' })
+        expect(removeProject).toHaveBeenCalledWith(expect.anything(), expect.anything(), 'acme', 'Acme')
+        expect(deleteSites).toHaveBeenCalledWith({ where: { projectId: 'acme' } })
+    })
+
+    // A refusal leaves the site in hostd, so its client link has to stay too.
+    it('keeps the client link when hostd refuses', async () => {
+        callerFromSession.mockResolvedValue({ caller: { kind: 'admin' }, clientId: null })
+        removeProject.mockResolvedValue({ ok: false, code: 'bad-request', message: 'name must match the project name to confirm deletion' })
+
+        const result = await deleteSiteAction('acme', 'acme')
+
+        expect(result.ok).toBe(false)
+        expect(deleteSites).not.toHaveBeenCalled()
+    })
+
+    it('still says deleted when only the unlink failed', async () => {
+        callerFromSession.mockResolvedValue({ caller: { kind: 'admin' }, clientId: null })
+        removeProject.mockResolvedValue({ ok: true, value: { ok: true } })
+        deleteSites.mockRejectedValue(new Error('connection lost'))
+
+        const result = await deleteSiteAction('acme', 'Acme')
+
+        expect(result.ok).toBe(true)
+        expect(result.ok && result.message).toMatch(/still linked/)
     })
 })

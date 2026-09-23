@@ -17,6 +17,7 @@ import { Chip } from '@/ui/Chip/Chip'
 import { KeyValue } from '@/ui/KeyValue/KeyValue'
 import { Row } from '@/ui/Row/Row'
 import { DeployControls } from './deployControls'
+import { DeployLog } from './deployLog'
 import { formatDuration, outcomeTone, outcomeWord, rollbackTarget, shortCommit, updatesFor } from './deploys'
 import { EnvSwitcher } from './envSwitcher'
 import { formatDay, formatWhen } from '../../format'
@@ -55,7 +56,7 @@ function Deploy({ record }: { record: DeployRecord }) {
             />
             {record.reason && <p className={styles.note}>{record.reason}</p>}
             {record.output && (
-                <details className={styles.output}>
+                <details className={styles.outputBlock}>
                     <summary>Show what it printed</summary>
                     <pre>{record.output}</pre>
                 </details>
@@ -128,45 +129,53 @@ export async function DeployPanel({ id, environments, environment, enabled }: Pr
         <>
             <EnvSwitcher id={id} tab="deploys" environments={environments} chosen={environment} />
 
-            <KeyValue pairs={[
-                { key: 'branch', value: view.branch ?? 'none set' },
-                { key: 'serving', value: view.deployed ? shortCommit(view.deployed) : 'nothing yet' },
-                {
-                    key: 'polling',
-                    value: view.paused ? 'paused' : 'every two minutes',
-                    tone: view.paused ? 'warn' : undefined,
-                },
-            ]} />
+            {/* The history beside what a deploy of this environment is doing right now. The column is
+                always here, not only while a deploy runs: see site.module.css on .deployLayout for why. */}
+            <div className={styles.deployLayout}>
+                <div className={styles.deployMain}>
+                    <KeyValue pairs={[
+                        { key: 'branch', value: view.branch ?? 'none set' },
+                        { key: 'serving', value: view.deployed ? shortCommit(view.deployed) : 'nothing yet' },
+                        {
+                            key: 'polling',
+                            value: view.paused ? 'paused' : 'every two minutes',
+                            tone: view.paused ? 'warn' : undefined,
+                        },
+                    ]} />
 
-            {view.paused && (
-                <div className={styles.said}>
-                    <Callout tone="warn" title="Deploys are paused">
-                        {view.consecutiveFailures} in a row went wrong, so hostd stopped polling this
-                        branch: rebuilding a broken branch every two minutes helps nobody. Deploying by
-                        hand or switching branch starts it again.
-                    </Callout>
+                    {view.paused && (
+                        <div className={styles.said}>
+                            <Callout tone="warn" title="Deploys are paused">
+                                {view.consecutiveFailures} in a row went wrong, so hostd stopped polling this
+                                branch: rebuilding a broken branch every two minutes helps nobody. Deploying by
+                                hand or switching branch starts it again.
+                            </Callout>
+                        </div>
+                    )}
+
+                    <DeployControls
+                        id={id}
+                        environment={environment}
+                        enabled={enabled}
+                        branch={view.branch}
+                        rollbackTo={target}
+                        latest={latest}
+                    />
+
+                    <section className={styles.block}>
+                        <h2>History</h2>
+                        {view.deploys.length === 0
+                            ? <p className={styles.empty}>
+                                Nothing has been deployed yet. hostd keeps the last twenty, newest first.
+                            </p>
+                            : view.deploys.map(record => (
+                                <Deploy key={`${record.commit}-${record.startedAt}`} record={record} />
+                            ))}
+                    </section>
                 </div>
-            )}
 
-            <DeployControls
-                id={id}
-                environment={environment}
-                enabled={enabled}
-                branch={view.branch}
-                rollbackTo={target}
-                latest={latest}
-            />
-
-            <section className={styles.block}>
-                <h2>History</h2>
-                {view.deploys.length === 0
-                    ? <p className={styles.empty}>
-                        Nothing has been deployed yet. hostd keeps the last twenty, newest first.
-                    </p>
-                    : view.deploys.map(record => (
-                        <Deploy key={`${record.commit}-${record.startedAt}`} record={record} />
-                    ))}
-            </section>
+                <DeployLog id={id} environment={environment} />
+            </div>
         </>
     )
 }

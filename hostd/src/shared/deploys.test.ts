@@ -3,7 +3,7 @@ import assert from 'node:assert/strict'
 
 import {
     emptyDeploys, recordDeploy, lastHealthyCommit, deployKey, maintenanceKey,
-    MAX_DEPLOY_RECORDS, PAUSE_AFTER_FAILURES, type DeployOutcome, type DeployRecord,
+    MAX_DEPLOY_RECORDS, PAUSE_AFTER_FAILURES, MAX_WATCH_BYTES, type DeployOutcome, type DeployRecord,
 } from './deploys.ts'
 
 const record = (commit: string, outcome: DeployOutcome): DeployRecord => ({
@@ -58,5 +58,14 @@ describe('deploy history', () => {
     it('has no healthy commit to return when nothing has ever worked', () => {
         const state = recordDeploy(emptyDeploys(), record('a', 'failed'))
         assert.equal(lastHealthyCommit(state, null), null)
+    })
+})
+
+describe('deploy watch bounds', () => {
+    // Its own number rather than OUTPUT_TAIL_BYTES: that one bounds the tail of one command stored in a
+    // record, this bounds a whole deploy's narrative and output held in memory. Different reasons, so
+    // they must not drift together.
+    it('bounds a watched deploy well above a single record tail', () => {
+        assert.ok(MAX_WATCH_BYTES >= 64 * 1024, String(MAX_WATCH_BYTES))
     })
 })

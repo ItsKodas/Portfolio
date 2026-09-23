@@ -480,6 +480,14 @@ the repo does commit the file, the checkout's copy wins: that one belongs with t
 the running tree's is the commit being replaced. A file that cannot be copied fails the deploy before the
 build, because compose cannot describe the site without it.
 
+**Watching one.** The Deploys tab carries an operator-only column showing what the deploy is doing: its own phase lines,
+with `docker compose` output beneath the build step. It is there whether or not a deploy is running, and
+when none is it shows what the last one printed, until the next one starts. A deploy the poller started
+is watchable exactly like one somebody pressed, and a reload mid-deploy picks up where it was, because
+what a watcher attaches to is a buffer rather than a live pipe. Nothing of it is written to disk: an
+agent restart loses the buffer, and loses the deploy with it, since a deploy is an in-process promise.
+The history stays the durable record.
+
 **What the health check actually checks.** Every registered compose service has a running container, and
 any container that declares a healthcheck reports `healthy`, within 60 seconds. It is deliberately not an
 HTTP request to the site's port: the agent runs `network_mode: none` and has no network namespace to make
@@ -863,6 +871,10 @@ database on a timer.
   unregisters a project that is still running, since nothing would then be able to stop it. Removing only
   the test environment does not stop anything (there is no per-environment lifecycle yet, so there is
   nothing safe for this to stop).
+- **Removing a whole project needs no capability.** `DELETE /projects/:id` is admin-only and takes the
+  project's name typed back, but works whether or not the project lists `provision`, so a site the
+  portal created can be deleted from its Settings tab. Removing only the test environment still needs
+  `provision`.
 - **Removing a project leaves its folder, volumes and databases in place.** `provision remove` stops it,
   edits the registry, and takes hostd's own vhost for each environment it removed off the host; nothing
   under `/var/www` is deleted. The vhost goes because a file left behind would go on claiming those

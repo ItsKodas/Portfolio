@@ -6,20 +6,33 @@ import 'server-only'
 
 import type { Caller } from './actor'
 import type { HostdConfig } from './config'
+import type { EnvironmentName } from './deployWatch'
 import { forClient } from './errors'
 import type { LogStream } from './logs'
 
-export type RelayDeps = {
+type BaseRelayDeps = {
     config: HostdConfig
     caller: Caller
     // null when the caller is the operator, who owns everything
     clientId: string | null
     assertOwned: (clientId: string, projectId: string) => Promise<boolean>
+}
+
+export type RelayDeps = BaseRelayDeps & {
     openLogStream: (
         config: HostdConfig,
         caller: Caller,
         id: string,
         query: { service: string, tail?: number, since?: string, follow?: boolean },
+    ) => Promise<LogStream>
+}
+
+export type DeployWatchRelayDeps = BaseRelayDeps & {
+    openDeployStream: (
+        config: HostdConfig,
+        caller: Caller,
+        id: string,
+        environment: EnvironmentName,
     ) => Promise<LogStream>
 }
 
@@ -54,6 +67,29 @@ export async function relayLogs(deps: RelayDeps, id: string, params: URLSearchPa
         follow: params.get('follow') === '1',
     })
 
+    if (!stream.ok) return problem(stream.code)
+
+    return new Response(stream.response.body, {
+        status: 200,
+        headers: {
+            'content-type': 'text/event-stream; charset=utf-8',
+            'cache-control': 'no-store',
+            connection: 'keep-alive',
+            // Stops a proxy buffering the stream into uselessness
+            'x-accel-buffering': 'no',
+        },
+    })
+}
+
+export async function relayDeployWatch(deps: DeployWatchRelayDeps, id: string, params: URLSearchParams): Promise<Response> {
+    const environment = params.get('environment')
+    if (environment !== 'live' && environment !== 'test') return problem('bad-request')
+
+    // A client may only watch their own site. Answering 404 rather than 403 means the portal does not
+    // confirm that a project id exists to somebody who has no business knowing.
+    if (deps.clientId && !(await deps.assertOwned(deps.clientId, id))) return problem('not-found')
+
+    const stream = await deps.openDeployStream(deps.config, deps.caller, id, environment)
     if (!stream.ok) return problem(stream.code)
 
     return new Response(stream.response.body, {
