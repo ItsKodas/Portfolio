@@ -208,12 +208,14 @@
 .deploy:last-child { border-bottom: 0; }
 .deploy .note { margin: 0 0 8px 11px; }
 
-.output { margin: 0 0 10px 11px; font-size: 11.5px; }
-.output summary { color: var(--ink-3); cursor: pointer; }
-.output summary:hover { color: var(--ink-2); }
-.output summary:focus-visible { outline: 2px solid var(--lake); outline-offset: 2px; }
+/* Renamed from .output: that name is now the deploy column's raw-output line kind, and a CSS module key
+   can only mean one class. Same block, same two callers (deployPanel.tsx, domainsPanel.tsx). */
+.outputBlock { margin: 0 0 10px 11px; font-size: 11.5px; }
+.outputBlock summary { color: var(--ink-3); cursor: pointer; }
+.outputBlock summary:hover { color: var(--ink-2); }
+.outputBlock summary:focus-visible { outline: 2px solid var(--lake); outline-offset: 2px; }
 
-.output pre {
+.outputBlock pre {
     margin: 8px 0 0;
     padding: 10px 12px;
     background: var(--night);
@@ -326,4 +328,76 @@
    a dim band across the track rather than a track with nothing in it. */
 @media (prefers-reduced-motion: reduce) {
     .barRun { animation: none; left: 0; width: 100%; opacity: .4; }
+}
+
+/* The Deploys tab is two columns on a wide screen and one on a narrow one. The column is always here,
+   not only while a deploy runs: one that came and went would reflow the page twice per deploy, with the
+   history moving under the operator's cursor both times. Gap matches .split, the log/sidebar layout this
+   mirrors; there is no spacing token in ui/tokens.css to name instead. */
+.deployLayout {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr);
+    gap: 20px;
+}
+
+@media (min-width: 900px) {
+    .deployLayout {
+        grid-template-columns: minmax(0, 1fr) 22rem;
+    }
+}
+
+/* A grid item's own min-width defaults to auto, not the track's minmax(0, ...), so without this the
+   history column could still be pushed wide by something inside it. */
+.deployMain { min-width: 0; }
+
+.deployLog {
+    display: flex;
+    flex-direction: column;
+    min-width: 0;
+    padding: 12px 14px;
+    background: var(--night);
+    border: 1px solid var(--rule);
+    border-radius: var(--radius-panel);
+}
+
+.deployLogProblem { color: var(--warn); font-size: 12.5px; margin: 0; }
+.deployLogIdle { color: var(--ink-3); font-size: 12.5px; margin: 0; }
+.deployLogRetry { margin-top: 8px; }
+
+/* Scrolls on its own rather than growing the page to 2000 lines tall. */
+.deployLogLines {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    max-height: 60vh;
+    overflow: auto;
+}
+
+/* The narrative: the deploy's own phase lines, read like the rest of the page. */
+.step {
+    color: var(--ink);
+    font-size: 12.5px;
+    margin-top: 10px;
+}
+.step:first-child { margin-top: 0; }
+
+/* A line docker compose printed: monospaced and dimmer, so it reads as the detail under the step above
+   it rather than as another thing the deploy said. */
+.output {
+    font-family: var(--font-mono), monospace;
+    font-size: 11px;
+    line-height: 1.7;
+    color: var(--ink-3);
+    white-space: pre-wrap;
+    word-break: break-word;
+}
+
+/* The last event of a deploy: outcome and duration. Ruled off rather than coloured by outcome, because
+   its text carries the same "failed" or "deployed" either way and a colour here would only repeat it. */
+.end {
+    margin-top: 10px;
+    padding-top: 8px;
+    border-top: 1px solid var(--rule);
+    color: var(--ink-2);
+    font-size: 12.5px;
 }

@@ -100,6 +100,10 @@ export type DeployCommitsArgs = { action: 'commits', environment: EnvironmentNam
 export type DeployArgs = DeployStartArgs | DeployRollbackArgs | DeployBranchArgs | DeployHistoryArgs | DeployCommitsArgs
 export type DeployRequest = { verb: 'deploy', project: string, args: DeployArgs }
 
+// Its own verb rather than a deploy action, because every action in parseDeployArgs answers with an
+// AgentReply and this answers with a stream. logs is the same shape for the same reason.
+export type DeployWatchRequest = { verb: 'deploy-watch', project: string, args: { environment: EnvironmentName } }
+
 // Restic's own short ids are hex, and this is checked here, where every other request shape is checked,
 // so a malformed id can never reach a repository path or a command.
 export const SNAPSHOT_ID = /^[0-9a-f]{8,64}$/
@@ -216,7 +220,7 @@ export type BranchesRequest = { verb: 'branches', project: string }
 export type CredentialsRequest = { verb: 'credentials' }
 
 export type ProjectRequest =
-    | StatusRequest | LifecycleRequest | LogsRequest | ProvisionOnProjectRequest | EnvRequest | DeployRequest
+    | StatusRequest | LifecycleRequest | LogsRequest | ProvisionOnProjectRequest | EnvRequest | DeployRequest | DeployWatchRequest
     | BackupRequest | DomainsRequest | ConfigureRequest | BranchesRequest
 export type AgentRequest = HealthRequest | StatusesRequest | ProvisionCreateRequest | CredentialsRequest | ProjectRequest
 export type Verb = AgentRequest['verb']
@@ -305,6 +309,7 @@ export const VERB_CAPABILITY: Record<Verb, Capability | null> = {
     // Reading the history and the commit list is the half of this a client may use; api's policy is
     // where that split lives, because only api knows who is asking.
     deploy: 'deploy',
+    'deploy-watch': 'deploy',
     backup: 'backups',
     domains: 'domains',
     // Null, and this is load bearing. Gating the verb that edits capabilities on a capability would mean
@@ -843,6 +848,19 @@ export function parseAgentRequest(line: string): Parsed {
             return { ok: true, request: { verb: 'deploy', project, args } }
         }
 
+        case 'deploy-watch': {
+            if (!onlyKeys(raw, ['verb', 'project', 'args'])) return refuse('bad-request', 'deploy-watch takes only project and args')
+            const project = projectOf(raw)
+            if (!project) return refuse('bad-request', 'project is malformed')
+            if (!isRecord(raw.args)) return refuse('bad-request', 'deploy-watch requires args')
+            if (!onlyKeys(raw.args, ['environment'])) return refuse('bad-request', 'deploy-watch takes only environment')
+            const environment = raw.args.environment
+            if (typeof environment !== 'string' || !(ENVIRONMENTS as readonly string[]).includes(environment)) {
+                return refuse('bad-request', 'environment must be live or test')
+            }
+            return { ok: true, request: { verb: 'deploy-watch', project, args: { environment: environment as EnvironmentName } } }
+        }
+
         case 'backup': {
             if (!onlyKeys(raw, ['verb', 'project', 'args'])) return refuse('bad-request', 'backup takes only project and args')
             const project = projectOf(raw)
@@ -914,7 +932,7 @@ export function checkStructure(
         const entry = Object.hasOwn(project.services, service) ? project.services[service] : undefined
         if (!entry || !isComposeService(entry)) return refuse('unknown-service', `${service} is not a registered service of ${id}`)
     }
-    if ((request.verb === 'env' || request.verb === 'deploy') && !environmentOf(project, request.args.environment)) {
+    if ((request.verb === 'env' || request.verb === 'deploy' || request.verb === 'deploy-watch') && !environmentOf(project, request.args.environment)) {
         return refuse('unknown-environment', `${id} has no ${request.args.environment} environment`)
     }
     return { ok: true, project }

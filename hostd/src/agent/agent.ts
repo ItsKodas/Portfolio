@@ -11,7 +11,7 @@ import {
 } from '../shared/protocol.ts'
 import { environmentOf, ENVIRONMENT_FLAGS, type EnvironmentFlag, type EnvironmentName, type ProjectEntry, type Registry } from '../shared/registry.ts'
 import { describeError } from '../shared/formats.ts'
-import { deployKey, lastHealthyCommit } from '../shared/deploys.ts'
+import { deployKey, lastHealthyCommit, MAX_WATCH_BYTES, type DeployEvent } from '../shared/deploys.ts'
 import { diskProblem, manualProblem } from '../shared/backups.ts'
 import type { RegistryWriter } from '../shared/registry-write.ts'
 import type { DiskUsage, SystemUsage } from '../shared/system.ts'
@@ -65,7 +65,7 @@ export type AgentDeps = {
     // then refuses unavailable instead of crashing, exactly like provision does. Structural types, not
     // the classes themselves, so the tests can hand this a recorder.
     deploys?: {
-        runner: Pick<DeployRunner, 'start'>
+        runner: Pick<DeployRunner, 'start' | 'watch'>
         store: Pick<DeployStore, 'get' | 'resume'>
         deps: DeployDeps
     }
@@ -97,7 +97,9 @@ export type AgentDeps = {
 
 export type Outcome =
     | { kind: 'reply', reply: AgentReply }
-    | { kind: 'stream', lines: AsyncIterable<LogLine>, close: () => void }
+    // LogLine is shaped for container logs, and its stream: 'stdout' | 'stderr' means nothing for a
+    // deploy's phase line. server.ts writes one JSON object per line and does not care which this is.
+    | { kind: 'stream', lines: AsyncIterable<LogLine | DeployEvent>, close: () => void }
     // A backup download: the same header line as a stream, then the body in length-prefixed frames ending
     // in a terminator server.ts writes only once this iterator has returned normally. Its own kind rather
     // than a stream of lines because a tar.gz through NDJSON would need base64, which inflates a
@@ -151,6 +153,8 @@ export class Agent {
                 return reply(await this.env(checked.project, request.args))
             case 'deploy':
                 return reply(await this.deploy(checked.project, request.args))
+            case 'deploy-watch':
+                return this.deployWatch(checked.project, request.args)
             case 'backup':
                 return this.backup(checked.project, request.args)
             // domains re-checks the registry, the guard and the capability itself, from a freshly
@@ -370,6 +374,60 @@ export class Agent {
         }
 
         return runner.start(project, environment, { trigger: 'manual', actor: 'admin' })
+    }
+
+    private deployWatch(project: ProjectEntry, args: { environment: EnvironmentName }): Outcome {
+        const deploys = this.deps.deploys
+        if (!deploys) return reply(refuse('unavailable', 'deploys are not wired up on this agent'))
+        const environment = environmentOf(project, args.environment)
+        if (!environment) return reply(refuse('unknown-environment', `${project.id} has no ${args.environment} environment`))
+
+        const key = deployKey(project.id, args.environment)
+        const watch = deploys.runner.watch
+        // Everything printed before this watcher arrived, then everything after, with no gap between them:
+        // there is no await between the replay and the subscribe, so nothing can be printed in between for
+        // either of them to miss.
+        const queue: DeployEvent[] = watch.replay(key)
+        let queued = queue.reduce((total, event) => total + Buffer.byteLength(event.text), 0)
+        const take = (): DeployEvent | undefined => {
+            const next = queue.shift()
+            if (next) queued -= Buffer.byteLength(next.text)
+            return next
+        }
+        let closed = false
+        let wake: (() => void) | null = null
+        const unsubscribe = watch.subscribe(key, event => {
+            queue.push(event)
+            queued += Buffer.byteLength(event.text)
+            // The same drop-oldest discipline, and the same bound, as the ring this queue drains from.
+            // Without it the ring bounds only what an unattached watcher replays: once attached, a consumer
+            // that has stopped reading (api suspends its generator at waitForDrain while the socket backs
+            // up) would hold the whole of a chatty build here instead, which is the case the bound exists
+            // for. A live column is read from the bottom, so the newest is what survives.
+            while (queued > MAX_WATCH_BYTES && queue.length > 1) take()
+            wake?.()
+        })
+        const close = () => {
+            closed = true
+            unsubscribe()
+            wake?.()
+        }
+        async function* lines(): AsyncGenerator<DeployEvent> {
+            try {
+                for (;;) {
+                    while (queue.length > 0) {
+                        const next = take()
+                        if (next) yield next
+                    }
+                    if (closed) return
+                    await new Promise<void>(resolve => { wake = resolve })
+                    wake = null
+                }
+            } finally {
+                unsubscribe()
+            }
+        }
+        return { kind: 'stream', lines: lines(), close }
     }
 
     // No capability gate, no per-field validation beyond what parseAgentRequest already did on the way
