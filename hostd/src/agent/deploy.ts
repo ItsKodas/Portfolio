@@ -221,6 +221,29 @@ async function carryComposeFiles(
     return { ok: true }
 }
 
+// Compose fills in `Dockerfile` for every service that does not name its own build file, and the legacy
+// builder the agent runs (no buildx: see the agent stage in hostd/Dockerfile) looks for exactly that
+// name, so a repo that commits `dockerfile` failed every build with "unable to evaluate symlinks in
+// Dockerfile path". buildx would find the lowercase name on its own, but BuildKit fetches registry
+// tokens from the client, and the agent has no network: every base image not already on the host
+// failed instead. So the checkout gets a `Dockerfile` copy beside each registered compose file, where
+// a `context: .` build looks for it. Only ever a gap filled: a checkout with its own is left alone.
+async function nameDockerfiles(next: EnvironmentEntry, deps: DeployDeps): Promise<{ ok: true } | { ok: false, problem: string }> {
+    const dirs = new Set(next.composePaths.map(path => posix.dirname(path)))
+    for (const dir of dirs) {
+        const lower = posix.join(dir, 'dockerfile')
+        const upper = posix.join(dir, 'Dockerfile')
+        if (await deps.fs.exists(upper) || !(await deps.fs.exists(lower))) continue
+        try {
+            await deps.fs.copyFile(lower, upper)
+        } catch (error) {
+            return { ok: false, problem: `dockerfile could not be copied to Dockerfile in the new tree: ${describeError(error)}` }
+        }
+        deps.log(`deploy ${next.dir}: copied dockerfile to Dockerfile for the build`)
+    }
+    return { ok: true }
+}
+
 // The automatic return the design is emphatic about: the new tree is parked back at <dir>.next, the
 // previous one takes its place, and only once the previous copy is up and healthy is the failed tree
 // removed. Nothing is deleted before its replacement is in place, so an interrupted rollback still
@@ -313,6 +336,12 @@ export async function runDeploy(
         if (!composed.ok) {
             await deps.fs.rmdir(trees.next).catch(() => {})
             return fail(composed.problem)
+        }
+
+        const named = await nameDockerfiles(nextEnvironment, deps)
+        if (!named.ok) {
+            await deps.fs.rmdir(trees.next).catch(() => {})
+            return fail(named.problem)
         }
 
         // The checkout above runs as root, in the fetcher, and the env files just carried across run as
