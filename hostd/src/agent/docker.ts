@@ -6,7 +6,6 @@ import { request as httpRequest, type ClientRequest, type IncomingMessage, type 
 import type { Readable } from 'node:stream'
 import { isComposeService, type ProjectEntry } from '../shared/registry.ts'
 import type { ServiceStatus } from '../shared/protocol.ts'
-import type { PortCheck } from '../shared/ports.ts'
 import { FrameDecoder } from './logframes.ts'
 
 export const DOCKER_SOCKET = '/var/run/docker.sock'
@@ -228,18 +227,6 @@ export function publishedHostPorts(containers: ContainerSummary[]): Set<number> 
         }
     }
     return ports
-}
-
-// A PortCheck (ports.ts) built from one snapshot of every container's published ports, fetched at most
-// once per instance and cached from then on: choosePort calls this once per port in the whole range it
-// scans, and this must not turn that into one Docker API call per port considered. Call this again (a
-// fresh instance) for each choosePort invocation, so a later provisioning action sees a fresh snapshot.
-export function dockerPortCheck(docker: DockerApi): PortCheck {
-    let ports: Promise<Set<number>> | null = null
-    return async port => {
-        ports ??= docker.listAllContainers().then(publishedHostPorts)
-        return (await ports).has(port)
-    }
 }
 
 export function buildServiceStatuses(project: ProjectEntry, inspected: ReadonlyMap<string, ContainerInspect>): ServiceStatus[] {

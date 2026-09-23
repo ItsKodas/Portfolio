@@ -14,7 +14,7 @@ import { readSystemUsage, systemSource, DEFAULT_SYSTEM_DISK_PATH } from '../shar
 import { describeError } from '../shared/formats.ts'
 import { ENVIRONMENTS } from '../shared/registry.ts'
 import { deployKey } from '../shared/deploys.ts'
-import { createDockerApi, dockerPortCheck } from './docker.ts'
+import { createDockerApi, publishedHostPorts } from './docker.ts'
 import { createSpawnRunner, resolveNewProject } from './compose.ts'
 import { GuardTracker } from './guard-tracker.ts'
 import { createFetchClient, socketConnect } from './fetch-client.ts'
@@ -197,9 +197,8 @@ async function main(): Promise<void> {
         refreshRegistry: async () => { await store.refresh() },
         writer,
         fetcher,
-        // A fresh dockerPortCheck per call, so it takes its own snapshot of every container's published
-        // ports rather than reusing one from an earlier provisioning action.
-        choosePort: async () => choosePort(store.current(), dockerPortCheck(docker)),
+        // Docker's published ports alone for now; host-ports.ts adds everything else listening on the host.
+        choosePort: async () => choosePort(store.current(), publishedHostPorts(await docker.listAllContainers())),
         mkdir: dir => mkdir(dir),
         rmdir: dir => rm(dir, { recursive: true, force: true }),
         exists,

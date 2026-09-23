@@ -5,8 +5,8 @@ import { PassThrough } from 'node:stream'
 import type { ClientRequest, IncomingMessage, RequestOptions } from 'node:http'
 import {
     containersPath, logsPath, checkedId, createDockerApi, pickPerService, buildServiceStatuses,
-    groupByProject, publishedHostPorts, dockerPortCheck, ALL_CONTAINERS_PATH,
-    type ContainerInspect, type ContainerSummary, type DockerApi,
+    groupByProject, publishedHostPorts, ALL_CONTAINERS_PATH,
+    type ContainerInspect, type ContainerSummary,
 } from './docker.ts'
 import { parseRegistry } from '../shared/registry.ts'
 
@@ -190,26 +190,6 @@ describe('publishedHostPorts', () => {
             { Id: '2', State: 'running', Ports: [{ IP: '0.0.0.0', PrivatePort: 80, PublicPort: 5010, Type: 'tcp' }, { IP: '0.0.0.0', PrivatePort: 443, PublicPort: 5011, Type: 'tcp' }] },
         ]
         assert.deepEqual(publishedHostPorts(containers), new Set([5010, 5011]))
-    })
-})
-
-describe('dockerPortCheck', () => {
-    it('reports a published port as in use and an unpublished one as free', async () => {
-        const containers: ContainerSummary[] = [{ Id: '1', State: 'running', Ports: [{ IP: '0.0.0.0', PrivatePort: 80, PublicPort: 5010, Type: 'tcp' }] }]
-        const docker = { listAllContainers: async () => containers } as unknown as DockerApi
-        const check = dockerPortCheck(docker)
-        assert.equal(await check(5010), true)
-        assert.equal(await check(5011), false)
-    })
-
-    it('fetches the container list once per instance, not once per port checked', async () => {
-        let calls = 0
-        const docker = { listAllContainers: async () => { calls++; return [] } } as unknown as DockerApi
-        const check = dockerPortCheck(docker)
-        await check(5000)
-        await check(5001)
-        await check(5002)
-        assert.equal(calls, 1)
     })
 })
 
