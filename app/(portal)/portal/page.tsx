@@ -10,8 +10,10 @@ import { KeyValue } from '@/ui/KeyValue/KeyValue'
 import { Meter } from '@/ui/Meter/Meter'
 import { Row } from '@/ui/Row/Row'
 import { Shell } from '@/ui/Shell/Shell'
+import { Dashboard } from '@/ui/icons'
 import { StatStrip } from '@/ui/StatStrip/StatStrip'
 import { StatusDot } from '@/ui/StatusDot/StatusDot'
+import Brand from './brand'
 import { gatherHome, type HomeView } from './home'
 import { NewSiteButton } from './newSite/NewSite'
 import { stateOf, summarise } from './siteState'
@@ -205,7 +207,10 @@ export default async function PortalHome() {
 
     const nav = (
         <>
-            <a className={styles.nav} href="/portal" aria-current="page">{isAdmin ? 'Dashboard' : 'Overview'}</a>
+            <a className={`${styles.nav} ${styles.home}`} href="/portal" aria-current="page">
+                <Dashboard size={16} />
+                {isAdmin ? 'Dashboard' : 'Overview'}
+            </a>
             <p className={styles.group}>{isAdmin ? 'sites' : 'your site'}</p>
             {/* Under /portal/sites/ rather than straight under /portal/: that segment has static siblings
                 now, and a project whose id happened to be one of them would be unreachable. */}
@@ -220,7 +225,7 @@ export default async function PortalHome() {
     )
 
     return (
-        <Shell brand="Horizons" nav={nav} rail={<Rail view={view} />}>
+        <Shell brand={<Brand />} nav={nav} rail={<Rail view={view} />}>
             <div className={styles.hello}>
                 <h1>{isAdmin ? 'Your sites' : 'Your site'}</h1>
                 <p>

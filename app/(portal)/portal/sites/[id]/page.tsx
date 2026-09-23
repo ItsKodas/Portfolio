@@ -12,6 +12,7 @@ import { assertOwned, getProject, listProjects, type ServiceStatus } from '@/ser
 import { callerFromSession } from '@/server/hostd/session'
 import { Callout } from '@/ui/Callout/Callout'
 import { Shell } from '@/ui/Shell/Shell'
+import { Dashboard } from '@/ui/icons'
 import { StatusDot } from '@/ui/StatusDot/StatusDot'
 import { DeployPanel } from './deployPanel'
 import { DomainsPanel } from './domainsPanel'
@@ -23,6 +24,7 @@ import { SiteSettingsForm } from './settings'
 import { SettlingProvider } from './settling'
 import { gatherSite } from './site'
 import { SiteTabs } from './tabs'
+import Brand from '../../brand'
 import { NewSiteButton } from '../../newSite/NewSite'
 import { serviceDot, stateOf, stateOfServices, type SiteState } from '../../siteState'
 import nav from '../../portal.module.css'
@@ -275,7 +277,10 @@ export default async function SitePage({ params, searchParams }: Props) {
 
     const navigation = (
         <>
-            <a className={nav.nav} href="/portal">{view.isAdmin ? 'Dashboard' : 'Overview'}</a>
+            <a className={`${nav.nav} ${nav.home}`} href="/portal">
+                <Dashboard size={16} />
+                {view.isAdmin ? 'Dashboard' : 'Overview'}
+            </a>
             <p className={nav.group}>{view.isAdmin ? 'sites' : 'your site'}</p>
             {view.sites.map(site => (
                 <a
@@ -300,7 +305,7 @@ export default async function SitePage({ params, searchParams }: Props) {
         // Around the whole shell rather than around the panel: the sidebar draws this site's dot too, and
         // a restart that calms the strip and leaves a red dot beside the name has only moved the alarm.
         <SettlingProvider state={current}>
-            <Shell brand="Horizons" nav={navigation} rail={null} fill>
+            <Shell brand={<Brand />} nav={navigation} rail={null} fill>
                 <div className={styles.hello}>
                     <h1>{view.name}</h1>
                     <p className={styles.mono}>{view.id}</p>
