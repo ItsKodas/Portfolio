@@ -4,7 +4,7 @@ import { describe, expect, it } from 'vitest'
 import * as icons from './index'
 
 const EXPECTED = [
-    'AcUnit', 'Add', 'ArrowBack', 'ArrowForward', 'Casino', 'Close', 'Cloud', 'ContentCopy', 'Dehaze',
+    'AcUnit', 'Add', 'ArrowBack', 'ArrowForward', 'Casino', 'Close', 'Cloud', 'ContentCopy', 'Dashboard', 'Dehaze',
     'DeleteOutline', 'FilterDrama', 'GitHub', 'Grain', 'Instagram', 'Language', 'LinkedIn', 'MusicNote',
     'NightsStay', 'NorthEast', 'Pause', 'Place', 'SportsEsports', 'Thunderstorm', 'WarningAmber', 'WaterDrop',
     'WbSunny', 'YouTube',

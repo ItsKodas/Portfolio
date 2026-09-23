@@ -1,0 +1,22 @@
+/* Every colour is a token, which is what ui/palette.test.ts asks of a stylesheet: that test walks ui/ and
+   does not reach this file, so the rule is kept here by hand. */
+
+.brand {
+    display: inline-flex;
+    align-items: center;
+    color: var(--ink);
+    text-decoration: none;
+}
+
+/* The hero's title is 700 weight with 10px of tracking at 8rem, so about .08em; a touch more here, since
+   wide tracking reads tighter at a small size */
+.name {
+    font-size: 15px;
+    font-weight: 700;
+    letter-spacing: .14em;
+    line-height: 1;
+    /* Tracking also trails the last letter, so it is taken back to keep the word optically centred */
+    margin-right: -.14em;
+}
+
+.brand:focus-visible { outline: 2px solid var(--lake); outline-offset: 4px; border-radius: 4px; }
