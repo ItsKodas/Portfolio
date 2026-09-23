@@ -5,14 +5,16 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 // that (the session, the database, hostd) is stood in for, because none of it is reached here.
 const callerFromSession = vi.fn()
 const writeSettings = vi.fn()
+const setPort = vi.fn()
 
 vi.mock('next/cache', () => ({ revalidatePath: () => {} }))
 vi.mock('@/server/db', () => ({ getDb: () => ({}) }))
 vi.mock('@/server/hostd/config', () => ({ readHostd: () => ({ url: 'http://hostd', token: 't' }) }))
 vi.mock('@/server/hostd/session', () => ({ callerFromSession: () => callerFromSession() }))
 vi.mock('@/server/hostd/settings', () => ({ writeSettings: (...args: unknown[]) => writeSettings(...args) }))
+vi.mock('@/server/hostd/ports', () => ({ setPort: (...args: unknown[]) => setPort(...args) }))
 
-const { changePrimaryDomainAction, saveSettingsAction, setPrimaryDomainAction } = await import('./actions')
+const { changePrimaryDomainAction, saveSettingsAction, setPortAction, setPrimaryDomainAction } = await import('./actions')
 
 const CANNOT = { ok: false, error: 'That is not something this page can do.' }
 
@@ -72,6 +74,33 @@ describe('saveSettingsAction', () => {
 // Setting the site's address goes through configure rather than the domains verb, because it edits the
 // registry entry rather than writing a vhost, so it reaches hostd through writeSettings like the
 // Settings form does.
+describe('setPortAction', () => {
+    it('refuses a client outright, without calling hostd', async () => {
+        callerFromSession.mockResolvedValue({ caller: { kind: 'client' }, clientId: 'cl_1' })
+
+        expect(await setPortAction('acme', 'live', 5013)).toEqual({ ok: false, error: 'This is not set up yet.' })
+        expect(setPort).not.toHaveBeenCalled()
+    })
+
+    it('refuses an environment or a port the page could not have sent, before the session is read', async () => {
+        expect(await setPortAction('acme', 'staging', 5013)).toEqual(CANNOT)
+        expect(await setPortAction('acme', 'live', 5013.5 as never)).toEqual(CANNOT)
+        expect(await setPortAction('acme', 'live', '5013' as never)).toEqual(CANNOT)
+        expect(callerFromSession).not.toHaveBeenCalled()
+        expect(setPort).not.toHaveBeenCalled()
+    })
+
+    it('sends the admin\'s call through to setPort, answering with hostd\'s own output', async () => {
+        callerFromSession.mockResolvedValue({ caller: { kind: 'admin' }, clientId: null })
+        setPort.mockResolvedValue({ ok: true, value: { output: 'containers recreated' } })
+
+        const result = await setPortAction('acme', 'live', 5013)
+
+        expect(setPort).toHaveBeenCalledWith(expect.anything(), expect.anything(), 'acme', 'live', 5013)
+        expect(result).toEqual({ ok: true, message: 'live now uses port 5013. containers recreated.' })
+    })
+})
+
 describe('setPrimaryDomainAction', () => {
     it('refuses an environment or a hostname the page could not have sent, before the session is read', async () => {
         expect(await setPrimaryDomainAction('acme', 'staging', 'acme.com')).toEqual(CANNOT)
