@@ -340,9 +340,11 @@
     gap: 20px;
 }
 
-@media (min-width: 900px) {
+/* The log gets a real share of the width, since docker's lines are long and wrapping every one of them
+   at 22rem made the output hard to read. The breakpoint sits where that share is still worth having. */
+@media (min-width: 1200px) {
     .deployLayout {
-        grid-template-columns: minmax(0, 1fr) 22rem;
+        grid-template-columns: minmax(0, 3fr) minmax(0, 2fr);
     }
 }
 
