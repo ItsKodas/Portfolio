@@ -41,6 +41,26 @@ projects:
         port: 5011
 `
 
+// acme again, already in the nested layout: live under /var/www/acme/live, with the site's one shared
+// repository at /var/www/acme/git beside it once created.
+const NESTED_LIVE_YAML = `
+projects:
+  acme:
+    client: cl_1
+    name: Acme
+    repo: git@github.com:ItsKodas/acme.git
+    services:
+      web: { role: site }
+    capabilities: [provision, env]
+    environments:
+      live:
+        dir: /var/www/acme/live
+        branch: main
+        domain: acme.com
+        port: 5010
+        certificate: letsencrypt
+`
+
 // A tiny in-memory env-file tree, keyed by full posix path to contents, enough to exercise the
 // copy-and-rewrite step in addEnvironment without ever touching a real disk (env-files.test.ts uses the
 // same approach for the same reason). No symlink support: that boundary is Task 5's own coverage.
@@ -82,6 +102,9 @@ function fakeEnvFs(tree: Record<string, string> = {}) {
 type SetupOptions = {
     registryYaml?: string
     cloneResult?: FetchReply
+    // Per verb, for the fetch, tip and checkout a nested test environment is made with; any verb not
+    // named here answers like a successful clone.
+    fetchResults?: Partial<Record<FetchRequest['verb'], FetchReply>>
     resolveResult?: { ok: true, services: Record<string, GuessedService> } | { ok: false, problem: string }
     portResult?: { ok: true, port: number } | { ok: false, problem: string }
     existsPaths?: string[]
@@ -99,7 +122,13 @@ function setup(options: SetupOptions = {}) {
     const calls: string[] = []
     const mkdirs: string[] = []
     const rmdirs: string[] = []
+    const moves: string[] = []
     const cloneRequests: FetchRequest[] = []
+    const fetchRequests: FetchRequest[] = []
+    // Every disk-shaping step in order, with its paths: `mkdir <dir>`, `move <from> <to>`, `rmdir <dir>`,
+    // and each fetcher call as `<verb> <dir>` (a checkout names its worktree instead). `calls` keeps only
+    // the bare step names, which the ordering tests below compare whole.
+    const steps: string[] = []
     const logs: string[] = []
     const runnerCalls: Array<{ command: string, args: string[] }> = []
     const resolveCalls: Array<{ expectedName: string, dir: string, composePaths: string[], collidesWith?: string }> = []
@@ -139,17 +168,20 @@ function setup(options: SetupOptions = {}) {
         writer,
         fetcher: {
             call: async request => {
-                calls.push('clone')
-                cloneRequests.push(request)
-                return options.cloneResult ?? { ok: true, commit: 'abc1234' }
+                calls.push(request.verb)
+                fetchRequests.push(request)
+                if (request.verb === 'clone') cloneRequests.push(request)
+                steps.push(`${request.verb} ${request.verb === 'checkout' ? request.worktree : 'dir' in request ? request.dir : ''}`)
+                return options.fetchResults?.[request.verb] ?? options.cloneResult ?? { ok: true, commit: 'abc1234' }
             },
         },
         choosePort: async () => {
             calls.push('choosePort')
             return options.portResult ?? { ok: true, port: 5100 }
         },
-        mkdir: async dir => { calls.push('mkdir'); mkdirs.push(dir) },
-        rmdir: async dir => { calls.push('rmdir'); rmdirs.push(dir) },
+        mkdir: async dir => { calls.push('mkdir'); mkdirs.push(dir); steps.push(`mkdir ${dir}`) },
+        move: async (from, to) => { calls.push('move'); moves.push(`${from} ${to}`); steps.push(`move ${from} ${to}`) },
+        rmdir: async dir => { calls.push('rmdir'); rmdirs.push(dir); steps.push(`rmdir ${dir}`) },
         exists: async dir => { calls.push('exists'); return exists.has(dir) },
         owner: async path => {
             calls.push('owner')
@@ -171,7 +203,7 @@ function setup(options: SetupOptions = {}) {
         log: message => logs.push(message),
     }
 
-    return { deps, registry, calls, mkdirs, rmdirs, cloneRequests, logs, registryFiles, envFs, envFsFiles, runnerCalls, resolveCalls, ownerPaths, ownCalls }
+    return { deps, registry, calls, steps, mkdirs, moves, rmdirs, cloneRequests, fetchRequests, logs, registryFiles, envFs, envFsFiles, runnerCalls, resolveCalls, ownerPaths, ownCalls }
 }
 
 const createArgs = (overrides: Partial<ProvisionCreateArgs> = {}): ProvisionCreateArgs => ({
@@ -191,11 +223,11 @@ describe('createProject', () => {
         const { deps, mkdirs, cloneRequests, registryFiles, resolveCalls } = setup()
         const reply = await createProject(createArgs(), deps)
         assert.deepEqual(reply, { ok: true, project: { id: 'bakery', state: 'needs-setup' }, envFiles: [] })
-        assert.deepEqual(mkdirs, ['/var/www/bakery'])
-        assert.deepEqual(cloneRequests, [{ verb: 'clone', repo: 'git@github.com:ItsKodas/bakery.git', dir: '/var/www/bakery', branch: 'main', credential: null }])
-        // The expected compose name is the folder's own basename, with no collision to guard against:
-        // live has no other environment yet.
-        assert.deepEqual(resolveCalls, [{ expectedName: 'bakery', dir: '/var/www/bakery', composePaths: ['/var/www/bakery/docker-compose.yml'], collidesWith: undefined }])
+        assert.deepEqual(mkdirs, ['/var/www/bakery', '/var/www/bakery/live', '/var/www/bakery/git'])
+        assert.deepEqual(cloneRequests, [{ verb: 'clone', repo: 'git@github.com:ItsKodas/bakery.git', dir: '/var/www/bakery/live', branch: 'main', credential: null }])
+        // The expected compose name is the project id, the default for a nested live, with no collision to
+        // guard against: live has no other environment yet.
+        assert.deepEqual(resolveCalls, [{ expectedName: 'bakery', dir: '/var/www/bakery/live', composePaths: ['/var/www/bakery/live/docker-compose.yml'], collidesWith: undefined }])
 
         const written = parseRegistry(registryFiles.get(REGISTRY_PATH)!)
         const bakery = written.projects.get('bakery')
@@ -213,20 +245,22 @@ describe('createProject', () => {
             capabilities: ['lifecycle', 'logs', 'deploy'], websockets: true, flexibleSsl: true,
         }), deps)
         assert.equal(reply.ok, true)
-        assert.deepEqual(mkdirs, ['/var/www/bakery_site'])
-        assert.deepEqual(cloneRequests, [{ verb: 'clone', repo: 'git@github.com:ItsKodas/bakery.git', dir: '/var/www/bakery_site', branch: 'main', credential: null }])
-        // The folder's name, not the id: that is what an unpinned compose file resolves to
+        assert.deepEqual(mkdirs, ['/var/www/bakery_site', '/var/www/bakery_site/live', '/var/www/bakery_site/git'])
+        assert.deepEqual(cloneRequests, [{ verb: 'clone', repo: 'git@github.com:ItsKodas/bakery.git', dir: '/var/www/bakery_site/live', branch: 'main', credential: null }])
+        // The id, not the folder's name: a nested live runs under its project id, whatever its site
+        // folder is called, so an unpinned compose file never resolves to the folder name here.
         assert.deepEqual(resolveCalls, [{
-            expectedName: 'bakery_site', dir: '/var/www/bakery_site',
-            composePaths: ['/var/www/bakery_site/docker-compose.yml', '/var/www/bakery_site/docker-compose.prod.yml'], collidesWith: undefined,
+            expectedName: 'bakery', dir: '/var/www/bakery_site/live',
+            composePaths: ['/var/www/bakery_site/live/docker-compose.yml', '/var/www/bakery_site/live/docker-compose.prod.yml'], collidesWith: undefined,
         }])
 
         const bakery = parseRegistry(registryFiles.get(REGISTRY_PATH)!).projects.get('bakery')!
         assert.equal(bakery.client, null)
         assert.deepEqual([...bakery.capabilities], ['lifecycle', 'logs', 'deploy'])
         const live = bakery.environments.get('live')!
-        assert.equal(live.dir, '/var/www/bakery_site')
-        assert.deepEqual(live.composePaths, ['/var/www/bakery_site/docker-compose.yml', '/var/www/bakery_site/docker-compose.prod.yml'])
+        assert.equal(live.dir, '/var/www/bakery_site/live')
+        assert.equal(live.composeName, 'bakery')
+        assert.deepEqual(live.composePaths, ['/var/www/bakery_site/live/docker-compose.yml', '/var/www/bakery_site/live/docker-compose.prod.yml'])
         assert.equal(live.websockets, true)
         assert.equal(live.flexibleSsl, true)
     })
@@ -241,7 +275,7 @@ describe('createProject', () => {
     it('clones a new project with the credential the create named', async () => {
         const { deps, cloneRequests } = setup()
         await createProject(createArgs({ credential: 'acme' }), deps)
-        assert.deepEqual(cloneRequests, [{ verb: 'clone', repo: 'git@github.com:ItsKodas/bakery.git', dir: '/var/www/bakery', branch: 'main', credential: 'acme' }])
+        assert.deepEqual(cloneRequests, [{ verb: 'clone', repo: 'git@github.com:ItsKodas/bakery.git', dir: '/var/www/bakery/live', branch: 'main', credential: 'acme' }])
     })
 
     // The registry entry has to carry it too, or the first deploy after creation fetches with the
@@ -264,11 +298,12 @@ describe('createProject', () => {
     it('does those in order, so nothing is registered before it exists on disk', async () => {
         const { deps, calls } = setup()
         await createProject(createArgs(), deps)
-        assert.deepEqual(calls, ['exists', 'choosePort', 'mkdir', 'clone', 'owner', 'own', 'resolve', 'write'])
+        assert.deepEqual(calls, ['exists', 'choosePort', 'mkdir', 'mkdir', 'clone', 'mkdir', 'move', 'owner', 'own', 'resolve', 'write'])
     })
 
     // The clone runs as root, in the fetcher, and the empty env files the step after it creates are
-    // written as root here, so everything under /var/www/bakery belongs to root until this runs. A brand
+    // written as root here, so everything under /var/www/bakery (live, and the repository split out
+    // beside it) belongs to root until this runs. A brand
     // new project has no sibling directory of its own to read an owner from, so the pattern is the
     // parent, /var/www itself: the folder this one is being created inside, which already belongs to
     // whoever the operator is. Read, never assumed, exactly as deploy.ts reads a site directory.
@@ -375,7 +410,7 @@ describe('createProject', () => {
         assert.equal(reply.ok, false)
         assert.equal(reply.ok === false && reply.code, 'failed')
         assert.deepEqual(rmdirs, ['/var/www/bakery'])
-        assert.deepEqual(calls, ['exists', 'choosePort', 'mkdir', 'clone', 'owner', 'own', 'resolve', 'rmdir'])
+        assert.deepEqual(calls, ['exists', 'choosePort', 'mkdir', 'mkdir', 'clone', 'mkdir', 'move', 'owner', 'own', 'resolve', 'rmdir'])
     })
 
     it('refuses an id that is taken, reserved or malformed, before touching the disk', async () => {
@@ -754,6 +789,179 @@ projects:
         assert.equal(reply.ok, false)
         assert.equal(reply.ok === false && reply.code, 'bad-request')
         assert.deepEqual(calls, [])
+    })
+})
+
+describe('nested sites', () => {
+    const nestedProject = (): ProjectEntry => parseRegistry(NESTED_LIVE_YAML).projects.get('acme')!
+    const testArgs = (overrides: Partial<ProvisionAddEnvironmentArgs> = {}): ProvisionAddEnvironmentArgs => ({
+        action: 'add-environment', environment: 'test', branch: 'develop', domain: 'test.acme.com', certificate: 'letsencrypt',
+        ...overrides,
+    })
+    const withRepository = { registryYaml: NESTED_LIVE_YAML, existsPaths: ['/var/www/acme/git/.git'] }
+
+    it('creates a new site nested, with its repository split out beside live', async () => {
+        const { deps, steps, registryFiles, logs } = setup()
+        const reply = await createProject(createArgs(), deps)
+        assert.equal(reply.ok, true)
+        assert.deepEqual(steps, [
+            'mkdir /var/www/bakery',
+            'mkdir /var/www/bakery/live',
+            'clone /var/www/bakery/live',
+            'mkdir /var/www/bakery/git',
+            'move /var/www/bakery/live/.git /var/www/bakery/git/.git',
+        ])
+        assert.ok(logs.includes('provision bakery: moved the git repository to /var/www/bakery/git'))
+        const live = parseRegistry(registryFiles.get(REGISTRY_PATH)!).projects.get('bakery')!.environments.get('live')!
+        assert.equal(live.dir, '/var/www/bakery/live')
+        assert.equal(live.composeName, 'bakery')
+        // The default is written as no key at all, so the entry reads the same as a hand-written one.
+        assert.doesNotMatch(registryFiles.get(REGISTRY_PATH)!, /composeName/)
+    })
+
+    it('removes the whole site folder when a create fails', async () => {
+        const { deps, steps, rmdirs, calls } = setup({ cloneResult: { ok: false, code: 'failed', message: 'git clone failed' } })
+        const reply = await createProject(createArgs(), deps)
+        assert.equal(reply.ok, false)
+        assert.deepEqual(rmdirs, ['/var/www/bakery'])
+        assert.deepEqual(steps, ['mkdir /var/www/bakery', 'mkdir /var/www/bakery/live', 'clone /var/www/bakery/live', 'rmdir /var/www/bakery'])
+        assert.equal(calls.includes('write'), false)
+    })
+
+    // The site folder is this call's own by then, so it goes; live never came to exist.
+    it('removes the site folder when live cannot be made inside it', async () => {
+        const { deps, rmdirs, calls } = setup()
+        const mkdir = deps.mkdir
+        deps.mkdir = async dir => {
+            if (dir.endsWith('/live')) throw new Error('EACCES: permission denied')
+            await mkdir(dir)
+        }
+        const reply = await createProject(createArgs(), deps)
+        assert.equal(reply.ok, false)
+        assert.match(reply.ok === false ? reply.message : '', /EACCES/)
+        assert.deepEqual(rmdirs, ['/var/www/bakery'])
+        assert.equal(calls.includes('clone'), false)
+    })
+
+    it('removes the site folder and registers nothing when the repository cannot be moved out of live', async () => {
+        const { deps, rmdirs, calls } = setup()
+        deps.move = async () => { throw new Error('EXDEV: cross-device link not permitted') }
+        const reply = await createProject(createArgs(), deps)
+        assert.equal(reply.ok, false)
+        assert.match(reply.ok === false ? reply.message : '', /EXDEV/)
+        assert.deepEqual(rmdirs, ['/var/www/bakery'])
+        assert.equal(calls.includes('write'), false)
+    })
+
+    it('adds test to a nested site as a worktree of the shared repository', async () => {
+        const { deps, steps, calls, fetchRequests, registryFiles, resolveCalls, ownerPaths, ownCalls } = setup(withRepository)
+        const reply = await addEnvironment(nestedProject(), testArgs(), deps)
+        assert.equal(reply.ok, true)
+        assert.equal(calls.some(call => call === 'clone' || call === 'mkdir'), false)
+        assert.deepEqual(fetchRequests, [
+            { verb: 'fetch', dir: '/var/www/acme/git', branch: 'develop', credential: null },
+            { verb: 'tip', dir: '/var/www/acme/git', branch: 'develop' },
+            { verb: 'checkout', dir: '/var/www/acme/git', worktree: '/var/www/acme/test', commit: 'abc1234' },
+        ])
+        assert.deepEqual(steps, ['fetch /var/www/acme/git', 'tip /var/www/acme/git', 'checkout /var/www/acme/test'])
+        assert.deepEqual(resolveCalls, [{
+            expectedName: 'acme-test', dir: '/var/www/acme/test', composePaths: ['/var/www/acme/test/docker-compose.yml'], collidesWith: 'acme',
+        }])
+        // Patterned on the site folder both environments live in, and applied to test's own tree only.
+        assert.deepEqual(ownerPaths, ['/var/www/acme'])
+        assert.deepEqual(ownCalls, [{ dir: '/var/www/acme/test', like: { uid: 1000, gid: 1000, mode: 0o775 } }])
+        const test = parseRegistry(registryFiles.get(REGISTRY_PATH)!).projects.get('acme')!.environments.get('test')!
+        assert.equal(test.dir, '/var/www/acme/test')
+        assert.equal(test.composeName, 'acme-test')
+        assert.doesNotMatch(registryFiles.get(REGISTRY_PATH)!, /composeName/)
+    })
+
+    it('fetches the test branch with the credential the project already has', async () => {
+        const { deps, fetchRequests } = setup(withRepository)
+        await addEnvironment({ ...nestedProject(), credential: 'acme' }, testArgs(), deps)
+        assert.deepEqual(fetchRequests[0], { verb: 'fetch', dir: '/var/www/acme/git', branch: 'develop', credential: 'acme' })
+    })
+
+    it('copies live env files into the nested test worktree', async () => {
+        const { deps, envFs, envFsFiles } = setup({ ...withRepository, envTree: { '/var/www/acme/live/.env': 'DATABASE_URL=postgres://db/acme\n' } })
+        const reply = await addEnvironment(nestedProject(), testArgs(), deps, envFs)
+        assert.equal(reply.ok, true)
+        assert.equal(envFsFiles.get('/var/www/acme/test/.env'), 'DATABASE_URL=postgres://db/acme-test\n')
+    })
+
+    it('refuses to add test to a nested site with no shared repository', async () => {
+        const { deps, calls } = setup({ registryYaml: NESTED_LIVE_YAML, existsPaths: [] })
+        const reply = await addEnvironment(nestedProject(), testArgs(), deps)
+        assert.deepEqual(reply, { ok: false, code: 'unavailable', message: '/var/www/acme/git has no repository to add test from' })
+        assert.deepEqual(calls, ['exists', 'exists'])
+    })
+
+    it('refuses when the nested test folder already exists, before touching anything', async () => {
+        const { deps, calls } = setup({ registryYaml: NESTED_LIVE_YAML, existsPaths: ['/var/www/acme/git/.git', '/var/www/acme/test'] })
+        const reply = await addEnvironment(nestedProject(), testArgs(), deps)
+        assert.deepEqual(reply, { ok: false, code: 'bad-request', message: '/var/www/acme/test already exists' })
+        assert.deepEqual(calls, ['exists'])
+    })
+
+    // Nothing is on disk before the checkout: a failed fetch or tip has nothing to roll back, and the
+    // site folder, live's and the repository's as much as test's, is never this call's to remove.
+    for (const verb of ['fetch', 'tip'] as const) {
+        it(`refuses and removes nothing when the ${verb} fails`, async () => {
+            const { deps, rmdirs, calls } = setup({ ...withRepository, fetchResults: { [verb]: { ok: false, code: 'failed', message: `git ${verb} failed` } } })
+            const reply = await addEnvironment(nestedProject(), testArgs(), deps)
+            assert.deepEqual(reply, { ok: false, code: 'failed', message: `git ${verb} failed` })
+            assert.deepEqual(rmdirs, [])
+            assert.equal(calls.includes('checkout'), false)
+            assert.equal(calls.includes('write'), false)
+        })
+    }
+
+    it('refuses when the tip names no commit', async () => {
+        const { deps, rmdirs, calls } = setup({ ...withRepository, fetchResults: { tip: { ok: true } } })
+        const reply = await addEnvironment(nestedProject(), testArgs(), deps)
+        assert.equal(reply.ok, false)
+        assert.match(reply.ok === false ? reply.message : '', /no commit for develop/)
+        assert.deepEqual(rmdirs, [])
+        assert.equal(calls.includes('checkout'), false)
+    })
+
+    it('removes only the test worktree when the checkout fails', async () => {
+        const { deps, rmdirs, calls } = setup({ ...withRepository, fetchResults: { checkout: { ok: false, code: 'failed', message: 'git worktree add failed' } } })
+        const reply = await addEnvironment(nestedProject(), testArgs(), deps)
+        assert.deepEqual(reply, { ok: false, code: 'failed', message: 'git worktree add failed' })
+        assert.deepEqual(rmdirs, ['/var/www/acme/test'])
+        assert.equal(calls.includes('write'), false)
+    })
+
+    it('removes only the test worktree, never the site, when a later step fails', async () => {
+        const { deps, rmdirs, calls } = setup({ ...withRepository, resolveResult: { ok: false, problem: 'docker compose config failed' } })
+        const reply = await addEnvironment(nestedProject(), testArgs(), deps)
+        assert.equal(reply.ok, false)
+        assert.deepEqual(rmdirs, ['/var/www/acme/test'])
+        assert.equal(calls.includes('write'), false)
+    })
+
+    it('removes nothing when the fetcher throws before the checkout', async () => {
+        const { deps, rmdirs } = setup(withRepository)
+        deps.fetcher = { call: async () => { throw new Error('the fetcher connection failed: socket reset') } }
+        const reply = await addEnvironment(nestedProject(), testArgs(), deps)
+        assert.equal(reply.ok, false)
+        assert.equal(reply.ok === false && reply.code, 'failed')
+        assert.deepEqual(rmdirs, [])
+    })
+
+    it('removes the test worktree when the fetcher throws during the checkout', async () => {
+        const { deps, rmdirs } = setup(withRepository)
+        const call = deps.fetcher.call
+        deps.fetcher = {
+            call: async request => {
+                if (request.verb === 'checkout') throw new Error('the fetcher did not answer within 330 seconds')
+                return call(request)
+            },
+        }
+        const reply = await addEnvironment(nestedProject(), testArgs(), deps)
+        assert.equal(reply.ok, false)
+        assert.deepEqual(rmdirs, ['/var/www/acme/test'])
     })
 })
 

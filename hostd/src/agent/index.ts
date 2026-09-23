@@ -202,6 +202,7 @@ async function main(): Promise<void> {
         // ports rather than reusing one from an earlier provisioning action.
         choosePort: async () => choosePort(store.current(), dockerPortCheck(docker)),
         mkdir: dir => mkdir(dir),
+        move: (from, to) => rename(from, to),
         rmdir: dir => rm(dir, { recursive: true, force: true }),
         exists,
         // The same two implementations deploy's fs below is given, so a freshly provisioned tree and a

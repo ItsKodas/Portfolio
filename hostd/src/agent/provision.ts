@@ -21,6 +21,7 @@ import type { FetchClient } from './fetch-client.ts'
 import { runLifecycle, type GuessedService, type Runner } from './compose.ts'
 import { listEnvFiles, readEnvFile, writeEnvFile, createMissingEnvFiles, type EnvFs } from './env-files.ts'
 import { isExampleName } from '../shared/envfiles.ts'
+import { isNestedDir, nestedDir, siteOf } from '../shared/layout.ts'
 import {
     refuse, parseCreateExtras,
     type AgentReply, type ProvisionAddEnvironmentArgs, type ProvisionCreateArgs, type Refusal,
@@ -48,7 +49,11 @@ export type ProvisionDeps = {
     writer: RegistryWriter
     fetcher: FetchClient
     choosePort: () => Promise<{ ok: true, port: number } | { ok: false, problem: string }>
+    // Never recursive: a missing parent is a refusal, not something to make on the way.
     mkdir(dir: string): Promise<void>
+    // A plain rename, only ever within one site folder: how a new site's repository leaves live/.git for
+    // the git/ folder beside it.
+    move(from: string, to: string): Promise<void>
     rmdir(dir: string): Promise<void>
     exists(dir: string): Promise<boolean>
     // The same pair deploy.ts's DeployFs already defines, for the same reason and with the same
@@ -176,7 +181,16 @@ async function copyEnvFiles(
 
 type ProvisionAttempt = {
     id: string
+    // The environment's own folder: what is cloned or checked out into, and what resolve reads.
     dir: string
+    // The folder this call makes, owns, and removes again on a rollback. A new nested site's is the site
+    // folder, which holds live and the repository split out of it; everywhere else it is dir itself. A
+    // test worktree's root is its own folder only, never the site around it, which is live's as much as
+    // test's.
+    root: string
+    // Where the tree comes from: a fresh clone of repo into dir, or a worktree of a repository already on
+    // disk (a nested site's shared git/), which git makes the folder for itself.
+    source: { kind: 'clone' } | { kind: 'worktree', repo: string }
     repo: string
     branch: string
     // Which of the fetcher's tokens the clone authenticates with. null is the default GITHUB_TOKEN, the
@@ -189,15 +203,16 @@ type ProvisionAttempt = {
     // The compose project name this environment will run under, checked by resolve before anything is
     // registered.
     composeName: string
-    // The existing directory whose ownership and mode the freshly cloned tree should take. Read, never
-    // assumed, the same rule deploy.ts follows for a checkout and a repository directory. createProject
-    // names the parent, /var/www, because a brand new project has no directory of its own anywhere yet;
-    // addEnvironment names the project's live folder, which is the sibling the test tree is a copy of.
+    // The existing directory whose ownership and mode the new tree should take. Read, never assumed, the
+    // same rule deploy.ts follows for a checkout and a repository directory. createProject names the
+    // parent, /var/www, because a brand new project has no directory of its own anywhere yet;
+    // addEnvironment names the folder the test tree sits in or beside: the site folder for a nested live,
+    // live's own folder for a flat one.
     likeDir: string
     // Relative to dir, in compose's merge order
     compose: string[]
-    // Runs after a successful clone, before resolve. A no-op for create; addEnvironment copies and
-    // rewrites env files here, using the composePath's directory as the freshly cloned test folder.
+    // Runs after a successful clone or checkout, before resolve. A no-op for create; addEnvironment copies
+    // and rewrites env files here, using the composePath's directory as the new test folder.
     afterClone: (composePath: string) => Promise<{ ok: true } | { ok: false, problem: string }>
     // Given the services resolve found (each guessed site or database), attempts the registry write. Only
     // createProject's services are ever non-empty going in; addEnvironment's write ignores the argument.
@@ -213,35 +228,86 @@ type ProvisionAttempt = {
 // that makes each step undoable only while the later ones have not happened. A throw from any dependency
 // (the fetcher on a timeout or a dropped connection, a filesystem call, resolve) is rolled back exactly
 // like a returned failure would be: nothing here assumes a dependency can only fail by returning `ok:
-// false`.
+// false`. A rollback only ever removes `root`, and only once this call has put it on disk.
 async function provisionOnDisk(attempt: ProvisionAttempt, deps: ProvisionDeps): Promise<Refusal | { ok: true, composePaths: string[] }> {
-    const { id, dir } = attempt
+    const { id, dir, root } = attempt
+    // Whether `root` is on disk as this call's own yet: a worktree's fetch or tip failing leaves nothing
+    // behind, and removing a folder then could only ever remove one this call did not make.
+    let made = false
 
     const rollback = async (reason: string): Promise<void> => {
-        deps.log(`provision ${id}: ${reason}, removing ${dir}`)
+        if (!made) {
+            deps.log(`provision ${id}: ${reason}, nothing to remove`)
+            return
+        }
+        deps.log(`provision ${id}: ${reason}, removing ${root}`)
         try {
-            await deps.rmdir(dir)
+            await deps.rmdir(root)
         } catch (error) {
-            deps.log(`provision ${id}: could not remove ${dir}: ${describeError(error)}`)
+            deps.log(`provision ${id}: could not remove ${root}: ${describeError(error)}`)
         }
     }
 
-    deps.log(`provision ${id}: creating ${dir}`)
-    try {
-        await deps.mkdir(dir)
-    } catch (error) {
-        // Nothing of this call's is on disk yet: mkdir itself is what failed, not a step after it. In
-        // particular a failure of EEXIST means the folder is already someone or something else's, and
-        // removing it would delete contents this call never created.
-        deps.log(`provision ${id}: could not create ${dir}: ${describeError(error)}`)
-        return refuse('failed', describeError(error))
+    if (attempt.source.kind === 'clone') {
+        deps.log(`provision ${id}: creating ${root}`)
+        try {
+            await deps.mkdir(root)
+        } catch (error) {
+            // Nothing of this call's is on disk yet: mkdir itself is what failed, not a step after it. In
+            // particular a failure of EEXIST means the folder is already someone or something else's, and
+            // removing it would delete contents this call never created.
+            deps.log(`provision ${id}: could not create ${root}: ${describeError(error)}`)
+            return refuse('failed', describeError(error))
+        }
+        made = true
     }
 
     try {
-        const cloned = await deps.fetcher.call({ verb: 'clone', repo: attempt.repo, dir, branch: attempt.branch, credential: attempt.credential })
-        if (!cloned.ok) {
-            await rollback('clone failed')
-            return refuse('failed', cloned.message)
+        if (attempt.source.kind === 'clone') {
+            // A new nested site: live is made inside the site folder just made, so a failure from here
+            // on removes the site folder as a whole.
+            if (dir !== root) await deps.mkdir(dir)
+            const cloned = await deps.fetcher.call({ verb: 'clone', repo: attempt.repo, dir, branch: attempt.branch, credential: attempt.credential })
+            if (!cloned.ok) {
+                await rollback('clone failed')
+                return refuse('failed', cloned.message)
+            }
+            // The repository leaves live straight away for the site's shared git/ folder, which is where
+            // the first deploy (and adding test) look for it. A rename within one folder, so it is whole
+            // or not done at all, and a failure removes the site folder like any other step.
+            if (dir !== root) {
+                const git = posix.join(root, 'git')
+                await deps.mkdir(git)
+                await deps.move(posix.join(dir, '.git'), posix.join(git, '.git'))
+                deps.log(`provision ${id}: moved the git repository to ${git}`)
+            }
+        } else {
+            const repo = attempt.source.repo
+            const fetched = await deps.fetcher.call({ verb: 'fetch', dir: repo, branch: attempt.branch, credential: attempt.credential })
+            if (!fetched.ok) {
+                await rollback('fetch failed')
+                return refuse('failed', fetched.message)
+            }
+            const tip = await deps.fetcher.call({ verb: 'tip', dir: repo, branch: attempt.branch })
+            if (!tip.ok) {
+                await rollback('tip failed')
+                return refuse('failed', tip.message)
+            }
+            if (!tip.commit) {
+                await rollback('tip gave no commit')
+                return refuse('failed', `the fetcher gave no commit for ${attempt.branch}`)
+            }
+            // git makes the worktree's folder itself, and can leave part of it behind when it fails, so
+            // it counts as this call's from the moment the checkout is asked for. A rollback removes the
+            // folder and nothing else; the worktree record git keeps for it is left for `worktree add
+            // --force` and repair to deal with, the same as a deploy's own failed checkout.
+            deps.log(`provision ${id}: adding ${dir} as a worktree of ${repo}`)
+            made = true
+            const checkedOut = await deps.fetcher.call({ verb: 'checkout', dir: repo, worktree: dir, commit: tip.commit })
+            if (!checkedOut.ok) {
+                await rollback('checkout failed')
+                return refuse('failed', checkedOut.message)
+            }
         }
 
         const composePaths = attempt.compose.map(file => posix.join(dir, file))
@@ -252,8 +318,9 @@ async function provisionOnDisk(attempt: ProvisionAttempt, deps: ProvisionDeps): 
             return refuse('failed', after.problem)
         }
 
-        // Everything under `dir` is root's until here: the clone ran as root in the fetcher, and the env
-        // files afterClone just created or copied were written as root by this process, into a directory
+        // Everything under `root` is root's until here: the clone or checkout ran as root in the fetcher,
+        // the repository split out beside a new live moved with it, and the env files afterClone just
+        // created or copied were written as root by this process, into a directory
         // this process made under its own restrictive umask (see index.ts). Left like that, a site is
         // created that the operator cannot read, edit or start by hand, unlike every hand-enrolled site
         // beside it, and unlike what the first deploy would leave behind once deploy.ts does this same
@@ -262,12 +329,13 @@ async function provisionOnDisk(attempt: ProvisionAttempt, deps: ProvisionDeps): 
         // failure here throws into the catch below, which rolls the folder back, on the same reasoning as
         // every other step: half-owned is not a state worth registering.
         const like = await deps.owner(attempt.likeDir)
-        await deps.own(dir, like)
+        await deps.own(root, like)
 
         // The expected compose project name is the environment's own composeName, checked against what
-        // compose actually resolves before anything is registered: those coincide with the folder
-        // basename for live (/var/www/<id>) but not for test (/var/www/<id>-test), and comparing test's
-        // resolved name against the bare id would refuse the ordinary, unpinned case for every repo.
+        // compose actually resolves before anything is registered: the project id for a nested live,
+        // <id>-test for a nested test, and the folder basename for a flat test (/var/www/<id>-test).
+        // Comparing test's resolved name against the bare id would refuse the ordinary case for every
+        // repo.
         const resolved = await deps.resolve(attempt.composeName, dir, composePaths, attempt.collidesWith)
         if (!resolved.ok) {
             // Named plainly, both in the log and the refusal: this is docker compose's own error (a
@@ -284,7 +352,7 @@ async function provisionOnDisk(attempt: ProvisionAttempt, deps: ProvisionDeps): 
         const written = await attempt.write(resolved.services)
         if (!written.ok) {
             if (written.conflict) {
-                deps.log(`provision ${id}: registry write failed, leaving ${dir} in place (already claimed)`)
+                deps.log(`provision ${id}: registry write failed, leaving ${root} in place (already claimed)`)
                 return refuse('failed', written.problem)
             }
             await rollback('registry write failed')
@@ -312,10 +380,13 @@ export async function createProject(args: ProvisionCreateArgs, deps: ProvisionDe
     if (invalidProblem) return refuse('unavailable', invalidProblem)
     if (RESERVED_PROJECT_IDS.has(args.id)) return refuse('bad-request', `${args.id} is reserved for the operator's own stacks`)
     if (registry.projects.has(args.id) || registry.invalid.has(args.id)) return refuse('bad-request', `${args.id} is already registered`)
-    const dir = `/var/www/${args.dir ?? args.id}`
+    // Every new site is nested: one folder under /var/www holding live, and the repository split out of
+    // it into git/ beside live. The site folder as a whole is what must not exist yet.
+    const site = `/var/www/${args.dir ?? args.id}`
+    const dir = nestedDir(site, 'live')
     const compose = args.compose ?? DEFAULT_COMPOSE
     const flags = { websockets: args.websockets ?? false, flexibleSsl: args.flexibleSsl ?? false }
-    if (await deps.exists(dir)) return refuse('bad-request', `${dir} already exists`)
+    if (await deps.exists(site)) return refuse('bad-request', `${site} already exists`)
     if (args.domain && domainTaken(registry, args.domain)) return refuse('bad-request', `${args.domain} is already used by another project`)
 
     const port = await deps.choosePort()
@@ -324,6 +395,8 @@ export async function createProject(args: ProvisionCreateArgs, deps: ProvisionDe
     const attempt = await provisionOnDisk({
         id: args.id,
         dir,
+        root: site,
+        source: { kind: 'clone' },
         repo: args.repo,
         branch: args.branch,
         // A create has no registry entry to read a credential from yet, so it comes straight from the
@@ -333,8 +406,10 @@ export async function createProject(args: ProvisionCreateArgs, deps: ProvisionDe
         // says who the operator is when the project has nothing of its own to read it from yet. If that
         // directory belongs to root, so does the new site, which is no worse than today and stays
         // consistent with its neighbours either way.
-        likeDir: posix.dirname(dir),
-        composeName: posix.basename(dir),
+        likeDir: '/var/www',
+        // A nested live's default compose name, which the registry entry therefore never has to spell
+        // out: the id, whatever the site folder is called.
+        composeName: args.id,
         compose,
         // A repo usually commits an example beside a gitignored real file, and its compose file usually
         // declares env_file against the real one; resolve (just below, in provisionOnDisk) would
@@ -365,7 +440,7 @@ export async function createProject(args: ProvisionCreateArgs, deps: ProvisionDe
     if (!attempt.ok) return attempt
 
     const live: EnvironmentEntry = {
-        name: 'live', dir, composePaths: attempt.composePaths, composeName: posix.basename(dir), branch: args.branch, domain: args.domain, aliases: [], port: port.port, certificate: args.certificate, deployed: null, ...flags,
+        name: 'live', dir, composePaths: attempt.composePaths, composeName: args.id, branch: args.branch, domain: args.domain, aliases: [], port: port.port, certificate: args.certificate, deployed: null, ...flags,
     }
     const envFiles = await listEnvFiles(live, envFs)
     return { ok: true, project: { id: args.id, state: 'needs-setup' }, envFiles }
@@ -377,8 +452,18 @@ export async function addEnvironment(project: ProjectEntry, args: ProvisionAddEn
     if (!project.repo) return refuse('invalid-project', `${project.id} has no repo to clone from`)
     if (project.environments.has('test')) return refuse('bad-request', `${project.id} already has a test environment`)
 
-    const dir = `${project.dir}-test`
+    // A nested live gets a nested test: a worktree at <site>/test of the one repository the site already
+    // shares, rather than a second clone. A flat live keeps its flat sibling, a separate clone at
+    // <dir>-test, exactly as before nesting.
+    const nested = isNestedDir(project.dir)
+    const site = siteOf(project.dir)
+    const dir = nested ? nestedDir(site, 'test') : `${project.dir}-test`
+    const composeName = nested ? `${project.id}-test` : posix.basename(dir)
     if (await deps.exists(dir)) return refuse('bad-request', `${dir} already exists`)
+    // createProject splits the repository out of live straight after cloning, so a nested site without
+    // one here is one somebody changed by hand: refused rather than guessed at.
+    const repository = posix.join(site, 'git')
+    if (nested && !(await deps.exists(posix.join(repository, '.git')))) return refuse('unavailable', `${repository} has no repository to add test from`)
 
     // Same reasoning as createProject: refresh before the domain and port checks, not just inside
     // choosePort, so both see the same snapshot.
@@ -394,6 +479,10 @@ export async function addEnvironment(project: ProjectEntry, args: ProvisionAddEn
     const attempt = await provisionOnDisk({
         id: project.id,
         dir,
+        // Test's own folder only, in either layout: never the site folder, which is live's as much as
+        // test's.
+        root: dir,
+        source: nested ? { kind: 'worktree', repo: repository } : { kind: 'clone' },
         repo: project.repo,
         branch: args.branch,
         // The project already has a registry entry, so its own credential is what the test clone
@@ -402,17 +491,18 @@ export async function addEnvironment(project: ProjectEntry, args: ProvisionAddEn
         // The live environment's own expected compose name: a test environment pinning it would share
         // one compose project with live, and starting test would take over live's running containers.
         collidesWith: project.composeName,
-        // The project's own folder, not /var/www: the test tree sits beside it and is a copy of it, so
-        // whatever the operator chose for live is what test should match, the same way deploy.ts patterns
-        // a checkout on <dir> rather than on anything further out.
-        likeDir: project.dir,
-        composeName: posix.basename(dir),
+        // The project's own folder, not /var/www: the site folder a nested test sits in, or the flat live
+        // folder a flat test sits beside and is a copy of. Whatever the operator chose for live is what
+        // test should match, the same way deploy.ts patterns a checkout on <dir> rather than on anything
+        // further out.
+        likeDir: site,
+        composeName,
         compose: DEFAULT_COMPOSE,
         afterClone: async composePath => {
             const live = project.environments.get('live')
             if (!live) return { ok: true }
             const test: EnvironmentEntry = {
-                name: 'test', dir, composePaths: [composePath], composeName: posix.basename(dir), branch: args.branch, domain: args.domain, aliases: [], port: port.port, certificate: args.certificate, deployed: null, websockets: false, flexibleSsl: false,
+                name: 'test', dir, composePaths: [composePath], composeName, branch: args.branch, domain: args.domain, aliases: [], port: port.port, certificate: args.certificate, deployed: null, websockets: false, flexibleSsl: false,
             }
             const failures = await copyEnvFiles(project.id, live, test, envFs, deps)
             if (failures.length > 0) return { ok: false, problem: `could not copy ${failures.join(', ')} from the live environment` }
@@ -431,7 +521,7 @@ export async function addEnvironment(project: ProjectEntry, args: ProvisionAddEn
     if (!attempt.ok) return attempt
 
     const test: EnvironmentEntry = {
-        name: 'test', dir, composePaths: attempt.composePaths, composeName: posix.basename(dir), branch: args.branch, domain: args.domain, aliases: [], port: port.port, certificate: args.certificate, deployed: null, websockets: false, flexibleSsl: false,
+        name: 'test', dir, composePaths: attempt.composePaths, composeName, branch: args.branch, domain: args.domain, aliases: [], port: port.port, certificate: args.certificate, deployed: null, websockets: false, flexibleSsl: false,
     }
     const envFiles = await listEnvFiles(test, envFs)
     return { ok: true, project: { id: project.id, state: 'needs-setup' }, envFiles }
