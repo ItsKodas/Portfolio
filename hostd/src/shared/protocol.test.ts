@@ -546,6 +546,25 @@ describe('checkStructure', () => {
 
     // Every other verb reads the compose file or its mounts; removing a project touches no files at all,
     // and a guard failure is exactly the kind of problem that makes an operator want to unregister it.
+    // Matches api's 'remove' policy verb: a whole project can be removed without provision, one
+    // environment of it cannot.
+    it('passes removing a whole project without the provision capability, but not removing one environment', () => {
+        const bare = parseRegistry(`
+projects:
+  bare:
+    client: cl_1
+    name: Bare
+    dir: /var/www/bare
+    upstream: 127.0.0.1:5020
+    services: { web: { role: site } }
+`)
+        assert.equal(checkStructure(bare, { verb: 'provision', project: 'bare', args: { action: 'remove', environment: null } }, none).ok, true)
+        assert.deepEqual(
+            checkStructure(bare, { verb: 'provision', project: 'bare', args: { action: 'remove', environment: 'test' } }, none),
+            { ok: false, code: 'capability-disabled', message: 'provision is not enabled for bare' },
+        )
+    })
+
     it('passes provision remove for a project the storage guard marked invalid, unlike every other verb', () => {
         const guardInvalid = new Map([['acme', 'storage media overlaps a database mount']])
         const remove = checkStructure(registry, { verb: 'provision', project: 'acme', args: { action: 'remove', environment: null } }, guardInvalid)
@@ -592,7 +611,7 @@ projects:
     upstream: 127.0.0.1:5099
     services: { web: { role: site } }
 `)
-        const provisionResult = checkStructure(noProvisionOrEnv, { verb: 'provision', project: 'quiet', args: { action: 'remove', environment: null } }, none)
+        const provisionResult = checkStructure(noProvisionOrEnv, { verb: 'provision', project: 'quiet', args: { action: 'remove', environment: 'test' } }, none)
         assert.deepEqual(provisionResult, { ok: false, code: 'capability-disabled', message: 'provision is not enabled for quiet' })
         const envResult = checkStructure(noProvisionOrEnv, { verb: 'env', project: 'quiet', args: { action: 'list', environment: 'live' } }, none)
         assert.deepEqual(envResult, { ok: false, code: 'capability-disabled', message: 'env is not enabled for quiet' })

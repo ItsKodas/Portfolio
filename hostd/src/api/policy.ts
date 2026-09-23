@@ -16,8 +16,11 @@ import type { Actor } from './auth.ts'
 // and re-checking a hostname all change what Apache serves, so they are the operator's; reading the
 // list is how a client watches their own DNS land, so that half is theirs. Re-checking is in the admin
 // half rather than the read one because it writes the record it checks.
+//
+// 'remove' is deleting a whole project, split from 'provision' so it needs no capability: see its entry
+// below.
 export type PolicyVerb =
-    | 'status' | 'lifecycle' | 'logs' | 'audit' | 'provision' | 'env' | 'deploy' | 'deploy-read'
+    | 'status' | 'lifecycle' | 'logs' | 'audit' | 'provision' | 'remove' | 'env' | 'deploy' | 'deploy-read'
     | 'backup' | 'backup-read'
     | 'domains' | 'domains-read' | 'configure'
 
@@ -29,6 +32,10 @@ const POLICY_CAPABILITY: Record<PolicyVerb, Capability | null> = {
     lifecycle: 'lifecycle',
     logs: 'logs',
     provision: 'provision',
+    // Null for the reason configure is: the portal can create a site with no provision capability, so
+    // gating its removal on one would leave every site it made undeletable until the operator ticked a box
+    // first. What guards it is ADMIN_ONLY, and the project's name typed back (routes.ts).
+    remove: null,
     env: 'env',
     deploy: 'deploy',
     'deploy-read': 'deploy',
@@ -44,7 +51,7 @@ const POLICY_CAPABILITY: Record<PolicyVerb, Capability | null> = {
 }
 
 // What only the admin may ever do, whatever the registry says and whoever owns the project.
-const ADMIN_ONLY: PolicyVerb[] = ['provision', 'env', 'deploy', 'domains', 'configure']
+const ADMIN_ONLY: PolicyVerb[] = ['provision', 'remove', 'env', 'deploy', 'domains', 'configure']
 export type Decision =
     | { ok: true, project: ProjectEntry }
     | { ok: false, status: 403 | 404 | 409, code: 'not-found' | 'capability-disabled' | 'invalid-project', message: string }

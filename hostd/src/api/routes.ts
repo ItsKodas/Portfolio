@@ -612,7 +612,7 @@ export function createHandler(deps: ApiDeps): (req: IncomingMessage, res: Server
         // mechanism of both, so it lives in exactly one place rather than two copies that could drift.
         const removeProject = async (project: string, environment: EnvironmentName | null): Promise<void> => {
             const target = environment ? `${project} remove ${environment}` : `${project} remove`
-            const entry = await authorizeProject(project, 'provision', target)
+            const entry = await authorizeProject(project, environment ? 'provision' : 'remove', target)
             if (!entry) return
 
             const body = await readJsonBody(req, MAX_REQUEST_BYTES)

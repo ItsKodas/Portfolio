@@ -393,6 +393,7 @@ export default async function SitePage({ params, searchParams }: Props) {
                             ? (
                                 <SiteSettingsForm
                                     id={view.id}
+                                    name={view.name}
                                     capabilities={view.capabilities}
                                     repo={view.repo}
                                     credential={view.credential}

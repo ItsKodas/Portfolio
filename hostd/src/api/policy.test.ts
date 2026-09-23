@@ -94,6 +94,16 @@ describe('authorize: provision and env are admin-only', () => {
     })
 })
 
+describe('authorize: removing a whole project', () => {
+    it('lets the admin remove a project with no provision capability', () => {
+        assert.equal(authorize(registry, admin, 'quiet', 'remove').ok, true)
+    })
+
+    it('gives its owner the same 404 as a project that is not theirs', () => {
+        assert.deepEqual(authorize(registry, owner, 'acme', 'remove'), authorize(registry, stranger, 'acme', 'status'))
+    })
+})
+
 describe('authorize: deploying is admin-only, reading a deploy is not', () => {
     const deployable = parseRegistry(`
 projects:

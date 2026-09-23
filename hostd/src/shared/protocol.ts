@@ -902,8 +902,12 @@ export function checkStructure(
     const guardProblem = guardInvalid.get(id)
     if (guardProblem !== undefined && !removingProject) return refuse('invalid-project', `${id} is invalid: ${guardProblem}`)
 
+    // Removing the whole project needs no capability, matching api's 'remove' policy verb: gating it would
+    // leave a project that was never given provision impossible to remove. Removing one environment is
+    // still provision's.
+    const removingWhole = request.verb === 'provision' && request.args.action === 'remove' && request.args.environment === null
     const capability = VERB_CAPABILITY[request.verb]
-    if (capability && !project.capabilities.has(capability)) return refuse('capability-disabled', `${capability} is not enabled for ${id}`)
+    if (capability && !removingWhole && !project.capabilities.has(capability)) return refuse('capability-disabled', `${capability} is not enabled for ${id}`)
 
     if (request.verb === 'logs') {
         const service = request.args.service

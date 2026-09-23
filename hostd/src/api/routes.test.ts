@@ -823,6 +823,20 @@ describe('DELETE /projects/:id', () => {
         assert.equal((await request('/projects/acme', { method: 'DELETE', actor: 'admin', body: { name: 1 } })).status, 400)
         assert.deepEqual(agent.calls, [])
     })
+
+    // quiet has no provision capability, which is every site the portal creates unless it was ticked
+    it('removes a project without the provision capability', async () => {
+        agent.reply = () => ({ ok: true, output: 'quiet was stopped and unregistered' })
+        const response = await request('/projects/quiet', { method: 'DELETE', actor: 'admin', body: { name: 'Quiet' } })
+        assert.equal(response.status, 200)
+        assert.deepEqual(agent.calls, [{ verb: 'provision', project: 'quiet', args: { action: 'remove', environment: null } }])
+    })
+
+    it('answers its owner 404 without calling the agent', async () => {
+        const response = await request('/projects/acme', { method: 'DELETE', actor: 'client:cl_1', body: { name: 'Acme' } })
+        assert.equal(response.status, 404)
+        assert.deepEqual(agent.calls, [])
+    })
 })
 
 describe('POST /projects/:id/environments', () => {

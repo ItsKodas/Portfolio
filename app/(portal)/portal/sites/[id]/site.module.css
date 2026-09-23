@@ -172,6 +172,18 @@
 
 .save { margin-top: 12px; display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
 
+/* Set apart from Save by a rule and some room: it is the one thing on the tab that cannot be undone here. */
+.deleteSite {
+    margin-top: 32px;
+    padding-top: 16px;
+    border-top: 1px solid var(--rule);
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+}
+.deleteSite h3 { font-size: 13px; color: var(--ink); margin: 0; font-weight: 600; }
+.deleteSite .note { margin-top: 0; }
+
 .logHead {
     display: flex;
     flex-wrap: wrap;
