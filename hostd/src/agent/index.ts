@@ -18,6 +18,7 @@ import { createDockerApi, dockerPortCheck } from './docker.ts'
 import { createSpawnRunner, resolveNewProject } from './compose.ts'
 import { GuardTracker } from './guard-tracker.ts'
 import { createFetchClient, socketConnect } from './fetch-client.ts'
+import { serialisePerRepo } from './fetch-lock.ts'
 import { Agent } from './agent.ts'
 import type { ProvisionDeps } from './provision.ts'
 import { currentTip, type DeployDeps } from './deploy.ts'
@@ -174,7 +175,7 @@ async function main(): Promise<void> {
     let fetcherProblem = await checkFetcher()
 
     const writer = new RegistryWriter(REGISTRY_FILE)
-    const fetcher = createFetchClient(socketConnect(FETCH_SOCKET_PATH))
+    const fetcher = serialisePerRepo(createFetchClient(socketConnect(FETCH_SOCKET_PATH)))
     const exists = async (path: string): Promise<boolean> => {
         try {
             await stat(path)
