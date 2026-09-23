@@ -19,7 +19,7 @@ export const CAPABILITIES: ReadonlyArray<{ key: string, built: boolean }> = [
 // bury the one thing it needs to say under seven copies of the same sentence.
 export const NOT_BUILT = 'files, backups and provision are designed but not built yet. hostd cannot act on '
     + 'them, so ticking one here does not switch anything on. Provision, once it is built, will let this '
-    + 'project be re-provisioned and removed through the API.'
+    + 'project be re-provisioned through the API. Deleting the site needs none of these.'
 
 // Each environment's render-only switches, in hostd's ENVIRONMENT_FLAGS order. The note is said under
 // each checkbox: what it does to a site hostd already serves, and what it does to one still on a

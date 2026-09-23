@@ -463,9 +463,10 @@ function fakeProvisionDeps(overrides: Partial<ProvisionDeps> = {}): ProvisionDep
 describe('provisioning and env', () => {
     const envWrite = (project = 'acme'): AgentRequest => ({ verb: 'env', project, args: { action: 'write', environment: 'live', path: '.env', text: 'A=1' } })
 
+    // Removing one environment; removing the whole project needs no capability (see checkStructure)
     it('refuses provision and env when the capability is off', async () => {
         const { agent } = setup({ provision: fakeProvisionDeps() })
-        const provisionReply = replyOf(await agent.handle({ verb: 'provision', project: 'quiet', args: { action: 'remove', environment: null } }))
+        const provisionReply = replyOf(await agent.handle({ verb: 'provision', project: 'quiet', args: { action: 'remove', environment: 'test' } }))
         assert.equal(provisionReply?.ok === false && provisionReply.code, 'capability-disabled')
 
         const envReply = replyOf(await agent.handle({ verb: 'env', project: 'quiet', args: { action: 'list', environment: 'live' } }))

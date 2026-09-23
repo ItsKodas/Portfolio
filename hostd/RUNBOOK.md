@@ -827,6 +827,10 @@ database on a timer.
   unregisters a project that is still running, since nothing would then be able to stop it. Removing only
   the test environment does not stop anything (there is no per-environment lifecycle yet, so there is
   nothing safe for this to stop).
+- **Removing a whole project needs no capability.** `DELETE /projects/:id` is admin-only and takes the
+  project's name typed back, but works whether or not the project lists `provision`, so a site the
+  portal created can be deleted from its Settings tab. Removing only the test environment still needs
+  `provision`.
 - **Removing a project leaves its folder, volumes and databases in place.** `provision remove` stops it,
   edits the registry, and takes hostd's own vhost for each environment it removed off the host; nothing
   under `/var/www` is deleted. The vhost goes because a file left behind would go on claiming those
