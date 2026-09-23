@@ -8,6 +8,7 @@ import {
     type Capability, type CertificateMode, type EnvironmentFlag, type EnvironmentName, type Keep, type ProjectEntry, type Registry,
 } from './registry.ts'
 import { normaliseHostname } from './hostnames.ts'
+import { PORT_RANGE } from './ports.ts'
 import type { Commit } from './fetch-protocol.ts'
 import type { DeployRecord, DeployTrigger } from './deploys.ts'
 import type { EnvFileList } from './envfiles.ts'
@@ -68,6 +69,9 @@ export type ProvisionCreateArgs = {
     capabilities?: Capability[]
     websockets?: boolean
     flexibleSsl?: boolean
+    // The live environment's port. Absent means hostd chooses the lowest free one, which is what the
+    // runbook's hand calls and every create before this field got.
+    port?: number
 }
 export type ProvisionAddEnvironmentArgs = {
     action: 'add-environment'
@@ -361,10 +365,10 @@ function parseLogsArgs(args: unknown): LogsArgs | Refusal {
 // request line.
 export const CREATE_KEYS = [
     'id', 'client', 'name', 'repo', 'credential', 'branch', 'domain', 'certificate',
-    'dir', 'compose', 'capabilities', 'websockets', 'flexibleSsl',
+    'dir', 'compose', 'capabilities', 'websockets', 'flexibleSsl', 'port',
 ] as const
 
-type CreateExtras = Pick<ProvisionCreateArgs, 'client' | 'dir' | 'compose' | 'capabilities' | 'websockets' | 'flexibleSsl'>
+type CreateExtras = Pick<ProvisionCreateArgs, 'client' | 'dir' | 'compose' | 'capabilities' | 'websockets' | 'flexibleSsl' | 'port'>
 
 // The optional half of a create, shared by both parsers and by the agent's own check so the three cannot
 // drift. Each field is either absent or fully valid by the time it comes back: grammar here, and what is
@@ -406,6 +410,13 @@ export function parseCreateExtras(raw: Record<string, unknown>): { ok: true, ext
         if (raw[flag] === undefined) continue
         if (typeof raw[flag] !== 'boolean') return { ok: false, message: `${flag} must be true or false` }
         extras[flag] = raw[flag] as boolean
+    }
+    if (raw.port !== undefined) {
+        // The range only: whether a port is free is the agent's to say, against the registry and the host
+        if (typeof raw.port !== 'number' || !Number.isInteger(raw.port) || raw.port < PORT_RANGE.from || raw.port > PORT_RANGE.to) {
+            return { ok: false, message: `port must be a whole number from ${PORT_RANGE.from} to ${PORT_RANGE.to}` }
+        }
+        extras.port = raw.port
     }
     return { ok: true, extras }
 }

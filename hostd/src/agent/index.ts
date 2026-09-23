@@ -8,7 +8,7 @@ import { randomBytes } from 'node:crypto'
 import { posix } from 'node:path'
 import { RegistryStore, explainRegistryError } from '../shared/registry-store.ts'
 import { RegistryWriter } from '../shared/registry-write.ts'
-import { choosePort } from '../shared/ports.ts'
+import { choosePort, portProblem } from '../shared/ports.ts'
 import { buildStatus, writeStatus } from '../shared/status.ts'
 import { readSystemUsage, systemSource, DEFAULT_SYSTEM_DISK_PATH } from '../shared/system.ts'
 import { describeError } from '../shared/formats.ts'
@@ -17,6 +17,7 @@ import { deployKey } from '../shared/deploys.ts'
 import { createDockerApi, publishedHostPorts } from './docker.ts'
 import { createSpawnRunner, resolveNewProject } from './compose.ts'
 import { createHostPortReader } from './host-ports.ts'
+import { writePortEnv } from './port-env.ts'
 import { GuardTracker } from './guard-tracker.ts'
 import { createFetchClient, socketConnect } from './fetch-client.ts'
 import { Agent } from './agent.ts'
@@ -209,6 +210,13 @@ async function main(): Promise<void> {
             const seen = await listening()
             return seen.ok ? choosePort(store.current(), seen.ports) : { ok: false, problem: seen.problem }
         },
+        checkPort: async (port, own) => {
+            const seen = await listening()
+            if (!seen.ok) return { ok: false, code: 'unavailable', problem: seen.problem }
+            const problem = portProblem(port, store.current(), seen.ports, own)
+            return problem ? { ok: false, code: 'bad-request', problem } : { ok: true }
+        },
+        setPortEnv: (environment, key, port) => writePortEnv(environment, key, port),
         mkdir: dir => mkdir(dir),
         rmdir: dir => rm(dir, { recursive: true, force: true }),
         exists,

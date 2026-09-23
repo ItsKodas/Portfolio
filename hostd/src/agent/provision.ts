@@ -13,9 +13,10 @@ import { randomBytes } from 'node:crypto'
 
 import { PROJECT_ID, CLIENT_ID, HOSTNAME, RESERVED_PROJECT_IDS, describeError } from '../shared/formats.ts'
 import {
-    GIT_REF, GIT_REPO,
+    GIT_REF, GIT_REPO, DEFAULT_PORT_ENV,
     type CertificateMode, type EnvironmentEntry, type EnvironmentName, type ProjectEntry, type Registry,
 } from '../shared/registry.ts'
+import type { OwnPort, PortVerdict } from '../shared/ports.ts'
 import { RegistryWriter, type Change } from '../shared/registry-write.ts'
 import type { FetchClient } from './fetch-client.ts'
 import { runLifecycle, type GuessedService, type Runner } from './compose.ts'
@@ -48,6 +49,13 @@ export type ProvisionDeps = {
     writer: RegistryWriter
     fetcher: FetchClient
     choosePort: () => Promise<{ ok: true, port: number } | { ok: false, problem: string }>
+    // Whether a port the operator named is free: the same rule choosePort applies, against the registry
+    // and a fresh reading of the host. own is the environment the port is for, whose current port is not
+    // counted against it.
+    checkPort: (port: number, own?: OwnPort) => Promise<PortVerdict>
+    // Writes <key>=<port> into the environment's root .env (port-env.ts), answering what was there. A
+    // dependency rather than a direct call, so a test never writes to a real /var/www.
+    setPortEnv: (environment: EnvironmentEntry, key: string, port: number) => Promise<{ ok: true, previous: string | null } | { ok: false, problem: string }>
     mkdir(dir: string): Promise<void>
     rmdir(dir: string): Promise<void>
     exists(dir: string): Promise<boolean>
@@ -63,7 +71,7 @@ export type ProvisionDeps = {
     // composePaths is every file the environment runs with, in compose's merge order: whatever the
     // operator named at create (docker-compose.yml when they named nothing), so a file missing from the
     // clone, or an override that does not merge, refuses the create instead of surfacing at first deploy.
-    resolve(expectedName: string, dir: string, composePaths: string[], collidesWith?: string): Promise<{ ok: true, services: Record<string, GuessedService> } | { ok: false, problem: string }>
+    resolve(expectedName: string, dir: string, composePaths: string[], collidesWith?: string): Promise<{ ok: true, services: Record<string, GuessedService>, published: number[] } | { ok: false, problem: string }>
     // Only ever used to stop the live environment before removeProject unregisters a whole project: there
     // is no per-environment lifecycle yet (see RUNBOOK.md), so this is never asked to touch test.
     runner: Runner
@@ -104,6 +112,12 @@ function domainTaken(registry: Registry, domain: string, excludeId?: string): bo
 function invalidRegistryProblem(registry: Registry): string | null {
     if (registry.invalid.size === 0) return null
     return `fix these invalid projects before provisioning: ${[...registry.invalid.keys()].sort().join(', ')}`
+}
+
+// Said the same way by create, add-environment and a port change, so the operator always learns what the
+// compose file has to say, not only that it did not say it.
+export function notPublishedProblem(key: string, port: number): string {
+    return `no service publishes port ${port}; publish \${${key}} in the compose file, like "127.0.0.1:\${${key}}:3000"`
 }
 
 function isDatabaseKey(key: string): boolean {
@@ -193,6 +207,10 @@ type ProvisionAttempt = {
     likeDir: string
     // Relative to dir, in compose's merge order
     compose: string[]
+    // The port this environment gets. provisionOnDisk writes it into .env straight after the clone
+    // (after afterClone, so it wins over a .env copied from live) and refuses unless compose publishes it.
+    port: number
+    portEnv: string
     // Runs after a successful clone, before resolve. A no-op for create; addEnvironment copies and
     // rewrites env files here, using the composePath's directory as the freshly cloned test folder.
     afterClone: (composePath: string) => Promise<{ ok: true } | { ok: false, problem: string }>
@@ -249,6 +267,16 @@ async function provisionOnDisk(attempt: ProvisionAttempt, deps: ProvisionDeps): 
             return refuse('failed', after.problem)
         }
 
+        // Before own, so .env is covered by it, and before resolve, which interpolates it
+        const portWritten = await deps.setPortEnv(
+            { name: 'live', dir, composePaths, branch: attempt.branch, domain: null, aliases: [], port: attempt.port, certificate: null, deployed: null, websockets: false, flexibleSsl: false },
+            attempt.portEnv, attempt.port,
+        )
+        if (!portWritten.ok) {
+            await rollback('writing the port failed')
+            return refuse('failed', portWritten.problem)
+        }
+
         // Everything under `dir` is root's until here: the clone ran as root in the fetcher, and the env
         // files afterClone just created or copied were written as root by this process, into a directory
         // this process made under its own restrictive umask (see index.ts). Left like that, a site is
@@ -276,6 +304,10 @@ async function provisionOnDisk(attempt: ProvisionAttempt, deps: ProvisionDeps): 
         if (Object.keys(resolved.services).length === 0) {
             await rollback('compose declares no services')
             return refuse('invalid-project', 'the compose file declares no services')
+        }
+        if (!resolved.published.includes(attempt.port)) {
+            await rollback(`compose does not publish port ${attempt.port}`)
+            return refuse('invalid-project', notPublishedProblem(attempt.portEnv, attempt.port))
         }
 
         const written = await attempt.write(resolved.services)
@@ -315,8 +347,17 @@ export async function createProject(args: ProvisionCreateArgs, deps: ProvisionDe
     if (await deps.exists(dir)) return refuse('bad-request', `${dir} already exists`)
     if (args.domain && domainTaken(registry, args.domain)) return refuse('bad-request', `${args.domain} is already used by another project`)
 
-    const port = await deps.choosePort()
-    if (!port.ok) return refuse('unavailable', port.problem)
+    let port: { ok: true, port: number }
+    if (args.port === undefined) {
+        const chosen = await deps.choosePort()
+        if (!chosen.ok) return refuse('unavailable', chosen.problem)
+        port = chosen
+    } else {
+        // Checked here, under the agent's provisioning lock, whatever the portal's live check said
+        const verdict = await deps.checkPort(args.port)
+        if (!verdict.ok) return refuse(verdict.code, verdict.problem)
+        port = { ok: true, port: args.port }
+    }
 
     const attempt = await provisionOnDisk({
         id: args.id,
@@ -332,6 +373,9 @@ export async function createProject(args: ProvisionCreateArgs, deps: ProvisionDe
         // consistent with its neighbours either way.
         likeDir: posix.dirname(dir),
         compose,
+        port: port.port,
+        // A new project has no `portEnv` key yet, so it gets the default.
+        portEnv: DEFAULT_PORT_ENV,
         // A repo usually commits an example beside a gitignored real file, and its compose file usually
         // declares env_file against the real one; resolve (just below, in provisionOnDisk) would
         // otherwise fail on a repo that has done nothing wrong, before the operator ever gets to fill
@@ -403,6 +447,8 @@ export async function addEnvironment(project: ProjectEntry, args: ProvisionAddEn
         // a checkout on <dir> rather than on anything further out.
         likeDir: project.dir,
         compose: DEFAULT_COMPOSE,
+        port: port.port,
+        portEnv: project.portEnv,
         afterClone: async composePath => {
             const live = project.environments.get('live')
             if (!live) return { ok: true }

@@ -690,6 +690,13 @@ describe('POST /projects', () => {
         assert.deepEqual(agent.calls, [])
     })
 
+    it('carries a port through to the agent', async () => {
+        agent.reply = () => ({ ok: true, project: { id: 'newsite', state: 'needs-setup' }, envFiles: [] })
+        const response = await request('/projects', { method: 'POST', actor: 'admin', body: { ...CREATE_BODY, domain: null, certificate: null, port: 5012 } })
+        assert.equal(response.status, 200)
+        assert.equal((agent.calls[0] as { args: { port?: number } }).args.port, 5012)
+    })
+
     it('returns 503 when the agent refuses because provisioning is not configured', async () => {
         // This is a well-formed agent reply (a Refusal with code 'unavailable'), not a dropped
         // connection: it exercises the ordinary refusal pass-through in respondAgentAction, mapped

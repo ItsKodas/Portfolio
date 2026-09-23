@@ -446,6 +446,8 @@ function fakeProvisionDeps(overrides: Partial<ProvisionDeps> = {}): ProvisionDep
         writer: { write: async () => ({ ok: true }) } as unknown as ProvisionDeps['writer'],
         fetcher: { call: async () => ({ ok: true }) },
         choosePort: async () => ({ ok: true, port: 5100 }),
+        checkPort: async () => ({ ok: true }),
+        setPortEnv: async () => ({ ok: true, previous: null }),
         mkdir: async () => {},
         rmdir: async () => {},
         exists: async () => false,
@@ -453,7 +455,7 @@ function fakeProvisionDeps(overrides: Partial<ProvisionDeps> = {}): ProvisionDep
         // two only have to succeed here, since what provisioning does with them is provision.test.ts's.
         owner: async () => ({ uid: 1000, gid: 1000, mode: 0o775 }),
         own: async () => {},
-        resolve: async () => ({ ok: true, services: { web: { role: 'site' } } }),
+        resolve: async () => ({ ok: true, services: { web: { role: 'site' } }, published: [5100] }),
         runner: async () => ({ exitCode: 0, stdout: '', stderr: '', timedOut: false }),
         log: () => {},
         ...overrides,
@@ -541,6 +543,9 @@ describe('provisioning and env', () => {
             },
             // Only the first call blocks: once serialised, the second is free to run to completion.
             fetcher: { call: async () => { calls++; if (calls === 1) await blocked; return { ok: true, commit: 'abc1234' } } },
+            // Whatever choosePort has handed out so far, so each attempt's own port is published by the
+            // time resolve runs for it, regardless of which of the two ports it was given.
+            resolve: async () => ({ ok: true, services: { web: { role: 'site' } }, published: [...ports] }),
         })
         const { agent } = setup({ provision })
 
@@ -595,7 +600,7 @@ describe('provisioning and env', () => {
         })
         const writes: Array<{ path: string, text: string }> = []
         const provision = fakeProvisionDeps({
-            resolve: async () => ({ ok: true, services: { web: { role: 'site' } } }),
+            resolve: async () => ({ ok: true, services: { web: { role: 'site' } }, published: [5100] }),
         })
         const { agent } = setup({
             provision,
