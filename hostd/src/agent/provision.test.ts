@@ -102,7 +102,7 @@ function setup(options: SetupOptions = {}) {
     const cloneRequests: FetchRequest[] = []
     const logs: string[] = []
     const runnerCalls: Array<{ command: string, args: string[] }> = []
-    const resolveCalls: Array<{ expectedName: string, dir: string, composePath: string, collidesWith?: string }> = []
+    const resolveCalls: Array<{ expectedName: string, dir: string, composePaths: string[], collidesWith?: string }> = []
     const ownerPaths: string[] = []
     const ownCalls: Array<{ dir: string, like: { uid: number, gid: number, mode: number } }> = []
 
@@ -159,9 +159,9 @@ function setup(options: SetupOptions = {}) {
             return found
         },
         own: async (dir, like) => { calls.push('own'); ownCalls.push({ dir, like }) },
-        resolve: async (expectedName, dir, composePath, collidesWith) => {
+        resolve: async (expectedName, dir, composePaths, collidesWith) => {
             calls.push('resolve')
-            resolveCalls.push({ expectedName, dir, composePath, collidesWith })
+            resolveCalls.push({ expectedName, dir, composePaths, collidesWith })
             return options.resolveResult ?? { ok: true, services: { web: { role: 'site' } } }
         },
         runner: (async (command, args) => {
@@ -195,7 +195,7 @@ describe('createProject', () => {
         assert.deepEqual(cloneRequests, [{ verb: 'clone', repo: 'git@github.com:ItsKodas/bakery.git', dir: '/var/www/bakery', branch: 'main', credential: null }])
         // The expected compose name is the folder's own basename, with no collision to guard against:
         // live has no other environment yet.
-        assert.deepEqual(resolveCalls, [{ expectedName: 'bakery', dir: '/var/www/bakery', composePath: '/var/www/bakery/docker-compose.yml', collidesWith: undefined }])
+        assert.deepEqual(resolveCalls, [{ expectedName: 'bakery', dir: '/var/www/bakery', composePaths: ['/var/www/bakery/docker-compose.yml'], collidesWith: undefined }])
 
         const written = parseRegistry(registryFiles.get(REGISTRY_PATH)!)
         const bakery = written.projects.get('bakery')
@@ -204,6 +204,38 @@ describe('createProject', () => {
         assert.equal(bakery.environments.get('live')?.domain, 'bakery.com')
         assert.equal(bakery.environments.get('live')?.port, 5100)
         assert.deepEqual(bakery.services, { web: { role: 'site' } })
+    })
+
+    it('creates into the folder the create named, resolving and registering every compose file it listed', async () => {
+        const { deps, mkdirs, cloneRequests, registryFiles, resolveCalls } = setup()
+        const reply = await createProject(createArgs({
+            client: undefined, dir: 'bakery_site', compose: ['docker-compose.yml', 'docker-compose.prod.yml'],
+            capabilities: ['lifecycle', 'logs', 'deploy'], websockets: true, flexibleSsl: true,
+        }), deps)
+        assert.equal(reply.ok, true)
+        assert.deepEqual(mkdirs, ['/var/www/bakery_site'])
+        assert.deepEqual(cloneRequests, [{ verb: 'clone', repo: 'git@github.com:ItsKodas/bakery.git', dir: '/var/www/bakery_site', branch: 'main', credential: null }])
+        // The folder's name, not the id: that is what an unpinned compose file resolves to
+        assert.deepEqual(resolveCalls, [{
+            expectedName: 'bakery_site', dir: '/var/www/bakery_site',
+            composePaths: ['/var/www/bakery_site/docker-compose.yml', '/var/www/bakery_site/docker-compose.prod.yml'], collidesWith: undefined,
+        }])
+
+        const bakery = parseRegistry(registryFiles.get(REGISTRY_PATH)!).projects.get('bakery')!
+        assert.equal(bakery.client, null)
+        assert.deepEqual([...bakery.capabilities], ['lifecycle', 'logs', 'deploy'])
+        const live = bakery.environments.get('live')!
+        assert.equal(live.dir, '/var/www/bakery_site')
+        assert.deepEqual(live.composePaths, ['/var/www/bakery_site/docker-compose.yml', '/var/www/bakery_site/docker-compose.prod.yml'])
+        assert.equal(live.websockets, true)
+        assert.equal(live.flexibleSsl, true)
+    })
+
+    it('refuses a folder that already exists under the name the create gave, before touching anything', async () => {
+        const { deps, mkdirs } = setup()
+        const reply = await createProject(createArgs({ dir: 'taken' }), { ...deps, exists: async dir => dir === '/var/www/taken' })
+        assert.deepEqual(reply, { ok: false, code: 'bad-request', message: '/var/www/taken already exists' })
+        assert.deepEqual(mkdirs, [])
     })
 
     it('clones a new project with the credential the create named', async () => {
@@ -516,7 +548,7 @@ describe('addEnvironment', () => {
         const { deps, resolveCalls } = setup()
         await addEnvironment(project(), args(), deps)
         assert.deepEqual(resolveCalls, [{
-            expectedName: 'acme-test', dir: '/var/www/acme-test', composePath: '/var/www/acme-test/docker-compose.yml', collidesWith: 'acme',
+            expectedName: 'acme-test', dir: '/var/www/acme-test', composePaths: ['/var/www/acme-test/docker-compose.yml'], collidesWith: 'acme',
         }])
     })
 

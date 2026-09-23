@@ -207,7 +207,7 @@ async function main(): Promise<void> {
         // freshly deployed one end up owned and moded by exactly the same rule.
         owner: ownerOf,
         own: (dir, like) => ownTree(dir, like),
-        resolve: (expectedName, dir, composePath, collidesWith) => resolveNewProject({ dir, composePaths: [composePath] }, expectedName, runner, collidesWith),
+        resolve: (expectedName, dir, composePaths, collidesWith) => resolveNewProject({ dir, composePaths }, expectedName, runner, collidesWith),
         runner,
         log,
     }

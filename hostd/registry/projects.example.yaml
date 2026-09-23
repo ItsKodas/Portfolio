@@ -30,7 +30,7 @@ projects:
   # An entry with dir and upstream and no environments, like this one, means live only: dir,
   # composePaths and upstream keep meaning exactly what they mean today.
   acme-bakery:
-    client: cl_8f2k1              # the portal's client id
+    client: cl_8f2k1              # the portal's client id; left out for a site of the operator's own
     name: Acme Bakery
     dir: /var/www/acme-bakery     # exactly one segment below /var/www
     compose: docker-compose.yml   # relative to dir; a list when the site runs with more than one,

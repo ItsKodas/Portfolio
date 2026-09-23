@@ -22,11 +22,11 @@ import { runLifecycle, type GuessedService, type Runner } from './compose.ts'
 import { listEnvFiles, readEnvFile, writeEnvFile, createMissingEnvFiles, type EnvFs } from './env-files.ts'
 import { isExampleName } from '../shared/envfiles.ts'
 import {
-    refuse,
+    refuse, parseCreateExtras,
     type AgentReply, type ProvisionAddEnvironmentArgs, type ProvisionCreateArgs, type Refusal,
 } from '../shared/protocol.ts'
 
-const COMPOSE_FILE = 'docker-compose.yml'
+const DEFAULT_COMPOSE = ['docker-compose.yml']
 // The keys a value's domain gets rewritten under, and nothing else: a database password or an API key
 // that happens to end in one of these letters is never touched, because those never end with them.
 const DOMAIN_KEY_SUFFIXES = ['_URL', '_HOST', '_DOMAIN', '_ORIGIN']
@@ -60,12 +60,10 @@ export type ProvisionDeps = {
     // checks it against the compose file's own project name, the same guard the ongoing sweep runs, but
     // here before anything is written. collidesWith, only ever passed for a test environment, is the
     // live environment's own expected name, so pinning it there gets a message about the collision.
-    // composePath is deliberately singular, unlike the registry's own compose list: a fresh clone gives
-    // nothing that says which extra compose files (an override, a production file) the operator intends,
-    // so this only ever resolves the base docker-compose.yml. If the repo actually runs with more than
-    // one file, an unnamed one is invisible to hostd from here on; RUNBOOK.md's Creating a site, step 2,
-    // is where the operator is meant to list them all in the registry entry.
-    resolve(expectedName: string, dir: string, composePath: string, collidesWith?: string): Promise<{ ok: true, services: Record<string, GuessedService> } | { ok: false, problem: string }>
+    // composePaths is every file the environment runs with, in compose's merge order: whatever the
+    // operator named at create (docker-compose.yml when they named nothing), so a file missing from the
+    // clone, or an override that does not merge, refuses the create instead of surfacing at first deploy.
+    resolve(expectedName: string, dir: string, composePaths: string[], collidesWith?: string): Promise<{ ok: true, services: Record<string, GuessedService> } | { ok: false, problem: string }>
     // Only ever used to stop the live environment before removeProject unregisters a whole project: there
     // is no per-environment lifecycle yet (see RUNBOOK.md), so this is never asked to touch test.
     runner: Runner
@@ -74,11 +72,15 @@ export type ProvisionDeps = {
 
 function fieldProblem(args: ProvisionCreateArgs): string | null {
     if (!PROJECT_ID.test(args.id)) return 'id must be lowercase letters, digits and hyphens, 2 to 31 characters'
-    if (!CLIENT_ID.test(args.client)) return 'client must be 1 to 64 letters, digits, underscores or hyphens'
+    if (args.client !== undefined && !CLIENT_ID.test(args.client)) return 'client must be 1 to 64 letters, digits, underscores or hyphens'
     if (args.name.length < 1 || args.name.length > 100) return 'name must be 1 to 100 characters'
     if (!GIT_REPO.test(args.repo)) return 'repo must be an ssh or https git URL'
     if (!GIT_REF.test(args.branch)) return 'branch must be a plain branch name'
     if (args.domain !== null && !HOSTNAME.test(args.domain)) return 'domain must be a lowercase hostname'
+    // The optional fields, through the same parser api and the request line already ran them through:
+    // the agent's own check, rather than a trust in theirs.
+    const extras = parseCreateExtras(args)
+    if (!extras.ok) return extras.message
     return null
 }
 
@@ -189,6 +191,8 @@ type ProvisionAttempt = {
     // names the parent, /var/www, because a brand new project has no directory of its own anywhere yet;
     // addEnvironment names the project's live folder, which is the sibling the test tree is a copy of.
     likeDir: string
+    // Relative to dir, in compose's merge order
+    compose: string[]
     // Runs after a successful clone, before resolve. A no-op for create; addEnvironment copies and
     // rewrites env files here, using the composePath's directory as the freshly cloned test folder.
     afterClone: (composePath: string) => Promise<{ ok: true } | { ok: false, problem: string }>
@@ -207,7 +211,7 @@ type ProvisionAttempt = {
 // (the fetcher on a timeout or a dropped connection, a filesystem call, resolve) is rolled back exactly
 // like a returned failure would be: nothing here assumes a dependency can only fail by returning `ok:
 // false`.
-async function provisionOnDisk(attempt: ProvisionAttempt, deps: ProvisionDeps): Promise<Refusal | { ok: true, composePath: string }> {
+async function provisionOnDisk(attempt: ProvisionAttempt, deps: ProvisionDeps): Promise<Refusal | { ok: true, composePaths: string[] }> {
     const { id, dir } = attempt
 
     const rollback = async (reason: string): Promise<void> => {
@@ -237,9 +241,9 @@ async function provisionOnDisk(attempt: ProvisionAttempt, deps: ProvisionDeps): 
             return refuse('failed', cloned.message)
         }
 
-        const composePath = posix.join(dir, COMPOSE_FILE)
+        const composePaths = attempt.compose.map(file => posix.join(dir, file))
 
-        const after = await attempt.afterClone(composePath)
+        const after = await attempt.afterClone(composePaths[0]!)
         if (!after.ok) {
             await rollback('setup failed')
             return refuse('failed', after.problem)
@@ -261,7 +265,7 @@ async function provisionOnDisk(attempt: ProvisionAttempt, deps: ProvisionDeps): 
         // compose file resolves to by default, not the registry id: those coincide for live
         // (/var/www/<id>) but not for test (/var/www/<id>-test), and comparing test's resolved name
         // against the bare id would refuse the ordinary, unpinned case for every repo.
-        const resolved = await deps.resolve(posix.basename(dir), dir, composePath, attempt.collidesWith)
+        const resolved = await deps.resolve(posix.basename(dir), dir, composePaths, attempt.collidesWith)
         if (!resolved.ok) {
             // Named plainly, both in the log and the refusal: this is docker compose's own error (a
             // missing env_file, a syntax error, a command that could not run), not "no site service",
@@ -285,7 +289,7 @@ async function provisionOnDisk(attempt: ProvisionAttempt, deps: ProvisionDeps): 
         }
 
         deps.log(`provision ${id}: created`)
-        return { ok: true, composePath }
+        return { ok: true, composePaths }
     } catch (error) {
         await rollback(`unexpected error (${describeError(error)})`)
         return refuse('failed', describeError(error))
@@ -305,7 +309,9 @@ export async function createProject(args: ProvisionCreateArgs, deps: ProvisionDe
     if (invalidProblem) return refuse('unavailable', invalidProblem)
     if (RESERVED_PROJECT_IDS.has(args.id)) return refuse('bad-request', `${args.id} is reserved for the operator's own stacks`)
     if (registry.projects.has(args.id) || registry.invalid.has(args.id)) return refuse('bad-request', `${args.id} is already registered`)
-    const dir = `/var/www/${args.id}`
+    const dir = `/var/www/${args.dir ?? args.id}`
+    const compose = args.compose ?? DEFAULT_COMPOSE
+    const flags = { websockets: args.websockets ?? false, flexibleSsl: args.flexibleSsl ?? false }
     if (await deps.exists(dir)) return refuse('bad-request', `${dir} already exists`)
     if (args.domain && domainTaken(registry, args.domain)) return refuse('bad-request', `${args.domain} is already used by another project`)
 
@@ -325,6 +331,7 @@ export async function createProject(args: ProvisionCreateArgs, deps: ProvisionDe
         // directory belongs to root, so does the new site, which is no worse than today and stays
         // consistent with its neighbours either way.
         likeDir: posix.dirname(dir),
+        compose,
         // A repo usually commits an example beside a gitignored real file, and its compose file usually
         // declares env_file against the real one; resolve (just below, in provisionOnDisk) would
         // otherwise fail on a repo that has done nothing wrong, before the operator ever gets to fill
@@ -338,19 +345,23 @@ export async function createProject(args: ProvisionCreateArgs, deps: ProvisionDe
             kind: 'add-project',
             id: args.id,
             project: {
-                client: args.client,
+                client: args.client ?? null,
                 name: args.name,
                 repo: args.repo,
                 ...(args.credential ? { credential: args.credential } : {}),
+                capabilities: args.capabilities ?? [],
                 services,
-                environment: { name: 'live', dir, branch: args.branch, domain: args.domain, aliases: [], port: port.port, certificate: args.certificate },
+                environment: {
+                    name: 'live', dir, branch: args.branch, domain: args.domain, aliases: [], port: port.port, certificate: args.certificate,
+                    compose, ...flags,
+                },
             },
         }),
     }, deps)
     if (!attempt.ok) return attempt
 
     const live: EnvironmentEntry = {
-        name: 'live', dir, composePaths: [attempt.composePath], branch: args.branch, domain: args.domain, aliases: [], port: port.port, certificate: args.certificate, deployed: null, websockets: false, flexibleSsl: false,
+        name: 'live', dir, composePaths: attempt.composePaths, branch: args.branch, domain: args.domain, aliases: [], port: port.port, certificate: args.certificate, deployed: null, ...flags,
     }
     const envFiles = await listEnvFiles(live, envFs)
     return { ok: true, project: { id: args.id, state: 'needs-setup' }, envFiles }
@@ -391,6 +402,7 @@ export async function addEnvironment(project: ProjectEntry, args: ProvisionAddEn
         // whatever the operator chose for live is what test should match, the same way deploy.ts patterns
         // a checkout on <dir> rather than on anything further out.
         likeDir: project.dir,
+        compose: DEFAULT_COMPOSE,
         afterClone: async composePath => {
             const live = project.environments.get('live')
             if (!live) return { ok: true }
@@ -414,7 +426,7 @@ export async function addEnvironment(project: ProjectEntry, args: ProvisionAddEn
     if (!attempt.ok) return attempt
 
     const test: EnvironmentEntry = {
-        name: 'test', dir, composePaths: [attempt.composePath], branch: args.branch, domain: args.domain, aliases: [], port: port.port, certificate: args.certificate, deployed: null, websockets: false, flexibleSsl: false,
+        name: 'test', dir, composePaths: attempt.composePaths, branch: args.branch, domain: args.domain, aliases: [], port: port.port, certificate: args.certificate, deployed: null, websockets: false, flexibleSsl: false,
     }
     const envFiles = await listEnvFiles(test, envFs)
     return { ok: true, project: { id: project.id, state: 'needs-setup' }, envFiles }

@@ -711,6 +711,87 @@ describe('POST /projects', () => {
         assert.deepEqual([entry?.verb, entry?.outcome], ['provision', 'failed'])
     })
 
+    it('passes the New site fields through to the agent, and a create with no client', async () => {
+        agent.reply = () => ({ ok: true, project: { id: 'newsite', state: 'needs-setup' }, envFiles: [] })
+        const { client: _client, ...body } = {
+            ...CREATE_BODY, dir: 'newsite_www', compose: ['docker-compose.yml', 'prod.yml'],
+            capabilities: ['lifecycle', 'deploy'], websockets: true, flexibleSsl: false,
+        }
+        const response = await request('/projects', { method: 'POST', actor: 'admin', body })
+        assert.equal(response.status, 200)
+        assert.deepEqual(agent.calls, [{ verb: 'provision', args: { action: 'create', ...body } }])
+    })
+
+    it('refuses a malformed New site field without calling the agent', async () => {
+        const response = await request('/projects', { method: 'POST', actor: 'admin', body: { ...CREATE_BODY, dir: '../etc' } })
+        assert.equal(response.status, 400)
+        assert.deepEqual(agent.calls, [])
+    })
+
+    // acme stands in for the site just created: the fake agent does not write the registry, and acme is
+    // already in it with the domain the create names, which is what the refreshed registry would hold.
+    describe('with a domain', () => {
+        const CREATED: AgentReply = { ok: true, project: { id: 'acme', state: 'needs-setup' }, envFiles: [] }
+        const body = { ...CREATE_BODY, id: 'acme', domain: 'acme.example', certificate: 'letsencrypt' }
+        const previewWith = (claims: string[]): AgentReply => ({
+            ok: true,
+            preview: {
+                proposed: '<VirtualHost *:443>', extraNames: [], unreadable: [], adoptable: true, flexibleSsl: false,
+                claims: claims.map(path => ({ path, text: '', names: ['acme.example'], unsupported: [] })),
+            },
+        })
+
+        it('writes the first vhost through an adopt with nothing to disable, and starts its hostnames verifying', async () => {
+            agent.reply = request => request.verb === 'provision' ? CREATED
+                : request.verb === 'domains' && request.args.action === 'preview' ? previewWith([])
+                : WRITTEN
+            const response = await request('/projects', { method: 'POST', actor: 'admin', body })
+            assert.equal(response.status, 200)
+            assert.deepEqual(await response.json(), { ...CREATED, vhost: { ok: true } })
+
+            const [, preview, adopt] = agent.calls
+            assert.ok(preview?.verb === 'domains' && preview.args.action === 'preview')
+            assert.ok(adopt?.verb === 'domains' && adopt.args.action === 'adopt')
+            assert.deepEqual(adopt.args.disable, [])
+            // One token, the one the preview rendered, is what the adopt wrote and what the record holds
+            assert.ok(preview.args.action === 'preview' && preview.args.token === adopt.args.token)
+            const record = domains.forEnvironment('acme', 'live').find(entry => entry.hostname === 'acme.example')
+            assert.deepEqual([record?.state, record?.token], ['pending', adopt.args.token])
+        })
+
+        it('leaves a hostname another file already serves for the operator to adopt, and still answers the create', async () => {
+            agent.reply = request => request.verb === 'provision' ? CREATED : previewWith(['/etc/apache2/sites-enabled/acme.conf'])
+            const response = await request('/projects', { method: 'POST', actor: 'admin', body })
+            assert.equal(response.status, 200)
+            const answer = await response.json() as { vhost: { ok: boolean, message: string } }
+            assert.equal(answer.vhost.ok, false)
+            assert.match(answer.vhost.message, /acme\.conf/)
+            assert.deepEqual(agent.calls.map(call => call.verb === 'domains' ? call.args.action : call.verb), ['provision', 'preview'])
+        })
+
+        it('reports an Apache refusal beside the create rather than instead of it', async () => {
+            agent.reply = request => request.verb === 'provision' ? CREATED
+                : request.verb === 'domains' && request.args.action === 'preview' ? previewWith([])
+                : { ok: false, code: 'failed', message: 'Apache refused the new configuration', output: 'Syntax error' }
+            const response = await request('/projects', { method: 'POST', actor: 'admin', body })
+            assert.equal(response.status, 200)
+            assert.deepEqual((await response.json() as { vhost: unknown }).vhost, { ok: false, message: 'Apache refused the new configuration' })
+            const record = domains.forEnvironment('acme', 'live').find(entry => entry.hostname === 'acme.example')
+            assert.deepEqual(record?.vhost, { ok: false, output: 'Syntax error' })
+        })
+
+        it('reports a lost agent connection during the vhost step without failing the create', async () => {
+            agent.call = async request => {
+                agent.calls.push(request)
+                if (request.verb === 'provision') return CREATED
+                throw new AgentUnavailableError('the agent closed the connection without answering')
+            }
+            const response = await request('/projects', { method: 'POST', actor: 'admin', body })
+            assert.equal(response.status, 200)
+            assert.equal((await response.json() as { vhost: { ok: boolean } }).vhost.ok, false)
+        })
+    })
+
     it('refuses a body over the 64 KB cap without calling the agent', async () => {
         const response = await request('/projects', { method: 'POST', actor: 'admin', rawBody: 'x'.repeat(64 * 1024 + 1) })
         assert.equal(response.status, 400)
