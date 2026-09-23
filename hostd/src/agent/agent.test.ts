@@ -1,7 +1,7 @@
 import { describe, it } from 'node:test'
 import assert from 'node:assert/strict'
 import { PassThrough } from 'node:stream'
-import { Agent, MAX_FOLLOWS_PER_PROJECT, type AgentDeps, type Outcome } from './agent.ts'
+import { Agent, MAX_FOLLOWS_PER_PROJECT, PORT_CHANGE_UP_TIMEOUT_MS, type AgentDeps, type Outcome } from './agent.ts'
 import { lifecycleArgv, type Runner, type RunResult } from './compose.ts'
 import type { ContainerInspect, ContainerSummary, DockerApi } from './docker.ts'
 import type { EnvFs } from './env-files.ts'
@@ -1642,5 +1642,55 @@ describe('port', () => {
         release()
         await first
         assert.equal(replyOf(await agent.handle(deploy))?.ok, true)
+    })
+
+    // configure and domains both write the registry and may rewrite the vhost the change is rewriting
+    it('refuses configure for the project while a change is in progress', async () => {
+        const { agent, first, release } = heldChange()
+        const configure: AgentRequest = { verb: 'configure', project: 'acme', args: { capabilities: ['lifecycle'] } }
+        assert.deepEqual(replyOf(await agent.handle(configure)), { ok: false, code: 'busy', message: 'acme is moving an environment to another port' })
+        release()
+        await first
+        assert.equal(replyOf(await agent.handle(configure))?.ok, true)
+    })
+
+    it('refuses the domains verb for the project while a change is in progress', async () => {
+        // A vhost hostd wrote, so the change gets as far as the port check and holds there
+        const domains = { ...fakeDomains(domainsRegistry).domains, readFile: async () => '# hostd' }
+        const { agent, first, release } = heldChange({ registry: () => domainsRegistry, domains })
+        const request = { verb: 'domains' as const, project: 'acme', args: { action: 'write' as const, environment: 'live' as const, token: 'abc123' } }
+        assert.deepEqual(await agent.domains(request), { ok: false, code: 'busy', message: 'acme is moving an environment to another port' })
+        // The vhost read comes first, so the port check that holds the change starts a tick later
+        await new Promise(resolve => setImmediate(resolve))
+        release()
+        await first
+    })
+
+    // Apache would go on proxying to the old port behind a file hostd did not write
+    it('refuses a domain served by a hand-written vhost, and without a rail at all', async () => {
+        const refusal = { ok: false, code: 'bad-request', message: 'acme.com is served by a hand-written vhost; adopt it from the Domains tab first, or move the port by hand' }
+        const handWritten = setup({ registry: () => domainsRegistry, provision: fakeProvisionDeps(), domains: fakeDomains(domainsRegistry).domains, envFs: fakeEnvFs() })
+        assert.deepEqual(replyOf(await handWritten.agent.handle(change(5012))), refusal)
+        assert.deepEqual(handWritten.runs, [])
+        const noRail = setup({ registry: () => domainsRegistry, provision: fakeProvisionDeps(), envFs: fakeEnvFs() })
+        assert.deepEqual(replyOf(await noRail.agent.handle(change(5012))), refusal)
+    })
+
+    // up, an undo's up and the rail all fit inside api's 150 second call to the agent
+    it('gives the recreate a shorter timeout than a lifecycle action', async () => {
+        const timeouts: Array<{ args: string[], timeoutMs: number }> = []
+        const { agent } = setup({
+            provision: fakeProvisionDeps(),
+            envFs: fakeEnvFs({ readFile: async () => 'WEB_PORT=5010' }),
+            runner: async (_command, args, timeoutMs) => {
+                timeouts.push({ args, timeoutMs })
+                const stdout = args.includes('config') ? JSON.stringify({ name: 'acme', services: { web: { ports: [{ published: '5012', target: 3000 }] } } }) : ''
+                return { exitCode: 0, stdout, stderr: '', timedOut: false }
+            },
+        })
+        assert.equal(replyOf(await agent.handle(change(5012)))?.ok, true)
+        const up = timeouts.find(call => call.args.includes('up'))
+        assert.equal(up?.timeoutMs, PORT_CHANGE_UP_TIMEOUT_MS)
+        assert.equal(PORT_CHANGE_UP_TIMEOUT_MS, 60_000)
     })
 })

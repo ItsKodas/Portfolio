@@ -1,9 +1,9 @@
 // Every TCP port listening on the host, read from the host's own network namespace. The agent has
 // network_mode: none, so it cannot probe the host by binding: it would only ever see its own empty
 // namespace. What it does have is Docker, so it runs a throwaway container in the host's namespace
-// (--network host) that reads /proc/net/tcp and tcp6 and exits. That lists Apache, databases, and
-// anything else a person started by hand, which is exactly what Docker's own published-port view
-// cannot see.
+// (--network host) that reads /proc/net/tcp and tcp6 (when the host has one) and exits. That lists
+// Apache, databases, and anything else a person started by hand, which is exactly what Docker's own
+// published-port view cannot see.
 //
 // The container runs the agent's own image, looked up from the agent's own container, so nothing is
 // ever pulled (the agent is offline) and a rebuild never leaves this on a stale tag. Docker's published
@@ -50,10 +50,15 @@ export function parseProcNetTcp(text: string): Set<number> {
     return ports
 }
 
+// Through sh rather than cat alone: a host with IPv6 disabled has no /proc/net/tcp6, and cat would exit
+// 1 on it and fail every probe. The trailing true keeps that from mattering, so an exit that is not 0 is
+// Docker's own (a missing image, a daemon that refused), and a tcp that could not be read either leaves
+// the listing empty, which read() below still refuses.
 export function probeArgv(image: string, name: string): string[] {
     return [
         'run', '--rm', '--name', name, '--network', 'host', '--read-only', '--cap-drop', 'ALL',
-        '--security-opt', 'no-new-privileges', '--pull', 'never', '--entrypoint', 'cat', image, '/proc/net/tcp', '/proc/net/tcp6',
+        '--security-opt', 'no-new-privileges', '--pull', 'never', '--entrypoint', 'sh', image,
+        '-c', 'cat /proc/net/tcp; cat /proc/net/tcp6 2>/dev/null; true',
     ]
 }
 

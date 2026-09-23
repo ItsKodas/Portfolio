@@ -303,6 +303,22 @@ describe('set-port', () => {
         const taken = [...other.projects.values()].find(project => project.id !== 'acme')!.environments.get('live')!.port
         assert.equal(applyChange(NO_DOMAIN, { kind: 'set-port', id: 'acme', environment: 'live', port: taken }).ok, false)
     })
+
+    // A port change's undo writes the old port back over the entry the change just reshaped, so both
+    // writes have to land on a legacy entry whose port lives inside upstream
+    it('reshapes a live-only entry to environments, and takes the old port back afterwards', () => {
+        const moved = applyChange(LIVE_ONLY, { kind: 'set-port', id: 'arbysauto', environment: 'live', port: 5099 })
+        assert.ok(moved.ok, moved.ok ? '' : moved.problem)
+        assert.doesNotMatch(moved.text, /upstream:/)
+        assert.match(moved.text, /environments:/)
+        const entry = parseRegistry(moved.text).projects.get('arbysauto')!
+        assert.equal(entry.environments.get('live')?.port, 5099)
+        assert.equal(entry.environments.get('live')?.dir, '/var/www/arbysauto')
+
+        const back = applyChange(moved.text, { kind: 'set-port', id: 'arbysauto', environment: 'live', port: 5011 })
+        assert.ok(back.ok, back.ok ? '' : back.problem)
+        assert.equal(parseRegistry(back.text).projects.get('arbysauto')?.environments.get('live')?.port, 5011)
+    })
 })
 
 describe('configure', () => {

@@ -17,6 +17,18 @@ projects:
 `)
 const acme = registry.projects.get('acme')!
 
+// The same project with no address, and one whose live environment answers only to aliases
+const bare = parseRegistry(`
+projects:
+  acme:
+    client: cl_1
+    name: Acme
+    repo: git@github.com:a/acme.git
+    services: { web: { role: site } }
+    environments:
+      live: { dir: /var/www/acme, port: 5010 }
+`).projects.get('acme')!
+
 function fakes(overrides: Partial<PortChangeDeps> = {}) {
     const steps: string[] = []
     const deps: PortChangeDeps = {
@@ -28,6 +40,7 @@ function fakes(overrides: Partial<PortChangeDeps> = {}) {
         running: async () => { steps.push('running?'); return true },
         up: async () => { steps.push('up'); return { ok: true } },
         rewriteVhost: async () => { steps.push('vhost'); return null },
+        hasOwnVhost: async () => true,
         ...overrides,
     }
     return { deps, steps }
@@ -154,5 +167,32 @@ describe('changePort', () => {
             message: 'acme live could not be recreated on port 5012: up exited with code 1. It was moved back to 5010. .env could not be put back: EACCES.',
         })
         assert.deepEqual(steps.slice(-4), ['up', 'restore env', 'registry 5010', 'up'])
+    })
+
+    // Apache would go on proxying to the old port behind a file hostd cannot rewrite, while the change
+    // reported success, so an address served by hand is refused before anything is written
+    it('refuses an environment whose domain is served by a hand-written vhost, touching nothing', async () => {
+        const { deps, steps } = fakes({ hasOwnVhost: async () => { steps.push('own vhost?'); return false } })
+        assert.deepEqual(await changePort(acme, 'live', 5012, deps), {
+            ok: false, code: 'bad-request',
+            message: 'acme.com is served by a hand-written vhost; adopt it from the Domains tab first, or move the port by hand',
+        })
+        assert.deepEqual(steps, ['own vhost?'])
+    })
+
+    it('moves an environment with no domain without asking about a vhost', async () => {
+        const { deps, steps } = fakes({ hasOwnVhost: async () => { steps.push('own vhost?'); return false } })
+        const reply = await changePort(bare, 'live', 5012, deps)
+        assert.equal(reply.ok, true)
+        assert.ok(!steps.includes('own vhost?'))
+    })
+
+    it('refuses, touching nothing, when whether hostd owns the vhost cannot be read', async () => {
+        const { deps, steps } = fakes({ hasOwnVhost: async () => { steps.push('own vhost?'); throw new Error('EACCES') } })
+        assert.deepEqual(await changePort(acme, 'live', 5012, deps), {
+            ok: false, code: 'failed',
+            message: 'acme live could not be moved to port 5012: whether hostd owns its vhost could not be read: EACCES',
+        })
+        assert.deepEqual(steps, ['own vhost?'])
     })
 })

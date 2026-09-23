@@ -446,11 +446,11 @@ describe('createProject', () => {
         }
     })
 
-    // Must-exist, per the whole-branch review: takenPorts only ever sees registry.projects, which
-    // excludes anything already invalid, and Docker's own published ports only see running containers, so
-    // a temporarily invalid entry whose containers are stopped is invisible to both. Refusing outright
-    // while anything is invalid is the honest fix, named here rather than only in ports.ts, since that is
-    // where provisioning as a whole is refused.
+    // Must-exist, per the whole-branch review: the port check's registry side only ever sees
+    // registry.projects, which excludes anything already invalid, and the host's listening ports only show
+    // what is running, so a temporarily invalid entry whose containers are stopped is invisible to both.
+    // Refusing outright while anything is invalid is the honest fix, named here rather than only in
+    // ports.ts, since that is where provisioning as a whole is refused.
     it('refuses provisioning entirely while the registry has any invalid entry, naming it', async () => {
         const yaml = `${REGISTRY_YAML}  broken:\n    client: cl_9\n`
         const { deps, calls } = setup({ registryYaml: yaml })
@@ -641,6 +641,22 @@ describe('addEnvironment', () => {
         assert.ok(calls.includes('own'))
         assert.ok(calls.indexOf('clone') < calls.indexOf('own'))
         assert.ok(calls.indexOf('own') < calls.indexOf('write'))
+    })
+
+    // The copy carries live's WEB_PORT across, so writing test's own port first would be overwritten by
+    // live's and test would start on live's port
+    it('writes the port into .env after the live env files are copied across', async () => {
+        const { deps, envFs, envFsFiles } = setup({ envTree: { '/var/www/acme/.env': 'WEB_PORT=5010\n' } })
+        let copiedFirst: string | undefined
+        deps.setPortEnv = async (environment, key, port) => {
+            copiedFirst = envFsFiles.get(`${environment.dir}/.env`)
+            envFsFiles.set(`${environment.dir}/.env`, `${key}=${port}\n`)
+            return { ok: true, previous: copiedFirst ?? null }
+        }
+        const reply = await addEnvironment(project(), args(), deps, envFs)
+        assert.equal(reply.ok, true)
+        assert.equal(copiedFirst, 'WEB_PORT=5010\n')
+        assert.equal(envFsFiles.get('/var/www/acme-test/.env'), 'WEB_PORT=5100\n')
     })
 
     it('removes the folder and writes nothing when the cloned tree cannot be given that ownership', async () => {

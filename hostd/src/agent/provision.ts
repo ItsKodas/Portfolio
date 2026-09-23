@@ -104,9 +104,10 @@ function domainTaken(registry: Registry, domain: string, excludeId?: string): bo
     return false
 }
 
-// takenPorts only ever sees registry.projects, which excludes anything already invalid, and Docker's own
-// published ports only see running containers; a temporarily invalid entry whose containers are stopped
-// is invisible to both, so a new project could take its port and collide the moment that entry is fixed.
+// The port check's registry side only ever sees registry.projects, which excludes anything already
+// invalid, and the host's listening ports only show what is running; a temporarily invalid entry whose
+// containers are stopped is invisible to both, so a new project could take its port and collide the
+// moment that entry is fixed.
 // Refusing provisioning outright while anything is invalid is the honest fix: naming the ids and asking
 // the operator to fix them first, rather than trying to parse a port out of a broken entry.
 function invalidRegistryProblem(registry: Registry): string | null {

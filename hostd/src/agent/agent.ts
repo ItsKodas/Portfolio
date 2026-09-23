@@ -15,7 +15,7 @@ import { deployKey, lastHealthyCommit } from '../shared/deploys.ts'
 import { diskProblem, manualProblem } from '../shared/backups.ts'
 import type { RegistryWriter } from '../shared/registry-write.ts'
 import type { DiskUsage, SystemUsage } from '../shared/system.ts'
-import { LIFECYCLE_TIMEOUT_MS, resolvePublished, runLifecycle, tail, type Runner } from './compose.ts'
+import { resolvePublished, runLifecycle, tail, type Runner } from './compose.ts'
 import { composeNameOf, deployTrees, locationIn, repositoryIn, upArgv } from './deploy-compose.ts'
 import type { DeployDeps } from './deploy.ts'
 import type { DeployRunner } from './deploy-runner.ts'
@@ -35,6 +35,10 @@ import { tokenFromVhost, vhostPath } from './vhost.ts'
 
 export const MAX_FOLLOWS_PER_PROJECT = 4
 export const FOLLOW_MAX_MS = 60 * 60_000
+// A port change's recreate, shorter than a lifecycle action's: the change can run up twice (the move and
+// the undo's move back) and then the rail, and all of it has to fit inside api's 150 second call to the
+// agent, or the portal reports a timeout while the change is still running.
+export const PORT_CHANGE_UP_TIMEOUT_MS = 60_000
 
 export type AgentDeps = {
     registry: () => Registry
@@ -126,6 +130,12 @@ export class Agent {
     private readonly portChanging = new Set<string>()
 
     constructor(private readonly deps: AgentDeps) {}
+
+    // Whether any environment of the project is moving to another port
+    private portChangingIn(id: string): boolean {
+        for (const key of this.portChanging) if (key.startsWith(`${id}:`)) return true
+        return false
+    }
 
     followCount(project: string): number {
         return this.follows.get(project) ?? 0
@@ -282,6 +292,9 @@ export class Agent {
     // project handle() already produced from its own (merely per-connection) registry() snapshot.
     async domains(request: DomainsRequest): Promise<DomainsWritten | AdoptPreview | Refusal> {
         if (!this.deps.domains) return refuse('unavailable', 'domains is not configured')
+        // Every action writes a vhost or the registry, which a port change on the project is doing too.
+        // The whole project rather than the one environment, for simplicity: a change takes seconds.
+        if (this.portChangingIn(request.project)) return refuse('busy', `${request.project} is moving an environment to another port`)
         const domains = this.deps.domains
         const registry = await domains.reloadRegistry()
         const checked = checkStructure(registry, request, this.deps.guardInvalid())
@@ -408,6 +421,8 @@ export class Agent {
     // widens to include it and stops compiling). { ok: true, output } is the shape the codebase already
     // uses for "nothing else to carry" (see env()'s write case and provision.ts's removeProject above).
     private async configure(project: ProjectEntry, args: ConfigureArgs): Promise<AgentReply> {
+        // It writes the registry entry and may rewrite the vhost a port change is rewriting too
+        if (this.portChangingIn(project.id)) return refuse('busy', `${project.id} is moving an environment to another port`)
         // Which environments are having an address REPLACED rather than given one for the first time.
         // Read before the writes below, because they are what makes the old value unreadable, and it is
         // the old value that decides whether Apache has a file to rewrite afterwards.
@@ -560,12 +575,13 @@ export class Agent {
                 // The same up a deploy's swap runs, in the environment's own folder: compose recreates
                 // exactly the containers whose ports changed, and never builds or pulls.
                 up: async entry => {
-                    const result = await this.deps.runner('docker', upArgv(locationIn(entry, entry.dir), composeNameOf(entry)), LIFECYCLE_TIMEOUT_MS)
+                    const result = await this.deps.runner('docker', upArgv(locationIn(entry, entry.dir), composeNameOf(entry)), PORT_CHANGE_UP_TIMEOUT_MS)
                     if (result.timedOut) return { ok: false, message: 'up timed out' }
                     if (result.exitCode !== 0) return { ok: false, message: `up exited with code ${result.exitCode}: ${tail(result.stderr.trim(), 300)}` }
                     return { ok: true }
                 },
                 rewriteVhost: async () => (await this.rewriteMovedVhost(project.id, environment)).problem,
+                hasOwnVhost: () => this.ownsVhost(project.id, environment),
             })
         } finally {
             this.provisioningBusy = false
@@ -573,6 +589,14 @@ export class Agent {
             this.lifecycleBusy.delete(project.id)
             this.portChanging.delete(envKey)
         }
+    }
+
+    // Whether hostd wrote the vhost for this environment, read off the same file rewriteMovedVhost reads.
+    // With no rail wired up hostd has never written one, so an environment with an address is served by
+    // hand. A read that throws is left to the caller, which refuses rather than guessing.
+    private async ownsVhost(id: string, name: EnvironmentName): Promise<boolean> {
+        if (!this.deps.domains) return false
+        return (await this.deps.domains.readFile(vhostPath(this.deps.domains.config.includeDir, id, name))) !== null
     }
 
     // The vhost behind an address that has just moved. hostd only owns a file it wrote itself, so the

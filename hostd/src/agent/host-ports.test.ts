@@ -38,10 +38,13 @@ describe('parseProcNetTcp', () => {
 })
 
 describe('probeArgv', () => {
-    it('runs cat in the host network namespace, from a local image, with nothing extra', () => {
+    // Through sh rather than cat alone, so a host with IPv6 disabled (no /proc/net/tcp6) still answers
+    // its IPv4 listing instead of exiting 1 and failing every probe
+    it('runs cat in the host network namespace, from a local image, tolerating a missing tcp6', () => {
         assert.deepEqual(probeArgv(IMAGE, 'hostd-port-probe-1'), [
             'run', '--rm', '--name', 'hostd-port-probe-1', '--network', 'host', '--read-only', '--cap-drop', 'ALL',
-            '--security-opt', 'no-new-privileges', '--pull', 'never', '--entrypoint', 'cat', IMAGE, '/proc/net/tcp', '/proc/net/tcp6',
+            '--security-opt', 'no-new-privileges', '--pull', 'never', '--entrypoint', 'sh', IMAGE,
+            '-c', 'cat /proc/net/tcp; cat /proc/net/tcp6 2>/dev/null; true',
         ])
     })
 })
@@ -85,6 +88,12 @@ describe('createHostPortReader', () => {
         const seen = await createHostPortReader({ runner, container: 'hostd-agent', published })()
         assert.equal(seen.ok, false)
         assert.match(seen.ok ? '' : seen.problem, /could not read the host's ports: Unable to find image/)
+    })
+
+    it('reads an IPv4 listing alone, for a host with IPv6 disabled', async () => {
+        const { runner } = recorder([{ stdout: IMAGE }, { stdout: TCP }])
+        const seen = await createHostPortReader({ runner, container: 'hostd-agent', published })()
+        assert.deepEqual([...(seen.ok ? seen.ports : [])].sort((a, b) => a - b), [22, 5001, 5004, 5007])
     })
 
     // A host always has something listening (sshd at least), so an empty listing is a broken probe.

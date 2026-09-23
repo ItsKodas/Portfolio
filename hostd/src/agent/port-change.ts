@@ -21,6 +21,9 @@ export type PortChangeDeps = {
     up: (environment: EnvironmentEntry) => Promise<{ ok: true } | { ok: false, message: string }>
     // A problem, or null when the vhost is rewritten or there is no hostd vhost to rewrite
     rewriteVhost: () => Promise<string | null>
+    // Whether the vhost for this environment is a file hostd wrote itself. Only asked of an environment
+    // with an address: one served by a hand-written file is refused, since nothing here can rewrite it.
+    hasOwnVhost: (environment: EnvironmentEntry) => Promise<boolean>
 }
 
 export async function changePort(
@@ -31,6 +34,22 @@ export async function changePort(
     const where = `${project.id} ${name}`
     const old = environment.port
     if (port === old) return { ok: true, output: `${where} already uses port ${port}` }
+
+    // Before anything is written: a hand-written vhost goes on proxying to the old port, and the rewrite
+    // below finds no file of hostd's to bring level, so the change would report success with the site
+    // unreachable. The operator adopts the file first (a previewed decision of its own) or moves by hand.
+    const address = environment.domain ?? environment.aliases[0] ?? null
+    if (address !== null) {
+        let owned: boolean
+        try {
+            owned = await deps.hasOwnVhost(environment)
+        } catch (error) {
+            return refuse('failed', `${where} could not be moved to port ${port}: whether hostd owns its vhost could not be read: ${describeError(error)}`)
+        }
+        if (!owned) {
+            return refuse('bad-request', `${address} is served by a hand-written vhost; adopt it from the Domains tab first, or move the port by hand`)
+        }
+    }
 
     const verdict = await deps.checkPort(port, { project: project.id, environment: name })
     if (!verdict.ok) return refuse(verdict.code, verdict.problem)
