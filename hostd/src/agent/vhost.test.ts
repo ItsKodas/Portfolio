@@ -13,6 +13,7 @@ const input = (over: Partial<VhostInput> = {}): VhostInput => ({
     aliases: ['www.acme.com', 'shop.acme.com'],
     port: 5010,
     websockets: false,
+    flexibleSsl: false,
     token: 'abc123',
     certificate: { chain: '/etc/ssl/hostd/origin.pem', key: '/etc/ssl/hostd/origin.key' },
     maintenanceDir: '/var/www/hostd-maintenance',
@@ -78,6 +79,57 @@ describe('renderVhost', () => {
 
     it('leaves the ProxyPass plain when it does not', () => {
         assert.doesNotMatch(renderVhost(input()), /upgrade=websocket/)
+    })
+})
+
+// Flexible SSL: the CDN reaches the origin over plain HTTP on port 80 only, so port 80 has to serve the
+// site. Redirecting it to https is the loop that took thebackroom.dev down.
+describe('renderVhost under Flexible SSL', () => {
+    const blocks = (text: string) => text.split(/(?=<VirtualHost )/).filter(block => block.startsWith('<VirtualHost'))
+    const port80 = (text: string) => blocks(text).filter(block => block.startsWith('<VirtualHost *:80>'))
+
+    it('serves the primary on port 80 instead of redirecting it', () => {
+        const [primary] = port80(renderVhost(input({ flexibleSsl: true })))
+        assert.match(primary!, /^    ServerName acme\.com$/m)
+        assert.doesNotMatch(primary!, /ServerAlias/)
+        assert.doesNotMatch(primary!, /R=301/)
+        assert.match(primary!, /^    ProxyPass \/ http:\/\/127\.0\.0\.1:5010\/$/m)
+        // No TLS on a plain HTTP port.
+        assert.doesNotMatch(primary!, /SSLEngine/)
+    })
+
+    it('keeps the maintenance page and the verification token on the port 80 it serves', () => {
+        const [primary] = port80(renderVhost(input({ flexibleSsl: true })))
+        assert.match(primary!, /RewriteCond expr "-f '\/run\/hostd\/maintenance\/acme-live'"/)
+        assert.match(primary!, /ProxyPass \/\.well-known\/hostd\/abc123 !/)
+    })
+
+    // The proxy would otherwise take the challenge to the site, and certbot would never see its file.
+    it('keeps the ACME challenge out of the proxy', () => {
+        const [primary] = port80(renderVhost(input({ flexibleSsl: true })))
+        assert.match(primary!, /Alias "\/\.well-known\/acme-challenge"/)
+        const excluded = primary!.indexOf('ProxyPass /.well-known/acme-challenge !')
+        assert.ok(excluded >= 0 && excluded < primary!.indexOf('ProxyPass / http://'))
+    })
+
+    it('still redirects the aliases on port 80 to the primary', () => {
+        const aliasBlock = port80(renderVhost(input({ flexibleSsl: true })))[1]!
+        assert.match(aliasBlock, /^    ServerName www\.acme\.com\n    ServerAlias shop\.acme\.com$/m)
+        assert.match(aliasBlock, /https:\/\/acme\.com\/\$1 \[R=301,L\]/)
+    })
+
+    it('has one port 80 block and no alias block when there are no aliases', () => {
+        assert.equal(port80(renderVhost(input({ flexibleSsl: true, aliases: [] }))).length, 1)
+    })
+
+    it('passes WebSockets through on port 80 too', () => {
+        const [primary] = port80(renderVhost(input({ flexibleSsl: true, websockets: true })))
+        assert.match(primary!, /upgrade=websocket/)
+    })
+
+    it('leaves port 443 exactly as it is without Flexible SSL, so moving the CDN to Full needs no rewrite to work', () => {
+        const only443 = (text: string) => blocks(text).filter(block => block.startsWith('<VirtualHost *:443>')).join('')
+        assert.equal(only443(renderVhost(input({ flexibleSsl: true }))), only443(renderVhost(input())))
     })
 
     it('serves the holding page when the maintenance flag exists', () => {

@@ -44,6 +44,9 @@ export type AdoptPreview = {
     // Apache's own configuration test fails while they are there, so every reload is refused.
     unreadable: string[]
     adoptable: boolean
+    // Whether adopting switches the environment to Flexible SSL, because a file being replaced answers
+    // port 80 only. Optional because a hostd from before the switch does not send it, which means no.
+    flexibleSsl?: boolean
 }
 
 // Matches hostd's registry id rule

@@ -148,6 +148,26 @@ describe('DomainsPanel, for the operator', () => {
         expect(screen.getByText(/no domain change on this server/i)).toBeInTheDocument()
     })
 
+    // thebackroom.dev's shape: a file with no port 443 block, behind Cloudflare on Flexible. Adopting it
+    // switches Flexible SSL on, and the operator is told so before confirming rather than finding a new
+    // tick in Settings afterwards.
+    it('says adopting will keep port 80 serving the site when the file has no port 443 block', async () => {
+        adoptPreview.mockResolvedValue({ ok: true, preview: preview({ flexibleSsl: true }) })
+
+        render(<DomainsPanel {...props} domains={[domain({ state: 'unmanaged' })]} />)
+        fireEvent.click(screen.getByRole('button', { name: /adopt/i }))
+
+        expect(await screen.findByText(/Port 80 will keep serving the site/)).toBeInTheDocument()
+    })
+
+    it('says nothing about Flexible SSL for a file that has a port 443 block', async () => {
+        render(<DomainsPanel {...props} domains={[domain({ state: 'unmanaged' })]} />)
+        fireEvent.click(screen.getByRole('button', { name: /adopt/i }))
+
+        await screen.findByText(/RewriteRule/)
+        expect(screen.queryByText(/Flexible SSL/)).toBeNull()
+    })
+
     it('says nothing about unreadable files when every one of them read', async () => {
         render(<DomainsPanel {...props} domains={[domain({ state: 'unmanaged' })]} />)
         fireEvent.click(screen.getByRole('button', { name: /adopt/i }))

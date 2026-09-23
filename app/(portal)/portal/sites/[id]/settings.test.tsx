@@ -57,6 +57,17 @@ describe('the settings form', () => {
         expect(saveSettingsAction).toHaveBeenCalledWith('arbysauto', { websockets: { live: true } })
     })
 
+    // Unticking is the way off once the CDN reaches port 443, so it has to be sent as false, not dropped.
+    it('sends a Flexible SSL switch turned off, and nothing else', async () => {
+        render(<SiteSettingsForm {...props} environments={[{ name: 'live', branch: null, flexibleSsl: true }]} />)
+
+        expect(screen.getByRole('checkbox', { name: /live Cloudflare Flexible SSL/ })).toBeChecked()
+        await userEvent.click(screen.getByRole('checkbox', { name: /live Cloudflare Flexible SSL/ }))
+        await userEvent.click(screen.getByRole('button', { name: /save/i }))
+
+        expect(saveSettingsAction).toHaveBeenCalledWith('arbysauto', { flexibleSsl: { live: false } })
+    })
+
     it('marks the ones hostd cannot act on yet, so ticking one is not mistaken for switching it on', () => {
         render(<SiteSettingsForm {...props} />)
         expect(screen.getByText(/not built yet/i)).toBeInTheDocument()

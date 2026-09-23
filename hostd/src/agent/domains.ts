@@ -10,7 +10,7 @@ import { hostnamesOf, type EnvironmentEntry, type ProjectEntry, type Registry } 
 import { refuse, type AdoptPreview, type DomainsWritten, type Refusal } from '../shared/protocol.ts'
 import type { Change } from '../shared/registry-write.ts'
 import type { ApacheRail } from './apache-rail.ts'
-import { blindWarning, findClaims, readNothing, type SitesEnabled } from './sites-enabled.ts'
+import { blindWarning, findClaims, readNothing, servesHttpOnly, type Claim, type SitesEnabled } from './sites-enabled.ts'
 import { renderVhost, upstreamFor, vhostPath } from './vhost.ts'
 
 export type DomainsConfig = {
@@ -48,6 +48,7 @@ function render(deps: DomainsDeps, project: ProjectEntry, environment: Environme
         aliases: environment.aliases,
         port: environment.port,
         websockets: environment.websockets,
+        flexibleSsl: environment.flexibleSsl,
         token,
         certificate: { chain: deps.config.originCert, key: deps.config.originKey },
         maintenanceDir: deps.config.maintenancePageDir,
@@ -213,6 +214,12 @@ export async function setAliases(
     return writeVhost(deps, registry.projects.get(project.id)!, fresh, token)
 }
 
+// Whether the vhost adoption writes has to serve port 80: the environment already says so, or a file it
+// replaces answered port 80 only (see servesHttpOnly).
+function needsFlexibleSsl(environment: EnvironmentEntry, claims: Claim[]): boolean {
+    return environment.flexibleSsl || claims.some(claim => servesHttpOnly(claim.text))
+}
+
 // Reading only. Nothing here moves a file or reloads anything: an operator has to see what they are
 // replacing before any of it happens, and that is the whole reason adoption is two calls.
 export async function previewAdopt(
@@ -239,10 +246,14 @@ export async function previewAdopt(
     // without carrying these across would silently stop serving hostnames that work today, and adding
     // them automatically would put hostnames in the registry nobody asked for.
     const extraNames = [...new Set(claims.flatMap(claim => claim.names))].filter(name => !hostnames.includes(name))
+    // Rendered as adopt will render it, Flexible SSL included when a file being replaced needs it, so the
+    // file the operator reads here is the file adopt puts down.
+    const flexibleSsl = needsFlexibleSsl(environment, claims)
     return {
         ok: true,
         preview: {
-            proposed: render(deps, project, environment, token),
+            proposed: render(deps, project, { ...environment, flexibleSsl }, token),
+            flexibleSsl,
             claims,
             extraNames,
             // Carried even though none of it can be a claim. This pane's whole job is to show what is
@@ -287,9 +298,25 @@ export async function adopt(
         }
     }
 
+    // A file being replaced that answered port 80 only was relying on the CDN in front to terminate TLS,
+    // so the environment is switched to Flexible SSL before the vhost is rendered: the usual redirect to
+    // https would loop that CDN forever. Registry first, then vhost, for the reason setAliases gives, and
+    // rendered from the reloaded entry rather than from a copy patched here.
+    let adopting = { project, environment }
+    if (!environment.flexibleSsl && needsFlexibleSsl(environment, claims.filter(claim => disable.includes(claim.path)))) {
+        const written = await deps.writeRegistry({
+            kind: 'set-flag', id: project.id, environment: environment.name, flag: 'flexibleSsl', enabled: true,
+        })
+        if (!written.ok) return refuse('failed', `the registry could not be updated: ${written.problem}`)
+        const fresh = (await deps.reloadRegistry()).projects.get(project.id)
+        const freshEnvironment = fresh?.environments.get(environment.name)
+        if (!fresh || !freshEnvironment) return refuse('failed', `${project.id} ${environment.name} did not survive the change`)
+        adopting = { project: fresh, environment: freshEnvironment }
+    }
+
     const path = vhostPath(deps.config.includeDir, project.id, environment.name)
     const previous = await deps.readFile(path)
-    const text = render(deps, project, environment, token)
+    const text = render(deps, adopting.project, adopting.environment, token)
 
     // One request, so the new file arrives and the old one leaves before the single configtest. Two
     // requests would mean a moment with both files loaded, where Apache picks one by file order, or a

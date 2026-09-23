@@ -46,6 +46,9 @@ export type Environment = {
     // Whether hostd's vhost passes WebSocket upgrades through. Optional because a hostd from before the
     // flag existed does not send it, which means off.
     websockets?: boolean
+    // Whether the origin serves the site on port 80 for a CDN in Flexible mode. Optional for the same
+    // reason as websockets.
+    flexibleSsl?: boolean
     dir?: string
     composePaths?: string[]
     port?: number

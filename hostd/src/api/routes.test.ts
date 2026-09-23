@@ -54,10 +54,10 @@ projects:
 // domain, certificate and deployed commit, and nothing about the machine underneath. quiet is the
 // single-environment shape, where the registry synthesises one live environment out of dir and upstream.
 const acmeEnvironmentsForClient = [
-    { name: 'live', branch: 'main', domain: 'acme.example', certificate: 'letsencrypt', websockets: false, deployed: 'abc1234' },
-    { name: 'test', branch: 'develop', domain: 'test.acme.example', certificate: null, websockets: false, deployed: null },
+    { name: 'live', branch: 'main', domain: 'acme.example', certificate: 'letsencrypt', websockets: false, flexibleSsl: false, deployed: 'abc1234' },
+    { name: 'test', branch: 'develop', domain: 'test.acme.example', certificate: null, websockets: false, flexibleSsl: false, deployed: null },
 ]
-const quietEnvironmentsForClient = [{ name: 'live', branch: null, domain: null, certificate: null, websockets: false, deployed: null }]
+const quietEnvironmentsForClient = [{ name: 'live', branch: null, domain: null, certificate: null, websockets: false, flexibleSsl: false, deployed: null }]
 
 const logLine: LogLine = { stream: 'stdout', ts: '2026-09-20T00:00:00Z', text: 'hello', truncated: false }
 const usage: SystemUsage = {
@@ -414,11 +414,11 @@ describe('GET /projects', () => {
         assert.deepEqual(body.projects.find(project => project.id === 'acme')?.environments, [
             {
                 name: 'live', dir: '/var/www/acme', composePaths: ['/var/www/acme/docker-compose.yml'], port: 5010,
-                branch: 'main', domain: 'acme.example', certificate: 'letsencrypt', websockets: false, deployed: 'abc1234',
+                branch: 'main', domain: 'acme.example', certificate: 'letsencrypt', websockets: false, flexibleSsl: false, deployed: 'abc1234',
             },
             {
                 name: 'test', dir: '/var/www/acme-test', composePaths: ['/var/www/acme-test/docker-compose.yml'], port: 5013,
-                branch: 'develop', domain: 'test.acme.example', certificate: null, websockets: false, deployed: null,
+                branch: 'develop', domain: 'test.acme.example', certificate: null, websockets: false, flexibleSsl: false, deployed: null,
             },
         ])
     })
@@ -1346,7 +1346,7 @@ describe('GET|POST /projects/:id/:env/adopt', () => {
     }
     const preview = (over: Partial<{ claims: typeof claim[], adoptable: boolean }> = {}): AgentReply => ({
         ok: true,
-        preview: { proposed: '<VirtualHost *:443>', claims: over.claims ?? [claim], extraNames: [], unreadable: [], adoptable: over.adoptable ?? true },
+        preview: { proposed: '<VirtualHost *:443>', claims: over.claims ?? [claim], extraNames: [], unreadable: [], adoptable: over.adoptable ?? true, flexibleSsl: false },
     })
 
     it('previews with the token adopt will write, so the file shown is the file written', async () => {
@@ -1459,7 +1459,7 @@ describe('POST /projects/:id/:env/adopt: did the site survive it', () => {
                 ok: true,
                 preview: {
                     proposed: '<VirtualHost *:443>', claims: over.claims ?? [claim],
-                    extraNames: [], unreadable: [], adoptable: true,
+                    extraNames: [], unreadable: [], adoptable: true, flexibleSsl: false,
                 },
             }
         }

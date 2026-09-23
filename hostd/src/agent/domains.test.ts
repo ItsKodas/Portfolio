@@ -376,6 +376,64 @@ describe('adopt', () => {
         assert.equal(result.ok, false)
         assert.equal(sent.length, 2)
     })
+
+    // The file thebackroom.dev had: port 80 only, because Cloudflare terminates TLS in Flexible mode. The
+    // usual redirect to https would loop that CDN forever, so adoption switches Flexible SSL on and the
+    // vhost serves port 80 instead.
+    describe('a file that answers port 80 only', () => {
+        const httpOnly = { path: '/etc/apache2/sites-enabled/acme.conf', text: '<VirtualHost *:80>\n    ServerName acme.com\n</VirtualHost>\n' }
+        const withFlexible = () => parseRegistry(REGISTRY.replace('aliases: [www.acme.com]', 'aliases: [www.acme.com]\n        flexibleSsl: true'))
+
+        it('switches Flexible SSL on in the registry before writing the vhost, and renders from the reloaded entry', async () => {
+            const { deps, sent, project, environment } = setup()
+            deps.listSitesEnabled = listing([httpOnly])
+            const writes: unknown[] = []
+            deps.writeRegistry = async change => { writes.push(change); return { ok: true } }
+            deps.reloadRegistry = async () => withFlexible()
+
+            const result = await adopt(deps, project, environment, 'abc123', [httpOnly.path])
+
+            assert.equal(result.ok, true)
+            assert.deepEqual(writes, [{ kind: 'set-flag', id: 'acme', environment: 'live', flag: 'flexibleSsl', enabled: true }])
+            const text = sent[0]!.write?.text ?? ''
+            // Port 80 serves the primary rather than redirecting it...
+            assert.match(text, /<VirtualHost \*:80>\n    ServerName acme\.com\n\n    # Flexible SSL/)
+            // ...while the alias on port 80 still redirects to the primary.
+            assert.match(text, /<VirtualHost \*:80>\n    ServerName www\.acme\.com\n[\s\S]*?https:\/\/acme\.com\/\$1 \[R=301,L\]/)
+        })
+
+        it('writes nothing to Apache when the registry refuses the switch', async () => {
+            const { deps, sent, project, environment } = setup()
+            deps.listSitesEnabled = listing([httpOnly])
+            deps.writeRegistry = async () => ({ ok: false, problem: 'the registry is locked' })
+
+            const result = await adopt(deps, project, environment, 'abc123', [httpOnly.path])
+
+            assert.equal(result.ok, false)
+            assert.equal(sent.length, 0)
+        })
+
+        it('leaves the registry alone for a file that has a port 443 block', async () => {
+            const { deps, project, environment } = setup()
+            deps.listSitesEnabled = listing([{ path: httpOnly.path, text: '<VirtualHost *:443>\n    ServerName acme.com\n</VirtualHost>\n' }])
+            let wrote = false
+            deps.writeRegistry = async () => { wrote = true; return { ok: true } }
+
+            assert.equal((await adopt(deps, project, environment, 'abc123', [httpOnly.path])).ok, true)
+            assert.equal(wrote, false)
+        })
+
+        it('previews the same file adopt will write, and says Flexible SSL is coming', async () => {
+            const { deps, project, environment } = setup()
+            deps.listSitesEnabled = listing([httpOnly])
+
+            const result = await previewAdopt(deps, project, environment, 'abc123')
+
+            assert.equal(result.ok && result.preview.flexibleSsl, true)
+            assert.equal(result.ok && result.preview.adoptable, true)
+            assert.match(result.ok ? result.preview.proposed : '', /# Flexible SSL/)
+        })
+    })
 })
 
 // Adoption undone. api decides when, because api is the process with a network and can ask the hostname

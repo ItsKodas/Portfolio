@@ -44,7 +44,17 @@ export type EnvironmentEntry = {
     // Whether hostd's generated vhost passes WebSocket upgrades through to the upstream. Off unless the
     // registry says so, which is the shape every entry written before this existed is already in.
     websockets: boolean
+    // Whether the origin answers the site on port 80 rather than redirecting it to https, because whatever
+    // sits in front terminates TLS itself and only ever reaches the origin over plain HTTP (Cloudflare
+    // calls this Flexible). Off unless the registry says so; adoption turns it on for a site whose own
+    // file had no port 443 block, since that is what the site was relying on.
+    flexibleSsl: boolean
 }
+
+// The per-environment switches that change nothing but how the vhost is rendered. Each is off unless
+// the registry says true, and each is written and cleared the same way.
+export const ENVIRONMENT_FLAGS = ['websockets', 'flexibleSsl'] as const
+export type EnvironmentFlag = typeof ENVIRONMENT_FLAGS[number]
 
 // A git ref or branch name that cannot be read as an option or a path traversal. Git itself also
 // forbids two dots anywhere (".." is range syntax, so "main..other" would resolve as a second,
@@ -121,7 +131,7 @@ const PROJECT_KEYS = new Set([
     'client', 'name', 'dir', 'compose', 'upstream', 'services', 'storage', 'capabilities', 'maxDomains', 'backups',
     'repo', 'credential', 'portEnv', 'limits', 'environments',
 ])
-const ENVIRONMENT_KEYS = new Set(['dir', 'compose', 'branch', 'domain', 'aliases', 'port', 'certificate', 'deployed', 'websockets'])
+const ENVIRONMENT_KEYS = new Set(['dir', 'compose', 'branch', 'domain', 'aliases', 'port', 'certificate', 'deployed', 'websockets', 'flexibleSsl'])
 const DIR = /^\/var\/www\/[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/
 const UPSTREAM = /^(localhost|\d{1,3}(?:\.\d{1,3}){3}):(\d{1,5})$/
 const MEMORY_LIMIT = /^[0-9]+(b|k|m|g)$/i
@@ -431,14 +441,17 @@ function parseEnvironment(name: EnvironmentName, raw: unknown, rules: HostRules,
         else problems.push(`${where}.deployed must be a commit hash`)
     }
 
-    let websockets = false
-    if (raw.websockets !== undefined) {
-        if (typeof raw.websockets === 'boolean') websockets = raw.websockets
-        else problems.push(`${where}.websockets must be true or false`)
+    const flag = (key: EnvironmentFlag): boolean => {
+        if (raw[key] === undefined) return false
+        if (typeof raw[key] === 'boolean') return raw[key]
+        problems.push(`${where}.${key} must be true or false`)
+        return false
     }
+    const websockets = flag('websockets')
+    const flexibleSsl = flag('flexibleSsl')
 
     if (!dir || port === null) return null
-    return { name, dir, composePaths: compose.map(file => posix.join(dir, file)), branch, domain, aliases, port, certificate, deployed, websockets }
+    return { name, dir, composePaths: compose.map(file => posix.join(dir, file)), branch, domain, aliases, port, certificate, deployed, websockets, flexibleSsl }
 }
 
 // When environments is absent, the caller synthesises a single live entry from the project-level
@@ -514,7 +527,7 @@ function parseProject(id: string, raw: unknown, rules: HostRules): ParsedProject
             environments.set('live', {
                 name: 'live', dir, composePaths: compose.map(file => posix.join(dir, file)),
                 branch: null, domain: null, aliases: [], port: upstream.port, certificate: null, deployed: null,
-                websockets: false,
+                websockets: false, flexibleSsl: false,
             })
         }
     }

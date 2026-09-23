@@ -34,11 +34,27 @@ const NOT_BUILT = 'files, backups, domains and provision are designed but not bu
     + 'them, so ticking one here does not switch anything on. Provision, once it is built, will let this '
     + 'project be re-provisioned and removed through the API.'
 
-// Said under each environment's checkbox. What it does to a site hostd already serves, and what it does
-// to one still on a hand-written file, because those are different and the operator may have either.
-const WEBSOCKETS = 'Passes WebSocket connections (socket.io and the like) through to the site. On a site hostd '
-    + 'already serves, saving rewrites its Apache configuration straight away. On a site still served by its own '
-    + 'hand-written file, this is what lets adoption carry that file\'s WebSocket rules.'
+// Each environment's render-only switches, in hostd's ENVIRONMENT_FLAGS order. The note is said under
+// each checkbox: what it does to a site hostd already serves, and what it does to one still on a
+// hand-written file, because those are different and the operator may have either.
+type SwitchKey = 'websockets' | 'flexibleSsl'
+const SWITCHES: ReadonlyArray<{ key: SwitchKey, label: string, note: string }> = [
+    {
+        key: 'websockets',
+        label: 'WebSockets',
+        note: 'Passes WebSocket connections (socket.io and the like) through to the site. On a site hostd '
+            + 'already serves, saving rewrites its Apache configuration straight away. On a site still served by its own '
+            + 'hand-written file, this is what lets adoption carry that file\'s WebSocket rules.',
+    },
+    {
+        key: 'flexibleSsl',
+        label: 'Cloudflare Flexible SSL',
+        note: 'Serves the site on port 80 as well as 443, for a CDN that reaches this server over plain HTTP '
+            + '(Cloudflare on Flexible). Without it, port 80 redirects to https and that CDN loops forever. Adoption '
+            + 'switches this on by itself when the file it replaces had no port 443 block. Untick it once the CDN '
+            + 'reaches port 443 (Cloudflare: Full).',
+    },
+]
 
 // A deploy checks nothing before it is asked to run, because there is nothing here to check it with: it
 // needs a git repository already at the environment's dir, and hostd only finds that out when it runs.
@@ -50,7 +66,7 @@ export function SiteSettingsForm({ id, capabilities, repo, credential, environme
     capabilities: string[]
     repo: string | null
     credential: string | null
-    environments: Array<{ name: string, branch: string | null, websockets?: boolean, dir?: string, port?: number }>
+    environments: Array<{ name: string, branch: string | null, websockets?: boolean, flexibleSsl?: boolean, dir?: string, port?: number }>
     // The repository's branches, fetched for the repo as it stands saved, not for whatever is currently
     // typed into the Repo field above: editing that field without saving leaves this offering the old
     // repo's branches, which is the one thing left as it is rather than fixed, because re-fetching on
@@ -69,8 +85,11 @@ export function SiteSettingsForm({ id, capabilities, repo, credential, environme
     const [credentialValue, setCredentialValue] = useState(credential ?? '')
     const [branchValues, setBranchValues] = useState<Record<string, string>>(() =>
         Object.fromEntries(environments.map(env => [env.name, env.branch ?? ''])))
-    const [websocketValues, setWebsocketValues] = useState<Record<string, boolean>>(() =>
-        Object.fromEntries(environments.map(env => [env.name, env.websockets ?? false])))
+    // Keyed by switch then environment. Absent in props means off, which is what hostd means by it too.
+    const [switchValues, setSwitchValues] = useState<Record<SwitchKey, Record<string, boolean>>>(() => ({
+        websockets: Object.fromEntries(environments.map(env => [env.name, env.websockets ?? false])),
+        flexibleSsl: Object.fromEntries(environments.map(env => [env.name, env.flexibleSsl ?? false])),
+    }))
     const [pending, setPending] = useState(false)
     const [said, setSaid] = useState<SiteActionResult | null>(null)
     // Set instead of said on a no-op save: said is what a call to hostd came back with, and a save that
@@ -112,26 +131,28 @@ export function SiteSettingsForm({ id, capabilities, repo, credential, environme
             const nextBranch = blankToNull(branchValues[env.name])
             if (nextBranch !== (env.branch ?? null)) changedBranches[env.name] = nextBranch
         }
-        // Per environment for the same reason as branches: switching this rewrites a vhost, so an
-        // environment nobody touched must not be sent at all.
-        const changedWebsockets: Record<string, boolean> = {}
-        for (const env of environments) {
-            const next = websocketValues[env.name] ?? false
-            if (next !== (env.websockets ?? false)) changedWebsockets[env.name] = next
-        }
-
         const payload: {
             capabilities?: string[]
             repo?: string | null
             credential?: string | null
             branches?: Record<string, string | null>
             websockets?: Record<string, boolean>
+            flexibleSsl?: Record<string, boolean>
         } = {}
         if (!sameList(nextCapabilities, capabilities)) payload.capabilities = nextCapabilities
         if (nextRepo !== repo) payload.repo = nextRepo
         if (nextCredential !== credential) payload.credential = nextCredential
         if (Object.keys(changedBranches).length > 0) payload.branches = changedBranches
-        if (Object.keys(changedWebsockets).length > 0) payload.websockets = changedWebsockets
+        // Per environment for the same reason as branches: flipping a switch rewrites a vhost, so an
+        // environment nobody touched must not be sent at all.
+        for (const { key } of SWITCHES) {
+            const changed: Record<string, boolean> = {}
+            for (const env of environments) {
+                const next = switchValues[key][env.name] ?? false
+                if (next !== (env[key] ?? false)) changed[env.name] = next
+            }
+            if (Object.keys(changed).length > 0) payload[key] = changed
+        }
 
         if (Object.keys(payload).length === 0) {
             setNothingChanged(true)
@@ -245,18 +266,22 @@ export function SiteSettingsForm({ id, capabilities, repo, credential, environme
                                 {`"${branchValue}" is not one of this repository's branches, so the next deploy on ${env.name} will fail until this is changed.`}
                             </p>
                         )}
-                        <label className={styles.capability}>
-                            <input
-                                type="checkbox"
-                                checked={websocketValues[env.name] ?? false}
-                                onChange={event => {
-                                    const enabled = event.target.checked
-                                    setWebsocketValues(prev => ({ ...prev, [env.name]: enabled }))
-                                }}
-                            />
-                            {`${env.name} WebSockets`}
-                        </label>
-                        <p className={styles.note}>{WEBSOCKETS}</p>
+                        {SWITCHES.map(({ key, label, note }) => (
+                            <div key={key}>
+                                <label className={styles.capability}>
+                                    <input
+                                        type="checkbox"
+                                        checked={switchValues[key][env.name] ?? false}
+                                        onChange={event => {
+                                            const enabled = event.target.checked
+                                            setSwitchValues(prev => ({ ...prev, [key]: { ...prev[key], [env.name]: enabled } }))
+                                        }}
+                                    />
+                                    {`${env.name} ${label}`}
+                                </label>
+                                <p className={styles.note}>{note}</p>
+                            </div>
+                        ))}
                     </div>
                 )
             })}

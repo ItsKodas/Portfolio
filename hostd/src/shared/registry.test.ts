@@ -424,6 +424,23 @@ projects:
         assert.equal(acme.environments.get('test')!.websockets, false)
     })
 
+    it('reads flexibleSsl as off unless an environment says true, and refuses anything else', () => {
+        const registry = parseRegistry(`
+projects:
+  acme:
+    client: cl_1
+    name: Acme
+    services: { web: { role: site } }
+    environments:
+      live: { dir: /var/www/acme, port: 5010, flexibleSsl: true }
+      test: { dir: /var/www/acme-test, port: 5110 }
+`)
+        const acme = registry.projects.get('acme')!
+        assert.equal(acme.environments.get('live')!.flexibleSsl, true)
+        assert.equal(acme.environments.get('test')!.flexibleSsl, false)
+        assert.match(invalidEnvironmentReason('environments: { live: { dir: /var/www/a, port: 5010, flexibleSsl: 1 } }')!, /flexibleSsl/)
+    })
+
     it('refuses websockets that is not true or false', () => {
         assert.match(invalidEnvironmentReason('environments: { live: { dir: /var/www/a, port: 5010, websockets: "yes" } }')!, /websockets/)
     })

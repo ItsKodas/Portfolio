@@ -1443,7 +1443,7 @@ projects:
         assert.equal(reply?.ok, true)
         assert.deepEqual(written, [
             { kind: 'configure', id: 'acme' },
-            { kind: 'set-websockets', id: 'acme', environment: 'live', enabled: true },
+            { kind: 'set-flag', id: 'acme', environment: 'live', flag: 'websockets', enabled: true },
         ])
         assert.equal(context.sent.length, 1)
         assert.match(context.sent[0]?.write?.text ?? '', /ProxyPass \/ http:\/\/127\.0\.0\.1:5010\/ upgrade=websocket/)

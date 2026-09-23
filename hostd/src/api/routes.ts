@@ -466,6 +466,7 @@ function environmentsFor(project: ProjectEntry, actor: Actor): Array<Record<stri
         domain: environment.domain,
         certificate: environment.certificate,
         websockets: environment.websockets,
+        flexibleSsl: environment.flexibleSsl,
         deployed: environment.deployed,
     }))
 }
