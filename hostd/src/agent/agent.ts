@@ -121,6 +121,9 @@ export class Agent {
     // same free domain, before either has written). Serialising every provisioning action against every
     // other one is the honest fix for that, not a lock keyed narrowly enough to miss it.
     private provisioningBusy = false
+    // Keyed <project>:<environment> while a port change runs, so the deploy verb refuses to run up on
+    // the same compose project, or rewrite the registry entry, halfway through one.
+    private readonly portChanging = new Set<string>()
 
     constructor(private readonly deps: AgentDeps) {}
 
@@ -371,6 +374,10 @@ export class Agent {
             return { ok: true, commits: log.commits ?? [] }
         }
 
+        // Every action from here on runs up or writes the registry, which a port change in progress on
+        // this environment is doing too
+        if (this.portChanging.has(key)) return refuse('busy', `${project.id} ${environment.name} is moving to another port`)
+
         if (args.action === 'rollback') {
             const target = lastHealthyCommit(store.get(key), environment.deployed)
             if (!target) return refuse('bad-request', `${project.id} ${environment.name} has no earlier healthy deploy to go back to`)
@@ -533,6 +540,9 @@ export class Agent {
         if (this.envBusy.has(envKey)) return refuse('busy', `${project.id} already has an env write running for ${environment}`)
         this.provisioningBusy = true
         this.envBusy.add(envKey)
+        // Held, not just checked, so a lifecycle action or a deploy arriving mid-change is refused too
+        this.lifecycleBusy.add(project.id)
+        this.portChanging.add(envKey)
         try {
             return await changePort(project, environment, port, {
                 checkPort: provision.checkPort,
@@ -560,6 +570,8 @@ export class Agent {
         } finally {
             this.provisioningBusy = false
             this.envBusy.delete(envKey)
+            this.lifecycleBusy.delete(project.id)
+            this.portChanging.delete(envKey)
         }
     }
 

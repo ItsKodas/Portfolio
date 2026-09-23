@@ -89,12 +89,16 @@ export async function changePort(
             return refuse('bad-request', notPublishedProblem(project.portEnv, port))
         }
 
+        // Counted as written before the write, not after: writePort can write the registry and then throw
+        // refreshing the agent's copy, and writing the old port back over an unchanged entry is harmless.
+        // An answered refusal wrote nothing, so that path leaves the registry alone as before.
+        registryWritten = true
         const registered = await deps.writePort(port)
         if (!registered.ok) {
+            registryWritten = false
             await undo()
             return refuse('bad-request', registered.problem)
         }
-        registryWritten = true
 
         running = await deps.running(environment)
         if (running) {

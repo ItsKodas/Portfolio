@@ -126,4 +126,33 @@ describe('changePort', () => {
         assert.deepEqual(reply, { ok: false, code: 'failed', message: 'acme live could not be moved to port 5012: spawn docker ENOENT. It was moved back to 5010.' })
         assert.deepEqual(steps.slice(-2), ['published', 'restore env "WEB_PORT=5010\\n"'])
     })
+
+    // The registry may already be written when writePort throws (its refresh is what failed), so a
+    // throw from it still puts the old port back
+    it('puts the registry back when writing it throws after the write', async () => {
+        const { deps, steps } = fakes({
+            writePort: async port => {
+                steps.push(`registry ${port}`)
+                if (port === 5012) throw new Error('the registry could not be re-read')
+                return { ok: true }
+            },
+        })
+        const reply = await changePort(acme, 'live', 5012, deps)
+        assert.deepEqual(reply, { ok: false, code: 'failed', message: 'acme live could not be moved to port 5012: the registry could not be re-read. It was moved back to 5010.' })
+        assert.deepEqual(steps.slice(-3), ['registry 5012', 'restore env "WEB_PORT=5010\\n"', 'registry 5010'])
+    })
+
+    it('carries on with the rest of the undo when putting .env back throws', async () => {
+        let ups = 0
+        const { deps, steps } = fakes({
+            up: async () => { steps.push('up'); ups += 1; return ups === 1 ? { ok: false, message: 'up exited with code 1' } : { ok: true } },
+            restorePortEnv: async () => { steps.push('restore env'); throw new Error('EACCES') },
+        })
+        const reply = await changePort(acme, 'live', 5012, deps)
+        assert.deepEqual(reply, {
+            ok: false, code: 'failed',
+            message: 'acme live could not be recreated on port 5012: up exited with code 1. It was moved back to 5010. .env could not be put back: EACCES.',
+        })
+        assert.deepEqual(steps.slice(-4), ['up', 'restore env', 'registry 5010', 'up'])
+    })
 })

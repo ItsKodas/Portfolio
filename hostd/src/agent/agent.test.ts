@@ -1615,4 +1615,32 @@ describe('port', () => {
         await first
         assert.equal(replyOf(await agent.handle(write))?.ok, true)
     })
+
+    // And the reverse: nothing that runs up or rewrites .env may start while a change is in progress
+    function heldChange(options: SetupOptions = {}) {
+        let release!: () => void
+        const slow = fakeProvisionDeps({ checkPort: () => new Promise(resolve => { release = () => resolve({ ok: false, code: 'bad-request', problem: 'port 5012 is in use on the host' }) }) })
+        const context = setup({ provision: slow, ...options })
+        return { ...context, first: context.agent.handle(change(5012)), release: () => release() }
+    }
+
+    it('refuses a lifecycle action for the project while a change is in progress', async () => {
+        const { agent, first, release, runs } = heldChange()
+        assert.deepEqual(replyOf(await agent.handle(lifecycle('acme', 'restart'))), { ok: false, code: 'busy', message: 'acme already has a lifecycle action running' })
+        release()
+        await first
+        assert.deepEqual(runs, [])
+        assert.equal(replyOf(await agent.handle(lifecycle('acme', 'restart')))?.ok, true)
+    })
+
+    it('refuses a deploy of the environment while a change is in progress', async () => {
+        const context = fakeDeploys()
+        const { agent, first, release } = heldChange({ registry: () => deployRegistry, deploys: context.deploys })
+        const deploy: AgentRequest = { verb: 'deploy', project: 'acme', args: { action: 'deploy', environment: 'live' } }
+        assert.deepEqual(replyOf(await agent.handle(deploy)), { ok: false, code: 'busy', message: 'acme live is moving to another port' })
+        assert.deepEqual(context.started, [])
+        release()
+        await first
+        assert.equal(replyOf(await agent.handle(deploy))?.ok, true)
+    })
 })
