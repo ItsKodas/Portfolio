@@ -76,11 +76,20 @@ entry's `portEnv` names). The site's compose file has to publish it, for example
 `ports: ["127.0.0.1:${WEB_PORT}:3000"]`. Create, add-environment and a port change all refuse a compose
 file that does not.
 
-To move an existing site that hard codes its port: change its compose file to `${WEB_PORT}`, deploy that,
-then pick the port in Settings.
+To move an existing site that hard codes its port, in this order, so `WEB_PORT` is never empty while
+compose reads it:
+
+1. Add `WEB_PORT=<current port>` to the environment's `.env` from the Env tab. (Or write the compose
+   file as `${WEB_PORT:-<current port>}`, which falls back to the current port on its own.)
+2. Change the compose file to publish `${WEB_PORT}`, for example `"127.0.0.1:${WEB_PORT}:3000"`.
+3. Deploy, and check the site still answers on its current port.
+4. If the domain is still served by a hand-written vhost, adopt it from the Domains tab. A port change
+   refuses an environment whose domain hostd has no vhost file for (`<domain> is served by a
+   hand-written vhost; ...`), since Apache would go on proxying to the old port.
+5. Change the port in Settings.
 
 How the check sees host services: the agent runs a throwaway `--network host` container from its own
-image that reads `/proc/net/tcp` and `/proc/net/tcp6`. If that fails, provisioning and port changes are
+image that reads `/proc/net/tcp` and, when the host has IPv6, `/proc/net/tcp6`. If that fails, provisioning and port changes are
 refused; check `docker compose logs agent` and that `docker inspect --format '{{.Image}}' hostd-agent`
 works.
 
@@ -1284,7 +1293,7 @@ the adoption that would have produced it rather than leave one behind.
 | Agent log or health warnings show `project <id> declares storage but no service with role database; if one of its services is a database, correct its role so the storage guard can protect it` | **This is advice, not an error.** The project stays valid, and status, logs, lifecycle and env all keep working exactly as before; nothing is refused. It is only worth acting on if one of the project's services really is a database: if so, correct its role in `hostd/registry/projects.yaml` (see step 2 of Creating a site) so the storage guard can actually protect that database's data directory. A project that genuinely has no database can leave this as is. |
 | A `create` or `add-environment` refusal `"fix these invalid projects before provisioning: ..."` | The registry has at least one invalid entry. Provisioning refuses outright rather than risk handing out a port an invalid entry's own (possibly stopped) containers already hold: fix or remove the named entries first, wait ten seconds for the reload, then try again. |
 | A `create` or `add-environment` refusal `"compose resolves the project name ..., not ..."` | Same check and message as a `"valid":false` project below, but caught before anything is cloned or registered: the repo's compose file pins a `name:` that does not match the id you gave. The cloned folder was removed and nothing was registered; either add `name: <id>` to the compose file, or use the id the compose file already pins. |
-| A `create` or `add-environment` refusal `"no free port ... to ..."` | The configured port range (5000-5999) is full, by registry entry or by an already-published container port. Free one up, or extend `PORT_RANGE` in `src/shared/ports.ts`. |
+| A `create` or `add-environment` refusal `"no free port ... to ..."` | Every port from 5000 to 65535 is taken, by a registry entry or by something listening on the dedi (a published container port or any other service). In practice this means the probe misread the host: run the `ss` check under A site's port. |
 | A `create` refusal `"... is already registered"`, or an `add-environment` refusal naming a folder that `"already exists"` | The id is already taken, or its folder is already on disk under a different registration. |
 | A `create` or `add-environment` refusal `"... is already used by another project"` | The domain is already registered to a different project's environment. |
 | A `create` or `add-environment` refusal naming a Git failure | The fetcher could not clone. Check the branch exists on the remote, and that `GITHUB_TOKEN` in `.env.fetcher` can read the repo. |
