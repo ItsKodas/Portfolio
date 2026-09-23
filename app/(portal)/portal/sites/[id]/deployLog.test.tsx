@@ -14,7 +14,6 @@ const { DeployLog, MAX_LINES } = await import('./deployLog')
 class FakeSource {
     static made: FakeSource[] = []
     onopen: (() => void) | null = null
-    onerror: (() => void) | null = null
     closed = false
     private listeners: Record<string, Array<(event: Event) => void>> = {}
 
@@ -30,9 +29,16 @@ class FakeSource {
     close(): void { this.closed = true }
     open(): void { act(() => { this.onopen?.() }) }
 
+    // Not wrapped in act, so a caller that needs to flush a promise as well can wrap the whole thing in an
+    // async act of its own. A named event from the relay carries data; the browser's own transport error
+    // does not, and telling those apart is the component's business.
+    fire(type: string, data?: unknown): void {
+        const event = data === undefined ? new Event(type) : Object.assign(new Event(type), { data: JSON.stringify(data) })
+        for (const fn of this.listeners[type] ?? []) fn(event)
+    }
+
     event(payload: { at: string, startedAt: string, kind: string, text: string }): void {
-        const message = Object.assign(new Event('line'), { data: JSON.stringify(payload) })
-        act(() => { for (const fn of this.listeners.line ?? []) fn(message) })
+        act(() => { this.fire('line', payload) })
     }
 }
 
@@ -58,6 +64,14 @@ describe('the deploy column', () => {
         const url = new URL(open().url, 'http://portal.test')
         expect(url.pathname).toBe('/api/sites/acme/deploy')
         expect(url.searchParams.get('environment')).toBe('live')
+    })
+
+    // The id goes into the path, so it is encoded there, exactly as the log view encodes what it puts in
+    // a query string. Nothing else about the request is the caller's to shape.
+    it('encodes the project id it was given', () => {
+        render(<DeployLog id="acme/bakery" environment="live" />)
+        const url = new URL(open().url, 'http://portal.test')
+        expect(url.pathname).toBe('/api/sites/acme%2Fbakery/deploy')
     })
 
     // The narrative and the raw output are the two things on screen, and reading one as the other is the
@@ -102,8 +116,61 @@ describe('the deploy column', () => {
             { status: 403, headers: { 'content-type': 'application/json' } },
         )))
         render(<DeployLog id="acme" environment="live" />)
-        await act(async () => { open().onerror?.() })
+        await act(async () => { open().fire('error') })
         expect(await screen.findByText(/not available for this site/)).toBeInTheDocument()
+    })
+
+    // EventSource retries a closed connection by itself, every few seconds, for as long as the tab is
+    // open. Behind a refusal each of those retries runs the whole path to hostd and writes an audit line,
+    // so a forgotten tab is thousands of appends an hour arriving exactly when hostd is already unwell.
+    it('stops retrying once the request has been refused', async () => {
+        vi.stubGlobal('fetch', vi.fn(async () => new Response(
+            JSON.stringify({ message: 'Deploying is not available for this site.' }),
+            { status: 403, headers: { 'content-type': 'application/json' } },
+        )))
+        render(<DeployLog id="acme" environment="live" />)
+        const refused = FakeSource.made[0]!
+        await act(async () => { refused.fire('error') })
+        await screen.findByText(/not available for this site/)
+        expect(refused.closed).toBe(true)
+    })
+
+    // An agent restart mid-deploy ends the stream at the server: api writes its end event and closes. The
+    // column must say so, because the alternative is a stale half-log that reads as a deploy still running.
+    it('says the stream dropped when the server ends it', () => {
+        render(<DeployLog id="acme" environment="live" />)
+        open().open()
+        open().event({ at: AT, startedAt: AT, kind: 'step', text: 'building' })
+
+        const ended = FakeSource.made[0]!
+        act(() => { ended.fire('end') })
+
+        expect(screen.getByText(/stream dropped/i)).toBeInTheDocument()
+        expect(ended.closed).toBe(true)
+        // What the deploy printed stays on screen: the point is to say it stopped, not to hide it.
+        expect(screen.getByText('building')).toBeInTheDocument()
+    })
+
+    // hostd's own named error event, which is a message and carries data, rather than the browser's plain
+    // transport error. It arrives on an open stream, where doing nothing leaves the same stale half-log.
+    it('says the stream dropped when hostd reports it failed', () => {
+        render(<DeployLog id="acme" environment="live" />)
+        open().open()
+        const failed = FakeSource.made[0]!
+
+        act(() => { failed.fire('error', { message: 'the deploy watch stream failed' }) })
+
+        expect(screen.getByText(/stream dropped/i)).toBeInTheDocument()
+        expect(failed.closed).toBe(true)
+    })
+
+    // An unclosed stream per navigation is how a portal ends up holding connections nobody is reading,
+    // each one still costing the agent a watcher and a queue.
+    it('closes the stream when the column goes away', () => {
+        const view = render(<DeployLog id="acme" environment="live" />)
+        open().open()
+        view.unmount()
+        expect(FakeSource.made.every(source => source.closed)).toBe(true)
     })
 
     // EventSource reconnects on its own after any dropped connection, and hostd replays its whole buffer
@@ -130,7 +197,7 @@ describe('the deploy column', () => {
         open().open()
         open().event({ at: AT, startedAt: AT, kind: 'step', text: 'building' })
 
-        act(() => { open().onerror?.() })
+        act(() => { open().fire('error') })
 
         expect(fetched).not.toHaveBeenCalled()
         expect(screen.queryByText(/cannot be watched/)).toBeNull()

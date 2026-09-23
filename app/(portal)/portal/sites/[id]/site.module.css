@@ -350,6 +350,7 @@
 
 .deployLogProblem { color: var(--warn); font-size: 12.5px; margin: 0; }
 .deployLogIdle { color: var(--ink-3); font-size: 12.5px; margin: 0; }
+.deployLogRetry { margin-top: 8px; }
 
 /* Scrolls on its own rather than growing the page to 2000 lines tall. */
 .deployLogLines {
