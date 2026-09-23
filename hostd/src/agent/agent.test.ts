@@ -1554,3 +1554,27 @@ projects:
         assert.deepEqual(written, [])
     })
 })
+
+describe('port', () => {
+    const change = (port: number, environment: 'live' | 'test' = 'live'): AgentRequest => ({ verb: 'port', project: 'acme', args: { environment, port } })
+
+    it('refuses when provisioning is not configured', async () => {
+        const { agent } = setup()
+        assert.deepEqual(replyOf(await agent.handle(change(5012))), { ok: false, code: 'unavailable', message: 'provisioning is not configured' })
+    })
+
+    it('refuses an environment the project does not have', async () => {
+        const { agent } = setup({ provision: fakeProvisionDeps() })
+        assert.equal((replyOf(await agent.handle(change(5012, 'test'))) as { code?: string }).code, 'unknown-environment')
+    })
+
+    it('refuses while another provisioning action holds the lock', async () => {
+        let release!: () => void
+        const slow = fakeProvisionDeps({ checkPort: () => new Promise(resolve => { release = () => resolve({ ok: true }) }) })
+        const { agent } = setup({ provision: slow })
+        const first = agent.handle(change(5012))
+        assert.deepEqual(replyOf(await agent.handle(change(5013))), { ok: false, code: 'busy', message: 'another provisioning action is in progress' })
+        release()
+        await first
+    })
+})

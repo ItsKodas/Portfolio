@@ -88,6 +88,7 @@ export type Route =
     | { verb: 'deploy', project: string, environment: EnvironmentName }
     | { verb: 'rollback', project: string, environment: EnvironmentName }
     | { verb: 'branch', project: string, environment: EnvironmentName }
+    | { verb: 'port', project: string, environment: EnvironmentName }
     | { verb: 'deploys', project: string, environment: EnvironmentName }
     | { verb: 'commits', project: string, environment: EnvironmentName }
     | { verb: 'backups', project: string }
@@ -203,6 +204,7 @@ export function matchRoute(method: string, pathname: string): Route {
                 case 'deploy': return only('POST', { verb: 'deploy', project, environment })
                 case 'rollback': return only('POST', { verb: 'rollback', project, environment })
                 case 'branch': return only('PUT', { verb: 'branch', project, environment })
+                case 'port': return only('PUT', { verb: 'port', project, environment })
                 case 'deploys': return only('GET', { verb: 'deploys', project, environment })
                 case 'commits': return only('GET', { verb: 'commits', project, environment })
                 case 'domains':
@@ -391,6 +393,13 @@ function parseBranchBody(value: Record<string, unknown>): { ok: true, branch: st
     // rule about what a branch may be lives; this only refuses a shape the agent could not read.
     if (typeof value.branch !== 'string') return { ok: false, message: 'branch is malformed' }
     return { ok: true, branch: value.branch }
+}
+
+function parsePortBody(value: Record<string, unknown>): { ok: true, port: number } | { ok: false, message: string } {
+    if (!onlyKeys(value, ['port'])) return { ok: false, message: 'changing a port takes only port' }
+    // The range and whether it is free are the agent's to say; this only refuses a shape it could not read
+    if (typeof value.port !== 'number' || !Number.isInteger(value.port)) return { ok: false, message: 'port must be a whole number' }
+    return { ok: true, port: value.port }
 }
 
 // Bounded far below the audit log's own limit: this is a page of a commit list, not an export.
@@ -1233,6 +1242,28 @@ export function createHandler(deps: ApiDeps): (req: IncomingMessage, res: Server
                 // (the agent's own set-branch calls its refreshRegistry for exactly this reason, in
                 // agent.ts), so api's copy needs catching up here too.
                 return respondAgentAction('deploy', reply, route.project, named, true)
+            }
+
+            case 'port': {
+                // configure's policy: admin only, whatever the project's capabilities, like every other
+                // change to the registry entry itself
+                const target = `${route.environment} port`
+                const entry = await authorizeProject(route.project, 'configure', target)
+                if (!entry) return
+
+                const body = await readJsonBody(req, MAX_REQUEST_BYTES)
+                if (!body.ok) return refuseRoute(400, 'bad-request', body.message, route.project, 'configure', target)
+                const parsed = parsePortBody(body.value)
+                if (!parsed.ok) return refuseRoute(400, 'bad-request', parsed.message, route.project, 'configure', target)
+
+                const named = `${target} ${parsed.port}`
+                const reply = await callAgentAudited(
+                    { verb: 'port', project: route.project, args: { environment: route.environment, port: parsed.port } },
+                    route.project, 'configure', named,
+                )
+                if (!reply) return
+                // The registry changed, so api's copy catches up before answering, as a branch switch does
+                return respondAgentAction('configure', reply, route.project, named, true)
             }
 
             case 'deploys':

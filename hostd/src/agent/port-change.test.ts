@@ -1,0 +1,93 @@
+import { describe, it } from 'node:test'
+import assert from 'node:assert/strict'
+
+import { changePort, type PortChangeDeps } from './port-change.ts'
+import { notPublishedProblem } from './provision.ts'
+import { parseRegistry } from '../shared/registry.ts'
+
+const registry = parseRegistry(`
+projects:
+  acme:
+    client: cl_1
+    name: Acme
+    repo: git@github.com:a/acme.git
+    services: { web: { role: site } }
+    environments:
+      live: { dir: /var/www/acme, port: 5010, domain: acme.com }
+`)
+const acme = registry.projects.get('acme')!
+
+function fakes(overrides: Partial<PortChangeDeps> = {}) {
+    const steps: string[] = []
+    const deps: PortChangeDeps = {
+        checkPort: async port => { steps.push(`check ${port}`); return { ok: true } },
+        setPortEnv: async (_env, key, port) => { steps.push(`env ${key}=${port}`); return { ok: true, previous: 'WEB_PORT=5010\n' } },
+        restorePortEnv: async (_env, previous) => { steps.push(`restore env ${JSON.stringify(previous)}`); return { ok: true } },
+        published: async () => { steps.push('published'); return { ok: true, ports: [5012] } },
+        writePort: async port => { steps.push(`registry ${port}`); return { ok: true } },
+        running: async () => { steps.push('running?'); return true },
+        up: async () => { steps.push('up'); return { ok: true } },
+        rewriteVhost: async () => { steps.push('vhost'); return null },
+        ...overrides,
+    }
+    return { deps, steps }
+}
+
+describe('changePort', () => {
+    it('checks, writes .env, confirms compose publishes it, writes the registry, recreates, rewrites the vhost', async () => {
+        const { deps, steps } = fakes()
+        const reply = await changePort(acme, 'live', 5012, deps)
+        assert.deepEqual(reply, { ok: true, output: 'acme live now uses port 5012, and its containers were recreated on it' })
+        assert.deepEqual(steps, ['check 5012', 'env WEB_PORT=5012', 'published', 'registry 5012', 'running?', 'up', 'vhost'])
+    })
+
+    it('does nothing for the port it already has', async () => {
+        const { deps, steps } = fakes()
+        assert.deepEqual(await changePort(acme, 'live', 5010, deps), { ok: true, output: 'acme live already uses port 5010' })
+        assert.deepEqual(steps, [])
+    })
+
+    it('refuses a port the check refuses, touching nothing', async () => {
+        const { deps, steps } = fakes({ checkPort: async () => ({ ok: false, code: 'bad-request', problem: 'port 5004 is in use on the host' }) })
+        assert.deepEqual(await changePort(acme, 'live', 5004, deps), { ok: false, code: 'bad-request', message: 'port 5004 is in use on the host' })
+        assert.deepEqual(steps, [])
+    })
+
+    it('puts .env back when compose does not publish the port', async () => {
+        const { deps, steps } = fakes({ published: async () => ({ ok: true, ports: [3000] }) })
+        assert.deepEqual(await changePort(acme, 'live', 5012, deps), { ok: false, code: 'bad-request', message: notPublishedProblem('WEB_PORT', 5012) })
+        assert.deepEqual(steps.slice(-1), ['restore env "WEB_PORT=5010\\n"'])
+    })
+
+    it('puts .env back when the registry refuses the port', async () => {
+        const { deps, steps } = fakes({ writePort: async () => ({ ok: false, problem: 'port 5012 is also used by other' }) })
+        const reply = await changePort(acme, 'live', 5012, deps)
+        assert.deepEqual(reply, { ok: false, code: 'bad-request', message: 'port 5012 is also used by other' })
+        assert.deepEqual(steps.slice(-1), ['restore env "WEB_PORT=5010\\n"'])
+    })
+
+    it('undoes everything and brings the old port back up when the recreate fails', async () => {
+        let ups = 0
+        const { deps, steps } = fakes({ up: async () => { steps.push('up'); ups += 1; return ups === 1 ? { ok: false, message: 'up exited with code 1' } : { ok: true } } })
+        const reply = await changePort(acme, 'live', 5012, deps)
+        assert.equal(reply.ok, false)
+        assert.match(reply.ok ? '' : reply.message, /up exited with code 1/)
+        assert.deepEqual(steps.slice(-4), ['up', 'restore env "WEB_PORT=5010\\n"', 'registry 5010', 'up'])
+    })
+
+    it('undoes everything when the vhost cannot be rewritten', async () => {
+        let rewrites = 0
+        const { deps, steps } = fakes({ rewriteVhost: async () => { steps.push('vhost'); rewrites += 1; return rewrites === 1 ? 'Apache refused the file' : null } })
+        const reply = await changePort(acme, 'live', 5012, deps)
+        assert.equal(reply.ok, false)
+        assert.match(reply.ok ? '' : reply.message, /Apache refused the file/)
+        assert.deepEqual(steps.slice(-5), ['vhost', 'restore env "WEB_PORT=5010\\n"', 'registry 5010', 'up', 'vhost'])
+    })
+
+    it('does not start an environment that is not running', async () => {
+        const { deps, steps } = fakes({ running: async () => { steps.push('running?'); return false } })
+        const reply = await changePort(acme, 'live', 5012, deps)
+        assert.deepEqual(reply, { ok: true, output: 'acme live now uses port 5012. It was not running, so it takes the port when it next starts' })
+        assert.ok(!steps.includes('up'))
+    })
+})

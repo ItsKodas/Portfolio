@@ -15,8 +15,8 @@ import { deployKey, lastHealthyCommit } from '../shared/deploys.ts'
 import { diskProblem, manualProblem } from '../shared/backups.ts'
 import type { RegistryWriter } from '../shared/registry-write.ts'
 import type { DiskUsage, SystemUsage } from '../shared/system.ts'
-import { runLifecycle, type Runner } from './compose.ts'
-import { deployTrees, repositoryIn } from './deploy-compose.ts'
+import { LIFECYCLE_TIMEOUT_MS, resolvePublished, runLifecycle, tail, type Runner } from './compose.ts'
+import { composeNameOf, deployTrees, locationIn, repositoryIn, upArgv } from './deploy-compose.ts'
 import type { DeployDeps } from './deploy.ts'
 import type { DeployRunner } from './deploy-runner.ts'
 import type { DeployStore } from './deploy-state.ts'
@@ -26,6 +26,8 @@ import { buildServiceStatuses, groupByProject, pickPerService, type ContainerIns
 import { createLogDecoder } from './logframes.ts'
 import { listEnvFiles, readEnvFile, writeEnvFile, type EnvFs } from './env-files.ts'
 import { createProject, addEnvironment, removeProject, type ProvisionDeps } from './provision.ts'
+import { changePort } from './port-change.ts'
+import { restorePortEnv, writePortEnv } from './port-env.ts'
 import type { BackupRunner } from './backup-runner.ts'
 import type { BackupStore } from './backup-state.ts'
 import { repoPath, type Restic } from './restic.ts'
@@ -162,6 +164,8 @@ export class Agent {
                 return reply(await this.configure(checked.project, request.args))
             case 'branches':
                 return reply(await this.branches(checked.project))
+            case 'port':
+                return reply(await this.port(checked.project, request.args.environment, request.args.port))
         }
     }
 
@@ -507,6 +511,42 @@ export class Agent {
             output: rewritten.length === 0
                 ? `${project.id}'s registry entry was updated`
                 : `${project.id}'s registry entry was updated and its Apache configuration was rewritten`,
+        }
+    }
+
+    // Under the provisioning lock, because the port check reads the same registry snapshot a create does:
+    // a create and a port change racing could otherwise both take one free port.
+    private async port(project: ProjectEntry, environment: EnvironmentName, port: number): Promise<AgentReply> {
+        const provision = this.deps.provision
+        if (!provision) return refuse('unavailable', 'provisioning is not configured')
+        if (this.provisioningBusy) return refuse('busy', 'another provisioning action is in progress')
+        this.provisioningBusy = true
+        try {
+            return await changePort(project, environment, port, {
+                checkPort: provision.checkPort,
+                setPortEnv: (entry, key, value) => writePortEnv(entry, key, value, this.deps.envFs),
+                restorePortEnv: (entry, previous) => restorePortEnv(entry, previous, this.deps.envFs),
+                published: entry => resolvePublished({ dir: entry.dir, composePaths: entry.composePaths }, this.deps.runner),
+                writePort: async value => {
+                    const written = await this.deps.writer.write({ kind: 'set-port', id: project.id, environment, port: value })
+                    if (!written.ok) return written
+                    await this.deps.refreshRegistry()
+                    return { ok: true }
+                },
+                running: async entry => (await this.deps.docker.listProjectContainers(composeNameOf(entry)))
+                    .some(container => container.State === 'running'),
+                // The same up a deploy's swap runs, in the environment's own folder: compose recreates
+                // exactly the containers whose ports changed, and never builds or pulls.
+                up: async entry => {
+                    const result = await this.deps.runner('docker', upArgv(locationIn(entry, entry.dir), composeNameOf(entry)), LIFECYCLE_TIMEOUT_MS)
+                    if (result.timedOut) return { ok: false, message: 'up timed out' }
+                    if (result.exitCode !== 0) return { ok: false, message: `up exited with code ${result.exitCode}: ${tail(result.stderr.trim(), 300)}` }
+                    return { ok: true }
+                },
+                rewriteVhost: async () => (await this.rewriteMovedVhost(project.id, environment)).problem,
+            })
+        } finally {
+            this.provisioningBusy = false
         }
     }
 

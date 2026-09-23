@@ -664,3 +664,17 @@ projects:
         assert.equal(result.ok, true)
     })
 })
+
+describe('port', () => {
+    it('parses a port change for one environment', () => {
+        assert.deepEqual(
+            parseAgentRequest('{"verb":"port","project":"acme","args":{"environment":"live","port":5012}}'),
+            { ok: true, request: { verb: 'port', project: 'acme', args: { environment: 'live', port: 5012 } } },
+        )
+    })
+
+    it('refuses a port outside the range, and an unknown environment', () => {
+        assert.equal(parseAgentRequest('{"verb":"port","project":"acme","args":{"environment":"live","port":80}}').ok, false)
+        assert.equal(parseAgentRequest('{"verb":"port","project":"acme","args":{"environment":"prod","port":5012}}').ok, false)
+    })
+})

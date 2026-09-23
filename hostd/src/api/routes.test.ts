@@ -2220,3 +2220,31 @@ describe('the backup endpoints', () => {
         }
     })
 })
+
+describe('PUT /projects/:id/:env/port', () => {
+    it('routes under the environment and allows only PUT', () => {
+        assert.deepEqual(matchRoute('PUT', '/projects/acme/live/port'), { verb: 'port', project: 'acme', environment: 'live' })
+        assert.equal(matchRoute('GET', '/projects/acme/live/port').verb, 'method-not-allowed')
+    })
+
+    it('asks the agent to change the port', async () => {
+        agent.reply = () => ({ ok: true, output: 'acme live now uses port 5012' })
+        const response = await request('/projects/acme/live/port', { method: 'PUT', actor: 'admin', body: { port: 5012 } })
+        assert.equal(response.status, 200)
+        assert.deepEqual(agent.calls, [{ verb: 'port', project: 'acme', args: { environment: 'live', port: 5012 } }])
+    })
+
+    it('refuses a body that is not one port', async () => {
+        for (const body of [{}, { port: '5012' }, { port: 5012, extra: true }]) {
+            const response = await request('/projects/acme/live/port', { method: 'PUT', actor: 'admin', body })
+            assert.equal(response.status, 400)
+        }
+        assert.deepEqual(agent.calls, [])
+    })
+
+    it('answers a client as though the project were not there', async () => {
+        const response = await request('/projects/acme/live/port', { method: 'PUT', body: { port: 5012 } })
+        assert.equal(response.status, 404)
+        assert.deepEqual(agent.calls, [])
+    })
+})

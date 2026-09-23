@@ -225,9 +225,12 @@ export type CredentialsRequest = { verb: 'credentials' }
 export type PortsArgs = { port: number | null, own: OwnPort | null }
 export type PortsRequest = { verb: 'ports', args: PortsArgs }
 
+// Moving one environment to another port. Admin only, by api's policy (configure).
+export type PortRequest = { verb: 'port', project: string, args: { environment: EnvironmentName, port: number } }
+
 export type ProjectRequest =
     | StatusRequest | LifecycleRequest | LogsRequest | ProvisionOnProjectRequest | EnvRequest | DeployRequest
-    | BackupRequest | DomainsRequest | ConfigureRequest | BranchesRequest
+    | BackupRequest | DomainsRequest | ConfigureRequest | BranchesRequest | PortRequest
 export type AgentRequest = HealthRequest | StatusesRequest | ProvisionCreateRequest | CredentialsRequest | PortsRequest | ProjectRequest
 export type Verb = AgentRequest['verb']
 
@@ -331,6 +334,8 @@ export const VERB_CAPABILITY: Record<Verb, Capability | null> = {
     credentials: null,
     // Null for the same reason: api's policy makes it admin-only.
     ports: null,
+    // Null, like configure: api's policy makes it admin-only.
+    port: null,
 }
 
 type Parsed = { ok: true, request: AgentRequest } | Refusal
@@ -913,6 +918,19 @@ export function parseAgentRequest(line: string): Parsed {
             return { ok: true, request: { verb: 'branches', project } }
         }
 
+        case 'port': {
+            if (!onlyKeys(raw, ['verb', 'project', 'args'])) return refuse('bad-request', 'port takes only project and args')
+            const project = projectOf(raw)
+            if (!project) return refuse('bad-request', 'project is malformed')
+            if (!isRecord(raw.args) || !onlyKeys(raw.args, ['environment', 'port'])) return refuse('bad-request', 'port takes only args.environment and args.port')
+            const { environment, port } = raw.args
+            if (!(ENVIRONMENTS as readonly unknown[]).includes(environment)) return refuse('bad-request', 'environment must be live or test')
+            if (typeof port !== 'number' || !Number.isInteger(port) || port < PORT_RANGE.from || port > PORT_RANGE.to) {
+                return refuse('bad-request', `port must be a whole number from ${PORT_RANGE.from} to ${PORT_RANGE.to}`)
+            }
+            return { ok: true, request: { verb: 'port', project, args: { environment: environment as EnvironmentName, port } } }
+        }
+
         default:
             return refuse('bad-request', 'unknown verb')
     }
@@ -946,7 +964,7 @@ export function checkStructure(
         const entry = Object.hasOwn(project.services, service) ? project.services[service] : undefined
         if (!entry || !isComposeService(entry)) return refuse('unknown-service', `${service} is not a registered service of ${id}`)
     }
-    if ((request.verb === 'env' || request.verb === 'deploy') && !environmentOf(project, request.args.environment)) {
+    if ((request.verb === 'env' || request.verb === 'deploy' || request.verb === 'port') && !environmentOf(project, request.args.environment)) {
         return refuse('unknown-environment', `${id} has no ${request.args.environment} environment`)
     }
     return { ok: true, project }
