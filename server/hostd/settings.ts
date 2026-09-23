@@ -21,6 +21,9 @@ export type SiteSettings = {
     // Whether each environment's vhost passes WebSocket upgrades through. hostd rewrites the vhost it owns
     // when this changes; a site still served by hand only has it recorded until it is adopted.
     websockets?: Record<string, boolean>
+    // Whether each environment serves the site on port 80 for a CDN in Flexible mode. Rewrites the vhost
+    // exactly as websockets does.
+    flexibleSsl?: Record<string, boolean>
 }
 
 // Matches hostd's registry id rule

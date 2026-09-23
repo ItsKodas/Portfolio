@@ -4,8 +4,8 @@
 
 import { PROJECT_ID, SERVICE_NAME, isRecord } from './formats.ts'
 import {
-    isComposeService, environmentOf, ENVIRONMENTS, CAPABILITIES, CERTIFICATE_MODES, GIT_REF, CREDENTIAL_NAME,
-    type Capability, type CertificateMode, type EnvironmentName, type Keep, type ProjectEntry, type Registry,
+    isComposeService, environmentOf, ENVIRONMENTS, ENVIRONMENT_FLAGS, CAPABILITIES, CERTIFICATE_MODES, GIT_REF, CREDENTIAL_NAME,
+    type Capability, type CertificateMode, type EnvironmentFlag, type EnvironmentName, type Keep, type ProjectEntry, type Registry,
 } from './registry.ts'
 import { normaliseHostname } from './hostnames.ts'
 import type { Commit } from './fetch-protocol.ts'
@@ -169,6 +169,9 @@ export type AdoptPreview = {
         // configuration test, so the operator is shown them before adopting rather than after.
         unreadable: string[]
         adoptable: boolean
+        // Whether the proposed vhost serves the site on port 80 for a CDN in Flexible mode, because a file
+        // being replaced answered port 80 only. Adopting switches the environment's Flexible SSL on.
+        flexibleSsl: boolean
     }
 }
 
@@ -189,6 +192,9 @@ export type ConfigureArgs = {
     // hostd owns, if it owns one yet; an environment still served by hand only has it recorded, for the
     // adoption that writes hostd's file to render.
     websockets?: Partial<Record<EnvironmentName, boolean>>
+    // Whether each environment's origin serves the site on port 80 for a CDN in Flexible mode, rather than
+    // redirecting it to https. Rewrites the vhost exactly as websockets does.
+    flexibleSsl?: Partial<Record<EnvironmentName, boolean>>
 }
 export type ConfigureRequest = { verb: 'configure', project: string, args: ConfigureArgs }
 
@@ -608,8 +614,8 @@ export function parseDomainsArgs(args: unknown): { ok: true, args: DomainsArgs }
 // body it could not read is refused in exactly one place. See policy.ts and routes.ts in api for how the
 // route bridges this Refusal shape onto its own parsers' { ok: false, message }.
 export function parseConfigureArgs(raw: unknown): ConfigureArgs | Refusal {
-    if (!isRecord(raw) || !onlyKeys(raw, ['capabilities', 'repo', 'credential', 'branches', 'domains', 'websockets'])) {
-        return refuse('bad-request', 'configure takes only capabilities, repo, credential, branches, domains and websockets')
+    if (!isRecord(raw) || !onlyKeys(raw, ['capabilities', 'repo', 'credential', 'branches', 'domains', 'websockets', 'flexibleSsl'])) {
+        return refuse('bad-request', 'configure takes only capabilities, repo, credential, branches, domains, websockets and flexibleSsl')
     }
 
     let capabilities: Capability[] | undefined
@@ -665,16 +671,19 @@ export function parseConfigureArgs(raw: unknown): ConfigureArgs | Refusal {
         domains = parsed
     }
 
-    let websockets: Partial<Record<EnvironmentName, boolean>> | undefined
-    if (raw.websockets !== undefined) {
-        if (!isRecord(raw.websockets)) return refuse('bad-request', 'websockets is malformed')
+    // Both render-only switches share one shape: a mapping of environment to true or false.
+    const flags: Partial<Record<EnvironmentFlag, Partial<Record<EnvironmentName, boolean>>>> = {}
+    for (const key of ENVIRONMENT_FLAGS) {
+        const value = raw[key]
+        if (value === undefined) continue
+        if (!isRecord(value)) return refuse('bad-request', `${key} is malformed`)
         const parsed: Partial<Record<EnvironmentName, boolean>> = {}
-        for (const [name, enabled] of Object.entries(raw.websockets)) {
+        for (const [name, enabled] of Object.entries(value)) {
             if (!(ENVIRONMENTS as readonly string[]).includes(name)) return refuse('bad-request', `${name} is not an environment`)
-            if (typeof enabled !== 'boolean') return refuse('bad-request', `${name} websockets must be true or false`)
+            if (typeof enabled !== 'boolean') return refuse('bad-request', `${name} ${key} must be true or false`)
             parsed[name as EnvironmentName] = enabled
         }
-        websockets = parsed
+        flags[key] = parsed
     }
 
     return {
@@ -683,7 +692,7 @@ export function parseConfigureArgs(raw: unknown): ConfigureArgs | Refusal {
         ...(credential !== undefined ? { credential } : {}),
         ...(branches !== undefined ? { branches } : {}),
         ...(domains !== undefined ? { domains } : {}),
-        ...(websockets !== undefined ? { websockets } : {}),
+        ...flags,
     }
 }
 

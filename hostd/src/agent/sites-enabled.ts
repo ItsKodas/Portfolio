@@ -108,9 +108,6 @@ function unsupportedReasons(text: string, expected: string | null, websockets: b
     const found = new Map<string, string>()
     const add = (kind: string, reason: string) => { if (!found.has(kind)) found.set(kind, reason) }
 
-    let sawVirtualHost = false
-    let sawPort443 = false
-
     for (const raw of text.split('\n')) {
         if (/^\s*#/.test(raw)) continue
 
@@ -118,14 +115,6 @@ function unsupportedReasons(text: string, expected: string | null, websockets: b
         if (blocked) {
             add('include', `${blocked[1]} is used, so the hostnames this file serves cannot be read here`)
             continue
-        }
-
-        const opened = raw.match(VHOST_OPEN)
-        if (opened) {
-            sawVirtualHost = true
-            // Any address on the line ending :443, not only *:443. An origin listening on 443 at one
-            // address is still an origin that terminates TLS, which is the fact this is measuring.
-            if (opened[1]!.split(/\s+/).some(address => address.endsWith(':443'))) sawPort443 = true
         }
 
         const websocket = raw.match(WEBSOCKET_URL)
@@ -159,13 +148,30 @@ function unsupportedReasons(text: string, expected: string | null, websockets: b
         }
     }
 
-    // Last, because it is a fact about the whole file rather than about any one line, and because a file
-    // with no <VirtualHost> in it at all is a fragment this has no business judging.
-    if (sawVirtualHost && !sawPort443) {
-        add('no-443', 'This file has no port 443 block, so the origin answers plain HTTP on port 80 only and whatever sits in front of it is terminating TLS on its own (Cloudflare calls this Flexible). hostd\'s generated vhost sends every request on port 80 to https and serves 443 itself, so the visitor would be redirected back through the CDN to the same HTTP origin and round again, forever. Give the origin a port 443 block, or take the site off Flexible SSL, before adopting it.')
-    }
-
     return [...found.values()]
+}
+
+// Whether this file answers plain HTTP on port 80 and nothing on 443, which means whatever sits in front
+// of it terminates TLS on its own and reaches the origin over HTTP (Cloudflare calls this Flexible).
+// Adopting such a file with hostd's usual port 80, which redirects to https, sends the CDN round in a
+// loop forever: that is what took thebackroom.dev off the internet. So this is not a refusal. Adoption
+// switches the environment's Flexible SSL on instead, and the generated vhost serves the site on port 80
+// just as the file did.
+//
+// A file with no <VirtualHost> in it at all is a fragment and says nothing either way.
+export function servesHttpOnly(text: string): boolean {
+    let sawVirtualHost = false
+    let sawPort443 = false
+    for (const raw of text.split('\n')) {
+        if (/^\s*#/.test(raw)) continue
+        const opened = raw.match(VHOST_OPEN)
+        if (!opened) continue
+        sawVirtualHost = true
+        // Any address on the line ending :443, not only *:443. An origin listening on 443 at one address
+        // is still an origin that terminates TLS, which is the fact this is measuring.
+        if (opened[1]!.split(/\s+/).some(address => address.endsWith(':443'))) sawPort443 = true
+    }
+    return sawVirtualHost && !sawPort443
 }
 
 // `expected` is hostd's own upstream for this environment, or null when there is none to compare

@@ -226,21 +226,21 @@ describe('set-aliases', () => {
     })
 })
 
-describe('set-websockets', () => {
+describe('set-flag', () => {
     it('writes websockets: true under the environment', () => {
-        const result = applyChange(BASE, { kind: 'set-websockets', id: 'acme', environment: 'live', enabled: true })
+        const result = applyChange(BASE, { kind: 'set-flag', id: 'acme', environment: 'live', flag: 'websockets', enabled: true })
         assert.match(result.ok ? result.text : '', /websockets: true/)
     })
 
     it('removes the key when switched off, rather than leaving websockets: false', () => {
-        const on = applyChange(BASE, { kind: 'set-websockets', id: 'acme', environment: 'live', enabled: true })
-        const result = applyChange(on.ok ? on.text : '', { kind: 'set-websockets', id: 'acme', environment: 'live', enabled: false })
+        const on = applyChange(BASE, { kind: 'set-flag', id: 'acme', environment: 'live', flag: 'websockets', enabled: true })
+        const result = applyChange(on.ok ? on.text : '', { kind: 'set-flag', id: 'acme', environment: 'live', flag: 'websockets', enabled: false })
         assert.equal(result.ok, true)
         assert.doesNotMatch(result.ok ? result.text : '', /websockets/)
     })
 
     it('refuses an environment the project does not have', () => {
-        assert.equal(applyChange(BASE, { kind: 'set-websockets', id: 'acme', environment: 'test', enabled: true }).ok, false)
+        assert.equal(applyChange(BASE, { kind: 'set-flag', id: 'acme', environment: 'test', flag: 'websockets', enabled: true }).ok, false)
     })
 })
 

@@ -9,7 +9,7 @@ import {
     type LifecycleReply, type LogLine, type LogsArgs, type ProjectStatus, type ProvisionAddEnvironmentArgs,
     type ProvisionCreateArgs, type ProvisionRemoveArgs, type Refusal, type ServiceStatus, type StatusesReply,
 } from '../shared/protocol.ts'
-import { environmentOf, type EnvironmentName, type ProjectEntry, type Registry } from '../shared/registry.ts'
+import { environmentOf, ENVIRONMENT_FLAGS, type EnvironmentFlag, type EnvironmentName, type ProjectEntry, type Registry } from '../shared/registry.ts'
 import { describeError } from '../shared/formats.ts'
 import { deployKey, lastHealthyCommit } from '../shared/deploys.ts'
 import { diskProblem, manualProblem } from '../shared/backups.ts'
@@ -397,13 +397,17 @@ export class Agent {
             const existing = environmentOf(project, name)?.domain
             if (existing && existing !== domain) replacing.push(name as EnvironmentName)
         }
-        // And which are having WebSockets switched, read for the same reason: the vhost has to follow the
-        // registry, and only the old value says whether this call changes anything.
-        const switching: EnvironmentName[] = []
-        for (const [name, enabled] of Object.entries(args.websockets ?? {})) {
-            const existing = environmentOf(project, name)
-            if (existing && existing.websockets !== enabled) switching.push(name as EnvironmentName)
+        // And which are having a render-only switch flipped (WebSockets, Flexible SSL), read for the same
+        // reason: the vhost has to follow the registry, and only the old value says whether this call
+        // changes anything.
+        const flips: Array<{ name: EnvironmentName, flag: EnvironmentFlag, enabled: boolean }> = []
+        for (const flag of ENVIRONMENT_FLAGS) {
+            for (const [name, enabled] of Object.entries(args[flag] ?? {})) {
+                const existing = environmentOf(project, name)
+                if (existing && existing[flag] !== enabled) flips.push({ name: name as EnvironmentName, flag, enabled })
+            }
         }
+        const switching = flips.map(flip => flip.name)
 
         // Validated where it is SET, not only where it is used: a name the fetcher does not hold would
         // otherwise sit in the registry until the next deploy discovered it. A null is clearing the key
@@ -443,10 +447,8 @@ export class Agent {
             })
             if (!set.ok) return refuse('bad-request', set.problem)
         }
-        for (const name of switching) {
-            const set = await this.deps.writer.write({
-                kind: 'set-websockets', id: project.id, environment: name, enabled: args.websockets![name]!,
-            })
+        for (const { name, flag, enabled } of flips) {
+            const set = await this.deps.writer.write({ kind: 'set-flag', id: project.id, environment: name, flag, enabled })
             if (!set.ok) return refuse('bad-request', set.problem)
         }
         // The registry store only reloads on its own ten second timer, so without this the next request
@@ -460,7 +462,7 @@ export class Agent {
         // reason setAliases writes the registry first.
         const problems: string[] = []
         const rewritten: ConfigureWritten[] = []
-        // Once per environment, even when one save both moves its address and switches WebSockets: the
+        // Once per environment, even when one save moves its address and flips a switch or two: the
         // rewrite renders from the registry as it now is, so a single pass carries both.
         for (const name of new Set([...replacing, ...switching])) {
             const result = await this.rewriteMovedVhost(project.id, name)

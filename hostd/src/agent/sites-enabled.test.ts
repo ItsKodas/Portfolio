@@ -10,6 +10,7 @@ import {
     unreadableWarnings,
     unlistableWarning,
     unopenableWarning,
+    servesHttpOnly,
 } from './sites-enabled.ts'
 
 describe('parseServerNames', () => {
@@ -65,8 +66,9 @@ describe('parseServerNames', () => {
     })
 })
 
-// The four refusals added after thebackroom.dev went dark. Each one is a thing the generated vhost
-// cannot reproduce and that is plainly readable in the file adoption is already parsing.
+// The refusals added after thebackroom.dev went dark. Each one is a thing the generated vhost cannot
+// reproduce and that is plainly readable in the file adoption is already parsing. The fourth, a file
+// with no port 443 block, is now carried by Flexible SSL instead (see servesHttpOnly below).
 describe('parseServerNames: what the template cannot carry', () => {
     const wrap = (body: string) => `<VirtualHost *:443>\n    ServerName acme.com\n${body}\n</VirtualHost>\n`
     const reasons = (body: string, expected: string | null = null) => parseServerNames(wrap(body), expected).unsupported
@@ -131,20 +133,33 @@ describe('parseServerNames: what the template cannot carry', () => {
         assert.deepEqual(reasons(body, 'http://127.0.0.1:3002/'), [])
     })
 
-    it('refuses a vhost with no port 443 block, because the forced redirect to https would loop', () => {
-        const found = parseServerNames('<VirtualHost *:80>\n    ServerName acme.com\n</VirtualHost>\n').unsupported
-        assert.equal(found.length, 1)
-        assert.match(found[0]!, /no port 443 block/)
-        assert.match(found[0]!, /Flexible/)
+    // Not a refusal any more: adoption switches the environment to Flexible SSL instead (servesHttpOnly).
+    it('does not refuse a vhost with no port 443 block', () => {
+        assert.deepEqual(parseServerNames('<VirtualHost *:80>\n    ServerName acme.com\n</VirtualHost>\n').unsupported, [])
+    })
+})
+
+describe('servesHttpOnly', () => {
+    it('reads a file with a port 80 block and no 443 block as HTTP only', () => {
+        assert.equal(servesHttpOnly('<VirtualHost *:80>\n    ServerName acme.com\n</VirtualHost>\n'), true)
     })
 
-    it('accepts a 443 block on a named address, not only on the wildcard', () => {
-        assert.deepEqual(parseServerNames('<VirtualHost 10.0.0.1:443>\n    ServerName acme.com\n</VirtualHost>\n').unsupported, [])
+    it('counts a 443 block on a named address, not only on the wildcard', () => {
+        assert.equal(servesHttpOnly('<VirtualHost *:80>\n</VirtualHost>\n<VirtualHost 10.0.0.1:443>\n</VirtualHost>\n'), false)
+    })
+
+    it('ignores a commented-out 443 block, because it serves nothing', () => {
+        assert.equal(servesHttpOnly('<VirtualHost *:80>\n</VirtualHost>\n# <VirtualHost *:443>\n'), true)
     })
 
     it('says nothing about a fragment with no VirtualHost in it at all, which it cannot judge', () => {
-        assert.deepEqual(parseServerNames('ServerName acme.com\n').unsupported, [])
+        assert.equal(servesHttpOnly('ServerName acme.com\n'), false)
     })
+})
+
+describe('parseServerNames: what the template cannot carry, continued', () => {
+    const wrap = (body: string) => `<VirtualHost *:443>\n    ServerName acme.com\n${body}\n</VirtualHost>\n`
+    const reasons = (body: string, expected: string | null = null) => parseServerNames(wrap(body), expected).unsupported
 
     it('says the same thing once however many times the file does it', () => {
         const body = '    RewriteRule ^/a(.*) http://127.0.0.1:3002/$1 [P]\n    RewriteRule ^/b(.*) http://127.0.0.1:3002/$1 [P]'
@@ -160,10 +175,9 @@ describe('parseServerNames: what the template cannot carry', () => {
 // The file that took thebackroom.dev off the internet, verbatim. Adoption moved it aside, Apache's own
 // configtest passed, the reload succeeded, hostd reported success, and the game was dark until the
 // operator put the file back by hand. Two things did it, and both are in this text: the [P] rewrite onto
-// a ws:// upstream, which the template has no equivalent for, and the absence of any :443 block, which
-// means the origin is HTTP-only behind a CDN in Flexible mode and hostd's forced redirect to https loops
-// forever. This fixture is the regression test for that outage and must keep failing adoption, and it
-// still does with WebSockets switched on: that carries the tunnel, but nothing carries a missing 443.
+// a ws:// upstream, and the absence of any :443 block, which means the origin is HTTP-only behind a CDN
+// in Flexible mode and hostd's forced redirect to https loops forever. The template now carries both
+// (WebSockets and Flexible SSL), and this fixture is the regression test that it reads both correctly.
 describe('the vhost that took thebackroom.dev off the internet', () => {
     const THE_BACKROOM = `<VirtualHost *:80>
     ServerName thebackroom.dev
@@ -194,26 +208,22 @@ describe('the vhost that took thebackroom.dev off the internet', () => {
         assert.deepEqual(findClaims(file, ['thebackroom.dev'], expected)[0]!.names, ['thebackroom.dev'])
     })
 
-    it('refuses it, naming the WebSocket tunnel with the switch that carries it, and the missing 443 block', () => {
+    it('refuses it while WebSockets is off, naming the tunnel and the switch that carries it', () => {
         const reasons = findClaims(file, ['thebackroom.dev'], expected)[0]!.unsupported
-        assert.equal(reasons.length, 2, reasons.join('\n'))
-        assert.match(reasons.join('\n'), /ws:\/\/127\.0\.0\.1:3002\//)
-        assert.match(reasons.join('\n'), /Switch on WebSockets for this environment in Settings/)
-        assert.match(reasons.join('\n'), /no port 443 block/)
+        assert.equal(reasons.length, 1, reasons.join('\n'))
+        assert.match(reasons[0]!, /ws:\/\/127\.0\.0\.1:3002\//)
+        assert.match(reasons[0]!, /Switch on WebSockets for this environment in Settings/)
     })
 
     // The tunnel goes to the environment's own upstream, which is exactly what upgrade=websocket does,
-    // so it is not also reported as a [P] rewrite the template cannot reproduce.
-    it('drops the tunnel from the reasons once WebSockets is on, and still refuses the missing 443 block', () => {
-        const reasons = findClaims(file, ['thebackroom.dev'], expected, true)[0]!.unsupported
-        assert.equal(reasons.length, 1, reasons.join('\n'))
-        assert.match(reasons[0]!, /no port 443 block/)
+    // so it is not also reported as a [P] rewrite the template cannot reproduce. The missing 443 block
+    // is not a reason either: adoption carries it with Flexible SSL.
+    it('adopts once WebSockets is on', () => {
+        assert.deepEqual(findClaims(file, ['thebackroom.dev'], expected, true)[0]!.unsupported, [])
     })
 
-    it('adopts once WebSockets is on and the file has a 443 block of its own', () => {
-        const fixed = THE_BACKROOM.replace('<VirtualHost *:80>', '<VirtualHost *:443>')
-        const claim = findClaims([{ path: file[0]!.path, text: fixed }], ['thebackroom.dev'], expected, true)[0]!
-        assert.deepEqual(claim.unsupported, [])
+    it('is read as HTTP only, which is what switches adoption to Flexible SSL', () => {
+        assert.equal(servesHttpOnly(THE_BACKROOM), true)
     })
 
     // The proxy target was right all along: the registry says 3002 and so does the file. A refusal that

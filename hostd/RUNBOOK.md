@@ -1155,11 +1155,16 @@ verification** above for that case worked through end to end.) Do it in this ord
      template carries it with `ProxyPass / ... upgrade=websocket`, so the line stops being a reason. A
      tunnel to any other upstream, or any `wss://` target, is still refused either way,
    - a `ProxyPass` whose target disagrees with the upstream the registry gives this environment,
-   - no port 443 block at all, which means the origin is HTTP-only behind something terminating TLS on
-     its own (Cloudflare Flexible); hostd's template redirects port 80 to https and serves 443 itself,
-     so the visitor would be sent back through the CDN to the same HTTP origin and round again forever,
    - anything under `Include`, `IncludeOptional` or `Use`, since a hostname could be defined somewhere
      the preview cannot see.
+
+   A file with **no port 443 block** is not refused any more. It means the origin is HTTP-only behind
+   something terminating TLS on its own (Cloudflare Flexible), and hostd's usual port 80, which redirects
+   to https, would loop that CDN forever: that is what took thebackroom.dev down. Adoption switches the
+   environment's Flexible SSL on instead (`flexibleSsl: true` in the registry, "Cloudflare Flexible SSL"
+   in Settings), and the generated vhost then serves the primary on port 80 as well as 443. The preview
+   says so before you confirm. Once the zone is moved to Full, untick it in Settings and port 80 goes
+   back to redirecting.
 
    It still says nothing about `Require` or other auth directives, a bespoke `ErrorDocument`, custom
    `Header` rules, or a `DocumentRoot` serving files rather than proxying. Anything found there has to be

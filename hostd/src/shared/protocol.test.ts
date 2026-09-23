@@ -256,7 +256,7 @@ describe('parseAgentRequest', () => {
         assert.equal(refusalOf({ verb: 'configure', project: 'acme', args: { capabilities: ['teleport'] } }), 'bad-request: capabilities must be a list of known capabilities')
         assert.equal(refusalOf({ verb: 'configure', project: 'acme', args: { branches: { live: 'a branch' } } }), 'bad-request: live branch must be null or a plain branch name')
         assert.equal(refusalOf({ verb: 'configure', project: 'acme', args: { branches: { staging: 'main' } } }), 'bad-request: staging is not an environment')
-        assert.equal(refusalOf({ verb: 'configure', project: 'acme', args: { capabilities: [], extra: true } }), 'bad-request: configure takes only capabilities, repo, credential, branches, domains and websockets')
+        assert.equal(refusalOf({ verb: 'configure', project: 'acme', args: { capabilities: [], extra: true } }), 'bad-request: configure takes only capabilities, repo, credential, branches, domains, websockets and flexibleSsl')
     })
 
     it('parses a branches request', () => {

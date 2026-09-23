@@ -413,6 +413,20 @@ export function AdoptSite({ id, environment, projectName }: AdoptProps) {
                             </div>
                         )}
 
+                        {/* Absent from a hostd older than the switch, which reads as off. */}
+                        {preview.flexibleSsl && (
+                            <div className={styles.said}>
+                                <Callout title="Port 80 will keep serving the site (Flexible SSL)">
+                                    The file below answers plain HTTP on port 80 and has no port 443 block,
+                                    so whatever sits in front of this site (Cloudflare on Flexible) reaches
+                                    it over HTTP. Adopting it switches Flexible SSL on for this environment,
+                                    so hostd serves the site on port 80 as well, rather than redirecting
+                                    it to https and sending that CDN round in a loop. Once the CDN reaches
+                                    port 443 instead (Cloudflare: Full), untick Flexible SSL in Settings.
+                                </Callout>
+                            </div>
+                        )}
+
                         {unreadable.length > 0 && (
                             <div className={styles.said}>
                                 <Callout tone="crit" title="Apache cannot read everything in sites-enabled">
