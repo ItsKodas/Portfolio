@@ -1,7 +1,7 @@
 import { describe, it } from 'node:test'
 import assert from 'node:assert/strict'
 
-import { deployTrees, composeNameOf, locationIn, buildArgv, upArgv, downArgv, runCompose } from './deploy-compose.ts'
+import { deployTrees, migrationTarget, migratingOf, composeNameOf, locationIn, buildArgv, upArgv, downArgv, runCompose } from './deploy-compose.ts'
 import { parseRegistry } from '../shared/registry.ts'
 import type { Runner } from './compose.ts'
 
@@ -38,6 +38,7 @@ describe('deploy trees', () => {
             prev: '/var/www/acme.prev',
             repo: '/var/www/acme.git',
             git: '/var/www/acme/.git',
+            site: null,
         })
     })
 
@@ -105,5 +106,58 @@ describe('runCompose', () => {
         const argv = downArgv(locationIn(test, '/var/www/acme-test'), 'acme-test')
         const result = await runCompose(argv, 1000, runner({ exitCode: 1 }))
         assert.match(result.ok === false ? result.message : '', /^down exited/)
+    })
+})
+
+describe('deployTrees by layout', () => {
+    it('keeps the flat siblings for a flat dir', () => {
+        assert.deepEqual(deployTrees('/var/www/acme'), {
+            dir: '/var/www/acme', next: '/var/www/acme.next', prev: '/var/www/acme.prev', repo: '/var/www/acme.git', git: '/var/www/acme/.git', site: null,
+        })
+    })
+
+    it('puts everything under the site for a nested dir', () => {
+        assert.deepEqual(deployTrees('/var/www/acme/test'), {
+            dir: '/var/www/acme/test', next: '/var/www/acme/next/test', prev: '/var/www/acme/prev/test', repo: '/var/www/acme/git', git: '/var/www/acme/test/.git', site: '/var/www/acme',
+        })
+    })
+})
+
+describe('migrationTarget', () => {
+    const registry = (live: string, test: string) => parseRegistry(`projects:
+  acme:
+    client: cl_1
+    name: Acme
+    services: { web: { role: site } }
+    environments:
+      live: { dir: ${live}, port: 5010 }
+      test: { dir: ${test}, port: 5011 }
+`).projects.get('acme')!
+
+    it('sends a flat live under a site of its own folder name', () => {
+        const project = registry('/var/www/acme', '/var/www/acme-test')
+        assert.equal(migrationTarget(project, project.environments.get('live')!)!.dir, '/var/www/acme/live')
+    })
+
+    it('holds a flat test back until live is nested', () => {
+        const project = registry('/var/www/acme', '/var/www/acme-test')
+        assert.equal(migrationTarget(project, project.environments.get('test')!), null)
+    })
+
+    it('sends a flat test under live once live is nested', () => {
+        const project = registry('/var/www/acme/live', '/var/www/acme-test')
+        const target = migrationTarget(project, project.environments.get('test')!)!
+        assert.equal(target.dir, '/var/www/acme/test')
+        assert.equal(target.repo, '/var/www/acme/git')
+    })
+
+    it('has nothing to do for a nested environment', () => {
+        const project = registry('/var/www/acme/live', '/var/www/acme/test')
+        assert.equal(migrationTarget(project, project.environments.get('live')!), null)
+    })
+
+    it('uses the registry compose name, not the folder', () => {
+        const project = registry('/var/www/acme/live', '/var/www/acme/test')
+        assert.equal(composeNameOf(project.environments.get('test')!), 'acme-test')
     })
 })
