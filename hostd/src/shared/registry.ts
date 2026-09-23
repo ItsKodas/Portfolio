@@ -6,10 +6,11 @@
 import { parse } from 'yaml'
 import { posix } from 'node:path'
 import {
-    PROJECT_ID, CLIENT_ID, SERVICE_NAME, STORAGE_NAME, ENV_NAME, HOSTNAME, RESERVED_PROJECT_IDS,
+    PROJECT_ID, CLIENT_ID, SERVICE_NAME, STORAGE_NAME, ENV_NAME, HOSTNAME, RESERVED_PROJECT_IDS, COMPOSE_NAME,
     isRecord, relativePathProblem, overlaps,
 } from './formats.ts'
 import { normaliseHostname, isReserved, allowedEntryProblem, isOpenSubdomain, openSubdomainEntryProblem } from './hostnames.ts'
+import { isFlatDir, isNestedDir, nestedEnvOf, siteOf } from './layout.ts'
 
 export const CAPABILITIES = ['lifecycle', 'logs', 'files', 'backups', 'domains', 'provision', 'env', 'deploy'] as const
 export type Capability = typeof CAPABILITIES[number]
@@ -35,6 +36,11 @@ export type EnvironmentEntry = {
     name: EnvironmentName
     dir: string
     composePaths: string[]
+    // The compose project name every compose call for this environment passes as --project-name. Written
+    // explicitly by a layout migration, so a site keeps the name its containers and volumes already
+    // carry; otherwise the folder name for a flat dir (what compose itself derived) and, for a nested
+    // one, the project id for live and <id>-<env> for the rest.
+    composeName: string
     branch: string | null
     domain: string | null
     aliases: string[]
@@ -81,6 +87,8 @@ export type ProjectEntry = {
     dir: string
     compose: string[]
     composePaths: string[]
+    // The live environment's compose project name, mirrored the same way dir already is.
+    composeName: string
     upstream: { host: string, port: number }
     portEnv: string
     limits: { memory: string | null, cpus: string | null }
@@ -132,7 +140,7 @@ const PROJECT_KEYS = new Set([
     'client', 'name', 'dir', 'compose', 'upstream', 'services', 'storage', 'capabilities', 'maxDomains', 'backups',
     'repo', 'credential', 'portEnv', 'limits', 'environments',
 ])
-const ENVIRONMENT_KEYS = new Set(['dir', 'compose', 'branch', 'domain', 'aliases', 'port', 'certificate', 'deployed', 'websockets', 'flexibleSsl'])
+const ENVIRONMENT_KEYS = new Set(['dir', 'compose', 'composeName', 'branch', 'domain', 'aliases', 'port', 'certificate', 'deployed', 'websockets', 'flexibleSsl'])
 const DIR = /^\/var\/www\/[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/
 const UPSTREAM = /^(localhost|\d{1,3}(?:\.\d{1,3}){3}):(\d{1,5})$/
 const MEMORY_LIMIT = /^[0-9]+(b|k|m|g)$/i
@@ -372,15 +380,21 @@ function parseLimits(raw: unknown, problems: string[]): { memory: string | null,
     return limits
 }
 
-// Same shape as today's project dir: exactly one segment below /var/www, and not . or .. at the end.
+// A flat dir (/var/www/<site>, what every site had before nesting) or a nested one
+// (/var/www/<site>/<environment>). Which environment a nested dir names is checked by the caller.
 function parseEnvironmentDir(raw: unknown): string | null {
-    return typeof raw === 'string' && DIR.test(raw) && !raw.endsWith('/..') && !raw.endsWith('/.') ? raw : null
+    return typeof raw === 'string' && (isFlatDir(raw) || isNestedDir(raw)) ? raw : null
+}
+
+function defaultComposeName(id: string, name: EnvironmentName, dir: string): string {
+    if (!isNestedDir(dir)) return posix.basename(dir)
+    return name === 'live' ? id : `${id}-${name}`
 }
 
 // The registry's top-level rules about which hostnames a project may claim, read once per file.
 type HostRules = { reserved: string[], allowed: string[], openSubdomains: string[] }
 
-function parseEnvironment(name: EnvironmentName, raw: unknown, rules: HostRules, problems: string[]): EnvironmentEntry | null {
+function parseEnvironment(id: string, name: EnvironmentName, raw: unknown, rules: HostRules, problems: string[]): EnvironmentEntry | null {
     const where = `environments.${name}`
     if (!isRecord(raw)) {
         problems.push(`${where} must be a mapping`)
@@ -389,7 +403,14 @@ function parseEnvironment(name: EnvironmentName, raw: unknown, rules: HostRules,
     for (const key of Object.keys(raw)) if (!ENVIRONMENT_KEYS.has(key)) problems.push(`${where}.${key} is not a known key`)
 
     const dir = parseEnvironmentDir(raw.dir)
-    if (!dir) problems.push(`${where}.dir must be /var/www/<one segment>`)
+    if (!dir) problems.push(`${where}.dir must be /var/www/<site> or /var/www/<site>/${name}`)
+    else if (isNestedDir(dir) && nestedEnvOf(dir) !== name) problems.push(`${where}.dir ${dir} is nested under another environment's name`)
+
+    let composeName: string | null = null
+    if (raw.composeName !== undefined) {
+        if (typeof raw.composeName === 'string' && COMPOSE_NAME.test(raw.composeName)) composeName = raw.composeName
+        else problems.push(`${where}.composeName must be lowercase letters, digits, - and _`)
+    }
 
     const compose = parseCompose(raw.compose, problems, `${where}.compose`)
 
@@ -452,12 +473,15 @@ function parseEnvironment(name: EnvironmentName, raw: unknown, rules: HostRules,
     const flexibleSsl = flag('flexibleSsl')
 
     if (!dir || port === null) return null
-    return { name, dir, composePaths: compose.map(file => posix.join(dir, file)), branch, domain, aliases, port, certificate, deployed, websockets, flexibleSsl }
+    return {
+        name, dir, composePaths: compose.map(file => posix.join(dir, file)), composeName: composeName ?? defaultComposeName(id, name, dir),
+        branch, domain, aliases, port, certificate, deployed, websockets, flexibleSsl,
+    }
 }
 
 // When environments is absent, the caller synthesises a single live entry from the project-level
 // dir, compose and upstream fields instead of calling this.
-function parseEnvironments(raw: unknown, rules: HostRules, problems: string[]): Map<EnvironmentName, EnvironmentEntry> {
+function parseEnvironments(id: string, raw: unknown, rules: HostRules, problems: string[]): Map<EnvironmentName, EnvironmentEntry> {
     const environments = new Map<EnvironmentName, EnvironmentEntry>()
     if (!isRecord(raw)) {
         problems.push('environments must be a mapping')
@@ -468,7 +492,7 @@ function parseEnvironments(raw: unknown, rules: HostRules, problems: string[]): 
 
     for (const name of ENVIRONMENTS) {
         if (raw[name] === undefined) continue
-        const entry = parseEnvironment(name, raw[name], rules, problems)
+        const entry = parseEnvironment(id, name, raw[name], rules, problems)
         if (entry) environments.set(name, entry)
     }
 
@@ -477,6 +501,10 @@ function parseEnvironments(raw: unknown, rules: HostRules, problems: string[]): 
     if (live && test) {
         if (live.dir === test.dir) problems.push(`environments live and test share dir ${live.dir}`)
         if (live.port === test.port) problems.push(`environments live and test share port ${live.port}`)
+        if (live.composeName === test.composeName) problems.push(`environments live and test share compose name ${live.composeName}`)
+        if (isNestedDir(live.dir) && isNestedDir(test.dir) && siteOf(live.dir) !== siteOf(test.dir)) {
+            problems.push('environments live and test must be nested under the same site')
+        }
     }
     return environments
 }
@@ -512,7 +540,7 @@ function parseProject(id: string, raw: unknown, rules: HostRules): ParsedProject
     let environments: Map<EnvironmentName, EnvironmentEntry>
     let upstream: { host: string, port: number } | null
     if (usesEnvironments) {
-        environments = parseEnvironments(raw.environments, rules, problems)
+        environments = parseEnvironments(id, raw.environments, rules, problems)
         // There is no per-environment host field (yet), so the live environment is always reached
         // through the loopback address. This is the one place upstream.host is not carried from input.
         const liveForUpstream = environments.get('live')
@@ -529,7 +557,7 @@ function parseProject(id: string, raw: unknown, rules: HostRules): ParsedProject
         environments = new Map<EnvironmentName, EnvironmentEntry>()
         if (dir && upstream) {
             environments.set('live', {
-                name: 'live', dir, composePaths: compose.map(file => posix.join(dir, file)),
+                name: 'live', dir, composePaths: compose.map(file => posix.join(dir, file)), composeName: posix.basename(dir),
                 branch: null, domain: null, aliases: [], port: upstream.port, certificate: null, deployed: null,
                 websockets: false, flexibleSsl: false,
             })
@@ -545,6 +573,7 @@ function parseProject(id: string, raw: unknown, rules: HostRules): ParsedProject
     // do, so a single-environment (live only) entry keeps meaning what it always meant.
     const compose = live ? live.composePaths.map(path => posix.relative(live.dir, path)) : DEFAULT_COMPOSE
     const composePaths = live?.composePaths ?? null
+    const composeName = live?.composeName ?? null
 
     const services = parseServices(raw.services, problems)
     const storage = parseStorage(raw.storage, dir ?? '/nonexistent', services, problems)
@@ -570,10 +599,10 @@ function parseProject(id: string, raw: unknown, rules: HostRules): ParsedProject
         else maxKeep = parseKeep(raw.backups.maxKeep, DEFAULT_MAX_KEEP, 'backups.maxKeep', problems)
     }
 
-    if (problems.length > 0 || client === undefined || !name || !dir || !upstream || !composePaths) return { problems }
+    if (problems.length > 0 || client === undefined || !name || !dir || !upstream || !composePaths || !composeName) return { problems }
     return {
         entry: {
-            id, client, name, repo, credential, dir, compose, composePaths, upstream, portEnv, limits, environments,
+            id, client, name, repo, credential, dir, compose, composePaths, composeName, upstream, portEnv, limits, environments,
             services, storage, capabilities, maxDomains,
             backups: { maxKeep },
         },
@@ -684,8 +713,22 @@ export function parseRegistry(text: string): Registry {
                     .map(other => other.id)
                 if (sharing.length > 0) messages.push(`domain ${host} is also used by ${sharing.join(', ')}`)
             }
+
+            const sharingName = [...parsed.values()]
+                .filter(other => other.id !== id && [...other.environments.values()].some(otherEnv => otherEnv.composeName === env.composeName))
+                .map(other => other.id)
+            if (sharingName.length > 0) messages.push(`compose name ${env.composeName} is also used by ${sharingName.join(', ')}`)
+
+            // A flat /var/www/acme and a nested /var/www/acme/live are the same folder on disk, whichever
+            // project wrote which: a migration of one would move the other's tree.
+            const site = siteOf(env.dir)
+            const sharingSite = [...parsed.values()]
+                .filter(other => other.id !== id && [...other.environments.values()].some(otherEnv => siteOf(otherEnv.dir) === site))
+                .map(other => other.id)
+            if (sharingSite.length > 0) messages.push(`site ${site} is also used by ${sharingSite.join(', ')}`)
         }
-        if (messages.length > 0) invalid.set(id, messages.join('; '))
+        // A site shared by both live and test would otherwise repeat the same message twice.
+        if (messages.length > 0) invalid.set(id, [...new Set(messages)].join('; '))
         else projects.set(id, entry)
     }
 

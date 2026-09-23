@@ -689,3 +689,94 @@ projects:
         assert.deepEqual(parseRegistry('projects: {}').openSubdomains, [])
     })
 })
+
+function envProject(environments: string, id = 'acme'): string {
+    return `projects:
+  ${id}:
+    client: cl_1
+    name: Acme
+    repo: git@github.com:ItsKodas/acme.git
+    services: { web: { role: site } }
+    environments:
+${environments}`
+}
+
+describe('nested layout', () => {
+    it('accepts nested dirs and defaults the compose names from the project id', () => {
+        const registry = parseRegistry(envProject(`      live: { dir: /var/www/acme-site/live, port: 5010 }
+      test: { dir: /var/www/acme-site/test, port: 5011 }
+`))
+        const project = registry.projects.get('acme')!
+        assert.equal(project.environments.get('live')!.composeName, 'acme')
+        assert.equal(project.environments.get('test')!.composeName, 'acme-test')
+        assert.equal(project.composeName, 'acme')
+        assert.equal(project.dir, '/var/www/acme-site/live')
+    })
+
+    it('defaults a flat dir to its own folder name, as compose always did', () => {
+        const registry = parseRegistry(envProject(`      live: { dir: /var/www/acme, port: 5010 }
+      test: { dir: /var/www/acme-test, port: 5011 }
+`))
+        assert.equal(registry.projects.get('acme')!.environments.get('test')!.composeName, 'acme-test')
+    })
+
+    it('takes an explicit composeName over the default', () => {
+        const registry = parseRegistry(envProject(`      live: { dir: /var/www/acme/live, port: 5010, composeName: acme }
+      test: { dir: /var/www/acme/test, port: 5011, composeName: acme-staging }
+`))
+        assert.equal(registry.projects.get('acme')!.environments.get('test')!.composeName, 'acme-staging')
+    })
+
+    it('refuses a malformed composeName', () => {
+        const reason = parseRegistry(envProject(`      live: { dir: /var/www/acme/live, port: 5010, composeName: Acme! }
+`)).invalid.get('acme')
+        assert.match(reason ?? '', /composeName/)
+    })
+
+    it('refuses a nested dir under the wrong environment', () => {
+        const reason = parseRegistry(envProject(`      live: { dir: /var/www/acme/test, port: 5010 }
+`)).invalid.get('acme')
+        assert.match(reason ?? '', /environments\.live\.dir/)
+    })
+
+    it('refuses nested environments of one project under two different sites', () => {
+        const reason = parseRegistry(envProject(`      live: { dir: /var/www/acme/live, port: 5010 }
+      test: { dir: /var/www/other/test, port: 5011 }
+`)).invalid.get('acme')
+        assert.match(reason ?? '', /same site/)
+    })
+
+    it('allows a flat test beside a nested live, which is what a migration passes through', () => {
+        const registry = parseRegistry(envProject(`      live: { dir: /var/www/acme/live, port: 5010 }
+      test: { dir: /var/www/acme-test, port: 5011 }
+`))
+        assert.ok(registry.projects.has('acme'))
+    })
+
+    it('refuses two environments of one project sharing a compose name', () => {
+        const reason = parseRegistry(envProject(`      live: { dir: /var/www/acme/live, port: 5010 }
+      test: { dir: /var/www/acme/test, port: 5011, composeName: acme }
+`)).invalid.get('acme')
+        assert.match(reason ?? '', /compose name acme/)
+    })
+
+    it('refuses two projects sharing a compose name or a site folder', () => {
+        const text = `projects:
+  acme:
+    client: cl_1
+    name: Acme
+    services: { web: { role: site } }
+    environments:
+      live: { dir: /var/www/acme, port: 5010 }
+  other:
+    client: cl_1
+    name: Other
+    services: { web: { role: site } }
+    environments:
+      live: { dir: /var/www/acme/live, port: 5020, composeName: other }
+`
+        const registry = parseRegistry(text)
+        assert.match(registry.invalid.get('acme') ?? '', /site \/var\/www\/acme is also used by other/)
+        assert.match(registry.invalid.get('other') ?? '', /site \/var\/www\/acme is also used by acme/)
+    })
+})
