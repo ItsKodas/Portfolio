@@ -404,6 +404,60 @@
     font-size: 12.5px;
 }
 
+/* The Deploys tab's status card: where the environment stands, then what can be done about it. One
+   surface rather than a list, three buttons and a callout stacked with nothing between them. */
+.deployStatus {
+    padding: 16px 18px;
+    background: var(--panel);
+    border: 1px solid var(--rule);
+    border-radius: var(--radius-panel);
+}
+
+.facts {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+    gap: 14px 24px;
+    margin: 0 0 16px;
+}
+
+.fact { min-width: 0; }
+.fact dt {
+    font-size: 10.5px;
+    text-transform: uppercase;
+    letter-spacing: .08em;
+    color: var(--ink-3);
+    margin-bottom: 5px;
+}
+.fact dd { margin: 0; font-size: 14px; color: var(--ink); overflow-wrap: anywhere; }
+.fact dd.factWarn { color: var(--warn); }
+
+/* Ruled off from the facts, so the buttons read as acting on them rather than as more of them */
+.deployStatus .controls { margin: 0; padding-top: 14px; border-top: 1px solid var(--rule); }
+.deployStatus .said { margin: 14px 0 0; }
+.deployStatus .facts + .said { margin: 0 0 14px; }
+
+.history { margin-top: 28px; }
+.history h2 {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 13px;
+    margin: 0 0 6px;
+}
+
+.count {
+    font-family: var(--font-mono), monospace;
+    font-size: 10.5px;
+    font-weight: 400;
+    color: var(--ink-3);
+    padding: 1px 6px;
+    border: 1px solid var(--rule-hi);
+    border-radius: var(--radius-chip);
+}
+
+/* More air per deploy than ui/Row's default: each one is two lines and a chip, and at 9px they ran together */
+.history .deploy > div { padding-top: 13px; padding-bottom: 13px; }
+
 /* No tab is taller than the window. Where ui/Shell fixes the frame to the window (the same 1081px it uses),
    the panel takes exactly the height left under the tab strip instead of at least its content's, and the
    long parts of a tab scroll inside themselves: the deploy history, the deploy log and the site log. A tab
