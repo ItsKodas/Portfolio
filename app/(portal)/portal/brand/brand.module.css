@@ -19,4 +19,14 @@
     margin-right: -.14em;
 }
 
+.label {
+    margin-left: 10px;
+    padding-left: 10px;
+    border-left: 1px solid var(--rule-hi);
+    font-size: 12.5px;
+    font-weight: 500;
+    color: var(--ink-3);
+    line-height: 1;
+}
+
 .brand:focus-visible { outline: 2px solid var(--lake); outline-offset: 4px; border-radius: 4px; }
