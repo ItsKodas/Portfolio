@@ -22,15 +22,21 @@ const liveTo = deployTrees('/var/www/acme/live')
 const testFrom = deployTrees('/var/www/acme-test')
 const testTo = deployTrees('/var/www/acme/test')
 
-function disk(paths: string[], failOn?: string) {
+// failOn names the moves that throw, as `<from> <to>`.
+function disk(paths: string[], failOn: string[] = []) {
     const present = new Set(paths)
     const calls: string[] = []
     const fs = {
         exists: async (path: string) => present.has(path),
         mkdir: async (dir: string) => { calls.push(`mkdir ${dir}`); present.add(dir) },
         rmdir: async (dir: string) => { calls.push(`rmdir ${dir}`); present.delete(dir) },
+        removeEmptyDir: async (dir: string) => {
+            calls.push(`rmdir-empty ${dir}`)
+            if ([...present].some(path => path.startsWith(`${dir}/`))) throw new Error('ENOTEMPTY')
+            present.delete(dir)
+        },
         move: async (from: string, to: string) => {
-            if (failOn === `${from} ${to}`) throw new Error('EXDEV')
+            if (failOn.includes(`${from} ${to}`)) throw new Error('EXDEV')
             calls.push(`move ${from} ${to}`); present.delete(from); present.add(to)
         },
         owner: async () => ({ uid: 1000, gid: 1000, mode: 0o775 }),
@@ -48,6 +54,12 @@ describe('inspectLayout', () => {
     })
     it('reads a live that moved but was never recorded', async () => {
         assert.equal(await inspectLayout(live, liveFrom, liveTo, disk(['/var/www/acme', '/var/www/acme/live', '/var/www/acme/git/.git']).exists), 'moved')
+    })
+    it('reads a live whose undo stopped after its tree reached prev/live as interrupted', async () => {
+        assert.equal(await inspectLayout(live, liveFrom, liveTo, disk(['/var/www/acme', '/var/www/acme/prev/live', '/var/www/acme.next']).exists), 'interrupted')
+    })
+    it('still reads a flat live with a prev/live folder of its own as flat', async () => {
+        assert.equal(await inspectLayout(live, liveFrom, liveTo, disk(['/var/www/acme', '/var/www/acme/docker-compose.yml', '/var/www/acme/prev/live']).exists), 'flat')
     })
     it('refuses to guess at a folder that is neither', async () => {
         assert.equal(await inspectLayout(live, liveFrom, liveTo, disk(['/var/www/acme']).exists), 'unknown')
@@ -95,18 +107,48 @@ describe('executeSteps', () => {
     })
 
     it('undoes what it did, in reverse, when a step fails', async () => {
-        const { fs, calls, present } = disk(['/var/www/acme', '/var/www/acme.next', '/var/www/acme.git'], '/var/www/acme.next /var/www/acme/live')
+        const { fs, calls, present } = disk(['/var/www/acme', '/var/www/acme.next', '/var/www/acme.git'], ['/var/www/acme.next /var/www/acme/live'])
         const result = await executeSteps(windowSteps(live, liveFrom, liveTo), fs, 'window')
         assert.equal(result.ok, false)
         assert.equal(!result.ok && result.undone, true)
         assert.match(!result.ok ? result.step : '', /acme\.next/)
         assert.deepEqual(calls.slice(-4), [
             'move /var/www/acme/prev/live /var/www/acme.migrating',
-            'rmdir /var/www/acme/prev',
-            'rmdir /var/www/acme',
+            'rmdir-empty /var/www/acme/prev',
+            'rmdir-empty /var/www/acme',
             'move /var/www/acme.migrating /var/www/acme',
         ])
         assert.deepEqual([...present].sort(), ['/var/www/acme', '/var/www/acme.git', '/var/www/acme.next'])
+    })
+
+    // On the real disk rmdir is recursive, so an undo that carried on past a move it could not reverse
+    // would remove /var/www/acme/prev with the site's running tree still inside it at prev/live.
+    it('stops undoing at the first step it cannot reverse, and removes nothing', async () => {
+        const { fs, calls, present } = disk(['/var/www/acme', '/var/www/acme.next', '/var/www/acme.git'], [
+            '/var/www/acme.next /var/www/acme/live',
+            '/var/www/acme/prev/live /var/www/acme.migrating',
+        ])
+        const result = await executeSteps(windowSteps(live, liveFrom, liveTo), fs, 'window')
+        assert.equal(result.ok, false)
+        assert.equal(!result.ok && result.undone, false)
+        assert.equal(calls.some(call => call.startsWith('rmdir')), false)
+        assert.ok(present.has('/var/www/acme/prev/live'))
+        // What is left is a state the next deploy's resume check finishes forward.
+        assert.equal(await inspectLayout(live, liveFrom, liveTo, fs.exists), 'interrupted')
+    })
+
+    it('never removes a folder it made once something is inside it', async () => {
+        const { fs, present } = disk(['/var/www/acme', '/var/www/acme.next', '/var/www/acme.git', '/var/www/acme/prev/stray'], [
+            '/var/www/acme.next /var/www/acme/live',
+        ])
+        // This call makes /var/www/acme, but something else is already under it by the time it undoes.
+        present.delete('/var/www/acme')
+        const result = await executeSteps([
+            { kind: 'mkdir', dir: '/var/www/acme', like: '/var/www/acme.git' },
+            { kind: 'move', from: '/var/www/acme.next', to: '/var/www/acme/live' },
+        ], fs, 'window')
+        assert.equal(!result.ok && result.undone, false)
+        assert.ok(present.has('/var/www/acme/prev/stray'))
     })
 
     it('skips a folder that is already there rather than making or owning it', async () => {

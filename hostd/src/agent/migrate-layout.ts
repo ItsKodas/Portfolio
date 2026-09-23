@@ -32,6 +32,10 @@ export async function inspectLayout(
         // A flat tree is one compose can run: its first registered compose file is at its root.
         const compose = environment.composePaths[0]
         if (compose && await exists(compose)) return 'flat'
+        // Not flat, and live's old tree is already at prev/live: a window whose undo stopped part way
+        // (see executeSteps), after the tree left <site>.migrating. Asked only once the folder is known
+        // not to be a flat tree, because a flat site could have a prev/live folder of its own.
+        if (await exists(to.prev)) return 'interrupted'
         return 'unknown'
     }
     const flat = await exists(from.dir)
@@ -83,6 +87,13 @@ const describeStep = (step: Step): string => step.kind === 'move' ? `move ${step
 // In 'window' mode a failure undoes every completed step in reverse and says whether that worked; the
 // caller then starts the flat tree again. In 'resume' mode there is nothing to undo to: the flat layout
 // is already gone, so a failure is only reported, and the next deploy tries again.
+//
+// The undo stops at the first step it cannot reverse, and leaves the disk exactly as that step left it.
+// Carrying on would remove the folders this call made while the site's own tree may still be inside
+// them (a move back out that failed), which on the real disk is the whole running site. Stopped there,
+// live's state is one inspectLayout reads as 'interrupted', and the next deploy finishes the move
+// forward. A folder this call made is removed with removeEmptyDir, never rmdir, for the same reason: if
+// anything is still in it, the removal fails rather than taking that with it.
 export async function executeSteps(
     steps: Step[], fs: DeployFs, mode: 'window' | 'resume',
 ): Promise<{ ok: true } | { ok: false, step: string, problem: string, undone: boolean }> {
@@ -103,16 +114,15 @@ export async function executeSteps(
         } catch (error) {
             const problem = describeError(error)
             if (mode === 'resume') return { ok: false, step: describeStep(step), problem, undone: false }
-            let undone = true
             for (const back of done.reverse()) {
                 try {
                     if (back.kind === 'move') await fs.move(back.to, back.from)
-                    else await fs.rmdir(back.dir)
+                    else await fs.removeEmptyDir(back.dir)
                 } catch {
-                    undone = false
+                    return { ok: false, step: describeStep(step), problem, undone: false }
                 }
             }
-            return { ok: false, step: describeStep(step), problem, undone }
+            return { ok: false, step: describeStep(step), problem, undone: true }
         }
     }
     return { ok: true }

@@ -79,6 +79,8 @@ type SetupOptions = {
     registryYaml?: string
     // DeployDeps.migrateLayout, off unless a test turns it on, exactly as the dependency itself defaults.
     migrateLayout?: boolean
+    // Makes every registry write fail at its final rename, so a write returns a problem.
+    registryWriteFails?: boolean
     fetchReplies?: Partial<Record<FetchRequest['verb'], FetchReply>>
     existsPaths?: string[]
     freeBytes?: number
@@ -117,6 +119,7 @@ function setup(options: SetupOptions = {}) {
         chmod: async () => {},
         chown: async () => {},
         rename: async (from, to) => {
+            if (options.registryWriteFails) throw new Error('read-only file system')
             registryFiles.set(to, registryFiles.get(from)!)
             registryFiles.delete(from)
             calls.push('registry-write')
@@ -168,6 +171,11 @@ function setup(options: SetupOptions = {}) {
         exists: async path => exists.has(path),
         mkdir: async dir => { calls.push(`mkdir ${dir}`); exists.add(dir) },
         rmdir: async dir => { calls.push(`rmdir ${dir}`); exists.delete(dir) },
+        removeEmptyDir: async dir => {
+            calls.push(`rmdir-empty ${dir}`)
+            if ([...exists].some(path => path.startsWith(`${dir}/`))) throw new Error(`ENOTEMPTY: directory not empty, rmdir '${dir}'`)
+            exists.delete(dir)
+        },
         copyFile: async (from, to) => { calls.push(`copy ${from} ${to}`); if (copyFails) throw new Error('read-only file system'); exists.add(to) },
         move: async (from, to) => {
             calls.push(`move ${from} ${to}`)
@@ -785,5 +793,94 @@ describe('nested layout', () => {
         assert.ok(t.calls.includes('mkdir /var/www/acme/next'))
         assert.ok(t.calls.includes('move /var/www/acme/test /var/www/acme/prev/test'))
         assert.ok(t.calls.includes('move /var/www/acme/next/test /var/www/acme/test'))
+    })
+
+    // The state a failed set-layout, or a stop between the window and the write, leaves: the registry
+    // says flat, and the repository is only in the nested layout. The poller has to find it there, or it
+    // skips the site on every poll and the deploy that records the move is never started.
+    it('polls a live that moved but was never recorded from the nested repository', async () => {
+        const t = setup({ existsPaths: ['/var/www/acme', '/var/www/acme/live', '/var/www/acme/git/.git'] })
+        const project = t.deps.registry().projects.get('acme')!
+        const result = await currentTip(project, project.environments.get('live')!, t.deps)
+        assert.deepEqual(result, { ok: true, commit: TIP })
+        assert.deepEqual(t.fetchRequests[0], { verb: 'fetch', dir: '/var/www/acme/git', branch: 'main', credential: null })
+    })
+
+    it('only records a move that finished on disk, with no flag of its own, then deploys nested', async () => {
+        const t = setup({ existsPaths: ['/var/www/acme', '/var/www/acme/live', '/var/www/acme/git/.git'] })
+        const project = t.deps.registry().projects.get('acme')!
+        const record = await runDeploy(project, project.environments.get('live')!, manual, t.deps)
+        assert.equal(record.outcome, 'ok', record.reason ?? '')
+        // One flag, the deploy's own window, and the move was recorded before it.
+        assert.equal(t.calls.filter(call => call === 'maintenance on').length, 1)
+        assert.ok(t.calls.indexOf('registry-write') < t.calls.indexOf('maintenance on'))
+        assert.equal(t.calls.slice(0, t.calls.indexOf('maintenance on')).some(call => call.startsWith('move') || call.startsWith('compose up')), false)
+        assert.equal(t.deps.registry().projects.get('acme')!.environments.get('live')!.dir, '/var/www/acme/live')
+        assert.ok(t.calls.includes('move /var/www/acme/next/live /var/www/acme/live'))
+    })
+
+    it('fails, without deploying, when the registry cannot record a resumed move', async () => {
+        const t = setup({ registryWriteFails: true, existsPaths: ['/var/www/acme', '/var/www/acme/live', '/var/www/acme/git/.git'] })
+        const project = t.deps.registry().projects.get('acme')!
+        const record = await runDeploy(project, project.environments.get('live')!, manual, t.deps)
+        assert.equal(record.outcome, 'failed')
+        assert.match(record.reason ?? '', /migrated, but the registry could not be updated/)
+        assert.equal(t.fetchRequests.some(request => request.verb === 'checkout'), false)
+        assert.equal(t.calls.includes('maintenance on'), false)
+    })
+
+    it('refuses to move a site folder that is neither layout, and deploys it flat', async () => {
+        const t = setup({ migrateLayout: true })
+        const project = t.deps.registry().projects.get('acme')!
+        const record = await runDeploy(project, project.environments.get('live')!, manual, t.deps)
+        assert.equal(record.outcome, 'ok', record.reason ?? '')
+        assert.ok(t.logs.some(line => line.includes('/var/www/acme is neither flat nor nested, so it is not being moved')))
+        assert.equal(t.calls.some(call => call.includes('.migrating')), false)
+        assert.ok(t.calls.includes('move /var/www/acme.next /var/www/acme'))
+        assert.equal(t.deps.registry().projects.get('acme')!.environments.get('live')!.dir, '/var/www/acme')
+    })
+
+    it('says the registry could not record the move when set-layout fails after the window', async () => {
+        const t = setup({ migrateLayout: true, registryWriteFails: true, existsPaths: ['/var/www/acme/.git', '/var/www/acme/docker-compose.yml'] })
+        const project = t.deps.registry().projects.get('acme')!
+        const record = await runDeploy(project, project.environments.get('live')!, manual, t.deps)
+        assert.equal(record.outcome, 'failed')
+        assert.match(record.reason ?? '', /deployed and moved to \/var\/www\/acme, but the registry could not be updated/)
+        assert.equal(t.deps.registry().projects.get('acme')!.environments.get('live')!.deployed, 'abc1234')
+    })
+
+    it('keeps a migrated rollback rolled back when set-layout fails, and says so', async () => {
+        const t = setup({
+            migrateLayout: true, registryWriteFails: true, containerState: { state: 'exited' },
+            existsPaths: ['/var/www/acme/.git', '/var/www/acme/docker-compose.yml'],
+        })
+        const project = t.deps.registry().projects.get('acme')!
+        const record = await runDeploy(project, project.environments.get('live')!, manual, t.deps)
+        assert.equal(record.outcome, 'rolled-back')
+        assert.match(record.reason ?? '', /rolled back to the previous copy; moved to \/var\/www\/acme, but the registry could not be updated/)
+    })
+
+    // Recursive removal of the folders the move made, after a move back out of them failed, would take
+    // the site's own tree (at prev/live) with it. The undo stops instead, and the next deploy goes on.
+    it('stops an undo it cannot finish, removes nothing, and the next deploy completes the move', async () => {
+        const t = setup({ migrateLayout: true, existsPaths: ['/var/www/acme/.git', '/var/www/acme/docker-compose.yml'] })
+        const move = t.deps.fs.move
+        t.deps.fs.move = async (from, to) => {
+            if (to === '/var/www/acme/live' || (from === '/var/www/acme/prev/live' && to === '/var/www/acme.migrating')) throw new Error('EXDEV')
+            return move(from, to)
+        }
+        let project = t.deps.registry().projects.get('acme')!
+        const first = await runDeploy(project, project.environments.get('live')!, manual, t.deps)
+        assert.equal(first.outcome, 'failed')
+        assert.match(first.reason ?? '', /moving to \/var\/www\/acme failed at .*; the undo did not finish either, so the next deploy completes the move/)
+        assert.equal(t.calls.some(call => call === 'rmdir /var/www/acme' || call === 'rmdir /var/www/acme/prev' || call.startsWith('rmdir-empty')), false)
+        assert.equal(t.calls.includes('compose up'), false)
+        assert.equal(t.maintenance.size, 0)
+
+        t.deps.fs.move = move
+        project = t.deps.registry().projects.get('acme')!
+        const second = await runDeploy(project, project.environments.get('live')!, manual, t.deps)
+        assert.equal(second.outcome, 'ok', second.reason ?? '')
+        assert.equal(t.deps.registry().projects.get('acme')!.environments.get('live')!.dir, '/var/www/acme/live')
     })
 })

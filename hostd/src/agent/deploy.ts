@@ -50,6 +50,9 @@ export type DeployFs = {
     exists(path: string): Promise<boolean>
     mkdir(dir: string): Promise<void>
     rmdir(dir: string): Promise<void>
+    // Removes a folder only if it is empty, and fails otherwise. What undoing a folder this process made
+    // uses, so an undo can never delete what ended up inside it (rmdir above is recursive).
+    removeEmptyDir(dir: string): Promise<void>
     move(from: string, to: string): Promise<void>
     // Copies one file into the new tree. Separate from the env carry's own read and write, which go
     // through env-files.ts and are held to the env-file boundary on purpose: a compose file is not an
@@ -172,7 +175,25 @@ export async function currentTip(
 ): Promise<{ ok: true, commit: string } | { ok: false, problem: string }> {
     const branch = environment.branch
     if (!branch) return { ok: false, problem: `${project.id} ${environment.name} has no branch to track` }
-    return tipIn(project, branch, buildTreesOf(environment, sourceTrees(project, environment, deps)), deps)
+    try {
+        return await tipIn(project, branch, await pollTreesOf(project, environment, deps), deps)
+    } catch (error) {
+        return { ok: false, problem: describeError(error) }
+    }
+}
+
+// Where the poller reads the tip. Normally the trees runDeploy would build from, except for a live whose
+// move finished on disk but was never recorded (a registry write that failed, or a stop between the
+// window and the write): the registry still says flat, but the repository is only in the nested
+// layout now. Polling the flat trees would find no repository and skip the site on every poll, so the
+// deploy whose resume check records the move would never be started.
+async function pollTreesOf(project: ProjectEntry, environment: EnvironmentEntry, deps: DeployDeps): Promise<DeployTrees> {
+    const source = sourceTrees(project, environment, deps)
+    const build = buildTreesOf(environment, source)
+    const moved = migrationTarget(project, environment)
+    if (build !== source.trees || !moved) return build
+    if (await deps.fs.exists(repositoryIn(source.trees)) || !(await deps.fs.exists(repositoryIn(moved)))) return build
+    return moved
 }
 
 // currentTip's own work, in trees already chosen. runDeploy calls this directly, because a resume or a
@@ -505,6 +526,8 @@ export async function runDeploy(
 
         // Prepare. A nested site's next/ and prev/ are made the first time an environment needs them,
         // owned like the site folder itself, because git will not make the folder a worktree lands in.
+        // 'window' mode, though no window is open, because it is the mode that removes a folder it made
+        // when a later one fails, rather than leaving half the pair behind.
         if (build.site) {
             const parents = await executeSteps([
                 { kind: 'mkdir', dir: posix.dirname(build.next), like: build.site },
@@ -584,13 +607,21 @@ export async function runDeploy(
             if (target) {
                 const moved = await moveIntoNested(environment, trees, target, deps)
                 if (!moved.ok) {
-                    // The steps already taken are undone, so the flat tree is back where it was and the
-                    // registry still says so: starting it is all that is left to put the site back.
-                    const restarted = await runCompose(upArgv(locationIn(environment, trees.dir), name), SWAP_TIMEOUT_MS, deps.runner)
                     const reason = `moving to ${target.site} failed at ${moved.step}: ${moved.problem}`
-                        + (moved.undone ? '' : '; the undo did not finish either, so the next deploy completes the move')
-                        + (restarted.ok ? '' : `; the previous copy did not start again: ${restarted.message}`)
-                    return fail(reason, restarted.ok ? null : restarted.output)
+                    if (!moved.undone) {
+                        // The undo stopped where it could not go on, so the flat tree is not back and
+                        // there is nothing at trees.dir to start. For live, that state is one the next
+                        // deploy's resume check finishes forward. For any other environment it is only
+                        // ever its old tree left at prev/<env>, which the operator has to put back.
+                        return fail(environment.name === 'live'
+                            ? `${reason}; the undo did not finish either, so the next deploy completes the move`
+                            : `${reason}; the undo did not finish either, and the previous copy is at ${target.prev}`)
+                    }
+                    // Every step taken is undone, so the flat tree is back where it was and the registry
+                    // still says so: starting it is all that is left to put the site back.
+                    const restarted = await runCompose(upArgv(locationIn(environment, trees.dir), name), SWAP_TIMEOUT_MS, deps.runner)
+                    if (!restarted.ok) return fail(`${reason}; the previous copy did not start again: ${restarted.message}`, restarted.output)
+                    return fail(reason)
                 }
                 live = target
             } else {
