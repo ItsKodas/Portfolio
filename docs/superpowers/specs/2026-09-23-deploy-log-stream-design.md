@@ -162,13 +162,19 @@ no reconnection. `startedAt` is the boundary.
 deploy is an in-process promise. That is existing behaviour. What this adds is the obligation to say the
 stream dropped rather than leave a stale half-log looking like a deploy still running.
 
-**A client without the `deploy` capability** is refused on the pre-flight fetch and told once, rather
-than `EventSource` retrying forever behind a silent failure.
+**A client without the `deploy` capability** is refused as an HTTP error on the `EventSource` itself,
+which hands over no body. The column closes that stream rather than leaving `EventSource` to retry
+forever behind a silent failure, asks the same endpoint again plainly to get the refusal in words, and
+says it once, with a Try again for whoever wants another attempt.
 
 **Chattiness is bounded at both ends**: the ring in the agent, `MAX_LINES` in the browser.
 
-**No new secret exposure.** The stream carries the same bytes `record.output` already stores, gated by
-the same capability and the same owner policy. It changes when they are seen, not who can see them.
+**No new secrets, and more of the same bytes.** Everything the stream carries is something a deploy
+already produces, and it is gated by the same capability and the same owner policy as the history. It is
+not the same volume, though: `record.output` is `tail()` of the one command that failed, while the stream
+carries every compose command's output as it goes, up to the ring's bound, and the phase lines besides,
+which name paths on the server's filesystem. A superset of what the history shows, gated identically. It
+changes when and how much is seen, not who can see it.
 
 ## Testing
 
