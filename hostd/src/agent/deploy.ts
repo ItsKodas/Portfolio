@@ -300,6 +300,10 @@ export async function runDeploy(
 
         let commit = request.commit
         if (!commit) {
+            // Said here rather than inside currentTip, which the poller calls for every environment every
+            // two minutes: a line in there would be noise about nothing happening, a hundred and fifty
+            // times an hour, and would reach no watcher anyway since a poll runs outside a deploy.
+            deps.log(`deploy ${project.id} ${environment.name}: fetching ${environment.branch}`)
             const tip = await currentTip(project, environment, deps)
             if (!tip.ok) return failed(tip.problem)
             commit = tip.commit
@@ -317,6 +321,7 @@ export async function runDeploy(
         // Prepare. A tree left behind by an earlier deploy is removed first: git refuses to add a
         // worktree over an existing folder, and whatever is in there is nobody's current version.
         if (await deps.fs.exists(trees.next)) await deps.fs.rmdir(trees.next)
+        deps.log(`deploy ${project.id} ${environment.name} ${commit.slice(0, 7)}: checking out`)
         const checkedOut = await deps.fetcher.call({ verb: 'checkout', dir: trees.repo, worktree: trees.next, commit })
         if (!checkedOut.ok) {
             await deps.fs.rmdir(trees.next).catch(() => {})
@@ -370,6 +375,7 @@ export async function runDeploy(
         // not serving, so it holds no network call and no build: a down, two renames and an up.
         await deps.fs.setMaintenance(key)
         try {
+            deps.log(`deploy ${project.id} ${environment.name} ${commit.slice(0, 7)}: taking the old copy down`)
             const down = await runCompose(downArgv(locationIn(environment, trees.dir), name), SWAP_TIMEOUT_MS, deps.runner)
             if (!down.ok) {
                 // Nothing has moved, so the old tree is still the site and can be started again by the
@@ -379,11 +385,14 @@ export async function runDeploy(
             }
 
             // Only one previous copy is kept, which is what bounds the disk this costs.
+            deps.log(`deploy ${project.id} ${environment.name} ${commit.slice(0, 7)}: swapping in the new copy`)
             if (await deps.fs.exists(trees.prev)) await deps.fs.rmdir(trees.prev)
             await deps.fs.move(trees.dir, trees.prev)
             await deps.fs.move(trees.next, trees.dir)
 
+            deps.log(`deploy ${project.id} ${environment.name} ${commit.slice(0, 7)}: starting the new copy`)
             const up = await runCompose(upArgv(locationIn(environment, trees.dir), name), SWAP_TIMEOUT_MS, deps.runner)
+            if (up.ok) deps.log(`deploy ${project.id} ${environment.name} ${commit.slice(0, 7)}: waiting for it to come up healthy`)
             const healthy = up.ok
                 ? await waitForHealthy(project, name, { docker: deps.docker, now: deps.now, sleep: deps.sleep })
                 : { ok: false as const, problem: up.message }

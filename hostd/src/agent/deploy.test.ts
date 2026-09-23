@@ -548,6 +548,32 @@ describe('runDeploy, the swap', () => {
         assert.ok(removed !== -1 && removed < moved)
     })
 
+    // The narrative a watcher reads. Until these existed a deploy said "building" and then "deployed",
+    // with twenty seconds of raw compose output in between and nothing at all during the swap or the
+    // health check: the parts where a deploy goes wrong in the most interesting ways. Checked as an
+    // ordered subsequence rather than an exact list, so adding a line later does not fail this.
+    it('narrates every phase it passes through, in order', async () => {
+        const context = setup()
+        const record = await runDeploy(context.project(), context.environment(), { ...request }, context.deps)
+        assert.equal(record.outcome, 'ok', record.reason ?? '')
+
+        const wanted = ['fetching', 'checking out', 'building', 'taking the old copy down', 'swapping in', 'starting', 'healthy']
+        let at = -1
+        for (const phrase of wanted) {
+            const found = context.logs.findIndex((line, index) => index > at && line.includes(phrase))
+            assert.ok(found > at, `${phrase} missing or out of order in: ${context.logs.join(' | ')}`)
+            at = found
+        }
+    })
+
+    // The poller calls currentTip for every environment every two minutes. If the fetch line lived in
+    // there it would be 150 lines an hour of noise about nothing happening.
+    it('does not narrate the poller reading a tip, only a deploy fetching one', async () => {
+        const context = setup()
+        await currentTip(context.project(), context.environment(), context.deps)
+        assert.equal(context.logs.some(line => line.includes('fetching')), false, context.logs.join(' | '))
+    })
+
     it('records the commit in the registry once it is healthy', async () => {
         const context = setup()
         const record = await runDeploy(context.project(), context.environment(), { ...request, commit: TIP }, context.deps)
