@@ -67,6 +67,12 @@ Additive, so every existing caller is untouched. `createSpawnRunner` already hol
 stays exactly what it is today. `restic.ts`'s `nodeSpawnStream` is the existing precedent for streaming a
 child's stdout in this codebase.
 
+**The sink takes both streams, not just stderr.** The spike found compose v5.1.3 writing its build
+progress to **stdout** and only the closing `Image <name> Built` summary to stderr. `deploy-compose.ts`
+currently carries the comment "Compose writes its progress to stderr, so both streams are the output",
+which is either out of date or version dependent; it is right to join both either way, and the line sink
+must do the same rather than trusting that comment and listening to one.
+
 ### The narrative needs no change to `runDeploy`
 
 `DeployRunner.run` already builds the deps it hands to a deploy. It wraps two of them per deploy:
@@ -173,10 +179,21 @@ the same capability and the same owner policy. It changes when they are seen, no
   refusal arrives before the stream opens.
 - **Portal:** renders the three kinds, caps lines, surfaces a refusal, clears at a `startedAt` boundary.
 
-One thing no test settles: whether compose output actually arrives line by line rather than in one lump
-at the end, because that depends on how `docker compose` buffers its own stdout when it is not attached
-to a terminal. This gets checked against a real build on the dedi before the work is called done, the
-same way `rev-parse --verify` and the credential helper's line format were checked.
+The question no test could settle, whether compose output arrives line by line or in one lump at the end,
+was answered by a spike against a real build on the dedi (compose v5.1.3) before this design was
+finalised. **It streams.** A two step build with a four second sleep in each step, spawned exactly as
+`createSpawnRunner` spawns it, with no TTY and default progress:
+
+```
+ 1.370 out #6 0.268 A-START
+ 5.373 out #6 4.269 A-DONE     <- 4.003s apart, matching the sleep
+ 5.755 out #7 0.355 B-START
+ 9.757 out #7 4.356 B-DONE     <- 4.002s apart
+```
+
+So no `--progress plain` is needed, and a `RUN` step's own output is relayed live, prefixed with the step
+number and its elapsed time. The column gets real build output as it happens, which is what the feature
+rests on.
 
 ## What this deliberately does not do
 
