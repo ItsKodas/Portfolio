@@ -2,6 +2,7 @@ import Link from 'next/link'
 
 import { signOut } from '@/server/auth'
 import { Button } from '@/ui/Button/Button'
+import Brand from './brand'
 import styles from './header.module.css'
 
 // Kept, rather than dropped for ui/Shell's bar: only the portal home renders inside a Shell, so for the
@@ -14,7 +15,7 @@ export default function AdminHeader() {
 
     return (
         <header className={styles.bar}>
-            <Link href="/admin" className={styles.brand}>Horizons admin</Link>
+            <Brand href="/admin" label="admin" />
             <nav className={styles.nav}>
                 <Link href="/admin" className={styles.link}>Quotes</Link>
                 <Link href="/admin/clients" className={styles.link}>Clients</Link>
