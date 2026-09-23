@@ -30,6 +30,28 @@ projects:
         deployed: abc1234
 `
 
+// Every site on the dedi that hostd can deploy names an override beside the base file: a port that
+// machine has free, a service that box does not run, an address to publish on. The registry is where the
+// operator says so, and the repo deliberately does not carry it.
+const REGISTRY_YAML_OVERRIDE = `
+projects:
+  acme:
+    client: cl_1
+    name: Acme
+    repo: git@github.com:ItsKodas/acme.git
+    services:
+      web: { role: site }
+    capabilities: [deploy, env]
+    environments:
+      live:
+        dir: /var/www/acme
+        compose: [ docker-compose.yml, docker-compose.override.yml ]
+        branch: main
+        domain: acme.com
+        port: 5010
+        deployed: abc1234
+`
+
 type SetupOptions = {
     registryYaml?: string
     fetchReplies?: Partial<Record<FetchRequest['verb'], FetchReply>>
@@ -37,6 +59,8 @@ type SetupOptions = {
     freeBytes?: number
     owners?: Record<string, { uid: number, gid: number, mode: number }>
     envTree?: Record<string, string>
+    // Makes DeployFs.copyFile throw, for the compose carry's own failure path.
+    copyFails?: boolean
     // Keyed by the compose subcommand: 'build', 'up', 'down'.
     composeResults?: Record<string, Partial<RunResult>>
     containerState?: { state: string, health?: string }
@@ -105,6 +129,7 @@ function setup(options: SetupOptions = {}) {
     }
 
     let rolledBack = false
+    const copyFails = options.copyFails ?? false
     // What /var/www/acme itself is owned by and moded as, before the deploy touches anything: uid 1000,
     // gid 1000, drwxrwxr-x, exactly the RUNBOOK's own description of a site directory on the dedi. A test
     // that wants a different owner (an operator who chose something else) can overwrite this map by id.
@@ -115,6 +140,7 @@ function setup(options: SetupOptions = {}) {
         exists: async path => exists.has(path),
         mkdir: async dir => { calls.push(`mkdir ${dir}`); exists.add(dir) },
         rmdir: async dir => { calls.push(`rmdir ${dir}`); exists.delete(dir) },
+        copyFile: async (from, to) => { calls.push(`copy ${from} ${to}`); if (copyFails) throw new Error('read-only file system'); exists.add(to) },
         move: async (from, to) => {
             calls.push(`move ${from} ${to}`)
             if (from.endsWith('.prev')) rolledBack = true
@@ -326,6 +352,48 @@ describe('runDeploy, before the swap', () => {
         assert.equal(record.outcome, 'ok', record.reason ?? '')
         assert.equal(context.files.get('/var/www/acme.next/.env'), 'DATABASE_URL=postgres://live\n')
         assert.equal(context.files.has('/var/www/acme.next/.env.example'), false)
+    })
+
+    // A host-specific compose file is not in the repo (that is the whole point of one), so a fresh
+    // checkout does not have it, and compose is handed `-f` pointing at a path that does not exist:
+    // "open /var/www/acme.next/docker-compose.override.yml: no such file or directory", before it builds
+    // anything. Carried for the same reason env files are, and by the same rule: only when the checkout
+    // does not have its own.
+    it('carries a registered compose file the checkout does not have', async () => {
+        const context = setup({ registryYaml: REGISTRY_YAML_OVERRIDE, existsPaths: ['/var/www/acme/.git', '/var/www/acme.next/docker-compose.yml'] })
+        const record = await runDeploy(context.project(), context.environment(), { ...request, commit: TIP }, context.deps)
+        assert.equal(record.outcome, 'ok', record.reason ?? '')
+        assert.ok(context.calls.includes('copy /var/www/acme/docker-compose.override.yml /var/www/acme.next/docker-compose.override.yml'),
+            context.calls.join(', '))
+    })
+
+    it('leaves the checkout its own copy, which belongs with the commit going out', async () => {
+        const context = setup({
+            registryYaml: REGISTRY_YAML_OVERRIDE,
+            existsPaths: ['/var/www/acme/.git', '/var/www/acme.next/docker-compose.yml', '/var/www/acme.next/docker-compose.override.yml'],
+        })
+        await runDeploy(context.project(), context.environment(), { ...request, commit: TIP }, context.deps)
+        assert.equal(context.calls.some(call => call.startsWith('copy ')), false, context.calls.join(', '))
+    })
+
+    // Before the own, so a file this process wrote as root does not stay root-owned in a tree the
+    // operator has to be able to read; and before the build, which is what reads it.
+    it('carries it before ownership is applied and before the build', async () => {
+        const context = setup({ registryYaml: REGISTRY_YAML_OVERRIDE, existsPaths: ['/var/www/acme/.git', '/var/www/acme.next/docker-compose.yml'] })
+        await runDeploy(context.project(), context.environment(), { ...request, commit: TIP }, context.deps)
+        const copied = context.calls.findIndex(call => call.startsWith('copy '))
+        const owned = context.calls.findIndex(call => call.startsWith('own /var/www/acme.next'))
+        const built = context.calls.indexOf('compose build')
+        assert.ok(copied !== -1 && owned !== -1 && built !== -1, context.calls.join(', '))
+        assert.ok(copied < owned && owned < built)
+    })
+
+    it('fails the deploy naming the file when it cannot be carried, and never builds', async () => {
+        const context = setup({ registryYaml: REGISTRY_YAML_OVERRIDE, copyFails: true, existsPaths: ['/var/www/acme/.git', '/var/www/acme.next/docker-compose.yml'] })
+        const record = await runDeploy(context.project(), context.environment(), { ...request, commit: TIP }, context.deps)
+        assert.equal(record.outcome, 'failed')
+        assert.ok((record.reason ?? '').includes('docker-compose.override.yml'), record.reason ?? '')
+        assert.equal(context.calls.includes('compose build'), false)
     })
 
     it('fails the deploy when an env file cannot be carried, naming the path and never its contents', async () => {

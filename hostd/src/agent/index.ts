@@ -3,7 +3,7 @@
 
 import { createServer, createConnection } from 'node:net'
 import { createWriteStream } from 'node:fs'
-import { chmod, chown, cp, mkdir, readdir, readFile, rename, rm, stat, statfs, unlink, writeFile } from 'node:fs/promises'
+import { chmod, chown, constants, copyFile, cp, mkdir, readdir, readFile, rename, rm, stat, statfs, unlink, writeFile } from 'node:fs/promises'
 import { randomBytes } from 'node:crypto'
 import { posix } from 'node:path'
 import { RegistryStore, explainRegistryError } from '../shared/registry-store.ts'
@@ -226,6 +226,9 @@ async function main(): Promise<void> {
             mkdir: async dir => { await mkdir(dir, { recursive: true }) },
             rmdir: dir => rm(dir, { recursive: true, force: true }),
             move: (from, to) => rename(from, to),
+            // COPYFILE_EXCL, so this can only ever create: a checkout's own compose file is never
+            // overwritten even if the caller's existence check were somehow wrong about it.
+            copyFile: (from, to) => copyFile(from, to, constants.COPYFILE_EXCL),
             // What df calls available: the blocks a deploy could actually use, excluding the ones the
             // filesystem reserves for root.
             freeBytes: async path => {

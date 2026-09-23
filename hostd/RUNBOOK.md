@@ -420,10 +420,19 @@ or deploy acts on the wrong one.
 
 **How one happens.** Every 2 minutes the agent asks GitHub for the tip of each deploying environment's
 branch. A tip different from the entry's `deployed` starts a deploy: fetch, check the commit out into
-`<dir>.next`, carry the env files across from the running copy, `docker compose build` there, then the
+`<dir>.next`, carry the env files across from the running copy, carry any compose file the checkout does
+not have (see below), `docker compose build` there, then the
 swap (maintenance flag up, `down`, `<dir>` becomes `<dir>.prev`, `<dir>.next` becomes `<dir>`, `up -d`,
 flag down), then the health check, then `deployed` is written to the registry. One deploy per environment
 at a time; a commit that lands mid-deploy is picked up by the next poll.
+
+**A host-specific compose file survives a deploy.** An override that says which port this machine has
+free, which service this box does not run, or which address to publish on has no business in the repo,
+so a fresh checkout does not have it. For every file the entry's `compose` list names, a deploy copies
+the running copy's across when the new tree has none of its own, exactly as it does for env files. Where
+the repo does commit the file, the checkout's copy wins: that one belongs with the commit going out, and
+the running tree's is the commit being replaced. A file that cannot be copied fails the deploy before the
+build, because compose cannot describe the site without it.
 
 **What the health check actually checks.** Every registered compose service has a running container, and
 any container that declares a healthcheck reports `healthy`, within 60 seconds. It is deliberately not an
