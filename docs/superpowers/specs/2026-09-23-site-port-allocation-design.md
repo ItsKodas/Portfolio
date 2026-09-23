@@ -53,9 +53,15 @@ short-lived container in the host's network namespace:
   and a failure refuses the create or change (`unavailable`, "could not read the host's ports"). hostd
   never assumes a port is free.
 
-`DockerApi` gains the calls this needs (`createContainer`, `start`, `wait`, `logs` of a stopped
-container, `remove`). The Docker-only `dockerPortCheck` is kept alongside: a container that is starting
-may have its port reserved by Docker before it is listening, and the union of both is what counts.
+The probe runs through the `docker` CLI, the same way the rest of the agent shells out to Docker, rather
+than through new `DockerApi` calls: `docker inspect --format {{.Image}} hostd-agent` for the image id
+(the container name is `HOSTD_AGENT_CONTAINER`, overridable), then
+`docker run --rm --name hostd-port-probe-<hex> --network host --read-only --cap-drop ALL
+--security-opt no-new-privileges --pull never --entrypoint cat <image> /proc/net/tcp /proc/net/tcp6`.
+A reading is cached for 2 seconds, so the portal's live check asking for a suggestion and a verdict back
+to back costs one probe, not two. Docker's own published ports are added on top of what the probe reads: a
+container that is starting may have its port reserved by Docker before it is listening, and the union of
+both is what counts.
 
 ## Writing the port into the site
 
@@ -82,16 +88,19 @@ ${WEB_PORT}; publish it like "127.0.0.1:${WEB_PORT}:3000"`. `ResolvedService` ga
   host's ports and apply `portProblem`. After the clone and `createMissingEnvFiles`, write the port into
   `.env`, then resolve and check the compose file publishes it. Any failure rolls back the whole create,
   as a compose failure does today.
-- New admin-only `GET /ports?port=N`. api asks the agent, which answers
+- New admin-only `GET /ports?port=N&project=ID&environment=live|test`. api asks the agent, which answers
   `{ suggested: number, problem: string | null }`: the lowest free port, and what is wrong with `N` if
-  one was given. It takes no lock and is advice only; the create and change check again under the lock.
+  one was given. `project` and `environment` go together and name the environment being changed, so its
+  own current port is not counted as taken. It takes no lock and is advice only; the create and change
+  check again under the lock.
 - Portal: `server/hostd/ports.ts` (`checkPort(config, caller, port?)`), and a Port field in the New site
   modal. When the modal opens it fills in `suggested`. As the admin types (debounced) it shows the
   problem under the field. The zod schema gains `port: 5000 to 65535`, and `createSiteAction` passes it.
 
 ## Changing it in Settings
 
-- `PUT /projects/:id/environments/:env/port` with `{ port }`, admin only, under the provisioning lock.
+- `PUT /projects/:id/:env/port` with `{ port }`, admin only, matching the shape of the other
+  per-environment routes, under the provisioning lock.
 - The agent, in order:
   1. Applies `portProblem` with `own` set to this environment.
   2. Writes the port into `.env`, keeping the old line to put back.
@@ -103,9 +112,21 @@ ${WEB_PORT}; publish it like "127.0.0.1:${WEB_PORT}:3000"`. `ResolvedService` ga
 - A failure at any step undoes the steps before it: `.env` line put back, registry put back, containers
   brought up again on the old port. The reply names the step that failed.
 - An unchanged port is a no-op that answers ok.
+- The change refuses busy while another provisioning action, a deploy (including a rollback or a branch
+  switch) for that environment, a lifecycle action for the project, or an env write for that environment
+  is running, and it holds all four off in turn while it runs itself, so nothing else can touch this
+  environment's containers or `.env` mid-change. The deploy poller itself is not held off: a poll that
+  lands mid-change is a known gap, not something this task closes.
 - Portal: the Settings tab shows each environment's port in an editable field with the same live check
   and a note that saving restarts the site. It saves through its own action, not the existing settings
   form, because it restarts containers and the rest of Settings does not.
+
+## Add-environment
+
+Adding a test environment now writes that environment's own port into its `.env` the same way create
+does, and requires its compose file to publish it. A test environment provisioned before this task, whose
+compose file does not yet publish `${WEB_PORT}`, needs that fixed before its port can be checked or
+changed the same way live's can.
 
 ## Out of scope
 

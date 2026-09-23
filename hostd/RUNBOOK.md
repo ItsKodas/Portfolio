@@ -65,6 +65,32 @@ value never leaves the dedi: the registry and the portal only ever hold its name
 The Account field offers exactly the names the fetcher answered with, and a name it does not hold is
 refused on save rather than at the next deploy.
 
+## A site's port
+
+hostd owns each environment's port. The portal picks it (New site form, or Settings for a site that
+exists), from 5000 to 65535, and refuses a port another environment has or anything on the dedi is
+listening on.
+
+hostd writes it into the environment's root `.env` as `WEB_PORT=<port>` (or the variable the registry
+entry's `portEnv` names). The site's compose file has to publish it, for example
+`ports: ["127.0.0.1:${WEB_PORT}:3000"]`. Create, add-environment and a port change all refuse a compose
+file that does not.
+
+To move an existing site that hard codes its port: change its compose file to `${WEB_PORT}`, deploy that,
+then pick the port in Settings.
+
+How the check sees host services: the agent runs a throwaway `--network host` container from its own
+image that reads `/proc/net/tcp` and `/proc/net/tcp6`. If that fails, provisioning and port changes are
+refused; check `docker compose logs agent` and that `docker image inspect hostd-agent` works.
+
+A quick check from the dedi that the probe sees what `ss` sees:
+
+```bash
+sudo ss -Hltn | awk '{print $4}' | sed 's/.*://' | sort -un
+```
+
+should match the listening ports the agent reads.
+
 ## Editing the registry
 
 `hostd/registry/projects.yaml` is hand-edited and read every ten seconds. Any editor will do: the
