@@ -12,7 +12,7 @@
 
 ## Global Constraints
 
-- Never use em dashes (U+2014) in page copy, UI text, docs, commit messages or PR text. Comments in code may use them. Check new docs and UI strings with Python, not a bash `$'—'` grep.
+- Never use em dashes (U+2014) in page copy, UI text, docs, commit messages or PR text. Comments in code may use them. Check new docs and UI strings with Python, not a bash `$'\u2014'` grep.
 - Ports: whole numbers from 5000 to 65535 (`PORT_RANGE = { from: 5000, to: 65535 }`).
 - The port variable is the registry's `portEnv` (default `WEB_PORT`), written into the environment's root `.env`.
 - hostd never assumes a port is free: a failed host probe refuses with code `unavailable`.
@@ -2491,7 +2491,7 @@ Add a section to `hostd/RUNBOOK.md` after the credentials section, titled `## A 
 No em dashes. Check with Python:
 
 ```bash
-python -c "import sys;t=open('hostd/RUNBOOK.md',encoding='utf-8').read();print('emdash' if '—' in t else 'clean')"
+python -c "import sys;t=open('hostd/RUNBOOK.md',encoding='utf-8').read();print('emdash' if '\u2014' in t else 'clean')"
 ```
 
 - [ ] **Step 2: Bring the spec in line with the build**
@@ -2509,7 +2509,7 @@ Expected: every test passes, no type or lint errors.
 - [ ] **Step 4: Scan the diff for em dashes outside comments**
 
 ```bash
-git diff Master --name-only | python -c "import sys,io;[print(p.strip()) for p in sys.stdin if p.strip() and not p.strip().endswith(('.ts','.tsx')) and '—' in io.open(p.strip(),encoding='utf-8',errors='ignore').read()]"
+git diff Master --name-only | python -c "import sys,io;[print(p.strip()) for p in sys.stdin if p.strip() and not p.strip().endswith(('.ts','.tsx')) and '\u2014' in io.open(p.strip(),encoding='utf-8',errors='ignore').read()]"
 ```
 
 Expected: no output. For `.ts`/`.tsx` files, check the new UI strings and messages by eye: em dashes are allowed only in comments.
