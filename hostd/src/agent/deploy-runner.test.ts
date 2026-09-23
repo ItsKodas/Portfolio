@@ -219,4 +219,43 @@ describe('DeployRunner watch', () => {
         await runner.settle()
         assert.ok(logged.includes('building'), logged.join(' | '))
     })
+
+    // begin() is called unconditionally before the deploy runs, so a watcher who attached expects an end
+    // no matter how the deploy ends, including a throw. A future refactor that moved watch.end inside the
+    // narrower try around just the deploy call would pass every other test here while hanging a watcher
+    // on a crashed deploy forever; this is the test that catches that.
+    it('ends the buffer with a failure when a deploy throws', async () => {
+        const seen: string[] = []
+        const runner = makeRunner({ deploy: async () => { throw new Error('boom') } })
+        runner.watch.subscribe('acme:live', event => seen.push(`${event.kind}:${event.text}`))
+        runner.start(project, environment, { trigger: 'manual', actor: 'koda' })
+        await runner.settle()
+        const last = seen[seen.length - 1] ?? ''
+        assert.ok(last.startsWith('end:'), last)
+        assert.ok(last.includes('boom'), last)
+    })
+
+    // resume() runs before the deploy itself, on the same path that must still close the stream: a store
+    // that fails to resume a paused environment is exactly as over, as far as a watcher is concerned, as
+    // a deploy that fails once it starts.
+    it('ends the buffer even when resuming the environment fails, before the deploy itself runs', async () => {
+        const seen: string[] = []
+        const store = {
+            get: () => ({ deploys: [], consecutiveFailures: 0, paused: false }),
+            isPaused: () => false,
+            resume: async () => { throw new Error('disk full') },
+            record: async () => {},
+        }
+        const deps = {
+            store, now: () => 1_000, log: () => {},
+            runner: async () => ({ exitCode: 0, stdout: '', stderr: '', timedOut: false }),
+        } as unknown as DeployRunnerDeps
+        const runner = new DeployRunner(deps, async () => okRecord())
+        runner.watch.subscribe('acme:live', event => seen.push(`${event.kind}:${event.text}`))
+        runner.start(project, environment, { trigger: 'manual', actor: 'koda' })
+        await runner.settle()
+        const last = seen[seen.length - 1] ?? ''
+        assert.ok(last.startsWith('end:'), last)
+        assert.ok(last.includes('disk full'), last)
+    })
 })

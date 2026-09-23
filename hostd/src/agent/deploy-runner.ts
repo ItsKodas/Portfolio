@@ -65,9 +65,12 @@ export class DeployRunner {
             }),
         }
         try {
-            if (request.trigger !== 'poll') await this.deps.store.resume(key)
             let record: DeployRecord
             try {
+                // resume sits inside the same try as the deploy itself: begin() has already fired
+                // unconditionally above, so anything between here and a record existing, resume failing
+                // included, must still close the stream the same way a throwing deploy does.
+                if (request.trigger !== 'poll') await this.deps.store.resume(key)
                 record = await this.deploy(project, environment, request, deps)
             } catch (error) {
                 // runDeploy returns its failures rather than throwing, so this is the unforeseen kind. It
