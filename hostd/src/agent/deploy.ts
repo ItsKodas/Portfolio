@@ -196,9 +196,9 @@ async function pollTreesOf(project: ProjectEntry, environment: EnvironmentEntry,
     return moved
 }
 
-// currentTip's own work, in trees already chosen. runDeploy calls this directly, because a resume or a
-// refused move can change which trees it builds in, and the tip has to come from the repository the
-// checkout will then use.
+// currentTip's own work, in trees already chosen. runDeploy calls this directly, because a resume can
+// change which trees it builds in, and the tip has to come from the repository the checkout will then
+// use.
 async function tipIn(
     project: ProjectEntry, branch: string, build: DeployTrees, deps: DeployDeps,
 ): Promise<{ ok: true, commit: string } | { ok: false, problem: string }> {
@@ -402,8 +402,6 @@ async function finishInterruptedMove(
 type Resumed =
     // Nothing to resume: flat, or not a candidate for moving at all.
     | { kind: 'unchanged' }
-    // What is on disk is neither layout, so this deploy must not start a move either.
-    | { kind: 'refused' }
     // A move already under way is finished and recorded; the deploy carries on in the nested trees.
     | { kind: 'nested', environment: EnvironmentEntry }
     | { kind: 'failed', problem: string }
@@ -411,7 +409,9 @@ type Resumed =
 // The check every deploy runs before anything else, whether or not migrateLayout is on: the registry
 // still records this environment as flat, so is the disk still flat? The disk is the truth. A move that
 // was cut short is finished (see finishInterruptedMove), one that finished but was never recorded is
-// only recorded, and a site folder that is neither layout is left to the operator.
+// started and recorded, and a site folder that is neither layout is left to the operator: the deploy is
+// refused. Deploying it flat instead would rename a folder hostd cannot read to .prev, and the deploy
+// after that would delete it.
 async function resumeLayout(
     project: ProjectEntry, environment: EnvironmentEntry, key: string, deps: DeployDeps,
 ): Promise<Resumed> {
@@ -421,8 +421,7 @@ async function resumeLayout(
     const state = await inspectLayout(environment, from, to, path => deps.fs.exists(path))
     if (state === 'flat') return { kind: 'unchanged' }
     if (state === 'unknown') {
-        deps.log(`deploy ${project.id} ${environment.name}: ${to.site} is neither flat nor nested, so it is not being moved`)
-        return { kind: 'refused' }
+        return { kind: 'failed', problem: `${to.site} is neither flat nor nested, so it is not being deployed; see the RUNBOOK` }
     }
     if (state === 'interrupted') {
         const finished = await finishInterruptedMove(project, environment, from, to, key, deps)
@@ -495,7 +494,6 @@ export async function runDeploy(
     try {
         const resumed = await resumeLayout(project, environment, key, deps)
         if (resumed.kind === 'failed') return failed(resumed.problem)
-        if (resumed.kind === 'refused') target = null
         if (resumed.kind === 'nested') {
             environment = resumed.environment
             trees = deployTrees(environment.dir)
