@@ -52,8 +52,33 @@ projects:
         deployed: abc1234
 `
 
+// Live already nested, test still flat: the state in which a test deploy moves beside live.
+const REGISTRY_YAML_TEST = `
+projects:
+  acme:
+    client: cl_1
+    name: Acme
+    repo: git@github.com:ItsKodas/acme.git
+    services:
+      web: { role: site }
+    capabilities: [deploy, env]
+    environments:
+      live:
+        dir: /var/www/acme/live
+        composeName: acme
+        branch: main
+        port: 5010
+      test:
+        dir: /var/www/acme-test
+        branch: develop
+        port: 5011
+`
+const REGISTRY_YAML_NESTED = REGISTRY_YAML_TEST.replace('dir: /var/www/acme-test', 'dir: /var/www/acme/test')
+
 type SetupOptions = {
     registryYaml?: string
+    // DeployDeps.migrateLayout, off unless a test turns it on, exactly as the dependency itself defaults.
+    migrateLayout?: boolean
     fetchReplies?: Partial<Record<FetchRequest['verb'], FetchReply>>
     existsPaths?: string[]
     freeBytes?: number
@@ -133,8 +158,11 @@ function setup(options: SetupOptions = {}) {
     // What /var/www/acme itself is owned by and moded as, before the deploy touches anything: uid 1000,
     // gid 1000, drwxrwxr-x, exactly the RUNBOOK's own description of a site directory on the dedi. A test
     // that wants a different owner (an operator who chose something else) can overwrite this map by id.
+    // The migrating and nested live paths are there because a move into the nested layout reads their
+    // ownership as the pattern for the folders it makes, and for the tree the next deploy checks out.
+    const siteOwner = { uid: 1000, gid: 1000, mode: 0o775 }
     const owners = new Map<string, { uid: number, gid: number, mode: number }>(
-        Object.entries(options.owners ?? { '/var/www/acme': { uid: 1000, gid: 1000, mode: 0o775 } }),
+        Object.entries(options.owners ?? { '/var/www/acme': siteOwner, '/var/www/acme.migrating': siteOwner, '/var/www/acme/live': siteOwner }),
     )
     const fs: DeployFs = {
         exists: async path => exists.has(path),
@@ -143,8 +171,14 @@ function setup(options: SetupOptions = {}) {
         copyFile: async (from, to) => { calls.push(`copy ${from} ${to}`); if (copyFails) throw new Error('read-only file system'); exists.add(to) },
         move: async (from, to) => {
             calls.push(`move ${from} ${to}`)
-            if (from.endsWith('.prev')) rolledBack = true
-            exists.delete(from)
+            if (from.endsWith('.prev') || from.includes('/prev/')) rolledBack = true
+            // A rename takes everything under the folder with it, which is what lets a repository moved
+            // from /var/www/acme.git to /var/www/acme/git still be found at /var/www/acme/git/.git.
+            for (const path of [...exists]) {
+                if (path !== from && !path.startsWith(`${from}/`)) continue
+                exists.delete(path)
+                exists.add(to + path.slice(from.length))
+            }
             exists.add(to)
         },
         freeBytes: async () => options.freeBytes ?? MIN_FREE_BYTES * 2,
@@ -210,6 +244,7 @@ function setup(options: SetupOptions = {}) {
         now: () => clock,
         sleep: async ms => { clock += ms },
         log: message => logs.push(message),
+        migrateLayout: options.migrateLayout,
     }
 
     const project = () => registry.projects.get('acme')!
@@ -649,5 +684,106 @@ describe('runDeploy, when the new version is not healthy', () => {
         assert.equal(record.outcome, 'failed')
         assert.match(record.reason ?? '', /read-only file system/)
         assert.equal(context.maintenance.size, 0)
+    })
+})
+
+describe('nested layout', () => {
+    const manual = { trigger: 'manual' as const, actor: 'koda' }
+
+    it('leaves a flat live alone while migration is switched off', async () => {
+        const t = setup({ existsPaths: ['/var/www/acme/.git', '/var/www/acme/docker-compose.yml'] })
+        const project = t.deps.registry().projects.get('acme')!
+        const record = await runDeploy(project, project.environments.get('live')!, manual, t.deps)
+        assert.equal(record.outcome, 'ok')
+        assert.ok(t.calls.includes('move /var/www/acme.next /var/www/acme'))
+    })
+
+    it('moves a flat live into the nested layout inside the window', async () => {
+        const t = setup({ migrateLayout: true, existsPaths: ['/var/www/acme/.git', '/var/www/acme/docker-compose.yml'] })
+        const project = t.deps.registry().projects.get('acme')!
+        const record = await runDeploy(project, project.environments.get('live')!, manual, t.deps)
+        assert.equal(record.outcome, 'ok')
+        const window = t.calls.slice(t.calls.indexOf('maintenance on'), t.calls.indexOf('maintenance off') + 1)
+        assert.deepEqual(window.filter(call => call.startsWith('move') || call.startsWith('compose')), [
+            'compose down',
+            'move /var/www/acme /var/www/acme.migrating',
+            'move /var/www/acme.migrating /var/www/acme/prev/live',
+            'move /var/www/acme.next /var/www/acme/live',
+            'move /var/www/acme.git /var/www/acme/git',
+            'compose up',
+        ])
+        const live = t.deps.registry().projects.get('acme')!.environments.get('live')!
+        assert.equal(live.dir, '/var/www/acme/live')
+        assert.equal(live.composeName, 'acme')
+        assert.equal(live.deployed, TIP)
+        const upArgs = t.composeRuns.at(-1)!
+        assert.deepEqual(upArgs.slice(0, 5), ['compose', '--project-name', 'acme', '--project-directory', '/var/www/acme/live'])
+    })
+
+    it('puts the flat tree back and starts it when a move fails', async () => {
+        const t = setup({ migrateLayout: true, existsPaths: ['/var/www/acme/.git', '/var/www/acme/docker-compose.yml'] })
+        const move = t.deps.fs.move
+        t.deps.fs.move = async (from, to) => { if (to === '/var/www/acme/live') throw new Error('EXDEV'); return move(from, to) }
+        const project = t.deps.registry().projects.get('acme')!
+        const record = await runDeploy(project, project.environments.get('live')!, manual, t.deps)
+        assert.equal(record.outcome, 'failed')
+        assert.match(record.reason ?? '', /moving to \/var\/www\/acme failed/)
+        assert.equal(t.deps.registry().projects.get('acme')!.environments.get('live')!.dir, '/var/www/acme')
+        assert.ok(t.calls.includes('move /var/www/acme.migrating /var/www/acme'))
+        assert.equal(t.calls.filter(call => call === 'compose up').length, 1)
+    })
+
+    it('swaps back on nested paths when the migrated tree is unhealthy, and stays nested', async () => {
+        const t = setup({ migrateLayout: true, existsPaths: ['/var/www/acme/.git', '/var/www/acme/docker-compose.yml'], containerState: { state: 'exited' } })
+        const project = t.deps.registry().projects.get('acme')!
+        const record = await runDeploy(project, project.environments.get('live')!, manual, t.deps)
+        assert.equal(record.outcome, 'rolled-back')
+        assert.ok(t.calls.includes('move /var/www/acme/live /var/www/acme/next/live'))
+        assert.ok(t.calls.includes('move /var/www/acme/prev/live /var/www/acme/live'))
+        assert.equal(t.deps.registry().projects.get('acme')!.environments.get('live')!.dir, '/var/www/acme/live')
+    })
+
+    it('finishes an interrupted migration before deploying', async () => {
+        const t = setup({ existsPaths: ['/var/www/acme.migrating', '/var/www/acme.next', '/var/www/acme.git', '/var/www/acme.git/.git'] })
+        const project = t.deps.registry().projects.get('acme')!
+        const record = await runDeploy(project, project.environments.get('live')!, manual, t.deps)
+        assert.equal(record.outcome, 'ok')
+        assert.ok(t.calls.includes('move /var/www/acme.migrating /var/www/acme/prev/live'))
+        assert.equal(t.deps.registry().projects.get('acme')!.environments.get('live')!.dir, '/var/www/acme/live')
+        assert.ok(t.fetchRequests.some(request => request.verb === 'checkout' && request.worktree === '/var/www/acme/next/live'))
+    })
+
+    it('builds a waiting test from the shared repository, then moves it beside live', async () => {
+        const t = setup({
+            migrateLayout: true, registryYaml: REGISTRY_YAML_TEST,
+            existsPaths: ['/var/www/acme', '/var/www/acme/git/.git', '/var/www/acme/live', '/var/www/acme-test', '/var/www/acme-test.git', '/var/www/acme-test.git/.git'],
+            owners: { '/var/www/acme': { uid: 1000, gid: 1000, mode: 0o775 }, '/var/www/acme-test': { uid: 1000, gid: 1000, mode: 0o775 } },
+            envTree: { '/var/www/acme-test/.env': 'X=1\n' },
+        })
+        const project = t.deps.registry().projects.get('acme')!
+        const record = await runDeploy(project, project.environments.get('test')!, manual, t.deps)
+        assert.equal(record.outcome, 'ok')
+        assert.ok(t.fetchRequests.every(request => !('dir' in request) || request.dir === '/var/www/acme/git'))
+        assert.ok(t.calls.includes('move /var/www/acme-test /var/www/acme/prev/test'))
+        assert.ok(t.calls.includes('move /var/www/acme/next/test /var/www/acme/test'))
+        const testEnv = t.deps.registry().projects.get('acme')!.environments.get('test')!
+        assert.equal(testEnv.dir, '/var/www/acme/test')
+        assert.equal(testEnv.composeName, 'acme-test')
+        assert.ok(t.calls.indexOf('rmdir /var/www/acme-test.git') > t.calls.lastIndexOf('registry-write'))
+    })
+
+    it('deploys a nested environment through next/<env> and prev/<env>', async () => {
+        const t = setup({
+            registryYaml: REGISTRY_YAML_NESTED,
+            existsPaths: ['/var/www/acme', '/var/www/acme/git/.git', '/var/www/acme/test'],
+            owners: { '/var/www/acme': { uid: 1000, gid: 1000, mode: 0o775 }, '/var/www/acme/test': { uid: 1000, gid: 1000, mode: 0o775 } },
+            envTree: { '/var/www/acme/test/.env': 'X=1\n' },
+        })
+        const project = t.deps.registry().projects.get('acme')!
+        const record = await runDeploy(project, project.environments.get('test')!, manual, t.deps)
+        assert.equal(record.outcome, 'ok')
+        assert.ok(t.calls.includes('mkdir /var/www/acme/next'))
+        assert.ok(t.calls.includes('move /var/www/acme/test /var/www/acme/prev/test'))
+        assert.ok(t.calls.includes('move /var/www/acme/next/test /var/www/acme/test'))
     })
 })
