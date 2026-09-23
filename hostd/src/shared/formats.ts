@@ -3,6 +3,10 @@
 
 // Also the compose project name, so it follows compose's own rules, minus underscores.
 export const PROJECT_ID = /^[a-z0-9][a-z0-9-]{1,30}$/
+// A project folder's name under /var/www, chosen at create. Also what an unpinned compose file takes as
+// its project name, so it keeps to compose's own rule (lowercase, digits, hyphen, underscore) even though
+// the registry's dir grammar alone would accept more.
+export const DIR_NAME = /^[a-z0-9][a-z0-9_-]{0,63}$/
 export const CLIENT_ID = /^[A-Za-z0-9_-]{1,64}$/
 export const SERVICE_NAME = /^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,62}$/
 export const STORAGE_NAME = /^[a-z0-9][a-z0-9-]{0,30}$/

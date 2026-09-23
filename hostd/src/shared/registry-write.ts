@@ -41,13 +41,21 @@ export type EnvironmentDraft = {
     aliases: string[]
     port: number
     certificate: CertificateMode | null
+    // Relative to dir. Absent, or the default docker-compose.yml alone, writes no compose key at all,
+    // exactly as a hand-written entry leaves it out.
+    compose?: string[]
+    // Written only when on, like domain and certificate, so an ordinary entry stays as short as before
+    websockets?: boolean
+    flexibleSsl?: boolean
 }
 
 export type ProjectDraft = {
-    client: string
+    // null writes no client key: the operator's own site, which no client may see
+    client: string | null
     name: string
     repo: string
     credential?: string | null
+    capabilities?: Capability[]
     services: Record<string, { role: 'site' } | { role: 'database', engine: string }>
     environment: EnvironmentDraft
 }
@@ -85,8 +93,11 @@ const environmentNode = (draft: EnvironmentDraft) => ({
     branch: draft.branch,
     ...(draft.domain ? { domain: draft.domain } : {}),
     ...(draft.aliases.length ? { aliases: draft.aliases } : {}),
+    ...(draft.compose && !(draft.compose.length === 1 && draft.compose[0] === 'docker-compose.yml') ? { compose: draft.compose } : {}),
     port: draft.port,
     ...(draft.certificate ? { certificate: draft.certificate } : {}),
+    ...(draft.websockets ? { websockets: true } : {}),
+    ...(draft.flexibleSsl ? { flexibleSsl: true } : {}),
 })
 
 // `conflict: true` marks the two cases where the id or environment turned out to already be taken, by
@@ -175,6 +186,12 @@ function toEnvironments(doc: Document, id: string): EditResult {
     return null
 }
 
+function flowList(doc: Document, items: string[]) {
+    const node = doc.createNode(items)
+    node.flow = true
+    return node
+}
+
 function edit(doc: Document, change: Change): EditResult {
     const projects = doc.getIn(['projects'])
     if (!projects) return { problem: 'the registry has no projects section' }
@@ -186,10 +203,12 @@ function edit(doc: Document, change: Change): EditResult {
             if (RESERVED_PROJECT_IDS.has(change.id)) return { problem: `${change.id} is reserved` }
             if (has(change.id)) return { problem: `${change.id} already exists`, conflict: true }
             doc.setIn(['projects', change.id], {
-                client: change.project.client,
+                ...(change.project.client !== null ? { client: change.project.client } : {}),
                 name: change.project.name,
                 repo: change.project.repo,
                 ...(change.project.credential ? { credential: change.project.credential } : {}),
+                // Flow style, as the configure case below writes it and as the file has it by hand
+                ...(change.project.capabilities?.length ? { capabilities: flowList(doc, change.project.capabilities) } : {}),
                 services: change.project.services,
                 environments: { [change.project.environment.name]: environmentNode(change.project.environment) },
             })

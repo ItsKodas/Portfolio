@@ -73,7 +73,8 @@ export const DEFAULT_PORT_ENV = 'WEB_PORT'
 
 export type ProjectEntry = {
     id: string
-    client: string
+    // null for a site the operator runs for themselves, which no client may see
+    client: string | null
     name: string
     repo: string | null
     credential: string | null
@@ -490,8 +491,11 @@ function parseProject(id: string, raw: unknown, rules: HostRules): ParsedProject
     const problems: string[] = []
     for (const key of Object.keys(raw)) if (!PROJECT_KEYS.has(key)) problems.push(`unknown key ${key}`)
 
-    const client = typeof raw.client === 'string' && CLIENT_ID.test(raw.client) ? raw.client : null
-    if (!client) problems.push(`client must match ${CLIENT_ID}`)
+    // Absent means the site belongs to no client: the operator's own, which policy.ts then shows to no
+    // client actor at all, since a null never equals a client's id.
+    const client = raw.client === undefined ? null
+        : typeof raw.client === 'string' && CLIENT_ID.test(raw.client) ? raw.client : undefined
+    if (client === undefined) problems.push(`client must match ${CLIENT_ID}`)
     const name = typeof raw.name === 'string' && raw.name.length >= 1 && raw.name.length <= 100 ? raw.name : null
     if (!name) problems.push('name must be 1 to 100 characters')
 
@@ -566,7 +570,7 @@ function parseProject(id: string, raw: unknown, rules: HostRules): ParsedProject
         else maxKeep = parseKeep(raw.backups.maxKeep, DEFAULT_MAX_KEEP, 'backups.maxKeep', problems)
     }
 
-    if (problems.length > 0 || !client || !name || !dir || !upstream || !composePaths) return { problems }
+    if (problems.length > 0 || client === undefined || !name || !dir || !upstream || !composePaths) return { problems }
     return {
         entry: {
             id, client, name, repo, credential, dir, compose, composePaths, upstream, portEnv, limits, environments,

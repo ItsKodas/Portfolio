@@ -101,6 +101,33 @@ describe('parseAgentRequest', () => {
         assert.deepEqual(parsed({ verb: 'provision', args: createArgs }), { ok: true, request: { verb: 'provision', args: createArgs } })
     })
 
+    // What the portal's New site form sends beyond the original eight, and a create with no client at all.
+    it('parses a provision create request with no client, a dir, compose files, capabilities and switches', () => {
+        const createArgs = {
+            action: 'create', id: 'bakery', name: 'Bakery', repo: 'git@github.com:x/bakery.git', branch: 'main', domain: null, certificate: null,
+            dir: 'bakery_site', compose: ['docker-compose.yml', 'deploy/prod.yml'], capabilities: ['lifecycle', 'deploy'], websockets: true, flexibleSsl: false,
+        }
+        assert.deepEqual(parsed({ verb: 'provision', args: createArgs }), { ok: true, request: { verb: 'provision', args: createArgs } })
+    })
+
+    it('refuses a malformed dir, compose list, capability or switch on a create', () => {
+        const createArgs = { action: 'create', id: 'bakery', name: 'Bakery', repo: 'git@github.com:x/bakery.git', branch: 'main', domain: null, certificate: null }
+        const dirRule = 'bad-request: dir must be one folder name: lowercase letters, digits, hyphens and underscores'
+        assert.equal(refusalOf({ verb: 'provision', args: { ...createArgs, dir: '../etc' } }), dirRule)
+        assert.equal(refusalOf({ verb: 'provision', args: { ...createArgs, dir: 'a/b' } }), dirRule)
+        assert.equal(refusalOf({ verb: 'provision', args: { ...createArgs, dir: 'Bakery' } }), dirRule)
+        assert.equal(refusalOf({ verb: 'provision', args: { ...createArgs, compose: [] } }), 'bad-request: compose must name 1 to 8 files')
+        assert.equal(refusalOf({ verb: 'provision', args: { ...createArgs, compose: ['../x.yml'] } }), 'bad-request: compose file ../x.yml: path contains ..')
+        assert.equal(refusalOf({ verb: 'provision', args: { ...createArgs, compose: ['/etc/x.yml'] } }), 'bad-request: compose file /etc/x.yml: path must be relative')
+        assert.equal(refusalOf({ verb: 'provision', args: { ...createArgs, compose: ['a.yml', 'a.yml'] } }), 'bad-request: compose names a file twice')
+        assert.equal(
+            refusalOf({ verb: 'provision', args: { ...createArgs, capabilities: ['root'] } }),
+            'bad-request: capabilities must be drawn from lifecycle, logs, files, backups, domains, provision, env, deploy',
+        )
+        assert.equal(refusalOf({ verb: 'provision', args: { ...createArgs, websockets: 'yes' } }), 'bad-request: websockets must be true or false')
+        assert.equal(refusalOf({ verb: 'provision', args: { ...createArgs, client: 'no spaces' } }), 'bad-request: client is malformed')
+    })
+
     // credential is optional, unlike repo: a project created without one uses the default token.
     it('parses a provision create request carrying a credential, and refuses a malformed one', () => {
         const createArgs = { action: 'create', id: 'bakery', client: 'cl_2', name: 'Bakery', repo: 'git@github.com:x/bakery.git', credential: 'acme', branch: 'main', domain: 'bakery.com', certificate: 'letsencrypt' }
@@ -132,7 +159,7 @@ describe('parseAgentRequest', () => {
         assert.equal(refusalOf({ verb: 'provision', project: 'acme', args: createArgs }), 'bad-request: provision create takes only args')
         assert.equal(refusalOf({ verb: 'provision', args: { ...createArgs, id: 5 } }), 'bad-request: id is malformed')
         assert.equal(refusalOf({ verb: 'provision', args: { ...createArgs, certificate: 'self-signed' } }), 'bad-request: certificate is malformed')
-        assert.equal(refusalOf({ verb: 'provision', args: { ...createArgs, extra: true } }), 'bad-request: create takes only id, client, name, repo, credential, branch, domain and certificate')
+        assert.equal(refusalOf({ verb: 'provision', args: { ...createArgs, extra: true } }), 'bad-request: create takes only id, client, name, repo, credential, branch, domain, certificate, dir, compose, capabilities, websockets, flexibleSsl')
     })
 
     it('refuses provision add-environment for anything other than test, and remove for an unknown environment', () => {

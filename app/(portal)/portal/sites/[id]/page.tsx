@@ -25,6 +25,7 @@ import { SettlingProvider } from './settling'
 import { gatherSite } from './site'
 import { SiteTabs } from './tabs'
 import Brand from '../../brand'
+import { NewSiteButton } from '../../newSite/NewSite'
 import { serviceDot, stateOf, stateOfServices, type SiteState } from '../../siteState'
 import nav from '../../portal.module.css'
 import styles from './site.module.css'
@@ -296,6 +297,7 @@ export default async function SitePage({ params, searchParams }: Props) {
                     <span className={nav.navName}>{site.name ?? site.id}</span>
                 </a>
             ))}
+            {view.isAdmin && <NewSiteButton />}
         </>
     )
 

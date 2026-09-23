@@ -2,9 +2,9 @@
 // or by a header line followed by a stream. Parsing is strict on purpose: the agent is root, so anything
 // it does not recognise, including an extra field, is refused rather than ignored.
 
-import { PROJECT_ID, SERVICE_NAME, isRecord } from './formats.ts'
+import { CLIENT_ID, DIR_NAME, PROJECT_ID, SERVICE_NAME, isRecord, relativePathProblem } from './formats.ts'
 import {
-    isComposeService, environmentOf, ENVIRONMENTS, ENVIRONMENT_FLAGS, CAPABILITIES, CERTIFICATE_MODES, GIT_REF, CREDENTIAL_NAME,
+    isComposeService, environmentOf, ENVIRONMENTS, ENVIRONMENT_FLAGS, CAPABILITIES, CERTIFICATE_MODES, GIT_REF, CREDENTIAL_NAME, MAX_COMPOSE_FILES,
     type Capability, type CertificateMode, type EnvironmentFlag, type EnvironmentName, type Keep, type ProjectEntry, type Registry,
 } from './registry.ts'
 import { normaliseHostname } from './hostnames.ts'
@@ -50,7 +50,8 @@ export type LogsRequest = { verb: 'logs', project: string, args: LogsArgs }
 export type ProvisionCreateArgs = {
     action: 'create'
     id: string
-    client: string
+    // Absent for a site the operator runs for themselves, which then belongs to no client
+    client?: string
     name: string
     repo: string
     // Optional, unlike repo: a project created without one uses the default token, which is every
@@ -59,6 +60,14 @@ export type ProvisionCreateArgs = {
     branch: string
     domain: string | null
     certificate: CertificateMode | null
+    // The folder's name under /var/www. Absent means the id.
+    dir?: string
+    // Relative to that folder, in compose's merge order. Absent means docker-compose.yml alone.
+    compose?: string[]
+    // Absent means none, which is what every create before this field got
+    capabilities?: Capability[]
+    websockets?: boolean
+    flexibleSsl?: boolean
 }
 export type ProvisionAddEnvironmentArgs = {
     action: 'add-environment'
@@ -348,14 +357,68 @@ function parseLogsArgs(args: unknown): LogsArgs | Refusal {
     return { service: args.service, tail, since: since as number | null, follow }
 }
 
+// The keys a create may carry, said once for both parsers of it: api's HTTP body and the agent's own
+// request line.
+export const CREATE_KEYS = [
+    'id', 'client', 'name', 'repo', 'credential', 'branch', 'domain', 'certificate',
+    'dir', 'compose', 'capabilities', 'websockets', 'flexibleSsl',
+] as const
+
+type CreateExtras = Pick<ProvisionCreateArgs, 'client' | 'dir' | 'compose' | 'capabilities' | 'websockets' | 'flexibleSsl'>
+
+// The optional half of a create, shared by both parsers and by the agent's own check so the three cannot
+// drift. Each field is either absent or fully valid by the time it comes back: grammar here, and what is
+// on disk and in the registry is still createProject's to check.
+export function parseCreateExtras(raw: Record<string, unknown>): { ok: true, extras: CreateExtras } | { ok: false, message: string } {
+    const extras: CreateExtras = {}
+    if (raw.client !== undefined) {
+        if (typeof raw.client !== 'string' || !CLIENT_ID.test(raw.client)) return { ok: false, message: 'client is malformed' }
+        extras.client = raw.client
+    }
+    if (raw.dir !== undefined) {
+        if (typeof raw.dir !== 'string' || !DIR_NAME.test(raw.dir)) {
+            return { ok: false, message: 'dir must be one folder name: lowercase letters, digits, hyphens and underscores' }
+        }
+        extras.dir = raw.dir
+    }
+    if (raw.compose !== undefined) {
+        const list = raw.compose
+        if (!Array.isArray(list) || list.length === 0 || list.length > MAX_COMPOSE_FILES) {
+            return { ok: false, message: `compose must name 1 to ${MAX_COMPOSE_FILES} files` }
+        }
+        for (const file of list) {
+            if (typeof file !== 'string') return { ok: false, message: 'compose is malformed' }
+            const problem = relativePathProblem(file)
+            if (problem) return { ok: false, message: `compose file ${file}: ${problem}` }
+        }
+        if (new Set(list).size !== list.length) return { ok: false, message: 'compose names a file twice' }
+        extras.compose = list as string[]
+    }
+    if (raw.capabilities !== undefined) {
+        const list = raw.capabilities
+        if (!Array.isArray(list) || !list.every(item => (CAPABILITIES as readonly unknown[]).includes(item))) {
+            return { ok: false, message: `capabilities must be drawn from ${CAPABILITIES.join(', ')}` }
+        }
+        if (new Set(list).size !== list.length) return { ok: false, message: 'capabilities names one twice' }
+        extras.capabilities = list as Capability[]
+    }
+    for (const flag of ['websockets', 'flexibleSsl'] as const) {
+        if (raw[flag] === undefined) continue
+        if (typeof raw[flag] !== 'boolean') return { ok: false, message: `${flag} must be true or false` }
+        extras[flag] = raw[flag] as boolean
+    }
+    return { ok: true, extras }
+}
+
 function parseProvisionCreate(raw: Record<string, unknown>): Parsed {
     if (!onlyKeys(raw, ['verb', 'args'])) return refuse('bad-request', 'provision create takes only args')
     const args = raw.args as Record<string, unknown>
-    if (!onlyKeys(args, ['action', 'id', 'client', 'name', 'repo', 'credential', 'branch', 'domain', 'certificate'])) {
-        return refuse('bad-request', 'create takes only id, client, name, repo, credential, branch, domain and certificate')
+    if (!onlyKeys(args, ['action', ...CREATE_KEYS])) {
+        return refuse('bad-request', `create takes only ${CREATE_KEYS.join(', ')}`)
     }
     if (typeof args.id !== 'string') return refuse('bad-request', 'id is malformed')
-    if (typeof args.client !== 'string') return refuse('bad-request', 'client is malformed')
+    const extras = parseCreateExtras(args)
+    if (!extras.ok) return refuse('bad-request', extras.message)
     if (typeof args.name !== 'string') return refuse('bad-request', 'name is malformed')
     if (typeof args.repo !== 'string') return refuse('bad-request', 'repo is malformed')
     if (args.credential !== undefined && (typeof args.credential !== 'string' || !CREDENTIAL_NAME.test(args.credential))) {
@@ -371,9 +434,10 @@ function parseProvisionCreate(raw: Record<string, unknown>): Parsed {
         request: {
             verb: 'provision',
             args: {
-                action: 'create', id: args.id, client: args.client, name: args.name, repo: args.repo,
+                action: 'create', id: args.id, name: args.name, repo: args.repo,
                 ...(args.credential !== undefined ? { credential: args.credential as string } : {}),
                 branch: args.branch, domain: domain as string | null, certificate: certificate as CertificateMode | null,
+                ...extras.extras,
             },
         },
     }

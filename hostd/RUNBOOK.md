@@ -332,11 +332,18 @@ Then remove the `hostd-test` entry from `registry/projects.yaml`.
 
 ## Creating a site
 
-`create` only clones the repo and notices which services the compose file resolves: each one is guessed
+The portal's **New site** button (bottom of the sidebar, admin only) sends the same `create` as step 1
+below, with every field filled in: the folder under `/var/www`, the compose files, the capabilities, the
+two vhost switches and an optional client. Leave the client out and the site is yours alone: the entry
+has no `client:` key and no client can see it. When a domain is given, api also writes the site's first
+vhost straight after the create (an adopt with nothing to disable); if another file already serves that
+hostname, or Apache refuses, the site is still created and the reply's `vhost` says what is left to do
+from the Domains tab.
+
+`create` only clones the repo and notices which services the compose files resolve: each one is guessed
 site or database from its image name (postgres, mysql, mariadb, mongo or redis becomes database; anything
 else, including a database run from a renamed or custom image, becomes site). It is a starting point, not
-a guarantee, and the result is registered with no capabilities at all. Steps 2 and 3 below must both
-happen, in that order, before anything past step 1 does anything useful.
+a guarantee. Step 2 below is still where those guesses get checked, and step 3 must follow it.
 
 **Who a created site belongs to.** The clone runs as root inside `hostd-fetcher`, so everything it writes
 starts out root-owned. `create` fixes that before it registers anything, by giving the whole new tree the
@@ -356,16 +363,19 @@ already correct whatever `create` left behind.
      -d '{"id":"acme-bakery","client":"cl_8f2k1","name":"Acme Bakery","repo":"git@github.com:ItsKodas/acme-bakery.git","branch":"main","domain":"acmebakery.com","certificate":"letsencrypt"}'
    ```
 
+   Optional fields: `dir` (the folder's name under `/var/www`, default the id), `compose` (a list of
+   files relative to it, default `["docker-compose.yml"]`), `capabilities` (default none), `websockets`
+   and `flexibleSsl` (default false). `client` may be left out for a site of your own.
+
    Expect `{"ok":true,"project":{"id":"acme-bakery","state":"needs-setup"},"envFiles":[...]}`.
 
 2. Edit `hostd/registry/projects.yaml`: correct any service the guess above got wrong, and add
    `capabilities: [lifecycle, logs, provision, env]` (or whatever subset the client should have) to the
-   new entry. If the repo ships more compose files than the one hostd just cloned it with (a
+   new entry if the create did not set them. If the repo ships more compose files than the create named (a
    `docker-compose.override.yml`, a production file), list every one of them in the entry's `compose:` key
-   now, in the order they merge (see Enrolling a real site, step 2): `create` only ever resolves the base
-   `docker-compose.yml`, since nothing in a fresh clone says which extra files the operator intends, and an
-   unnamed override is one hostd cannot see, so the site would run differently under hostd than it does by
-   hand until this is corrected. Wait ten seconds for the reload before going on to step 3.
+   now, in the order they merge (see Enrolling a real site, step 2): an unnamed override is one hostd
+   cannot see, so the site would run differently under hostd than it does by hand until this is corrected.
+   Wait ten seconds for the reload before going on to step 3.
 
 3. Only now, with the roles right, add any `storage` entries the site needs (uploads, media and the
    like). **The storage guard cannot protect a database it believes is a site**: it refuses a storage

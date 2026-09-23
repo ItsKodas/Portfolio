@@ -2,10 +2,10 @@
 // before the agent hears of it; every change, every stream opened and every refusal is audited.
 
 import type { IncomingMessage, ServerResponse } from 'node:http'
-import { PROJECT_ID, CLIENT_ID, SERVICE_NAME, isRecord, describeError } from '../shared/formats.ts'
+import { PROJECT_ID, SERVICE_NAME, isRecord, describeError } from '../shared/formats.ts'
 import {
     LIFECYCLE_ACTIONS, MAX_TAIL, DEFAULT_TAIL, MAX_REQUEST_BYTES, MAX_COMMITS, DEFAULT_COMMITS,
-    SNAPSHOT_ID, RUN_ID, parseConfigureArgs,
+    SNAPSHOT_ID, RUN_ID, CREATE_KEYS, parseConfigureArgs, parseCreateExtras,
     type AgentReply, type AgentRequest, type LifecycleAction, type LogsArgs, type ProjectStatus, type Refusal,
     type RefusalCode, type ProvisionCreateArgs, type ProvisionAddEnvironmentArgs,
 } from '../shared/protocol.ts'
@@ -332,13 +332,12 @@ async function readJsonBody(req: IncomingMessage, maxBytes: number): Promise<{ o
 }
 
 function parseCreateBody(value: Record<string, unknown>): { ok: true, args: ProvisionCreateArgs } | { ok: false, message: string } {
-    if (!onlyKeys(value, ['id', 'client', 'name', 'repo', 'credential', 'branch', 'domain', 'certificate'])) {
-        return { ok: false, message: 'create takes only id, client, name, repo, credential, branch, domain and certificate' }
+    if (!onlyKeys(value, [...CREATE_KEYS])) {
+        return { ok: false, message: `create takes only ${CREATE_KEYS.join(', ')}` }
     }
     // Validated against the same grammar as everywhere else an id is trusted, not just typeof: an
     // unvalidated id is what would otherwise end up as the project field of an audit entry below.
     if (typeof value.id !== 'string' || !PROJECT_ID.test(value.id)) return { ok: false, message: 'id is malformed' }
-    if (typeof value.client !== 'string' || !CLIENT_ID.test(value.client)) return { ok: false, message: 'client is malformed' }
     if (typeof value.name !== 'string') return { ok: false, message: 'name is malformed' }
     if (typeof value.repo !== 'string') return { ok: false, message: 'repo is malformed' }
     if (value.credential !== undefined && (typeof value.credential !== 'string' || !CREDENTIAL_NAME.test(value.credential))) {
@@ -349,13 +348,16 @@ function parseCreateBody(value: Record<string, unknown>): { ok: true, args: Prov
     if (domain !== null && typeof domain !== 'string') return { ok: false, message: 'domain is malformed' }
     const certificate = value.certificate
     if (certificate !== null && !(CERTIFICATE_MODES as readonly string[]).includes(certificate as string)) return { ok: false, message: 'certificate is malformed' }
+    const extras = parseCreateExtras(value)
+    if (!extras.ok) return extras
     return {
         ok: true,
         args: {
-            action: 'create', id: value.id, client: value.client, name: value.name, repo: value.repo,
+            action: 'create', id: value.id, name: value.name, repo: value.repo,
             ...(value.credential === undefined ? {} : { credential: value.credential as string }),
             branch: value.branch,
             domain: domain as string | null, certificate: certificate as CertificateMode | null,
+            ...extras.extras,
         },
     }
 }
@@ -839,6 +841,49 @@ export function createHandler(deps: ApiDeps): (req: IncomingMessage, res: Server
             return sendJson(res, 200, { ok: true, domains: domainsFor(entry, environment) })
         }
 
+        // A new site's first vhost, written straight after the create that registered it, so the operator
+        // does not have to go and adopt a site that has nothing to adopt. The same preview and adopt the
+        // Domains tab runs, with nothing to disable: if another file already serves the hostname, that is
+        // a displacement the operator should preview and confirm themselves, so this stops and says so.
+        //
+        // Never throws and never answers the request itself: the site already exists by the time this
+        // runs, so whatever goes wrong here is reported beside a create that succeeded, not instead of it.
+        const firstVhost = async (id: string): Promise<{ ok: true } | { ok: false, message: string }> => {
+            const entry = deps.registry().projects.get(id)
+            const environment = entry?.environments.get('live')
+            if (!entry || !environment || environment.domain === null) {
+                return { ok: false, message: `${id} was created, but its entry could not be read back to write its vhost` }
+            }
+            const target = environment.domain
+            try {
+                // Records for the new hostname first, so the token minted below is stored on them
+                await deps.domains.reconcile(deps.registry(), new Date(now()).toISOString())
+                const token = await tokenFor(id, 'live')
+                const preview = await deps.agent.call({ verb: 'domains', project: id, args: { action: 'preview', environment: 'live', token } })
+                if (!preview.ok) return { ok: false, message: preview.message }
+                if (!('preview' in preview)) return { ok: false, message: 'the agent did not answer the preview with one' }
+                const claims = preview.preview.claims.map(claim => claim.path)
+                if (claims.length > 0) {
+                    return { ok: false, message: `${target} is already served by ${claims.join(', ')}. Adopt it from the Domains tab to replace that file.` }
+                }
+
+                const reply = await deps.agent.call({ verb: 'domains', project: id, args: { action: 'adopt', environment: 'live', token, disable: [] } })
+                if (!reply.ok) {
+                    if (reply.code === 'failed') await recordVhost(id, 'live', { ok: false, output: reply.output ?? '' })
+                    const outcome: AuditOutcome = reply.code === 'failed' ? 'failed' : 'refused'
+                    await audit(who, { project: id, verb: 'domains', target, outcome, reason: outcome === 'failed' ? reply.message : reply.code })
+                    return { ok: false, message: reply.message }
+                }
+                const written = 'written' in reply && !Array.isArray(reply.written) ? reply.written.hostnames : hostnamesOf(environment)
+                await recordWritten(id, 'live', token, written, environment.domain)
+                await recordVhost(id, 'live', null)
+                await audit(who, { project: id, verb: 'domains', target, outcome: 'ok' })
+                return { ok: true }
+            } catch (error) {
+                return { ok: false, message: describeError(error) }
+            }
+        }
+
         switch (route.verb) {
             case 'not-found':
                 return refuseRoute(404, 'not-found', 'no such route', null, 'unknown', url.pathname.slice(0, 200))
@@ -1002,7 +1047,19 @@ export function createHandler(deps: ApiDeps): (req: IncomingMessage, res: Server
                 const target = `${parsed.args.id} create`
                 const reply = await callAgentAudited({ verb: 'provision', args: parsed.args }, parsed.args.id, 'provision', target)
                 if (!reply) return
-                return respondAgentAction('provision', reply, parsed.args.id, target, true)
+                if (!reply.ok || parsed.args.domain === null) return respondAgentAction('provision', reply, parsed.args.id, target, true)
+
+                // What respondAgentAction does on the ok path, then the vhost, which needs the refreshed
+                // registry to find the entry this create just wrote. vhost goes beside the agent's reply
+                // rather than turning it into a refusal: the site exists either way.
+                await audit(who, { project: parsed.args.id, verb: 'provision', target, outcome: 'ok' })
+                try {
+                    await deps.refreshRegistry()
+                } catch (error) {
+                    console.error(`[api] ${new Date().toISOString()} registry refresh after provision ${target} failed: ${describeError(error)}`)
+                }
+                const vhost = await firstVhost(parsed.args.id)
+                return sendJson(res, 200, { ...reply, vhost })
             }
 
             case 'delete':

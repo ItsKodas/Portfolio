@@ -15,6 +15,7 @@ import { StatStrip } from '@/ui/StatStrip/StatStrip'
 import { StatusDot } from '@/ui/StatusDot/StatusDot'
 import Brand from './brand'
 import { gatherHome, type HomeView } from './home'
+import { NewSiteButton } from './newSite/NewSite'
 import { stateOf, summarise } from './siteState'
 import styles from './portal.module.css'
 
@@ -219,6 +220,7 @@ export default async function PortalHome() {
                     <span className={styles.navName}>{site.name ?? site.id}</span>
                 </a>
             ))}
+            {isAdmin && <NewSiteButton />}
         </>
     )
 

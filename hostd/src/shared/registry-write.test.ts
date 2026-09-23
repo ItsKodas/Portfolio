@@ -91,6 +91,47 @@ describe('applyChange', () => {
         assert.equal(registry.projects.get('acme')!.environments.get('live')!.domain, 'acme.com')
     })
 
+    // Everything the portal's New site form sets, in one write, so the operator never has to finish the
+    // entry by hand: no client, capabilities, several compose files and both switches.
+    it('adds a project with no client, capabilities, compose files and switches, which parse back', () => {
+        const result = applyChange(BASE, {
+            ...addProject,
+            project: {
+                ...addProject.project,
+                client: null,
+                capabilities: ['lifecycle', 'deploy'],
+                environment: {
+                    ...addProject.project.environment, dir: '/var/www/bakery-site',
+                    compose: ['docker-compose.yml', 'docker-compose.prod.yml'], websockets: true, flexibleSsl: true,
+                },
+            },
+        })
+        assert.ok(result.ok)
+        assert.doesNotMatch(result.text.split('bakery:')[1]!, /client:/)
+        assert.match(result.text, /capabilities: \[ lifecycle, deploy \]/)
+        const bakery = parseRegistry(result.text).projects.get('bakery')!
+        assert.equal(bakery.client, null)
+        assert.deepEqual([...bakery.capabilities], ['lifecycle', 'deploy'])
+        const live = bakery.environments.get('live')!
+        assert.equal(live.dir, '/var/www/bakery-site')
+        assert.deepEqual(live.composePaths, ['/var/www/bakery-site/docker-compose.yml', '/var/www/bakery-site/docker-compose.prod.yml'])
+        assert.equal(live.websockets, true)
+        assert.equal(live.flexibleSsl, true)
+    })
+
+    it('leaves compose, capabilities and the switches out of the file when they are the defaults', () => {
+        const result = applyChange(BASE, {
+            ...addProject,
+            project: {
+                ...addProject.project, capabilities: [],
+                environment: { ...addProject.project.environment, compose: ['docker-compose.yml'], websockets: false, flexibleSsl: false },
+            },
+        })
+        assert.ok(result.ok)
+        const entry = result.text.split('bakery:')[1]!
+        assert.doesNotMatch(entry, /compose:|capabilities:|websockets:|flexibleSsl:/)
+    })
+
     it('adds a project with a credential, which parses back', () => {
         const result = applyChange(BASE, { ...addProject, id: 'bakery2', project: { ...addProject.project, credential: 'acme' } })
         assert.ok(result.ok)
