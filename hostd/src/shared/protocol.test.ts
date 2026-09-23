@@ -595,3 +595,16 @@ projects:
         assert.equal(result.ok, true)
     })
 })
+
+describe('deploy-watch', () => {
+    it('reads a watch for one environment', () => {
+        const result = parseAgentRequest(JSON.stringify({ verb: 'deploy-watch', project: 'acme', args: { environment: 'live' } }))
+        assert.deepEqual(result, { ok: true, request: { verb: 'deploy-watch', project: 'acme', args: { environment: 'live' } } })
+    })
+
+    it('refuses a malformed project, a bad environment and an extra field', () => {
+        assert.equal(refusalOf({ verb: 'deploy-watch', project: '../acme', args: { environment: 'live' } }), 'bad-request: project is malformed')
+        assert.equal(refusalOf({ verb: 'deploy-watch', project: 'acme', args: { environment: 'staging' } }), 'bad-request: environment must be live or test')
+        assert.equal(refusalOf({ verb: 'deploy-watch', project: 'acme', args: { environment: 'live', follow: true } }), 'bad-request: deploy-watch takes only environment')
+    })
+})
