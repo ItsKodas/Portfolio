@@ -28,6 +28,7 @@ import Brand from '../../brand'
 import { NewSiteButton } from '../../newSite/NewSite'
 import { serviceDot, stateOf, stateOfServices, type SiteState } from '../../siteState'
 import nav from '../../portal.module.css'
+import PortalTabs from '../../tabs'
 import styles from './site.module.css'
 
 export const metadata: Metadata = { title: 'Site' }
@@ -305,7 +306,7 @@ export default async function SitePage({ params, searchParams }: Props) {
         // Around the whole shell rather than around the panel: the sidebar draws this site's dot too, and
         // a restart that calms the strip and leaves a red dot beside the name has only moved the alarm.
         <SettlingProvider state={current}>
-            <Shell brand={<Brand />} nav={navigation} rail={null} fill>
+            <Shell brand={<Brand />} tabs={<PortalTabs admin={view.isAdmin} />} nav={navigation} rail={null} fill>
                 <div className={styles.hello}>
                     <h1>{view.name}</h1>
                     <p className={styles.mono}>{view.id}</p>
