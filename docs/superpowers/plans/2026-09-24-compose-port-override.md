@@ -12,8 +12,8 @@
 
 ## Global Constraints
 
-- Never use em dashes (U+2014) anywhere except code comments: not in UI copy, docs, commit messages or PR text. Check with Python (bash `$'—'` greps can silently match nothing):
-  `python -c "import sys;[print(f) for f in sys.argv[1:] if '—' in open(f,encoding='utf-8').read()]" <files>`
+- Never use em dashes (U+2014) anywhere except code comments: not in UI copy, docs, commit messages or PR text. Check with Python (bash `$'\u2014'` greps can silently match nothing):
+  `python -c "import sys;[print(f) for f in sys.argv[1:] if '\u2014' in open(f,encoding='utf-8').read()]" <files>`
 - The file name is exactly `hostd.ports.yml`, in the environment's folder (`<dir>/hostd.ports.yml`), always the last compose file.
 - The published address is always `127.0.0.1`.
 - The override references the port variable (`${WEB_PORT}` or the registry's `portEnv`), never the number, so the port lives only in `.env`.
@@ -1155,7 +1155,7 @@ To move an existing site onto a port the panel chose:
 Run: `cd hostd && npm test`, then `npx vitest run "app/(portal)/portal/newSite"` from the repo root.
 Expected: all pass.
 
-Run: `python -c "import sys;[print(f) for f in sys.argv[1:] if '—' in open(f,encoding='utf-8').read()]" hostd/RUNBOOK.md "app/(portal)/portal/newSite/NewSite.tsx" "app/(portal)/portal/newSite/schema.ts"`
+Run: `python -c "import sys;[print(f) for f in sys.argv[1:] if '\u2014' in open(f,encoding='utf-8').read()]" hostd/RUNBOOK.md "app/(portal)/portal/newSite/NewSite.tsx" "app/(portal)/portal/newSite/schema.ts"`
 Expected: no output.
 
 - [ ] **Step 6: Commit**
@@ -1186,5 +1186,5 @@ Expected: the web service shows one port, `host_ip: 127.0.0.1`, `published: "599
 
 - [ ] **Step 3: Em dash check over every changed file**
 
-Run: `git diff --name-only origin/Master... | xargs python -c "import sys;[print(f) for f in sys.argv[1:] if '—' in open(f,encoding='utf-8').read()]"`
+Run: `git diff --name-only origin/Master... | xargs python -c "import sys;[print(f) for f in sys.argv[1:] if '\u2014' in open(f,encoding='utf-8').read()]"`
 Expected: no output, or only files whose em dashes are in code comments (check each one printed).
