@@ -90,4 +90,40 @@ describe('changePort', () => {
         assert.deepEqual(reply, { ok: true, output: 'acme live now uses port 5012. It was not running, so it takes the port when it next starts' })
         assert.ok(!steps.includes('up'))
     })
+
+    // A thrown error is undone exactly like an answered failure, or .env and the registry would be left
+    // on the new port while the containers and the vhost stay on the old one
+    it('undoes .env and the registry when asking whether it runs throws', async () => {
+        const { deps, steps } = fakes({ running: async () => { steps.push('running?'); throw new Error('connect ENOENT /var/run/docker.sock') } })
+        const reply = await changePort(acme, 'live', 5012, deps)
+        assert.deepEqual(reply, { ok: false, code: 'failed', message: 'acme live could not be moved to port 5012: connect ENOENT /var/run/docker.sock. It was moved back to 5010.' })
+        assert.deepEqual(steps.slice(-3), ['running?', 'restore env "WEB_PORT=5010\\n"', 'registry 5010'])
+        assert.ok(!steps.includes('up'))
+        assert.ok(!steps.includes('vhost'))
+    })
+
+    it('undoes everything and brings the old port back up when the recreate throws', async () => {
+        let ups = 0
+        const { deps, steps } = fakes({ up: async () => { steps.push('up'); ups += 1; if (ups === 1) throw new Error('spawn docker ENOENT'); return { ok: true } } })
+        const reply = await changePort(acme, 'live', 5012, deps)
+        assert.deepEqual(reply, { ok: false, code: 'failed', message: 'acme live could not be moved to port 5012: spawn docker ENOENT. It was moved back to 5010.' })
+        assert.deepEqual(steps.slice(-4), ['up', 'restore env "WEB_PORT=5010\\n"', 'registry 5010', 'up'])
+        assert.ok(!steps.includes('vhost'))
+    })
+
+    it('rewrites the vhost back when a throw comes after it was rewritten', async () => {
+        let rewrites = 0
+        const { deps, steps } = fakes({ rewriteVhost: async () => { steps.push('vhost'); rewrites += 1; if (rewrites === 1) throw new Error('rail went away'); return null } })
+        const reply = await changePort(acme, 'live', 5012, deps)
+        assert.equal(reply.ok, false)
+        assert.match(reply.ok ? '' : reply.message, /rail went away/)
+        assert.deepEqual(steps.slice(-5), ['vhost', 'restore env "WEB_PORT=5010\\n"', 'registry 5010', 'up', 'vhost'])
+    })
+
+    it('does not put the registry back when the throw came before it was written', async () => {
+        const { deps, steps } = fakes({ published: async () => { steps.push('published'); throw new Error('spawn docker ENOENT') } })
+        const reply = await changePort(acme, 'live', 5012, deps)
+        assert.deepEqual(reply, { ok: false, code: 'failed', message: 'acme live could not be moved to port 5012: spawn docker ENOENT. It was moved back to 5010.' })
+        assert.deepEqual(steps.slice(-2), ['published', 'restore env "WEB_PORT=5010\\n"'])
+    })
 })

@@ -67,7 +67,8 @@ export type AgentDeps = {
     // then refuses unavailable instead of crashing, exactly like provision does. Structural types, not
     // the classes themselves, so the tests can hand this a recorder.
     deploys?: {
-        runner: Pick<DeployRunner, 'start'>
+        // isRunning too, so a port change can refuse while a deploy's swap owns the same compose project
+        runner: Pick<DeployRunner, 'start' | 'isRunning'>
         store: Pick<DeployStore, 'get' | 'resume'>
         deps: DeployDeps
     }
@@ -520,7 +521,18 @@ export class Agent {
         const provision = this.deps.provision
         if (!provision) return refuse('unavailable', 'provisioning is not configured')
         if (this.provisioningBusy) return refuse('busy', 'another provisioning action is in progress')
+        // Nor alongside anything else that touches this environment's containers or .env: a deploy's swap
+        // runs up on the same compose project, a lifecycle action would read a half-changed .env, and an
+        // env write would be lost when an undo puts back the whole .env it read. Every check and every
+        // slot taken before the first await, so nothing can slip in between the two.
+        if (this.deps.deploys?.runner.isRunning(deployKey(project.id, environment))) {
+            return refuse('busy', `${project.id} ${environment} has a deploy running`)
+        }
+        if (this.lifecycleBusy.has(project.id)) return refuse('busy', `${project.id} already has a lifecycle action running`)
+        const envKey = `${project.id}:${environment}`
+        if (this.envBusy.has(envKey)) return refuse('busy', `${project.id} already has an env write running for ${environment}`)
         this.provisioningBusy = true
+        this.envBusy.add(envKey)
         try {
             return await changePort(project, environment, port, {
                 checkPort: provision.checkPort,
@@ -547,6 +559,7 @@ export class Agent {
             })
         } finally {
             this.provisioningBusy = false
+            this.envBusy.delete(envKey)
         }
     }
 

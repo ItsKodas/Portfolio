@@ -661,6 +661,7 @@ function fakeDeploys(options: {
                 started.push({ id: project.id, environment: environment.name, request })
                 return { ok: true as const, started: { environment: environment.name as 'live', trigger: request.trigger } }
             },
+            isRunning: () => false,
         },
         store: {
             get: () => options.state ?? emptyDeploys(),
@@ -1576,5 +1577,42 @@ describe('port', () => {
         assert.deepEqual(replyOf(await agent.handle(change(5013))), { ok: false, code: 'busy', message: 'another provisioning action is in progress' })
         release()
         await first
+    })
+
+    // A deploy's swap runs up on the same compose project, so the two must never overlap
+    it('refuses while a deploy is running for that environment', async () => {
+        const deploys = { runner: { start: () => { throw new Error('not in this test') }, isRunning: (key: string) => key === 'acme:live' } }
+        const { agent } = setup({ provision: fakeProvisionDeps(), deploys: deploys as unknown as AgentDeps['deploys'] })
+        assert.deepEqual(replyOf(await agent.handle(change(5012))), { ok: false, code: 'busy', message: 'acme live has a deploy running' })
+    })
+
+    it('refuses while a lifecycle action is running for the project', async () => {
+        let release: () => void = () => {}
+        const blocked = new Promise<void>(resolve => { release = resolve })
+        const { agent } = setup({
+            provision: fakeProvisionDeps(),
+            runner: async () => {
+                await blocked
+                return { exitCode: 0, stdout: '', stderr: '', timedOut: false }
+            },
+        })
+        const running = agent.handle(lifecycle('acme', 'restart'))
+        await new Promise(resolve => setImmediate(resolve))
+        assert.deepEqual(replyOf(await agent.handle(change(5012))), { ok: false, code: 'busy', message: 'acme already has a lifecycle action running' })
+        release()
+        await running
+    })
+
+    // The change writes .env and may put back the whole file it read, so a portal save must wait for it
+    it('holds the env write slot for the environment until the change is done', async () => {
+        let release!: () => void
+        const slow = fakeProvisionDeps({ checkPort: () => new Promise(resolve => { release = () => resolve({ ok: false, code: 'bad-request', problem: 'port 5012 is in use on the host' }) }) })
+        const { agent } = setup({ provision: slow, envFs: fakeEnvFs() })
+        const first = agent.handle(change(5012))
+        const write: AgentRequest = { verb: 'env', project: 'acme', args: { action: 'write', environment: 'live', path: '.env', text: 'A=1' } }
+        assert.deepEqual(replyOf(await agent.handle(write)), { ok: false, code: 'busy', message: 'acme already has an env write running for live' })
+        release()
+        await first
+        assert.equal(replyOf(await agent.handle(write))?.ok, true)
     })
 })

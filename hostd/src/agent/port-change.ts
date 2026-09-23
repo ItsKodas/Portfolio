@@ -5,6 +5,7 @@
 // proxies to another. The recreate is a few seconds of downtime, which the portal says before it asks.
 
 import { notPublishedProblem } from './provision.ts'
+import { describeError } from '../shared/formats.ts'
 import { refuse, type Refusal } from '../shared/protocol.ts'
 import type { OwnPort, PortVerdict } from '../shared/ports.ts'
 import type { EnvironmentEntry, EnvironmentName, ProjectEntry } from '../shared/registry.ts'
@@ -36,57 +37,84 @@ export async function changePort(
 
     const written = await deps.setPortEnv(environment, project.portEnv, port)
     if (!written.ok) return refuse('failed', written.problem)
-    // Each undo is best effort and says what it could not do, so the operator knows what to put right
+    // Each undo is best effort and says what it could not do, so the operator knows what to put right.
+    // An undo that throws is reported the same way as one that answers a problem, so undoing never
+    // throws out of here and leaves the rest of the undo unrun.
     const undone: string[] = []
-    const restoreEnv = async () => {
-        const restored = await deps.restorePortEnv(environment, written.previous)
-        if (!restored.ok) undone.push(`.env could not be put back: ${restored.problem}`)
+    const attempt = async (what: string, step: () => Promise<string | null>) => {
+        try {
+            const problem = await step()
+            if (problem !== null) undone.push(`${what}: ${problem}`)
+        } catch (error) {
+            undone.push(`${what}: ${describeError(error)}`)
+        }
     }
-    const restoreRegistry = async () => {
-        const restored = await deps.writePort(old)
-        if (!restored.ok) undone.push(`the registry could not be put back to ${old}: ${restored.problem}`)
+    // What has happened so far, so an undo puts back exactly those steps and no others
+    let registryWritten = false
+    let recreated = false
+    let vhostTouched = false
+    const undo = async () => {
+        await attempt('.env could not be put back', async () => {
+            const restored = await deps.restorePortEnv(environment, written.previous)
+            return restored.ok ? null : restored.problem
+        })
+        if (registryWritten) {
+            await attempt(`the registry could not be put back to ${old}`, async () => {
+                const restored = await deps.writePort(old)
+                return restored.ok ? null : restored.problem
+            })
+        }
+        if (recreated) {
+            await attempt(`the containers could not be brought back up on ${old}`, async () => {
+                const back = await deps.up(environment)
+                return back.ok ? null : back.message
+            })
+        }
+        if (vhostTouched) await attempt('the vhost could not be put back', () => deps.rewriteVhost())
     }
     const failed = (message: string) => refuse('failed', undone.length === 0 ? message : `${message} ${undone.join('. ')}.`)
 
-    const published = await deps.published(environment)
-    if (!published.ok) {
-        await restoreEnv()
-        return refuse('invalid-project', published.problem)
-    }
-    if (!published.ports.includes(port)) {
-        await restoreEnv()
-        return refuse('bad-request', notPublishedProblem(project.portEnv, port))
-    }
-
-    const registered = await deps.writePort(port)
-    if (!registered.ok) {
-        await restoreEnv()
-        return refuse('bad-request', registered.problem)
-    }
-
-    const running = await deps.running(environment)
-    if (running) {
-        const up = await deps.up(environment)
-        if (!up.ok) {
-            await restoreEnv()
-            await restoreRegistry()
-            const back = await deps.up(environment)
-            if (!back.ok) undone.push(`the containers could not be brought back up on ${old}: ${back.message}`)
-            return failed(`${where} could not be recreated on port ${port}: ${up.message}. It was moved back to ${old}.`)
+    // Everything after the .env write, so that a step which throws (a Docker socket error, a runner
+    // that could not spawn, a registry refresh that failed) is undone exactly like one that answers a
+    // failure. Otherwise .env and the registry would be left on the new port with the site on the old.
+    let running = false
+    try {
+        const published = await deps.published(environment)
+        if (!published.ok) {
+            await undo()
+            return refuse('invalid-project', published.problem)
         }
-    }
+        if (!published.ports.includes(port)) {
+            await undo()
+            return refuse('bad-request', notPublishedProblem(project.portEnv, port))
+        }
 
-    const vhostProblem = await deps.rewriteVhost()
-    if (vhostProblem !== null) {
-        await restoreEnv()
-        await restoreRegistry()
+        const registered = await deps.writePort(port)
+        if (!registered.ok) {
+            await undo()
+            return refuse('bad-request', registered.problem)
+        }
+        registryWritten = true
+
+        running = await deps.running(environment)
         if (running) {
-            const back = await deps.up(environment)
-            if (!back.ok) undone.push(`the containers could not be brought back up on ${old}: ${back.message}`)
+            recreated = true
+            const up = await deps.up(environment)
+            if (!up.ok) {
+                await undo()
+                return failed(`${where} could not be recreated on port ${port}: ${up.message}. It was moved back to ${old}.`)
+            }
         }
-        const again = await deps.rewriteVhost()
-        if (again !== null) undone.push(`the vhost could not be put back: ${again}`)
-        return failed(`the vhost for ${where} could not be rewritten: ${vhostProblem} It was moved back to ${old}.`)
+
+        vhostTouched = true
+        const vhostProblem = await deps.rewriteVhost()
+        if (vhostProblem !== null) {
+            await undo()
+            return failed(`the vhost for ${where} could not be rewritten: ${vhostProblem} It was moved back to ${old}.`)
+        }
+    } catch (error) {
+        await undo()
+        return failed(`${where} could not be moved to port ${port}: ${describeError(error)}. It was moved back to ${old}.`)
     }
 
     return {
