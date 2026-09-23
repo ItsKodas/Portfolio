@@ -285,6 +285,26 @@ describe('set-flag', () => {
     })
 })
 
+describe('set-port', () => {
+    it('writes the environment\'s port', () => {
+        const result = applyChange(BASE, { kind: 'set-port', id: 'acme', environment: 'live', port: 5099 })
+        assert.equal(result.ok, true)
+        assert.equal(parseRegistry(result.ok ? result.text : '').projects.get('acme')?.environments.get('live')?.port, 5099)
+    })
+
+    it('refuses an environment that does not exist', () => {
+        assert.equal(applyChange(BASE, { kind: 'set-port', id: 'acme', environment: 'test', port: 5099 }).ok, false)
+    })
+
+    // BASE has only one project, so NO_DOMAIN (acme and backroom, both live) is what has a second
+    // project's port to collide with. One rule about sharing a port, parseRegistry's, not a second copy here.
+    it('refuses a port another project already has', () => {
+        const other = parseRegistry(NO_DOMAIN)
+        const taken = [...other.projects.values()].find(project => project.id !== 'acme')!.environments.get('live')!.port
+        assert.equal(applyChange(NO_DOMAIN, { kind: 'set-port', id: 'acme', environment: 'live', port: taken }).ok, false)
+    })
+})
+
 describe('configure', () => {
     // The body the portal's form actually sends. It sends every field on every save, one branches entry
     // per environment, and a blank branch field becomes null: a live-only entry has a synthesised live
