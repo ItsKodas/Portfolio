@@ -30,6 +30,22 @@
 .nav[aria-current] { color: var(--ink); background: var(--panel-hi); }
 .navName { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
+/* The way back to the dashboard, set apart from the site list under it: a bordered row with the accent on
+   its icon, so it reads as a destination of its own rather than as the first entry in the list. */
+.home {
+    gap: 10px;
+    padding: 8px 10px;
+    margin-bottom: 6px;
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--ink-2);
+    border: 1px solid var(--rule-hi);
+    background: var(--panel);
+}
+.home svg { color: var(--lake); flex: none; }
+.home:hover { color: var(--ink); border-color: var(--lake); background: var(--panel-hi); }
+.home[aria-current] { color: var(--ink); border-color: var(--lake); }
+
 .group { color: var(--ink-3); font-size: 10.5px; margin: 14px 0 5px; padding: 0 8px; }
 
 /* The rail is context, not decoration: it keeps its heading when it drops under the content on a narrow
