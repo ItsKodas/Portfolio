@@ -1,6 +1,6 @@
 import { describe, it } from 'node:test'
 import assert from 'node:assert/strict'
-import { PassThrough, Readable } from 'node:stream'
+import { PassThrough, Readable, Writable } from 'node:stream'
 
 import { copyRefusal, removeInterruptedStaging, runCopy, stagingOf, COPY_MIN_FREE_BYTES, type CopyDeps, type CopyFs } from './copy-run.ts'
 import type { ContainerSummary, DockerApi, ExecResult } from './docker.ts'
@@ -215,6 +215,22 @@ function setup(options: Options = {}) {
 
 const RESTORE = ['compose acme-uat1 start web', 'compose acme-uat1 stop db']
 
+// A dump file on a disk that has just filled up: the first write is taken but not flushed, and fails as
+// a real one does, so drain never comes
+function fullDisk(): { sink: Writable, done: Promise<void> } {
+    const sink = new Writable({
+        highWaterMark: 1,
+        write(_chunk, _encoding, callback) {
+            setImmediate(() => callback(Object.assign(new Error('ENOSPC: no space left on device, write'), { code: 'ENOSPC' })))
+        },
+    })
+    const done = new Promise<void>((resolve, reject) => {
+        sink.on('finish', resolve)
+        sink.on('error', reject)
+    })
+    return { sink, done }
+}
+
 describe('runCopy', () => {
     it('copies every database and storage folder in the seven steps, in order', async () => {
         const { deps, calls, finished, started } = setup()
@@ -321,6 +337,18 @@ describe('runCopy', () => {
         assert.equal(record.outcome, 'failed')
         assert.equal(record.step, 'dump')
         assert.match(record.reason ?? '', /db: the dump exited with code 1: connection refused/)
+        assert.equal(calls.filter(call => call.startsWith('compose')).length, 0)
+        assert.equal(calls.at(-1), `rmdir ${STAGING}`)
+        assert.deepEqual(finished, [record])
+    })
+
+    it('fails the dump rather than waiting forever when the staging disk fills up', { timeout: 5000 }, async () => {
+        const { deps, calls, finished } = setup()
+        deps.fs.writeStream = () => fullDisk()
+        const record = await runCopy(project(), 'uat1', RUN, 'koda', deps)
+        assert.equal(record.outcome, 'failed')
+        assert.equal(record.step, 'dump')
+        assert.match(record.reason ?? '', /ENOSPC/)
         assert.equal(calls.filter(call => call.startsWith('compose')).length, 0)
         assert.equal(calls.at(-1), `rmdir ${STAGING}`)
         assert.deepEqual(finished, [record])

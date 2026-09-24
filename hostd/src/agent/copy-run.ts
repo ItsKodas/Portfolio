@@ -20,6 +20,7 @@ import type { CopyRecord } from '../shared/protocol.ts'
 import { composeBase, tail, type Runner } from './compose.ts'
 import { checkedId, pickPerService, type ContainerSummary, type DockerApi } from './docker.ts'
 import { dumpPlan, isProblem } from './backup-dumps.ts'
+import { writeChunk } from './backup-run.ts'
 import { loadPlan, postgresErrorCollector, readyProbe, renameStream } from './copy-plans.ts'
 import { MIN_FREE_BYTES } from './deploy.ts'
 
@@ -287,10 +288,10 @@ async function dumpLive(context: Context): Promise<Map<string, string>> {
         await deps.fs.mkdir(dir, { private: true })
         const file = posix.join(dir, plan.file)
         const { sink, done } = deps.fs.writeStream(file)
+        // Handled from the start: a write that fails (a full disk) rejects this long before the exec returns
+        done.catch(() => {})
         try {
-            const result = await deps.dockerApi.exec(container!.Id, plan.argv, chunk => {
-                if (!sink.write(chunk)) return new Promise<void>(resolve => sink.once('drain', () => resolve()))
-            })
+            const result = await deps.dockerApi.exec(container!.Id, plan.argv, chunk => writeChunk(sink, chunk))
             sink.end()
             await done
             if (result.exitCode !== 0) fail(`${service}: the dump exited with code ${result.exitCode}: ${tail(result.stderr, 500)}`)

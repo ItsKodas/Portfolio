@@ -1,6 +1,6 @@
 import { describe, it } from 'node:test'
 import assert from 'node:assert/strict'
-import { PassThrough } from 'node:stream'
+import { PassThrough, Writable } from 'node:stream'
 
 import { runBackup, type BackupDeps, type BackupFs } from './backup-run.ts'
 import { parseRegistry } from '../shared/registry.ts'
@@ -109,6 +109,29 @@ describe('runBackup', () => {
         assert.equal(record.snapshot, null)
         assert.match(record.reason ?? '', /could not connect to server/)
         assert.deepEqual(backups, [], 'nothing is captured when a dump failed')
+    })
+
+    it('fails the run rather than waiting forever when the staging disk fills up mid-dump', { timeout: 5000 }, async () => {
+        const { deps, backups, removed } = setup()
+        deps.fs.writeStream = () => {
+            // The first write is taken but not flushed, and fails as a real one does, so drain never comes
+            const sink = new Writable({
+                highWaterMark: 1,
+                write(_chunk, _encoding, callback) {
+                    setImmediate(() => callback(Object.assign(new Error('ENOSPC: no space left on device, write'), { code: 'ENOSPC' })))
+                },
+            })
+            const done = new Promise<void>((resolve, reject) => {
+                sink.on('finish', resolve)
+                sink.on('error', reject)
+            })
+            return { sink, done }
+        }
+        const record = await runBackup(project(), { tag: 'manual', actor: 'client', run: 'run1', keep: null }, deps)
+        assert.equal(record.outcome, 'failed')
+        assert.match(record.reason ?? '', /ENOSPC/)
+        assert.deepEqual(backups, [])
+        assert.ok(removed.includes('/backups/.staging/acme/run1'), 'staging is still cleared')
     })
 
     it('applies the client retention after a scheduled run only', async () => {

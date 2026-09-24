@@ -4,6 +4,7 @@
 // Live only. Every path here comes from environmentOf(project, 'live') or project.storage, both of which
 // the registry derived; nothing a request carried ever becomes a path.
 
+import { once } from 'node:events'
 import { posix } from 'node:path'
 import type { Writable } from 'node:stream'
 
@@ -37,6 +38,27 @@ export type BackupDeps = {
     disk: () => Promise<DiskUsage | null>
     now: () => number
     log(message: string): void
+}
+
+// One chunk of a dump into its file, waiting for the file to take it when it is behind. A write that fails
+// (a full disk) never drains, so the wait is on drain, error or close, whichever comes first: the dump then
+// fails rather than waiting forever with the database's dump process blocked behind it.
+export async function writeChunk(sink: Writable, chunk: Buffer): Promise<void> {
+    if (sink.errored) throw sink.errored
+    if (sink.destroyed || sink.writableEnded) throw new Error('the dump file was closed while the dump was still being written')
+    if (sink.write(chunk)) return
+    const stop = new AbortController()
+    try {
+        await Promise.race([
+            // once rejects on error
+            once(sink, 'drain', { signal: stop.signal }),
+            once(sink, 'close', { signal: stop.signal }).then(() => {
+                throw sink.errored ?? new Error('the dump file was closed while the dump was still being written')
+            }),
+        ])
+    } finally {
+        stop.abort()
+    }
 }
 
 export type BackupRequest = { tag: BackupTag, actor: string, run: string, keep: Keep | null }
@@ -154,10 +176,10 @@ async function dump(
     if (!container) return `${plan.service}: no container is running to dump from`
     if (container.State !== 'running') return `${plan.service}: the container is ${container.State}, so there is nothing to dump from`
     const { sink, done } = deps.fs.writeStream(target)
+    // Handled from the start: a write that fails rejects this long before the exec below returns
+    done.catch(() => {})
     try {
-        const result = await deps.docker.exec(container.Id, plan.argv, chunk => {
-            if (!sink.write(chunk)) return new Promise<void>(resolve => sink.once('drain', () => resolve()))
-        })
+        const result = await deps.docker.exec(container.Id, plan.argv, chunk => writeChunk(sink, chunk))
         sink.end()
         await done
         if (result.exitCode !== 0) return `${plan.service}: the dump exited with code ${result.exitCode}: ${tail(result.stderr, 500)}`
