@@ -12,11 +12,11 @@ import { rollback, setBranch, startDeploy } from '@/server/hostd/deploys'
 import {
     addDomain, adoptSite, previewAdopt, removeDomain, verifyDomain, type AdoptPreview,
 } from '@/server/hostd/domains'
-import { writeEnvFile, type EnvironmentName } from '@/server/hostd/env'
+import { isEnvironmentName, writeEnvFile, type EnvironmentName } from '@/server/hostd/env'
 import type { Caller } from '@/server/hostd/actor'
 import { forAdmin, forClient } from '@/server/hostd/errors'
 import { setPort } from '@/server/hostd/ports'
-import { assertOwned, lifecycle } from '@/server/hostd/projects'
+import { assertOwned, lifecycle, listEnvironments } from '@/server/hostd/projects'
 import { removeProject } from '@/server/hostd/remove'
 import { callerFromSession } from '@/server/hostd/session'
 import { writeSettings, type SiteSettings } from '@/server/hostd/settings'
@@ -38,10 +38,6 @@ const SAID: Record<LifecycleAction, string> = {
     stop: 'Stopping. The site will show its holding page until it is started again.',
     restart: 'Restarting. The site is unavailable for a few seconds.',
 }
-
-// hostd's own ENVIRONMENTS (hostd/src/shared/registry.ts). Checked against the list rather than cast,
-// because this string arrives from a browser like every other argument here.
-const ENVIRONMENTS = ['live', 'test'] as const
 
 const SIGN_IN_AGAIN = 'Your session has expired. Sign in again.'
 const NOT_YOURS = 'This is not set up yet.'
@@ -76,6 +72,25 @@ async function allow(id: string, adminOnly: boolean): Promise<Allowed | { ok: fa
     return { ok: true, caller: who.caller, config, isAdmin }
 }
 
+// The gate for an action about one environment: allow() first, then the site's own list of environments,
+// read from hostd. A site can have any number of them, so a well formed name is not enough; one this site
+// does not have is refused here rather than sent on for hostd to refuse.
+async function allowOn(id: string, environment: EnvironmentName, adminOnly: boolean): Promise<Allowed | { ok: false, error: string }> {
+    const allowed = await allow(id, adminOnly)
+    if (!allowed.ok) return allowed
+
+    const listed = await listEnvironments(allowed.config, allowed.caller, id)
+    if (!listed.ok) {
+        console.error(`[portal] environments of ${id} could not be read: ${forAdmin(listed.code, listed.message)}`)
+        return { ok: false, error: allowed.isAdmin ? forAdmin(listed.code, listed.message) : forClient(listed.code) }
+    }
+    if (!listed.value.some(one => one.name === environment)) {
+        return { ok: false, error: `This site has no ${environment} environment.` }
+    }
+
+    return allowed
+}
+
 // hostd's message names paths, services and project ids, which is right for the operator and wrong for a
 // client. The original is logged either way, so a client's refusal is still diagnosable from this side.
 function refused(where: string, isAdmin: boolean, result: { code: string, message: string }): SiteActionResult {
@@ -98,17 +113,16 @@ export async function lifecycleAction(id: string, action: string): Promise<SiteA
     return { ok: true, message: SAID[asked] }
 }
 
-export async function saveEnvAction(id: string, path: string, text: string): Promise<SiteActionResult> {
-    if (typeof path !== 'string' || typeof text !== 'string') return { ok: false, error: 'That is not something this page can do.' }
+export async function saveEnvAction(id: string, environment: string, path: string, text: string): Promise<SiteActionResult> {
+    const name = environmentOf(environment)
+    if (!name || typeof path !== 'string' || typeof text !== 'string') return { ok: false, error: 'That is not something this page can do.' }
 
     // Editing env files is the operator's alone. hostd refuses a client outright (hostd/src/api/policy.ts
     // puts that check ahead of ownership), and this is the same rule applied a step earlier.
-    const allowed = await allow(id, true)
+    const allowed = await allowOn(id, name, true)
     if (!allowed.ok) return allowed
 
-    // live, because hostd exposes no list of a project's environments yet: the registry holds them but
-    // nothing answers them over the wire, so there is exactly one environment a page can name today.
-    const result = await writeEnvFile(allowed.config, allowed.caller, id, 'live', path, text)
+    const result = await writeEnvFile(allowed.config, allowed.caller, id, name, path, text)
     if (!result.ok) return refused(`env write ${path} on ${id}`, allowed.isAdmin, result)
 
     revalidatePath(`/portal/sites/${id}`)
@@ -122,15 +136,16 @@ export async function saveEnvAction(id: string, path: string, text: string): Pro
 //
 // All three answer as soon as the work has started, because a deploy is minutes of building and hostd's
 // own call timeout is 150 seconds. Nothing here waits for an outcome, and the message says so.
-function environmentOf(environment: string): EnvironmentName | null {
-    return (ENVIRONMENTS as readonly string[]).includes(environment) ? environment as EnvironmentName : null
+// Only the shape, checked before the session is read. Whether this site has it is allowOn's question.
+function environmentOf(environment: unknown): EnvironmentName | null {
+    return isEnvironmentName(environment) ? environment : null
 }
 
 export async function deployAction(id: string, environment: string): Promise<SiteActionResult> {
     const name = environmentOf(environment)
     if (!name) return { ok: false, error: 'That is not something this page can do.' }
 
-    const allowed = await allow(id, true)
+    const allowed = await allowOn(id, name, true)
     if (!allowed.ok) return allowed
 
     const result = await startDeploy(allowed.config, allowed.caller, id, name)
@@ -144,7 +159,7 @@ export async function rollbackAction(id: string, environment: string): Promise<S
     const name = environmentOf(environment)
     if (!name) return { ok: false, error: 'That is not something this page can do.' }
 
-    const allowed = await allow(id, true)
+    const allowed = await allowOn(id, name, true)
     if (!allowed.ok) return allowed
 
     // Which commit it goes back to is hostd's to decide, and the route takes none: the page names it
@@ -201,7 +216,7 @@ export async function setBranchAction(id: string, environment: string, branch: s
     const name = environmentOf(environment)
     if (!name || typeof branch !== 'string') return { ok: false, error: 'That is not something this page can do.' }
 
-    const allowed = await allow(id, true)
+    const allowed = await allowOn(id, name, true)
     if (!allowed.ok) return allowed
 
     const result = await setBranch(allowed.config, allowed.caller, id, name, branch)
@@ -220,7 +235,7 @@ export async function setPortAction(id: string, environment: string, port: numbe
     const name = environmentOf(environment)
     if (!name || typeof port !== 'number' || !Number.isInteger(port)) return { ok: false, error: 'That is not something this page can do.' }
 
-    const allowed = await allow(id, true)
+    const allowed = await allowOn(id, name, true)
     if (!allowed.ok) return allowed
 
     const result = await setPort(allowed.config, allowed.caller, id, name, port)
@@ -244,7 +259,7 @@ export async function addDomainAction(id: string, environment: string, hostname:
     const name = environmentOf(environment)
     if (!name || typeof hostname !== 'string') return { ok: false, error: 'That is not something this page can do.' }
 
-    const allowed = await allow(id, true)
+    const allowed = await allowOn(id, name, true)
     if (!allowed.ok) return allowed
 
     // Lowercased here rather than left to hostd, because the grammar it is checked against has no capital
@@ -269,7 +284,7 @@ export async function setPrimaryDomainAction(id: string, environment: string, ho
     const name = environmentOf(environment)
     if (!name || typeof hostname !== 'string') return { ok: false, error: 'That is not something this page can do.' }
 
-    const allowed = await allow(id, true)
+    const allowed = await allowOn(id, name, true)
     if (!allowed.ok) return allowed
 
     // Lowercased here for the same reason the domain actions below do it: the grammar it is checked
@@ -301,7 +316,7 @@ export async function changePrimaryDomainAction(
         return { ok: false, error: 'That is not something this page can do.' }
     }
 
-    const allowed = await allow(id, true)
+    const allowed = await allowOn(id, name, true)
     if (!allowed.ok) return allowed
 
     const wanted = hostname.trim().toLowerCase()
@@ -323,7 +338,7 @@ export async function removeDomainAction(id: string, environment: string, hostna
     const name = environmentOf(environment)
     if (!name || typeof hostname !== 'string') return { ok: false, error: 'That is not something this page can do.' }
 
-    const allowed = await allow(id, true)
+    const allowed = await allowOn(id, name, true)
     if (!allowed.ok) return allowed
 
     const wanted = hostname.trim().toLowerCase()
@@ -338,7 +353,7 @@ export async function verifyDomainAction(id: string, environment: string, hostna
     const name = environmentOf(environment)
     if (!name || typeof hostname !== 'string') return { ok: false, error: 'That is not something this page can do.' }
 
-    const allowed = await allow(id, true)
+    const allowed = await allowOn(id, name, true)
     if (!allowed.ok) return allowed
 
     const wanted = hostname.trim().toLowerCase()
@@ -356,7 +371,7 @@ export async function adoptPreviewAction(id: string, environment: string): Promi
     const name = environmentOf(environment)
     if (!name) return { ok: false, error: 'That is not something this page can do.' }
 
-    const allowed = await allow(id, true)
+    const allowed = await allowOn(id, name, true)
     if (!allowed.ok) return allowed
 
     const result = await previewAdopt(allowed.config, allowed.caller, id, name)
@@ -372,7 +387,7 @@ export async function adoptAction(id: string, environment: string, confirm: stri
     const name = environmentOf(environment)
     if (!name || typeof confirm !== 'string') return { ok: false, error: 'That is not something this page can do.' }
 
-    const allowed = await allow(id, true)
+    const allowed = await allowOn(id, name, true)
     if (!allowed.ok) return allowed
 
     // Sent as typed. hostd compares it with the project's own name and refuses anything else, and that

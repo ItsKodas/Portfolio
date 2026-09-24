@@ -7,8 +7,13 @@ import 'server-only'
 import type { Caller } from './actor'
 import { hostdRequest, type HostdResult } from './client'
 import type { HostdConfig } from './config'
+import type { EnvironmentName } from './environmentName'
 
-export type EnvironmentName = 'live' | 'test'
+// The name rule lives in its own module, so a browser form can check a name too; this is where the
+// server code takes it from.
+export {
+    ENV_NAME, LIVE, RESERVED_ENVIRONMENT_NAMES, isEnvironmentName, newEnvironmentProblem, type EnvironmentName,
+} from './environmentName'
 
 export type EnvFile = {
     path: string

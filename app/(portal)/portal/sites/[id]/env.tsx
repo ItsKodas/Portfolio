@@ -7,16 +7,12 @@
 // place only is a check one refactor away from not existing.
 
 import { readHostd } from '@/server/hostd/config'
-import { listEnvFiles, readEnvFile, type EnvFile } from '@/server/hostd/env'
+import { LIVE, listEnvFiles, readEnvFile, type EnvFile } from '@/server/hostd/env'
 import { forAdmin } from '@/server/hostd/errors'
 import { callerFromSession } from '@/server/hostd/session'
 import { Callout } from '@/ui/Callout/Callout'
 import { EnvForm } from './envForm'
 import styles from './site.module.css'
-
-// hostd exposes no list of a project's environments, so there is exactly one a page can name today. See
-// the note on the same constant in page.tsx.
-const LIVE = 'live'
 
 function size(bytes: number): string {
     if (bytes < 1024) return `${bytes} B`
@@ -84,7 +80,7 @@ export async function EnvPanel({ id, file }: { id: string, file: string | null }
                 )}
 
                 {chosen && text && text.ok && (
-                    <EnvForm id={id} path={chosen} text={text.value} example={example} />
+                    <EnvForm id={id} environment={LIVE} path={chosen} text={text.value} example={example} />
                 )}
             </section>
         </>

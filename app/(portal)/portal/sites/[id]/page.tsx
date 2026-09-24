@@ -6,7 +6,7 @@ import { listBranches } from '@/server/hostd/branches'
 import { readHostd } from '@/server/hostd/config'
 import { listCredentials } from '@/server/hostd/credentials'
 import { listDomains, type Domain } from '@/server/hostd/domains'
-import type { EnvironmentName } from '@/server/hostd/env'
+import { LIVE, type EnvironmentName } from '@/server/hostd/env'
 import { forAdmin, forClient } from '@/server/hostd/errors'
 import { assertOwned, getProject, listProjects, type ServiceStatus } from '@/server/hostd/projects'
 import { callerFromSession } from '@/server/hostd/session'
@@ -34,11 +34,9 @@ import styles from './site.module.css'
 export const metadata: Metadata = { title: 'Site' }
 export const dynamic = 'force-dynamic'
 
-// hostd now answers a project's environments on every listing (hostd/src/api/routes.ts, environmentsFor),
-// and the Deploys tab below uses them. The Overview's Environment panel still says live and only live: a
-// status read answers the project's containers, not one environment's, so there is nothing yet to put in
-// a second panel. That one waits for hostd to report services per environment.
-const LIVE = 'live'
+// The Overview's Environment panel says live and only live: a status read answers the project's
+// containers, not one environment's, so there is nothing yet to put in a second panel. That one waits for
+// hostd to report services per environment. The Deploys, Domains and Environment tabs are per environment.
 
 // What stands in for a tab with nothing behind it. A tab is shown and marked rather than left out: a
 // missing tab reads as a product that cannot do the thing, and a marked one reads as a product that will.
