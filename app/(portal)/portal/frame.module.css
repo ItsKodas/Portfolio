@@ -3,22 +3,23 @@
    how a set of pages stops looking like one product, so the shape they share lives here and a page keeps
    its own module only for what is genuinely its own.
 
-   The widths match what each page asked Container for, so no page changes width: lg, md and sm.
+   The page runs the full width under the portal bar and is padded as ui/Shell's content column is, so a
+   heading here lands where it does on the dashboard. md and sm are for the pages that are one form or one
+   record: they cap the width a line of text can run to, and stay on the left edge with everything else.
 
    Every colour here is a token or a neutral overlay, which is what ui/palette.test.ts asks of a stylesheet.
    That test walks ui/ and does not reach this file, so the rule is kept here by hand. */
 
 .page {
-    max-width: 1200px;
-    margin: 0 auto;
-    padding: 0 24px 48px;
+    box-sizing: border-box;
+    padding: 20px 22px 34px;
 }
 
 .md { max-width: 900px; }
 .sm { max-width: 600px; }
 
-@media (max-width: 600px) {
-    .page { padding-left: 16px; padding-right: 16px; }
+@media (max-width: 760px) {
+    .page { padding: 18px 16px 30px; }
 }
 
 /* A page's title line: the heading, with whatever sits on the same baseline beside it */
