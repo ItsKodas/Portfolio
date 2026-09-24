@@ -18,7 +18,7 @@
 - Trash path: `<site>/.deleted/<env>-<unix seconds>/` with `tree`, `prev`, `next` inside.
 - Never `compose down -v`. Nothing is deleted before its replacement is in place, except build trees and the purge itself.
 - Admin only for create, delete, restore and the deleted list (policy verb `provision`).
-- No em dashes (U+2014) in docs, UI text, messages, commit messages or PR text. Check with Python `chr(0x2014)`, never a literal or a `—` escape in a heredoc.
+- No em dashes (U+2014) in docs, UI text, messages, commit messages or PR text. Check with Python `chr(0x2014)`, never a literal or a `\u2014` escape in a heredoc.
 - Commit messages: subject, blank line, `Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>`. Use `git commit -F <file>`.
 - hostd tests: `cd hostd && npm test`, types `npm run typecheck`. Portal tests: `npm test` at the repo root (vitest), types `npx tsc --noEmit`.
 - Tests use the existing fakes; no Docker, network or real filesystem.
