@@ -16,8 +16,10 @@ import { ENVIRONMENTS } from '../shared/registry.ts'
 import { deployKey } from '../shared/deploys.ts'
 import { createDockerApi, publishedHostPorts } from './docker.ts'
 import { createSpawnRunner, resolveNewProject } from './compose.ts'
+import { buildPortOverride, portOverridePath } from './port-override.ts'
 import { createHostPortReader } from './host-ports.ts'
 import { writePortEnv } from './port-env.ts'
+import { writeOwnedFile } from './owned-file.ts'
 import { GuardTracker } from './guard-tracker.ts'
 import { createFetchClient, socketConnect } from './fetch-client.ts'
 import { Agent } from './agent.ts'
@@ -217,6 +219,8 @@ async function main(): Promise<void> {
             return problem ? { ok: false, code: 'bad-request', problem } : { ok: true }
         },
         setPortEnv: (environment, key, port) => writePortEnv(environment, key, port),
+        portOverride: (location, portEnv) => buildPortOverride(location, portEnv, runner, writeOwnedFile),
+        removePortOverride: dir => rm(portOverridePath(dir), { force: true }),
         mkdir: dir => mkdir(dir),
         rmdir: dir => rm(dir, { recursive: true, force: true }),
         exists,
@@ -238,6 +242,7 @@ async function main(): Promise<void> {
         fetcher,
         docker,
         runner,
+        portOverride: (location, portEnv) => buildPortOverride(location, portEnv, runner, writeOwnedFile),
         fs: {
             exists,
             mkdir: async dir => { await mkdir(dir, { recursive: true }) },

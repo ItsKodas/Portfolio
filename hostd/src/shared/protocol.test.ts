@@ -116,7 +116,11 @@ describe('parseAgentRequest', () => {
         assert.equal(refusalOf({ verb: 'provision', args: { ...createArgs, dir: '../etc' } }), dirRule)
         assert.equal(refusalOf({ verb: 'provision', args: { ...createArgs, dir: 'a/b' } }), dirRule)
         assert.equal(refusalOf({ verb: 'provision', args: { ...createArgs, dir: 'Bakery' } }), dirRule)
-        assert.equal(refusalOf({ verb: 'provision', args: { ...createArgs, compose: [] } }), 'bad-request: compose must name 1 to 8 files')
+        assert.equal(refusalOf({ verb: 'provision', args: { ...createArgs, compose: [] } }), 'bad-request: compose must name 1 to 7 files')
+        const eight = Array.from({ length: 8 }, (_, index) => `c${index}.yml`)
+        assert.equal(refusalOf({ verb: 'provision', args: { ...createArgs, compose: eight } }), 'bad-request: compose must name 1 to 7 files')
+        assert.equal(refusalOf({ verb: 'provision', args: { ...createArgs, compose: ['docker-compose.yml', 'deploy/hostd.ports.yml'] } }),
+            'bad-request: hostd.ports.yml is the file hostd writes; name your own compose files')
         assert.equal(refusalOf({ verb: 'provision', args: { ...createArgs, compose: ['../x.yml'] } }), 'bad-request: compose file ../x.yml: path contains ..')
         assert.equal(refusalOf({ verb: 'provision', args: { ...createArgs, compose: ['/etc/x.yml'] } }), 'bad-request: compose file /etc/x.yml: path must be relative')
         assert.equal(refusalOf({ verb: 'provision', args: { ...createArgs, compose: ['a.yml', 'a.yml'] } }), 'bad-request: compose names a file twice')

@@ -29,14 +29,32 @@ projects:
       live: { dir: /var/www/acme, port: 5010 }
 `).projects.get('acme')!
 
+// A site created (or moved) since hostd.ports.yml: the override already names ${WEB_PORT}, so a move only
+// rewrites .env
+const withOverride = parseRegistry(`
+projects:
+  acme:
+    client: cl_1
+    name: Acme
+    repo: git@github.com:a/acme.git
+    services: { web: { role: site } }
+    environments:
+      live: { dir: /var/www/acme, port: 5010, compose: [docker-compose.yml, hostd.ports.yml] }
+`).projects.get('acme')!
+
 function fakes(overrides: Partial<PortChangeDeps> = {}) {
     const steps: string[] = []
     const deps: PortChangeDeps = {
         checkPort: async port => { steps.push(`check ${port}`); return { ok: true } },
         setPortEnv: async (_env, key, port) => { steps.push(`env ${key}=${port}`); return { ok: true, previous: 'WEB_PORT=5010\n' } },
         restorePortEnv: async (_env, previous) => { steps.push(`restore env ${JSON.stringify(previous)}`); return { ok: true } },
+        override: async env => {
+            steps.push('override')
+            return { ok: true, composePaths: [...env.composePaths, `${env.dir}/hostd.ports.yml`], service: 'web', target: 3000 }
+        },
+        removeOverride: async () => { steps.push('remove override') },
         published: async () => { steps.push('published'); return { ok: true, ports: [5012] } },
-        writePort: async port => { steps.push(`registry ${port}`); return { ok: true } },
+        writePort: async (port, compose) => { steps.push(compose ? `registry ${port} ${compose.join(',')}` : `registry ${port}`); return { ok: true } },
         running: async () => { steps.push('running?'); return true },
         up: async () => { steps.push('up'); return { ok: true } },
         rewriteVhost: async () => { steps.push('vhost'); return null },
@@ -51,7 +69,39 @@ describe('changePort', () => {
         const { deps, steps } = fakes()
         const reply = await changePort(acme, 'live', 5012, deps)
         assert.deepEqual(reply, { ok: true, output: 'acme live now uses port 5012, and its containers were recreated on it' })
+        assert.deepEqual(steps, ['check 5012', 'env WEB_PORT=5012', 'override', 'published', 'registry 5012 docker-compose.yml,hostd.ports.yml', 'running?', 'up', 'vhost'])
+    })
+
+    it('leaves an override that is already there alone', async () => {
+        const { deps, steps } = fakes()
+        assert.equal((await changePort(withOverride, 'live', 5012, deps)).ok, true)
         assert.deepEqual(steps, ['check 5012', 'env WEB_PORT=5012', 'published', 'registry 5012', 'running?', 'up', 'vhost'])
+    })
+
+    it('checks and recreates with the override in the compose list', async () => {
+        const seen: string[][] = []
+        const { deps } = fakes({
+            published: async env => { seen.push(env.composePaths); return { ok: true, ports: [5012] } },
+            up: async env => { seen.push(env.composePaths); return { ok: true } },
+        })
+        await changePort(bare, 'live', 5012, deps)
+        assert.deepEqual(seen, [
+            ['/var/www/acme/docker-compose.yml', '/var/www/acme/hostd.ports.yml'],
+            ['/var/www/acme/docker-compose.yml', '/var/www/acme/hostd.ports.yml'],
+        ])
+    })
+
+    it('refuses when the override cannot be built, putting .env back', async () => {
+        const problem = 'hostd cannot tell which service is the site (web, worker); give the others an image it recognises as a database, or publish a port from the site\'s service only'
+        const { deps, steps } = fakes({ override: async () => { steps.push('override'); return { ok: false, problem } } })
+        assert.deepEqual(await changePort(acme, 'live', 5012, deps), { ok: false, code: 'invalid-project', message: problem })
+        assert.deepEqual(steps, ['check 5012', 'env WEB_PORT=5012', 'override', 'restore env "WEB_PORT=5010\\n"'])
+    })
+
+    it('takes the override and its compose entry away again when the recreate fails', async () => {
+        const { deps, steps } = fakes({ up: async () => { steps.push('up'); return steps.filter(step => step === 'up').length === 1 ? { ok: false, message: 'up exited with code 1' } : { ok: true } } })
+        assert.equal((await changePort(acme, 'live', 5012, deps)).ok, false)
+        assert.deepEqual(steps.slice(4), ['registry 5012 docker-compose.yml,hostd.ports.yml', 'running?', 'up', 'restore env "WEB_PORT=5010\\n"', 'registry 5010 docker-compose.yml', 'remove override', 'up'])
     })
 
     it('does nothing for the port it already has', async () => {
@@ -68,15 +118,15 @@ describe('changePort', () => {
 
     it('puts .env back when compose does not publish the port', async () => {
         const { deps, steps } = fakes({ published: async () => ({ ok: true, ports: [3000] }) })
-        assert.deepEqual(await changePort(acme, 'live', 5012, deps), { ok: false, code: 'bad-request', message: notPublishedProblem('WEB_PORT', 5012) })
-        assert.deepEqual(steps.slice(-1), ['restore env "WEB_PORT=5010\\n"'])
+        assert.deepEqual(await changePort(acme, 'live', 5012, deps), { ok: false, code: 'bad-request', message: notPublishedProblem('/var/www/acme', 5012) })
+        assert.deepEqual(steps.slice(-3), ['override', 'restore env "WEB_PORT=5010\\n"', 'remove override'])
     })
 
     it('puts .env back when the registry refuses the port', async () => {
         const { deps, steps } = fakes({ writePort: async () => ({ ok: false, problem: 'port 5012 is also used by other' }) })
         const reply = await changePort(acme, 'live', 5012, deps)
         assert.deepEqual(reply, { ok: false, code: 'bad-request', message: 'port 5012 is also used by other' })
-        assert.deepEqual(steps.slice(-1), ['restore env "WEB_PORT=5010\\n"'])
+        assert.deepEqual(steps.slice(-2), ['restore env "WEB_PORT=5010\\n"', 'remove override'])
     })
 
     it('undoes everything and brings the old port back up when the recreate fails', async () => {
@@ -85,7 +135,7 @@ describe('changePort', () => {
         const reply = await changePort(acme, 'live', 5012, deps)
         assert.equal(reply.ok, false)
         assert.match(reply.ok ? '' : reply.message, /up exited with code 1/)
-        assert.deepEqual(steps.slice(-4), ['up', 'restore env "WEB_PORT=5010\\n"', 'registry 5010', 'up'])
+        assert.deepEqual(steps.slice(-5), ['up', 'restore env "WEB_PORT=5010\\n"', 'registry 5010 docker-compose.yml', 'remove override', 'up'])
     })
 
     it('undoes everything when the vhost cannot be rewritten', async () => {
@@ -94,7 +144,7 @@ describe('changePort', () => {
         const reply = await changePort(acme, 'live', 5012, deps)
         assert.equal(reply.ok, false)
         assert.match(reply.ok ? '' : reply.message, /Apache refused the file/)
-        assert.deepEqual(steps.slice(-5), ['vhost', 'restore env "WEB_PORT=5010\\n"', 'registry 5010', 'up', 'vhost'])
+        assert.deepEqual(steps.slice(-6), ['vhost', 'restore env "WEB_PORT=5010\\n"', 'registry 5010 docker-compose.yml', 'remove override', 'up', 'vhost'])
     })
 
     it('does not start an environment that is not running', async () => {
@@ -110,7 +160,7 @@ describe('changePort', () => {
         const { deps, steps } = fakes({ running: async () => { steps.push('running?'); throw new Error('connect ENOENT /var/run/docker.sock') } })
         const reply = await changePort(acme, 'live', 5012, deps)
         assert.deepEqual(reply, { ok: false, code: 'failed', message: 'acme live could not be moved to port 5012: connect ENOENT /var/run/docker.sock. It was moved back to 5010.' })
-        assert.deepEqual(steps.slice(-3), ['running?', 'restore env "WEB_PORT=5010\\n"', 'registry 5010'])
+        assert.deepEqual(steps.slice(-4), ['running?', 'restore env "WEB_PORT=5010\\n"', 'registry 5010 docker-compose.yml', 'remove override'])
         assert.ok(!steps.includes('up'))
         assert.ok(!steps.includes('vhost'))
     })
@@ -120,7 +170,7 @@ describe('changePort', () => {
         const { deps, steps } = fakes({ up: async () => { steps.push('up'); ups += 1; if (ups === 1) throw new Error('spawn docker ENOENT'); return { ok: true } } })
         const reply = await changePort(acme, 'live', 5012, deps)
         assert.deepEqual(reply, { ok: false, code: 'failed', message: 'acme live could not be moved to port 5012: spawn docker ENOENT. It was moved back to 5010.' })
-        assert.deepEqual(steps.slice(-4), ['up', 'restore env "WEB_PORT=5010\\n"', 'registry 5010', 'up'])
+        assert.deepEqual(steps.slice(-5), ['up', 'restore env "WEB_PORT=5010\\n"', 'registry 5010 docker-compose.yml', 'remove override', 'up'])
         assert.ok(!steps.includes('vhost'))
     })
 
@@ -130,29 +180,29 @@ describe('changePort', () => {
         const reply = await changePort(acme, 'live', 5012, deps)
         assert.equal(reply.ok, false)
         assert.match(reply.ok ? '' : reply.message, /rail went away/)
-        assert.deepEqual(steps.slice(-5), ['vhost', 'restore env "WEB_PORT=5010\\n"', 'registry 5010', 'up', 'vhost'])
+        assert.deepEqual(steps.slice(-6), ['vhost', 'restore env "WEB_PORT=5010\\n"', 'registry 5010 docker-compose.yml', 'remove override', 'up', 'vhost'])
     })
 
     it('does not put the registry back when the throw came before it was written', async () => {
         const { deps, steps } = fakes({ published: async () => { steps.push('published'); throw new Error('spawn docker ENOENT') } })
         const reply = await changePort(acme, 'live', 5012, deps)
         assert.deepEqual(reply, { ok: false, code: 'failed', message: 'acme live could not be moved to port 5012: spawn docker ENOENT. It was moved back to 5010.' })
-        assert.deepEqual(steps.slice(-2), ['published', 'restore env "WEB_PORT=5010\\n"'])
+        assert.deepEqual(steps.slice(-3), ['published', 'restore env "WEB_PORT=5010\\n"', 'remove override'])
     })
 
     // The registry may already be written when writePort throws (its refresh is what failed), so a
     // throw from it still puts the old port back
     it('puts the registry back when writing it throws after the write', async () => {
         const { deps, steps } = fakes({
-            writePort: async port => {
-                steps.push(`registry ${port}`)
+            writePort: async (port, compose) => {
+                steps.push(compose ? `registry ${port} ${compose.join(',')}` : `registry ${port}`)
                 if (port === 5012) throw new Error('the registry could not be re-read')
                 return { ok: true }
             },
         })
         const reply = await changePort(acme, 'live', 5012, deps)
         assert.deepEqual(reply, { ok: false, code: 'failed', message: 'acme live could not be moved to port 5012: the registry could not be re-read. It was moved back to 5010.' })
-        assert.deepEqual(steps.slice(-3), ['registry 5012', 'restore env "WEB_PORT=5010\\n"', 'registry 5010'])
+        assert.deepEqual(steps.slice(-4), ['registry 5012 docker-compose.yml,hostd.ports.yml', 'restore env "WEB_PORT=5010\\n"', 'registry 5010 docker-compose.yml', 'remove override'])
     })
 
     it('carries on with the rest of the undo when putting .env back throws', async () => {
@@ -166,7 +216,7 @@ describe('changePort', () => {
             ok: false, code: 'failed',
             message: 'acme live could not be recreated on port 5012: up exited with code 1. It was moved back to 5010. .env could not be put back: EACCES.',
         })
-        assert.deepEqual(steps.slice(-4), ['up', 'restore env', 'registry 5010', 'up'])
+        assert.deepEqual(steps.slice(-5), ['up', 'restore env', 'registry 5010 docker-compose.yml', 'remove override', 'up'])
     })
 
     // Apache would go on proxying to the old port behind a file hostd cannot rewrite, while the change

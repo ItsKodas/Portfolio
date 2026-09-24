@@ -1,10 +1,14 @@
 // Moving an environment to another port. Six steps, in this order, because each is only undoable while
-// the ones after it have not happened: check the port, write it into .env, make sure compose publishes it,
-// write the registry, recreate the containers (which rereads .env), and rewrite the vhost to proxy there.
-// A failure puts back every step before it, so the site is never left listening on one port while Apache
-// proxies to another. The recreate is a few seconds of downtime, which the portal says before it asks.
+// the ones after it have not happened: check the port, write it into .env, write hostd.ports.yml if the
+// environment has none, make sure compose publishes it, write the registry, recreate the containers
+// (which rereads .env), and rewrite the vhost to proxy there. A failure puts back every step before it,
+// so the site is never left listening on one port while Apache proxies to another. The recreate is a few
+// seconds of downtime, which the portal says before it asks.
+
+import { posix } from 'node:path'
 
 import { notPublishedProblem } from './provision.ts'
+import { isPortOverride, type PortOverrideResult } from './port-override.ts'
 import { describeError } from '../shared/formats.ts'
 import { refuse, type Refusal } from '../shared/protocol.ts'
 import type { OwnPort, PortVerdict } from '../shared/ports.ts'
@@ -14,9 +18,14 @@ export type PortChangeDeps = {
     checkPort: (port: number, own: OwnPort) => Promise<PortVerdict>
     setPortEnv: (environment: EnvironmentEntry, key: string, port: number) => Promise<{ ok: true, previous: string | null } | { ok: false, problem: string }>
     restorePortEnv: (environment: EnvironmentEntry, previous: string | null) => Promise<{ ok: true } | { ok: false, problem: string }>
+    // Writes hostd.ports.yml for an environment whose compose list does not have it yet (a site created
+    // or enrolled before it), answering the full list, override last
+    override: (environment: EnvironmentEntry) => Promise<PortOverrideResult>
+    removeOverride: (environment: EnvironmentEntry) => Promise<void>
     published: (environment: EnvironmentEntry) => Promise<{ ok: true, ports: number[] } | { ok: false, problem: string }>
-    // Writes the registry and refreshes the agent's copy of it, so the vhost rewrite reads the new port
-    writePort: (port: number) => Promise<{ ok: true } | { ok: false, problem: string }>
+    // Writes the registry and refreshes the agent's copy of it, so the vhost rewrite reads the new port.
+    // compose, relative to the environment's dir, is written in the same edit when given.
+    writePort: (port: number, compose?: string[]) => Promise<{ ok: true } | { ok: false, problem: string }>
     running: (environment: EnvironmentEntry) => Promise<boolean>
     up: (environment: EnvironmentEntry) => Promise<{ ok: true } | { ok: false, message: string }>
     // A problem, or null when the vhost is rewritten or there is no hostd vhost to rewrite
@@ -69,6 +78,10 @@ export async function changePort(
         }
     }
     // What has happened so far, so an undo puts back exactly those steps and no others
+    // The environment as the rest of the change runs it: with hostd.ports.yml in its list once written
+    let moved = environment
+    let overrideWritten = false
+    const relative = (entry: EnvironmentEntry) => entry.composePaths.map(path => posix.relative(entry.dir, path))
     let registryWritten = false
     let recreated = false
     let vhostTouched = false
@@ -79,9 +92,12 @@ export async function changePort(
         })
         if (registryWritten) {
             await attempt(`the registry could not be put back to ${old}`, async () => {
-                const restored = await deps.writePort(old)
+                const restored = await deps.writePort(old, overrideWritten ? relative(environment) : undefined)
                 return restored.ok ? null : restored.problem
             })
+        }
+        if (overrideWritten) {
+            await attempt('hostd.ports.yml could not be removed', async () => { await deps.removeOverride(environment); return null })
         }
         if (recreated) {
             await attempt(`the containers could not be brought back up on ${old}`, async () => {
@@ -98,31 +114,44 @@ export async function changePort(
     // failure. Otherwise .env and the registry would be left on the new port with the site on the old.
     let running = false
     try {
-        const published = await deps.published(environment)
+        if (!environment.composePaths.some(isPortOverride)) {
+            // Counted as written before the call, like the registry below: a write that throws may
+            // still have left the file, and removing a file that is not there is harmless
+            overrideWritten = true
+            const override = await deps.override(environment)
+            if (!override.ok) {
+                overrideWritten = false
+                await undo()
+                return refuse('invalid-project', override.problem)
+            }
+            moved = { ...environment, composePaths: override.composePaths }
+        }
+
+        const published = await deps.published(moved)
         if (!published.ok) {
             await undo()
             return refuse('invalid-project', published.problem)
         }
         if (!published.ports.includes(port)) {
             await undo()
-            return refuse('bad-request', notPublishedProblem(project.portEnv, port))
+            return refuse('bad-request', notPublishedProblem(environment.dir, port))
         }
 
         // Counted as written before the write, not after: writePort can write the registry and then throw
         // refreshing the agent's copy, and writing the old port back over an unchanged entry is harmless.
         // An answered refusal wrote nothing, so that path leaves the registry alone as before.
         registryWritten = true
-        const registered = await deps.writePort(port)
+        const registered = await deps.writePort(port, overrideWritten ? relative(moved) : undefined)
         if (!registered.ok) {
             registryWritten = false
             await undo()
             return refuse('bad-request', registered.problem)
         }
 
-        running = await deps.running(environment)
+        running = await deps.running(moved)
         if (running) {
             recreated = true
-            const up = await deps.up(environment)
+            const up = await deps.up(moved)
             if (!up.ok) {
                 await undo()
                 return failed(`${where} could not be recreated on port ${port}: ${up.message}. It was moved back to ${old}.`)
