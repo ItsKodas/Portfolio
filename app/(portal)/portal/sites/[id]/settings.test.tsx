@@ -145,6 +145,25 @@ describe('the settings form', () => {
         expect(saveSettingsAction).toHaveBeenCalledWith('arbysauto', { capabilities: ['lifecycle', 'logs', 'deploy'] })
     })
 
+    // A valid environment name that is also a property every plain object inherits: read from a plain
+    // object it would come back as a function, not as missing
+    it('reads an environment named constructor that arrived after it was drawn as untouched', async () => {
+        const { rerender } = render(<SiteSettingsForm {...props} />)
+        rerender(<SiteSettingsForm
+            {...props}
+            environments={[...props.environments, { name: 'constructor', branch: 'uat' }]}
+        />)
+
+        expect(screen.getByLabelText(/constructor branch/i)).toHaveValue('uat')
+        expect(screen.getByRole('checkbox', { name: /constructor WebSockets/ })).not.toBeChecked()
+        expect(screen.getByRole('checkbox', { name: /constructor Cloudflare Flexible SSL/ })).not.toBeChecked()
+
+        await userEvent.click(screen.getByRole('checkbox', { name: /deploy/ }))
+        await userEvent.click(screen.getByRole('button', { name: /save/i }))
+
+        expect(saveSettingsAction).toHaveBeenCalledWith('arbysauto', { capabilities: ['lifecycle', 'logs', 'deploy'] })
+    })
+
     // Saving what nobody touched would report success over a request that changed nothing on hostd's end.
     it('calls nothing, and says so plainly, when nothing on the form changed', async () => {
         render(<SiteSettingsForm {...props} />)

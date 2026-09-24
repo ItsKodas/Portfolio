@@ -96,7 +96,7 @@ export function SiteSettingsForm({ id, name, capabilities, repo, credential, env
         for (const env of environments) {
             // An environment missing from local state arrived after this form was drawn (an add or a
             // restore refreshes the page and keeps this state), so it is untouched, not cleared.
-            const nextBranch = blankToNull(branchValues[env.name] ?? env.branch ?? '')
+            const nextBranch = blankToNull(ownValue(branchValues, env.name) ?? env.branch ?? '')
             if (nextBranch !== (env.branch ?? null)) changedBranches[env.name] = nextBranch
         }
         const payload: {
@@ -116,7 +116,7 @@ export function SiteSettingsForm({ id, name, capabilities, repo, credential, env
         for (const { key } of SWITCHES) {
             const changed: Record<string, boolean> = {}
             for (const env of environments) {
-                const next = switchValues[key][env.name] ?? env[key] ?? false
+                const next = ownValue(switchValues[key], env.name) ?? env[key] ?? false
                 if (next !== (env[key] ?? false)) changed[env.name] = next
             }
             if (Object.keys(changed).length > 0) payload[key] = changed
@@ -188,7 +188,7 @@ export function SiteSettingsForm({ id, name, capabilities, repo, credential, env
             {credentialsError && <p className={styles.note}>{`The host's credential names could not be read: ${credentialsError}`}</p>}
 
             {environments.map(env => {
-                const branchValue = branchValues[env.name] ?? env.branch ?? ''
+                const branchValue = ownValue(branchValues, env.name) ?? env.branch ?? ''
                 // The saved value can be a branch the repository does not have, exactly as `main` was on
                 // the live incident this change is for: an operator typed it into what looked like a text
                 // box, and nothing checked it against the repository before it went into the registry. A
@@ -239,7 +239,7 @@ export function SiteSettingsForm({ id, name, capabilities, repo, credential, env
                                 <label className={styles.capability}>
                                     <input
                                         type="checkbox"
-                                        checked={switchValues[key][env.name] ?? env[key] ?? false}
+                                        checked={ownValue(switchValues[key], env.name) ?? env[key] ?? false}
                                         onChange={event => {
                                             const enabled = event.target.checked
                                             setSwitchValues(prev => ({ ...prev, [key]: { ...prev[key], [env.name]: enabled } }))
@@ -359,6 +359,12 @@ function DeleteSite({ id, name }: { id: string, name: string }) {
             </Dialog>
         </section>
     )
+}
+
+// What the form holds for one environment, or undefined when it holds nothing. Own properties only: an
+// environment may be called constructor, which every plain object would otherwise answer with a function.
+function ownValue<T>(values: Record<string, T>, name: string): T | undefined {
+    return Object.hasOwn(values, name) ? values[name] : undefined
 }
 
 function blankToNull(value: string | undefined): string | null {
