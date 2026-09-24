@@ -454,6 +454,7 @@ function fakeProvisionDeps(overrides: Partial<ProvisionDeps> = {}): ProvisionDep
         portOverride: async location => ({ ok: true, composePaths: [...location.composePaths, `${location.dir}/hostd.ports.yml`], service: 'web', target: 3000 }),
         removePortOverride: async () => {},
         mkdir: async () => {},
+        move: async () => {},
         rmdir: async () => {},
         exists: async () => false,
         // The ownership a site directory has on the dedi, the same fixture deploy.test.ts uses: these
@@ -529,7 +530,7 @@ describe('provisioning and env', () => {
 
         release()
         assert.equal(replyOf(await first)?.ok, true)
-        assert.deepEqual(mkdirs, ['/var/www/bakery'])
+        assert.deepEqual(mkdirs, ['/var/www/bakery', '/var/www/bakery/live', '/var/www/bakery/git'])
         assert.deepEqual(rmdirs, [])
         // The lock is released once the first call finishes, so a later create is not busy.
         assert.equal(replyOf(await agent.handle(create('bakery')))?.ok, true)
@@ -585,7 +586,7 @@ describe('provisioning and env', () => {
     it('forwards envFs into create, so its env listing never reaches the real filesystem', async () => {
         const provision = fakeProvisionDeps()
         const envFs = fakeEnvFs({
-            readdir: async dir => dir === '/var/www/bakery'
+            readdir: async dir => dir === '/var/www/bakery/live'
                 ? [{ name: '.env', isDirectory: () => false, isFile: () => true }]
                 : [],
             stat: async () => ({ size: 3 }),

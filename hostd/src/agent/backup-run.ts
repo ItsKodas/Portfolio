@@ -130,13 +130,13 @@ async function dump(
         // The fallback for an engine with no dump method: stop it, copy what it has bind-mounted, start it
         // again. Briefly disruptive, and the caller marks the record so the portal can say so.
         await deps.fs.mkdir(target)
-        const resolved = await resolveCompose({ dir, composePaths: project.composePaths }, deps.runner)
+        const resolved = await resolveCompose({ dir, composePaths: project.composePaths, composeName: project.composeName }, deps.runner)
         if (!resolved.ok) return `${plan.service}: ${resolved.problem}`
         const sources = (resolved.resolved.services[plan.service]?.volumes ?? [])
             .filter(volume => volume.type === 'bind' && typeof volume.source === 'string')
             .map(volume => volume.source!)
         if (sources.length === 0) return `${plan.service}: a generic engine needs a bind-mounted data directory to copy`
-        const base = composeBase({ dir, composePaths: project.composePaths })
+        const base = composeBase({ dir, composePaths: project.composePaths, composeName: project.composeName })
         const stopped = await deps.runner('docker', [...base, 'stop', plan.service], LIFECYCLE_TIMEOUT_MS)
         if (stopped.exitCode !== 0) return `${plan.service}: could not be stopped to copy its data`
         try {

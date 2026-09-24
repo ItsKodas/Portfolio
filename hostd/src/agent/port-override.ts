@@ -100,7 +100,7 @@ export async function buildPortOverride(
 ): Promise<PortOverrideResult> {
     const own = location.composePaths.filter(path => !isPortOverride(path))
     if (own.length === 0) return { ok: false, problem: 'the environment names no compose file of its own' }
-    const resolved = await resolveCompose({ dir: location.dir, composePaths: own }, run)
+    const resolved = await resolveCompose({ dir: location.dir, composePaths: own, composeName: location.composeName }, run)
     if (!resolved.ok) return resolved
     const override = portOverride(resolved.resolved, portEnv)
     if (!override.ok) return override

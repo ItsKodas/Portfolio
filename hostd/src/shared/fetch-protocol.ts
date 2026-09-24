@@ -5,9 +5,10 @@
 
 import { isRecord } from './formats.ts'
 import { CREDENTIAL_NAME, GIT_COMMIT, GIT_REF, GIT_REPO } from './registry.ts'
+// Every path the caller may hand Git: a flat tree or sibling, or a nested site's repository,
+// environment, or next and prev copy (see layout.ts). Nothing else reaches Git.
+import { FETCH_DIR } from './layout.ts'
 
-// One segment directly under /var/www: what stops any path from the caller reaching Git.
-const FETCH_DIR = /^\/var\/www\/[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/
 const MAX_LOG_LIMIT = 500
 
 export type FetchRequest =

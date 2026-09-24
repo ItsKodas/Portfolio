@@ -621,9 +621,9 @@ export class Agent {
                 checkPort: provision.checkPort,
                 setPortEnv: (entry, key, value) => writePortEnv(entry, key, value, this.deps.envFs),
                 restorePortEnv: (entry, previous) => restorePortEnv(entry, previous, this.deps.envFs),
-                override: entry => provision.portOverride({ dir: entry.dir, composePaths: entry.composePaths }, project.portEnv),
+                override: entry => provision.portOverride({ dir: entry.dir, composePaths: entry.composePaths, composeName: entry.composeName }, project.portEnv),
                 removeOverride: entry => provision.removePortOverride(entry.dir),
-                published: entry => resolvePublished({ dir: entry.dir, composePaths: entry.composePaths }, this.deps.runner),
+                published: entry => resolvePublished({ dir: entry.dir, composePaths: entry.composePaths, composeName: entry.composeName }, this.deps.runner),
                 writePort: async (value, compose) => {
                     const written = await this.deps.writer.write({ kind: 'set-port', id: project.id, environment, port: value, ...(compose ? { compose } : {}) })
                     if (!written.ok) return written

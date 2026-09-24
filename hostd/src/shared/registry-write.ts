@@ -74,6 +74,10 @@ export type Change =
     // idempotent and lets the existing conflict check do its job.
     | { kind: 'set-aliases', id: string, environment: EnvironmentName, aliases: string[] }
     | { kind: 'set-flag', id: string, environment: EnvironmentName, flag: EnvironmentFlag, enabled: boolean }
+    // Written once per environment, by the deploy that moves it into the nested layout. Both keys at
+    // once: the dir changes the folder compose would derive a name from, so the name it had is pinned
+    // in the same write.
+    | { kind: 'set-layout', id: string, environment: EnvironmentName, dir: string, composeName: string }
     // The environment's port, which the vhost proxies to and the site's .env publishes. Whether it is
     // free on the host is the agent's check; whether it is unique in the registry is parseRegistry's.
     // compose, relative to the environment's dir, is written in the same edit when given: a port change
@@ -230,6 +234,14 @@ function edit(doc: Document, change: Change): EditResult {
                 return { problem: `${change.id} has no ${change.environment} environment` }
             }
             doc.setIn(['projects', change.id, 'environments', change.environment, 'deployed'], change.commit)
+            return null
+        case 'set-layout':
+            if (!doc.hasIn(['projects', change.id, 'environments', change.environment])) {
+                return { problem: `${change.id} has no ${change.environment} environment` }
+            }
+            // No grammar check here, as set-branch: parseRegistry below is the one rule for both keys.
+            doc.setIn(['projects', change.id, 'environments', change.environment, 'dir'], change.dir)
+            doc.setIn(['projects', change.id, 'environments', change.environment, 'composeName'], change.composeName)
             return null
         case 'set-branch':
             if (!doc.hasIn(['projects', change.id, 'environments', change.environment])) {

@@ -27,7 +27,7 @@ function fakeFs(tree: Record<string, string> = {}) {
 }
 
 const live: EnvironmentEntry = {
-    name: 'live', dir: '/var/www/acme', composePaths: ['/var/www/acme/docker-compose.yml'], branch: 'main', domain: null,
+    name: 'live', dir: '/var/www/acme', composePaths: ['/var/www/acme/docker-compose.yml'], composeName: 'acme', branch: 'main', domain: null,
     aliases: [], port: 5010, certificate: null, deployed: null, websockets: false, flexibleSsl: false,
 }
 

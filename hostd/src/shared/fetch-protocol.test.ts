@@ -85,6 +85,21 @@ describe('parseFetchRequest', () => {
     it('refuses a branches request carrying an unknown field', () => {
         assert.equal(refusalOf({ verb: 'branches', repo: 'git@github.com:a/b.git', dir: '/var/www/b' }), 'branches takes only repo and credential')
     })
+
+    it('accepts a nested site repository, environment, and next or prev copy', () => {
+        const fetched = parseFetchRequest(JSON.stringify({ verb: 'fetch', dir: '/var/www/b/git', branch: 'main' }))
+        assert.equal(fetched.ok, true)
+        const checkout = parseFetchRequest(JSON.stringify({ verb: 'checkout', dir: '/var/www/b/git', worktree: '/var/www/b/next/live', commit: 'a1b2c3d' }))
+        assert.equal(checkout.ok, true)
+        const repair = parseFetchRequest(JSON.stringify({ verb: 'repair', dir: '/var/www/b/git', worktree: '/var/www/b/prev/test' }))
+        assert.equal(repair.ok, true)
+    })
+
+    it('refuses anything deeper or wider than a nested site', () => {
+        assert.match(refusalOf({ verb: 'fetch', dir: '/var/www/b/git/.git' })!, /dir/)
+        assert.match(refusalOf({ verb: 'checkout', dir: '/var/www/b/git', worktree: '/var/www/b/uat1', commit: 'a1b2c3d' })!, /worktree/)
+        assert.match(refusalOf({ verb: 'repair', dir: '/var/www/b/git', worktree: '/var/www/b/next' })!, /worktree/)
+    })
 })
 
 describe('credential on the verbs that reach GitHub', () => {

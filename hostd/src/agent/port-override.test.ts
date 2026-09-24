@@ -93,7 +93,7 @@ describe('buildPortOverride', () => {
 
     it('resolves only the repo\'s own files, writes the override and lists it last', async () => {
         const { runs, writes, run, writeFile } = recorder()
-        const location = { dir: '/var/www/acme', composePaths: ['/var/www/acme/docker-compose.yml', '/var/www/acme/hostd.ports.yml'] }
+        const location = { dir: '/var/www/acme', composePaths: ['/var/www/acme/docker-compose.yml', '/var/www/acme/hostd.ports.yml'], composeName: 'acme' }
         const result = await buildPortOverride(location, 'WEB_PORT', run, writeFile)
         assert.deepEqual(result, { ok: true, composePaths: ['/var/www/acme/docker-compose.yml', '/var/www/acme/hostd.ports.yml'], service: 'web', target: 3000 })
         assert.equal(runs.length, 1)
@@ -105,27 +105,27 @@ describe('buildPortOverride', () => {
 
     it('adds the override to a list that does not have it', async () => {
         const { run, writeFile } = recorder()
-        const result = await buildPortOverride({ dir: '/var/www/acme', composePaths: ['/var/www/acme/docker-compose.yml'] }, 'WEB_PORT', run, writeFile)
+        const result = await buildPortOverride({ dir: '/var/www/acme', composePaths: ['/var/www/acme/docker-compose.yml'], composeName: 'acme' }, 'WEB_PORT', run, writeFile)
         assert.deepEqual(result.ok && result.composePaths, ['/var/www/acme/docker-compose.yml', '/var/www/acme/hostd.ports.yml'])
     })
 
     it('writes nothing when compose cannot be resolved', async () => {
         const { writes, run, writeFile } = recorder('', 1)
-        const result = await buildPortOverride({ dir: '/var/www/acme', composePaths: ['/var/www/acme/docker-compose.yml'] }, 'WEB_PORT', run, writeFile)
+        const result = await buildPortOverride({ dir: '/var/www/acme', composePaths: ['/var/www/acme/docker-compose.yml'], composeName: 'acme' }, 'WEB_PORT', run, writeFile)
         assert.equal(result.ok, false)
         assert.deepEqual(writes, [])
     })
 
     it('writes nothing when the override cannot be built', async () => {
         const { writes, run, writeFile } = recorder(JSON.stringify({ name: 'acme', services: { web: { build: '.' } } }))
-        const result = await buildPortOverride({ dir: '/var/www/acme', composePaths: ['/var/www/acme/docker-compose.yml'] }, 'WEB_PORT', run, writeFile)
+        const result = await buildPortOverride({ dir: '/var/www/acme', composePaths: ['/var/www/acme/docker-compose.yml'], composeName: 'acme' }, 'WEB_PORT', run, writeFile)
         assert.match(result.ok ? '' : result.problem, /does not say which port/)
         assert.deepEqual(writes, [])
     })
 
     it('refuses a list that is only the override', async () => {
         const { run, writeFile } = recorder()
-        assert.deepEqual(await buildPortOverride({ dir: '/var/www/acme', composePaths: ['/var/www/acme/hostd.ports.yml'] }, 'WEB_PORT', run, writeFile),
+        assert.deepEqual(await buildPortOverride({ dir: '/var/www/acme', composePaths: ['/var/www/acme/hostd.ports.yml'], composeName: 'acme' }, 'WEB_PORT', run, writeFile),
             { ok: false, problem: 'the environment names no compose file of its own' })
     })
 

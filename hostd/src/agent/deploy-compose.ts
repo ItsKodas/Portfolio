@@ -4,8 +4,15 @@
 
 import { posix } from 'node:path'
 
-import { tail, type ComposeLocation, type Runner } from './compose.ts'
-import type { EnvironmentEntry } from '../shared/registry.ts'
+import { tail, type Runner } from './compose.ts'
+import { isNestedDir, siteOf, nestedDir } from '../shared/layout.ts'
+import type { EnvironmentEntry, ProjectEntry } from '../shared/registry.ts'
+
+// Unlike compose.ts's own ComposeLocation, no composeName: every function below takes the project name as
+// its own separate argument instead (see base()), which is what lets deploy.ts pin one name (the
+// environment's own) across a build in <dir>.next and the swap into <dir> that follows, two different
+// locations that must still resolve to the same compose project.
+type BuildLocation = { dir: string, composePaths: string[] }
 
 // A build runs the repo's own Dockerfile, which can legitimately take a long time on a cold cache.
 export const BUILD_TIMEOUT_MS = 30 * 60_000
@@ -17,15 +24,40 @@ export type DeployTrees = {
     next: string
     prev: string
     // Where the git repository lives once a deploy has moved it out of the tree, so renaming the tree
-    // can never take the repository with it.
+    // can never take the repository with it. Shared by every environment of a nested site.
     repo: string
     // The repository's original home, inside the tree, as a fresh clone leaves it.
     git: string
+    // The folder a nested site keeps everything under, or null for a flat one.
+    site: string | null
 }
 
 export function deployTrees(dir: string): DeployTrees {
-    return { dir, next: `${dir}.next`, prev: `${dir}.prev`, repo: `${dir}.git`, git: posix.join(dir, '.git') }
+    if (isNestedDir(dir)) {
+        const site = siteOf(dir)
+        const env = posix.basename(dir)
+        return {
+            dir, next: posix.join(site, 'next', env), prev: posix.join(site, 'prev', env),
+            repo: posix.join(site, 'git'), git: posix.join(dir, '.git'), site,
+        }
+    }
+    return { dir, next: `${dir}.next`, prev: `${dir}.prev`, repo: `${dir}.git`, git: posix.join(dir, '.git'), site: null }
 }
+
+// Where a flat environment goes when it is nested, or null when it is not to move (yet). Live goes
+// under a site named after its own flat folder. Any other environment waits until live has moved,
+// because until then /var/www/<site> is live's own tree and nothing can be put inside it.
+export function migrationTarget(project: ProjectEntry, environment: EnvironmentEntry): DeployTrees | null {
+    if (isNestedDir(environment.dir)) return null
+    if (environment.name === 'live') return deployTrees(nestedDir(environment.dir, 'live'))
+    const live = project.environments.get('live')
+    if (!live || !isNestedDir(live.dir)) return null
+    return deployTrees(nestedDir(siteOf(live.dir), environment.name))
+}
+
+// Where a flat live tree waits during its own migration, between leaving /var/www/<site> and
+// arriving at /var/www/<site>/prev/live. The one moment the site's folder name is free to be made.
+export const migratingOf = (site: string): string => `${site}.migrating`
 
 // What proves <dir>.git holds the repository, rather than merely existing. ensureRepo creates that
 // directory one step before the repository moves into it, so the directory on its own proves nothing:
@@ -36,29 +68,27 @@ export function repositoryIn(trees: DeployTrees): string {
     return posix.join(trees.repo, '.git')
 }
 
-// The environment's own folder basename, which is what an unpinned compose file resolves to and what
-// guard.ts already refuses to let drift (see composeNameProblem). Pinning it with --project-name is what
-// lets a build in <dir>.next produce the images the swapped-in tree then starts: compose would otherwise
-// derive the name from that folder, and acme.next is not acme.
+// Pinned with --project-name on every deploy step, which is what lets a build in the next tree
+// produce the images the swapped-in tree then starts.
 export function composeNameOf(environment: EnvironmentEntry): string {
-    return posix.basename(environment.dir)
+    return environment.composeName
 }
 
 // The same compose files the registry named for this environment, resolved inside another tree and in
 // the registry's own order, because compose merges -f files left to right.
-export function locationIn(environment: EnvironmentEntry, dir: string): ComposeLocation {
+export function locationIn(environment: EnvironmentEntry, dir: string): BuildLocation {
     return { dir, composePaths: environment.composePaths.map(path => posix.join(dir, posix.relative(environment.dir, path))) }
 }
 
-function base(location: ComposeLocation, name: string): string[] {
+function base(location: BuildLocation, name: string): string[] {
     return ['compose', '--project-name', name, '--project-directory', location.dir, ...location.composePaths.flatMap(path => ['-f', path])]
 }
 
-export const buildArgv = (location: ComposeLocation, name: string): string[] => [...base(location, name), 'build']
-export const upArgv = (location: ComposeLocation, name: string): string[] => [...base(location, name), 'up', '-d', '--no-build', '--pull', 'never']
+export const buildArgv = (location: BuildLocation, name: string): string[] => [...base(location, name), 'build']
+export const upArgv = (location: BuildLocation, name: string): string[] => [...base(location, name), 'up', '-d', '--no-build', '--pull', 'never']
 // --remove-orphans, because a commit that deletes a service would otherwise leave its container running
 // under this project's name for ever. Never -v: a deploy must not be able to delete a client's data.
-export const downArgv = (location: ComposeLocation, name: string): string[] => [...base(location, name), 'down', '--remove-orphans']
+export const downArgv = (location: BuildLocation, name: string): string[] => [...base(location, name), 'down', '--remove-orphans']
 
 export type ComposeResult = { ok: true, output: string } | { ok: false, message: string, output: string }
 

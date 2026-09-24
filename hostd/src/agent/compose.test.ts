@@ -29,7 +29,7 @@ function runnerReturning(result: Partial<RunResult>) {
 }
 
 describe('argv', () => {
-    const base = ['compose', '--project-directory', '/var/www/acme', '-f', '/var/www/acme/docker-compose.yml']
+    const base = ['compose', '--project-name', 'acme', '--project-directory', '/var/www/acme', '-f', '/var/www/acme/docker-compose.yml']
 
     // up rather than start, so a start also works after a down or a reboot; never builds or pulls, so a
     // start cannot fetch anything new.
@@ -65,7 +65,7 @@ projects:
     // site actually runs with has to be passed, in the order compose merges them.
     it('passes one -f per registered file, in order', () => {
         assert.deepEqual(lifecycleArgv(twoFiles, 'restart'), [
-            'compose', '--project-directory', '/var/www/acme',
+            'compose', '--project-name', 'acme', '--project-directory', '/var/www/acme',
             '-f', '/var/www/acme/docker-compose.yml',
             '-f', '/var/www/acme/docker-compose.override.yml',
             'restart',
@@ -73,8 +73,8 @@ projects:
     })
 
     it('resolves the merged configuration for the guard', () => {
-        assert.deepEqual(configArgv(twoFiles).slice(0, 7), [
-            'compose', '--project-directory', '/var/www/acme',
+        assert.deepEqual(configArgv(twoFiles).slice(0, 9), [
+            'compose', '--project-name', 'acme', '--project-directory', '/var/www/acme',
             '-f', '/var/www/acme/docker-compose.yml',
             '-f', '/var/www/acme/docker-compose.override.yml',
         ])
@@ -94,7 +94,7 @@ projects:
       live: { dir: /var/www/acme, port: 5010, compose: [docker-compose.yml, docker-compose.override.yml] }
 `).projects.get('acme')!
         assert.deepEqual(lifecycleArgv(viaEnvironments, 'restart'), [
-            'compose', '--project-directory', '/var/www/acme',
+            'compose', '--project-name', 'acme', '--project-directory', '/var/www/acme',
             '-f', '/var/www/acme/docker-compose.yml',
             '-f', '/var/www/acme/docker-compose.override.yml',
             'restart',
@@ -212,7 +212,7 @@ describe('resolveNewProject', () => {
         assert.deepEqual(await resolveNewProject(location, 'bakery', run), {
             ok: true, services: { web: { role: 'site' }, worker: { role: 'site' } }, published: [],
         })
-        assert.deepEqual(calls[0]?.args, configArgv(location))
+        assert.deepEqual(calls[0]?.args, configArgv({ ...location, composeName: 'bakery' }))
     })
 
     // A starting point the operator corrects, not a guarantee: every image string here is exactly the
@@ -300,6 +300,22 @@ describe('resolveNewProject for a test environment', () => {
             ok: false,
             problem: 'compose resolves the project name something-else, not acme-test; set name: acme-test in the compose file, or rename the registry entry',
         })
+    })
+})
+
+describe('compose project name', () => {
+    const project = parseRegistry(`projects:
+  acme:
+    client: cl_1
+    name: Acme
+    services: { web: { role: site } }
+    environments:
+      live: { dir: /var/www/acme/live, port: 5010 }
+`).projects.get('acme')!
+
+    it('is passed explicitly, so a nested folder called live never names the project', () => {
+        assert.deepEqual(lifecycleArgv(project, 'stop').slice(0, 5), ['compose', '--project-name', 'acme', '--project-directory', '/var/www/acme/live'])
+        assert.deepEqual(configArgv(project).slice(0, 3), ['compose', '--project-name', 'acme'])
     })
 })
 

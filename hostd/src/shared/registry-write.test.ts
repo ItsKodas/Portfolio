@@ -540,6 +540,25 @@ describe('configure', () => {
     })
 })
 
+describe('set-layout', () => {
+    it('moves an environment to its nested dir and pins its compose name', () => {
+        const result = applyChange(BASE, { kind: 'set-layout', id: 'acme', environment: 'live', dir: '/var/www/acme/live', composeName: 'acme' })
+        assert.ok(result.ok)
+        const live = parseRegistry(result.text).projects.get('acme')!.environments.get('live')!
+        assert.equal(live.dir, '/var/www/acme/live')
+        assert.equal(live.composeName, 'acme')
+        assert.match(result.text, /composeName: acme/)
+    })
+
+    it('refuses an environment that does not exist', () => {
+        assert.equal(applyChange(BASE, { kind: 'set-layout', id: 'acme', environment: 'test', dir: '/var/www/acme/test', composeName: 'acme-test' }).ok, false)
+    })
+
+    it('refuses a dir the registry would not load', () => {
+        assert.equal(applyChange(BASE, { kind: 'set-layout', id: 'acme', environment: 'live', dir: '/var/www/acme/test', composeName: 'acme' }).ok, false)
+    })
+})
+
 describe('configure credential', () => {
     it('writes the name onto the entry', () => {
         const result = applyChange(BASE, { kind: 'configure', id: 'acme', credential: 'acme' })

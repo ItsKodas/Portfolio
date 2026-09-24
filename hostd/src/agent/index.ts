@@ -3,7 +3,7 @@
 
 import { createServer, createConnection } from 'node:net'
 import { createWriteStream } from 'node:fs'
-import { chmod, chown, constants, copyFile, cp, mkdir, readdir, readFile, rename, rm, stat, statfs, unlink, writeFile } from 'node:fs/promises'
+import { chmod, chown, constants, copyFile, cp, mkdir, readdir, readFile, rename, rm, rmdir, stat, statfs, unlink, writeFile } from 'node:fs/promises'
 import { randomBytes } from 'node:crypto'
 import { posix } from 'node:path'
 import { RegistryStore, explainRegistryError } from '../shared/registry-store.ts'
@@ -22,6 +22,7 @@ import { writePortEnv } from './port-env.ts'
 import { writeOwnedFile } from './owned-file.ts'
 import { GuardTracker } from './guard-tracker.ts'
 import { createFetchClient, socketConnect } from './fetch-client.ts'
+import { serialisePerRepo } from './fetch-lock.ts'
 import { Agent } from './agent.ts'
 import type { ProvisionDeps } from './provision.ts'
 import { currentTip, type DeployDeps } from './deploy.ts'
@@ -184,7 +185,7 @@ async function main(): Promise<void> {
     let fetcherProblem = await checkFetcher()
 
     const writer = new RegistryWriter(REGISTRY_FILE)
-    const fetcher = createFetchClient(socketConnect(FETCH_SOCKET_PATH))
+    const fetcher = serialisePerRepo(createFetchClient(socketConnect(FETCH_SOCKET_PATH)))
     const exists = async (path: string): Promise<boolean> => {
         try {
             await stat(path)
@@ -222,6 +223,7 @@ async function main(): Promise<void> {
         portOverride: (location, portEnv) => buildPortOverride(location, portEnv, runner, writeOwnedFile),
         removePortOverride: dir => rm(portOverridePath(dir), { force: true }),
         mkdir: dir => mkdir(dir),
+        move: (from, to) => rename(from, to),
         rmdir: dir => rm(dir, { recursive: true, force: true }),
         exists,
         // The same two implementations deploy's fs below is given, so a freshly provisioned tree and a
@@ -247,6 +249,8 @@ async function main(): Promise<void> {
             exists,
             mkdir: async dir => { await mkdir(dir, { recursive: true }) },
             rmdir: dir => rm(dir, { recursive: true, force: true }),
+            // Not recursive: the kernel refuses a folder that is not empty (ENOTEMPTY).
+            removeEmptyDir: dir => rmdir(dir),
             move: (from, to) => rename(from, to),
             // COPYFILE_EXCL, so this can only ever create: a checkout's own compose file is never
             // overwritten even if the caller's existence check were somehow wrong about it.
@@ -267,6 +271,9 @@ async function main(): Promise<void> {
         },
         now: Date.now,
         sleep: async ms => { await sleep(ms) },
+        // On unless the operator sets HOSTD_MIGRATE_LAYOUT=0: the way to stop sites moving into the
+        // nested layout on their next deploy without a release. A move already under way always finishes.
+        migrateLayout: process.env.HOSTD_MIGRATE_LAYOUT !== '0',
         log,
     }
     const deployRunner = new DeployRunner({ ...deployDeps, store: deployStore })

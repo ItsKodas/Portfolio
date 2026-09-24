@@ -73,8 +73,35 @@ projects:
         deployed: abc1234
 `
 
+// Live already nested, test still flat: the state in which a test deploy moves beside live.
+const REGISTRY_YAML_TEST = `
+projects:
+  acme:
+    client: cl_1
+    name: Acme
+    repo: git@github.com:ItsKodas/acme.git
+    services:
+      web: { role: site }
+    capabilities: [deploy, env]
+    environments:
+      live:
+        dir: /var/www/acme/live
+        composeName: acme
+        branch: main
+        port: 5010
+      test:
+        dir: /var/www/acme-test
+        branch: develop
+        port: 5011
+`
+const REGISTRY_YAML_NESTED = REGISTRY_YAML_TEST.replace('dir: /var/www/acme-test', 'dir: /var/www/acme/test')
+
 type SetupOptions = {
     registryYaml?: string
+    // DeployDeps.migrateLayout, off unless a test turns it on, exactly as the dependency itself defaults.
+    migrateLayout?: boolean
+    // Makes every registry write fail at its final rename, so a write returns a problem.
+    registryWriteFails?: boolean
     fetchReplies?: Partial<Record<FetchRequest['verb'], FetchReply>>
     existsPaths?: string[]
     freeBytes?: number
@@ -103,7 +130,8 @@ function setup(options: SetupOptions = {}) {
     const composeRuns: string[][] = []
     const logs: string[] = []
     const maintenance = new Set<string>()
-    const exists = new Set(options.existsPaths ?? ['/var/www/acme/.git'])
+    // By default a flat live as provisioning leaves it: a clone, with the compose file at its root.
+    const exists = new Set(options.existsPaths ?? ['/var/www/acme/.git', '/var/www/acme/docker-compose.yml'])
     const files = new Map(Object.entries(options.envTree ?? { '/var/www/acme/.env': 'DATABASE_URL=postgres://live\n' }))
 
     const registryFiles = new Map<string, string>([[REGISTRY_PATH, yaml]])
@@ -114,6 +142,7 @@ function setup(options: SetupOptions = {}) {
         chmod: async () => {},
         chown: async () => {},
         rename: async (from, to) => {
+            if (options.registryWriteFails) throw new Error('read-only file system')
             registryFiles.set(to, registryFiles.get(from)!)
             registryFiles.delete(from)
             calls.push('registry-write')
@@ -155,13 +184,21 @@ function setup(options: SetupOptions = {}) {
     // What /var/www/acme itself is owned by and moded as, before the deploy touches anything: uid 1000,
     // gid 1000, drwxrwxr-x, exactly the RUNBOOK's own description of a site directory on the dedi. A test
     // that wants a different owner (an operator who chose something else) can overwrite this map by id.
+    // The migrating and nested live paths are there because a move into the nested layout reads their
+    // ownership as the pattern for the folders it makes, and for the tree the next deploy checks out.
+    const siteOwner = { uid: 1000, gid: 1000, mode: 0o775 }
     const owners = new Map<string, { uid: number, gid: number, mode: number }>(
-        Object.entries(options.owners ?? { '/var/www/acme': { uid: 1000, gid: 1000, mode: 0o775 } }),
+        Object.entries(options.owners ?? { '/var/www/acme': siteOwner, '/var/www/acme.migrating': siteOwner, '/var/www/acme/live': siteOwner }),
     )
     const fs: DeployFs = {
         exists: async path => exists.has(path),
         mkdir: async dir => { calls.push(`mkdir ${dir}`); exists.add(dir) },
         rmdir: async dir => { calls.push(`rmdir ${dir}`); exists.delete(dir) },
+        removeEmptyDir: async dir => {
+            calls.push(`rmdir-empty ${dir}`)
+            if ([...exists].some(path => path.startsWith(`${dir}/`))) throw new Error(`ENOTEMPTY: directory not empty, rmdir '${dir}'`)
+            exists.delete(dir)
+        },
         copyFile: async (from, to) => {
             calls.push(`copy ${from} ${to}`)
             if (copyFails) throw new Error('read-only file system')
@@ -173,8 +210,14 @@ function setup(options: SetupOptions = {}) {
         },
         move: async (from, to) => {
             calls.push(`move ${from} ${to}`)
-            if (from.endsWith('.prev')) rolledBack = true
-            exists.delete(from)
+            if (from.endsWith('.prev') || from.includes('/prev/')) rolledBack = true
+            // A rename takes everything under the folder with it, which is what lets a repository moved
+            // from /var/www/acme.git to /var/www/acme/git still be found at /var/www/acme/git/.git.
+            for (const path of [...exists]) {
+                if (path !== from && !path.startsWith(`${from}/`)) continue
+                exists.delete(path)
+                exists.add(to + path.slice(from.length))
+            }
             exists.add(to)
         },
         freeBytes: async () => options.freeBytes ?? MIN_FREE_BYTES * 2,
@@ -244,6 +287,7 @@ function setup(options: SetupOptions = {}) {
         now: () => clock,
         sleep: async ms => { clock += ms },
         log: message => logs.push(message),
+        migrateLayout: options.migrateLayout,
     }
 
     const project = () => registry.projects.get('acme')!
@@ -358,7 +402,7 @@ describe('runDeploy, before the swap', () => {
     })
 
     it('removes a tree left behind by an earlier deploy before checking out', async () => {
-        const context = setup({ existsPaths: ['/var/www/acme/.git', '/var/www/acme.next'] })
+        const context = setup({ existsPaths: ['/var/www/acme/.git', '/var/www/acme/docker-compose.yml', '/var/www/acme.next'] })
         await runDeploy(context.project(), context.environment(), { ...request, commit: TIP }, context.deps)
         const removed = context.calls.indexOf('rmdir /var/www/acme.next')
         const checkedOut = context.calls.indexOf('fetcher checkout')
@@ -394,7 +438,7 @@ describe('runDeploy, before the swap', () => {
     // anything. Carried for the same reason env files are, and by the same rule: only when the checkout
     // does not have its own.
     it('carries a registered compose file the checkout does not have', async () => {
-        const context = setup({ registryYaml: REGISTRY_YAML_OVERRIDE, existsPaths: ['/var/www/acme/.git', '/var/www/acme.next/docker-compose.yml'] })
+        const context = setup({ registryYaml: REGISTRY_YAML_OVERRIDE, existsPaths: ['/var/www/acme/.git', '/var/www/acme/docker-compose.yml', '/var/www/acme.next/docker-compose.yml'] })
         const record = await runDeploy(context.project(), context.environment(), { ...request, commit: TIP }, context.deps)
         assert.equal(record.outcome, 'ok', record.reason ?? '')
         assert.ok(context.calls.includes('copy /var/www/acme/docker-compose.override.yml /var/www/acme.next/docker-compose.override.yml'),
@@ -404,7 +448,7 @@ describe('runDeploy, before the swap', () => {
     it('leaves the checkout its own copy, which belongs with the commit going out', async () => {
         const context = setup({
             registryYaml: REGISTRY_YAML_OVERRIDE,
-            existsPaths: ['/var/www/acme/.git', '/var/www/acme.next/docker-compose.yml', '/var/www/acme.next/docker-compose.override.yml'],
+            existsPaths: ['/var/www/acme/.git', '/var/www/acme/docker-compose.yml', '/var/www/acme.next/docker-compose.yml', '/var/www/acme.next/docker-compose.override.yml'],
         })
         await runDeploy(context.project(), context.environment(), { ...request, commit: TIP }, context.deps)
         assert.equal(context.calls.some(call => call.startsWith('copy ')), false, context.calls.join(', '))
@@ -413,7 +457,7 @@ describe('runDeploy, before the swap', () => {
     // Rebuilt rather than carried, so a commit that adds a service publishing a host port, or moves the
     // site's container port, is covered at this deploy and not only at the next port change
     it('rebuilds hostd.ports.yml in the new tree before it is owned and built', async () => {
-        const context = setup({ registryYaml: REGISTRY_YAML_PORTS, existsPaths: ['/var/www/acme/.git', '/var/www/acme.next/docker-compose.yml'] })
+        const context = setup({ registryYaml: REGISTRY_YAML_PORTS, existsPaths: ['/var/www/acme/.git', '/var/www/acme/docker-compose.yml', '/var/www/acme.next/docker-compose.yml'] })
         const record = await runDeploy(context.project(), context.environment(), { ...request, commit: TIP }, context.deps)
         assert.equal(record.outcome, 'ok', record.reason ?? '')
         const override = context.calls.indexOf('override /var/www/acme.next WEB_PORT')
@@ -426,7 +470,7 @@ describe('runDeploy, before the swap', () => {
     // from the commit going out, so a missing copy in the running tree is never a reason to fail a
     // deploy one step earlier trying to carry a file that is not there.
     it('deploys fine when hostd.ports.yml is missing from the running tree, never copying it and still rebuilding it', async () => {
-        const context = setup({ registryYaml: REGISTRY_YAML_PORTS, existsPaths: ['/var/www/acme/.git', '/var/www/acme.next/docker-compose.yml'] })
+        const context = setup({ registryYaml: REGISTRY_YAML_PORTS, existsPaths: ['/var/www/acme/.git', '/var/www/acme/docker-compose.yml', '/var/www/acme.next/docker-compose.yml'] })
         const record = await runDeploy(context.project(), context.environment(), { ...request, commit: TIP }, context.deps)
         assert.equal(record.outcome, 'ok', record.reason ?? '')
         assert.equal(context.calls.some(call => call.startsWith('copy') && call.includes('hostd.ports.yml')), false, context.calls.join(', '))
@@ -436,7 +480,7 @@ describe('runDeploy, before the swap', () => {
     it('fails the deploy before building when the override cannot be rebuilt', async () => {
         const problem = 'web does not say which port it listens on; add expose: ["3000"] (the port inside the container) to it in the compose file'
         const context = setup({
-            registryYaml: REGISTRY_YAML_PORTS, existsPaths: ['/var/www/acme/.git', '/var/www/acme.next/docker-compose.yml'],
+            registryYaml: REGISTRY_YAML_PORTS, existsPaths: ['/var/www/acme/.git', '/var/www/acme/docker-compose.yml', '/var/www/acme.next/docker-compose.yml'],
             overrideResult: { ok: false, problem },
         })
         const record = await runDeploy(context.project(), context.environment(), { ...request, commit: TIP }, context.deps)
@@ -455,7 +499,7 @@ describe('runDeploy, before the swap', () => {
     // Before the own, so a file this process wrote as root does not stay root-owned in a tree the
     // operator has to be able to read; and before the build, which is what reads it.
     it('carries it before ownership is applied and before the build', async () => {
-        const context = setup({ registryYaml: REGISTRY_YAML_OVERRIDE, existsPaths: ['/var/www/acme/.git', '/var/www/acme.next/docker-compose.yml'] })
+        const context = setup({ registryYaml: REGISTRY_YAML_OVERRIDE, existsPaths: ['/var/www/acme/.git', '/var/www/acme/docker-compose.yml', '/var/www/acme.next/docker-compose.yml'] })
         await runDeploy(context.project(), context.environment(), { ...request, commit: TIP }, context.deps)
         const copied = context.calls.findIndex(call => call.startsWith('copy '))
         const owned = context.calls.findIndex(call => call.startsWith('own /var/www/acme.next'))
@@ -469,7 +513,7 @@ describe('runDeploy, before the swap', () => {
     // that name, so a repo that commits `dockerfile` failed every build with "unable to evaluate symlinks
     // in Dockerfile path". The checkout gets a `Dockerfile` copy of it, beside the compose file.
     it('gives a lowercase dockerfile the name compose asks for, before ownership and the build', async () => {
-        const context = setup({ existsPaths: ['/var/www/acme/.git', '/var/www/acme.next/docker-compose.yml', '/var/www/acme.next/dockerfile'] })
+        const context = setup({ existsPaths: ['/var/www/acme/.git', '/var/www/acme/docker-compose.yml', '/var/www/acme.next/docker-compose.yml', '/var/www/acme.next/dockerfile'] })
         const record = await runDeploy(context.project(), context.environment(), { ...request, commit: TIP }, context.deps)
         assert.equal(record.outcome, 'ok', record.reason ?? '')
         const copied = context.calls.indexOf('copy /var/www/acme.next/dockerfile /var/www/acme.next/Dockerfile')
@@ -481,14 +525,14 @@ describe('runDeploy, before the swap', () => {
 
     it('leaves a checkout that has its own Dockerfile alone', async () => {
         const context = setup({
-            existsPaths: ['/var/www/acme/.git', '/var/www/acme.next/docker-compose.yml', '/var/www/acme.next/Dockerfile', '/var/www/acme.next/dockerfile'],
+            existsPaths: ['/var/www/acme/.git', '/var/www/acme/docker-compose.yml', '/var/www/acme.next/docker-compose.yml', '/var/www/acme.next/Dockerfile', '/var/www/acme.next/dockerfile'],
         })
         await runDeploy(context.project(), context.environment(), { ...request, commit: TIP }, context.deps)
         assert.equal(context.calls.some(call => call.startsWith('copy ')), false, context.calls.join(', '))
     })
 
     it('fails the deploy naming the file when it cannot be carried, and never builds', async () => {
-        const context = setup({ registryYaml: REGISTRY_YAML_OVERRIDE, copyFails: true, existsPaths: ['/var/www/acme/.git', '/var/www/acme.next/docker-compose.yml'] })
+        const context = setup({ registryYaml: REGISTRY_YAML_OVERRIDE, copyFails: true, existsPaths: ['/var/www/acme/.git', '/var/www/acme/docker-compose.yml', '/var/www/acme.next/docker-compose.yml'] })
         const record = await runDeploy(context.project(), context.environment(), { ...request, commit: TIP }, context.deps)
         assert.equal(record.outcome, 'failed')
         assert.ok((record.reason ?? '').includes('docker-compose.override.yml'), record.reason ?? '')
@@ -617,7 +661,7 @@ describe('runDeploy, the swap', () => {
     })
 
     it('keeps only one previous copy', async () => {
-        const context = setup({ existsPaths: ['/var/www/acme/.git', '/var/www/acme.prev'] })
+        const context = setup({ existsPaths: ['/var/www/acme/.git', '/var/www/acme/docker-compose.yml', '/var/www/acme.prev'] })
         await runDeploy(context.project(), context.environment(), { ...request, commit: TIP }, context.deps)
         const removed = context.calls.indexOf('rmdir /var/www/acme.prev')
         const moved = context.calls.indexOf('move /var/www/acme /var/www/acme.prev')
@@ -751,5 +795,323 @@ describe('runDeploy, when the new version is not healthy', () => {
         assert.equal(record.outcome, 'failed')
         assert.match(record.reason ?? '', /read-only file system/)
         assert.equal(context.maintenance.size, 0)
+    })
+})
+
+describe('nested layout', () => {
+    const manual = { trigger: 'manual' as const, actor: 'koda' }
+
+    it('leaves a flat live alone while migration is switched off', async () => {
+        const t = setup({ existsPaths: ['/var/www/acme/.git', '/var/www/acme/docker-compose.yml'] })
+        const project = t.deps.registry().projects.get('acme')!
+        const record = await runDeploy(project, project.environments.get('live')!, manual, t.deps)
+        assert.equal(record.outcome, 'ok')
+        assert.ok(t.calls.includes('move /var/www/acme.next /var/www/acme'))
+    })
+
+    it('moves a flat live into the nested layout inside the window', async () => {
+        const t = setup({ migrateLayout: true, existsPaths: ['/var/www/acme/.git', '/var/www/acme/docker-compose.yml'] })
+        const project = t.deps.registry().projects.get('acme')!
+        const record = await runDeploy(project, project.environments.get('live')!, manual, t.deps)
+        assert.equal(record.outcome, 'ok')
+        const window = t.calls.slice(t.calls.indexOf('maintenance on'), t.calls.indexOf('maintenance off') + 1)
+        assert.deepEqual(window.filter(call => call.startsWith('move') || call.startsWith('compose')), [
+            'compose down',
+            'move /var/www/acme /var/www/acme.migrating',
+            'move /var/www/acme.migrating /var/www/acme/prev/live',
+            'move /var/www/acme.next /var/www/acme/live',
+            'move /var/www/acme.git /var/www/acme/git',
+            'compose up',
+        ])
+        const live = t.deps.registry().projects.get('acme')!.environments.get('live')!
+        assert.equal(live.dir, '/var/www/acme/live')
+        assert.equal(live.composeName, 'acme')
+        assert.equal(live.deployed, TIP)
+        const upArgs = t.composeRuns.at(-1)!
+        assert.deepEqual(upArgs.slice(0, 5), ['compose', '--project-name', 'acme', '--project-directory', '/var/www/acme/live'])
+    })
+
+    it('puts the flat tree back and starts it when a move fails', async () => {
+        const t = setup({ migrateLayout: true, existsPaths: ['/var/www/acme/.git', '/var/www/acme/docker-compose.yml'] })
+        const move = t.deps.fs.move
+        t.deps.fs.move = async (from, to) => { if (to === '/var/www/acme/live') throw new Error('EXDEV'); return move(from, to) }
+        const project = t.deps.registry().projects.get('acme')!
+        const record = await runDeploy(project, project.environments.get('live')!, manual, t.deps)
+        assert.equal(record.outcome, 'failed')
+        assert.match(record.reason ?? '', /moving to \/var\/www\/acme failed/)
+        assert.equal(t.deps.registry().projects.get('acme')!.environments.get('live')!.dir, '/var/www/acme')
+        assert.ok(t.calls.includes('move /var/www/acme.migrating /var/www/acme'))
+        assert.equal(t.calls.filter(call => call === 'compose up').length, 1)
+    })
+
+    it('swaps back on nested paths when the migrated tree is unhealthy, and stays nested', async () => {
+        const t = setup({ migrateLayout: true, existsPaths: ['/var/www/acme/.git', '/var/www/acme/docker-compose.yml'], containerState: { state: 'exited' } })
+        const project = t.deps.registry().projects.get('acme')!
+        const record = await runDeploy(project, project.environments.get('live')!, manual, t.deps)
+        assert.equal(record.outcome, 'rolled-back')
+        assert.ok(t.calls.includes('move /var/www/acme/live /var/www/acme/next/live'))
+        assert.ok(t.calls.includes('move /var/www/acme/prev/live /var/www/acme/live'))
+        assert.equal(t.deps.registry().projects.get('acme')!.environments.get('live')!.dir, '/var/www/acme/live')
+    })
+
+    // What the resume does before the deploy's own work starts: everything up to the first fetch.
+    const resumeOf = (calls: string[]) => calls.slice(0, calls.indexOf('fetcher fetch'))
+    const neverRemovesTheSite = (calls: string[]) => {
+        for (const path of ['/var/www/acme', '/var/www/acme/live', '/var/www/acme/prev', '/var/www/acme/prev/live']) {
+            assert.equal(calls.includes(`rmdir ${path}`), false, `rmdir ${path}`)
+        }
+    }
+
+    // The resume serves the old tree again, never the build the window was about to swap in, which no
+    // health check has seen. The build is thrown away (it is never client data) and the deploy rebuilds.
+    it('finishes a move interrupted in <site>.migrating, and serves the old tree rather than the build', async () => {
+        const t = setup({ existsPaths: ['/var/www/acme.migrating', '/var/www/acme.migrating/docker-compose.yml', '/var/www/acme.next', '/var/www/acme.git', '/var/www/acme.git/.git'] })
+        const project = t.deps.registry().projects.get('acme')!
+        const record = await runDeploy(project, project.environments.get('live')!, manual, t.deps)
+        assert.equal(record.outcome, 'ok', record.reason ?? '')
+        const resume = resumeOf(t.calls)
+        assert.deepEqual(resume.filter(call => call.startsWith('move') || call.startsWith('rmdir') || call.startsWith('compose')), [
+            'move /var/www/acme.migrating /var/www/acme/prev/live',
+            'move /var/www/acme.git /var/www/acme/git',
+            'rmdir /var/www/acme.next',
+            'move /var/www/acme/prev/live /var/www/acme/live',
+            'compose up',
+        ])
+        neverRemovesTheSite(resume)
+        assert.equal(t.deps.registry().projects.get('acme')!.environments.get('live')!.dir, '/var/www/acme/live')
+        assert.ok(t.fetchRequests.some(request => request.verb === 'checkout' && request.worktree === '/var/www/acme/next/live'))
+    })
+
+    // A first deploy moved the repository out to <site>.git before its window, so the old tree at
+    // prev/live has no .git, and the undo stopped with the build back at <site>.next.
+    it('finishes a stopped undo whose build is still at <site>.next, and serves the old tree', async () => {
+        const t = setup({
+            existsPaths: [
+                '/var/www/acme', '/var/www/acme/prev', '/var/www/acme/prev/live', '/var/www/acme/prev/live/docker-compose.yml',
+                '/var/www/acme.next', '/var/www/acme.git', '/var/www/acme.git/.git',
+            ],
+        })
+        const project = t.deps.registry().projects.get('acme')!
+        const record = await runDeploy(project, project.environments.get('live')!, manual, t.deps)
+        assert.equal(record.outcome, 'ok', record.reason ?? '')
+        const resume = resumeOf(t.calls)
+        assert.deepEqual(resume.filter(call => call.startsWith('move') || call.startsWith('rmdir') || call.startsWith('compose')), [
+            'move /var/www/acme.git /var/www/acme/git',
+            'rmdir /var/www/acme.next',
+            'move /var/www/acme/prev/live /var/www/acme/live',
+            'compose up',
+        ])
+        neverRemovesTheSite(resume)
+        assert.equal(t.deps.registry().projects.get('acme')!.environments.get('live')!.dir, '/var/www/acme/live')
+    })
+
+    it('parks a build that already reached <site>/live in next/live, and serves the old tree', async () => {
+        const t = setup({
+            existsPaths: [
+                '/var/www/acme', '/var/www/acme/prev', '/var/www/acme/prev/live', '/var/www/acme/prev/live/docker-compose.yml',
+                '/var/www/acme/live', '/var/www/acme/live/docker-compose.yml', '/var/www/acme.git', '/var/www/acme.git/.git',
+            ],
+        })
+        const project = t.deps.registry().projects.get('acme')!
+        const record = await runDeploy(project, project.environments.get('live')!, manual, t.deps)
+        assert.equal(record.outcome, 'ok', record.reason ?? '')
+        const resume = resumeOf(t.calls)
+        assert.deepEqual(resume.filter(call => /^(move|rmdir|mkdir|own |compose)/.test(call)), [
+            'move /var/www/acme.git /var/www/acme/git',
+            'mkdir /var/www/acme/next', 'own /var/www/acme/next 1000:1000 775',
+            'move /var/www/acme/live /var/www/acme/next/live',
+            'move /var/www/acme/prev/live /var/www/acme/live',
+            'compose up',
+        ])
+        neverRemovesTheSite(resume)
+    })
+
+    it('removes a stale next/live before parking the build there', async () => {
+        const t = setup({
+            existsPaths: [
+                '/var/www/acme', '/var/www/acme/prev', '/var/www/acme/prev/live', '/var/www/acme/prev/live/docker-compose.yml',
+                '/var/www/acme/live', '/var/www/acme/next', '/var/www/acme/next/live', '/var/www/acme.next', '/var/www/acme.git', '/var/www/acme.git/.git',
+            ],
+        })
+        const project = t.deps.registry().projects.get('acme')!
+        const record = await runDeploy(project, project.environments.get('live')!, manual, t.deps)
+        assert.equal(record.outcome, 'ok', record.reason ?? '')
+        const resume = resumeOf(t.calls)
+        assert.deepEqual(resume.filter(call => /^(move|rmdir|mkdir|compose)/.test(call)), [
+            'move /var/www/acme.git /var/www/acme/git',
+            'rmdir /var/www/acme/next/live',
+            'move /var/www/acme/live /var/www/acme/next/live',
+            'rmdir /var/www/acme.next',
+            'move /var/www/acme/prev/live /var/www/acme/live',
+            'compose up',
+        ])
+        neverRemovesTheSite(resume)
+    })
+
+    it('builds a waiting test from the shared repository, then moves it beside live', async () => {
+        const t = setup({
+            migrateLayout: true, registryYaml: REGISTRY_YAML_TEST,
+            existsPaths: ['/var/www/acme', '/var/www/acme/git/.git', '/var/www/acme/live', '/var/www/acme-test', '/var/www/acme-test.git', '/var/www/acme-test.git/.git'],
+            owners: { '/var/www/acme': { uid: 1000, gid: 1000, mode: 0o775 }, '/var/www/acme-test': { uid: 1000, gid: 1000, mode: 0o775 } },
+            envTree: { '/var/www/acme-test/.env': 'X=1\n' },
+        })
+        const project = t.deps.registry().projects.get('acme')!
+        const record = await runDeploy(project, project.environments.get('test')!, manual, t.deps)
+        assert.equal(record.outcome, 'ok')
+        assert.ok(t.fetchRequests.every(request => !('dir' in request) || request.dir === '/var/www/acme/git'))
+        assert.ok(t.calls.includes('move /var/www/acme-test /var/www/acme/prev/test'))
+        assert.ok(t.calls.includes('move /var/www/acme/next/test /var/www/acme/test'))
+        const testEnv = t.deps.registry().projects.get('acme')!.environments.get('test')!
+        assert.equal(testEnv.dir, '/var/www/acme/test')
+        assert.equal(testEnv.composeName, 'acme-test')
+        assert.ok(t.calls.indexOf('rmdir /var/www/acme-test.git') > t.calls.lastIndexOf('registry-write'))
+    })
+
+    it('deploys a nested environment through next/<env> and prev/<env>', async () => {
+        const t = setup({
+            registryYaml: REGISTRY_YAML_NESTED,
+            existsPaths: ['/var/www/acme', '/var/www/acme/git/.git', '/var/www/acme/test'],
+            owners: { '/var/www/acme': { uid: 1000, gid: 1000, mode: 0o775 }, '/var/www/acme/test': { uid: 1000, gid: 1000, mode: 0o775 } },
+            envTree: { '/var/www/acme/test/.env': 'X=1\n' },
+        })
+        const project = t.deps.registry().projects.get('acme')!
+        const record = await runDeploy(project, project.environments.get('test')!, manual, t.deps)
+        assert.equal(record.outcome, 'ok')
+        assert.ok(t.calls.includes('mkdir /var/www/acme/next'))
+        assert.ok(t.calls.includes('move /var/www/acme/test /var/www/acme/prev/test'))
+        assert.ok(t.calls.includes('move /var/www/acme/next/test /var/www/acme/test'))
+    })
+
+    // The state a failed set-layout, or a stop between the window and the write, leaves: the registry
+    // says flat, and the repository is only in the nested layout. The poller has to find it there, or it
+    // skips the site on every poll and the deploy that records the move is never started.
+    it('polls a live that moved but was never recorded from the nested repository', async () => {
+        const t = setup({ existsPaths: ['/var/www/acme', '/var/www/acme/live', '/var/www/acme/git/.git'] })
+        const project = t.deps.registry().projects.get('acme')!
+        const result = await currentTip(project, project.environments.get('live')!, t.deps)
+        assert.deepEqual(result, { ok: true, commit: TIP })
+        assert.deepEqual(t.fetchRequests[0], { verb: 'fetch', dir: '/var/www/acme/git', branch: 'main', credential: null })
+    })
+
+    it('only records a move that finished on disk, with no flag of its own, then deploys nested', async () => {
+        const t = setup({ existsPaths: ['/var/www/acme', '/var/www/acme/live', '/var/www/acme/git/.git'] })
+        const project = t.deps.registry().projects.get('acme')!
+        const record = await runDeploy(project, project.environments.get('live')!, manual, t.deps)
+        assert.equal(record.outcome, 'ok', record.reason ?? '')
+        // One flag, the deploy's own window, and the move was recorded before it.
+        assert.equal(t.calls.filter(call => call === 'maintenance on').length, 1)
+        assert.ok(t.calls.indexOf('registry-write') < t.calls.indexOf('maintenance on'))
+        assert.equal(t.calls.slice(0, t.calls.indexOf('maintenance on')).some(call => call.startsWith('move')), false)
+        assert.equal(t.deps.registry().projects.get('acme')!.environments.get('live')!.dir, '/var/www/acme/live')
+        assert.ok(t.calls.includes('move /var/www/acme/next/live /var/www/acme/live'))
+    })
+
+    // A stop between the window's last rename and its up leaves the site on disk as a finished move with
+    // nothing running. The resume cannot tell that apart from a healthy move whose registry write failed,
+    // so it always starts the nested tree, which changes nothing for one already running.
+    it('starts a move that finished on disk once, where it now lives, before the deploy goes on', async () => {
+        const t = setup({ existsPaths: ['/var/www/acme', '/var/www/acme/live', '/var/www/acme/git/.git'] })
+        const project = t.deps.registry().projects.get('acme')!
+        const record = await runDeploy(project, project.environments.get('live')!, manual, t.deps)
+        assert.equal(record.outcome, 'ok', record.reason ?? '')
+        const before = t.calls.slice(0, t.calls.indexOf('fetcher fetch'))
+        assert.deepEqual(before.filter(call => call.startsWith('compose')), ['compose up'])
+        assert.ok(before.indexOf('compose up') < before.indexOf('registry-write'))
+        assert.deepEqual(t.composeRuns[0]!.slice(0, 5), ['compose', '--project-name', 'acme', '--project-directory', '/var/www/acme/live'])
+        assert.ok(t.composeRuns[0]!.includes('--no-build'))
+    })
+
+    it('logs a resumed move that will not start, and deploys anyway', async () => {
+        const t = setup({ existsPaths: ['/var/www/acme', '/var/www/acme/live', '/var/www/acme/git/.git'], composeResults: { up: { exitCode: 1 } } })
+        const project = t.deps.registry().projects.get('acme')!
+        await runDeploy(project, project.environments.get('live')!, manual, t.deps)
+        assert.ok(t.logs.some(line => line.includes('/var/www/acme/live did not start')))
+        assert.equal(t.deps.registry().projects.get('acme')!.environments.get('live')!.dir, '/var/www/acme/live')
+        assert.ok(t.fetchRequests.some(request => request.verb === 'checkout'))
+    })
+
+    it('fails, without deploying, when the registry cannot record a resumed move', async () => {
+        const t = setup({ registryWriteFails: true, existsPaths: ['/var/www/acme', '/var/www/acme/live', '/var/www/acme/git/.git'] })
+        const project = t.deps.registry().projects.get('acme')!
+        const record = await runDeploy(project, project.environments.get('live')!, manual, t.deps)
+        assert.equal(record.outcome, 'failed')
+        assert.match(record.reason ?? '', /migrated, but the registry could not be updated/)
+        assert.equal(t.fetchRequests.some(request => request.verb === 'checkout'), false)
+        assert.equal(t.calls.includes('maintenance on'), false)
+    })
+
+    // Deploying it flat would rename a folder hostd cannot read to .prev, and the deploy after that would
+    // delete it. So the deploy is refused, whether or not migration is on, and the operator looks.
+    for (const migrateLayout of [true, false]) {
+        it(`refuses to deploy a live folder that is neither layout, touching nothing (migration ${migrateLayout ? 'on' : 'off'})`, async () => {
+            const t = setup({ migrateLayout, existsPaths: ['/var/www/acme/.git'] })
+            const project = t.deps.registry().projects.get('acme')!
+            const record = await runDeploy(project, project.environments.get('live')!, manual, t.deps)
+            assert.equal(record.outcome, 'failed')
+            assert.match(record.reason ?? '', /\/var\/www\/acme is neither flat nor nested/)
+            assert.equal(t.fetchRequests.length, 0)
+            assert.equal(t.calls.some(call => call.startsWith('move') || call.startsWith('rmdir') || call.startsWith('compose')), false)
+            assert.equal(t.calls.includes('maintenance on'), false)
+            assert.equal(t.deps.registry().projects.get('acme')!.environments.get('live')!.dir, '/var/www/acme')
+        })
+    }
+
+    // A test whose undo stopped leaves its old tree at prev/test and nothing at either of its own places.
+    it('refuses to deploy a test that is neither layout, leaving its old tree at prev/test', async () => {
+        const t = setup({
+            migrateLayout: true, registryYaml: REGISTRY_YAML_TEST,
+            existsPaths: ['/var/www/acme', '/var/www/acme/git/.git', '/var/www/acme/live', '/var/www/acme/prev/test', '/var/www/acme-test.git/.git'],
+        })
+        const project = t.deps.registry().projects.get('acme')!
+        const record = await runDeploy(project, project.environments.get('test')!, manual, t.deps)
+        assert.equal(record.outcome, 'failed')
+        assert.match(record.reason ?? '', /neither flat nor nested/)
+        assert.equal(t.fetchRequests.length, 0)
+        assert.equal(t.calls.some(call => call.startsWith('move') || call.startsWith('rmdir') || call.startsWith('compose')), false)
+        assert.ok(t.exists.has('/var/www/acme/prev/test'))
+    })
+
+    it('says the registry could not record the move when set-layout fails after the window', async () => {
+        const t = setup({ migrateLayout: true, registryWriteFails: true, existsPaths: ['/var/www/acme/.git', '/var/www/acme/docker-compose.yml'] })
+        const project = t.deps.registry().projects.get('acme')!
+        const record = await runDeploy(project, project.environments.get('live')!, manual, t.deps)
+        assert.equal(record.outcome, 'failed')
+        assert.match(record.reason ?? '', /deployed and moved to \/var\/www\/acme, but the registry could not be updated/)
+        assert.equal(t.deps.registry().projects.get('acme')!.environments.get('live')!.deployed, 'abc1234')
+    })
+
+    it('keeps a migrated rollback rolled back when set-layout fails, and says so', async () => {
+        const t = setup({
+            migrateLayout: true, registryWriteFails: true, containerState: { state: 'exited' },
+            existsPaths: ['/var/www/acme/.git', '/var/www/acme/docker-compose.yml'],
+        })
+        const project = t.deps.registry().projects.get('acme')!
+        const record = await runDeploy(project, project.environments.get('live')!, manual, t.deps)
+        assert.equal(record.outcome, 'rolled-back')
+        assert.match(record.reason ?? '', /rolled back to the previous copy; moved to \/var\/www\/acme, but the registry could not be updated/)
+    })
+
+    // Recursive removal of the folders the move made, after a move back out of them failed, would take
+    // the site's own tree (at prev/live) with it. The undo stops instead, and the next deploy goes on.
+    it('stops an undo it cannot finish, removes nothing, and the next deploy completes the move', async () => {
+        const t = setup({ migrateLayout: true, existsPaths: ['/var/www/acme/.git', '/var/www/acme/docker-compose.yml'] })
+        const move = t.deps.fs.move
+        t.deps.fs.move = async (from, to) => {
+            if (to === '/var/www/acme/live' || (from === '/var/www/acme/prev/live' && to === '/var/www/acme.migrating')) throw new Error('EXDEV')
+            return move(from, to)
+        }
+        let project = t.deps.registry().projects.get('acme')!
+        const first = await runDeploy(project, project.environments.get('live')!, manual, t.deps)
+        assert.equal(first.outcome, 'failed')
+        assert.match(first.reason ?? '', /moving to \/var\/www\/acme failed at .*; the undo did not finish either, so the next deploy completes the move/)
+        assert.equal(t.calls.some(call => call === 'rmdir /var/www/acme' || call === 'rmdir /var/www/acme/prev' || call.startsWith('rmdir-empty')), false)
+        assert.equal(t.calls.includes('compose up'), false)
+        assert.equal(t.maintenance.size, 0)
+
+        t.deps.fs.move = move
+        project = t.deps.registry().projects.get('acme')!
+        const second = await runDeploy(project, project.environments.get('live')!, manual, t.deps)
+        assert.equal(second.outcome, 'ok', second.reason ?? '')
+        assert.equal(t.deps.registry().projects.get('acme')!.environments.get('live')!.dir, '/var/www/acme/live')
     })
 })
