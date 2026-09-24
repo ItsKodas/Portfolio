@@ -13,13 +13,14 @@ import { randomBytes } from 'node:crypto'
 
 import { PROJECT_ID, CLIENT_ID, HOSTNAME, RESERVED_PROJECT_IDS, describeError } from '../shared/formats.ts'
 import {
-    GIT_REF, GIT_REPO, DEFAULT_PORT_ENV,
+    GIT_REF, GIT_REPO, DEFAULT_PORT_ENV, PORT_OVERRIDE_FILE,
     type CertificateMode, type EnvironmentEntry, type EnvironmentName, type ProjectEntry, type Registry,
 } from '../shared/registry.ts'
 import type { OwnPort, PortVerdict } from '../shared/ports.ts'
 import { RegistryWriter, type Change } from '../shared/registry-write.ts'
 import type { FetchClient } from './fetch-client.ts'
-import { runLifecycle, type GuessedService, type Runner } from './compose.ts'
+import { runLifecycle, type ComposeLocation, type GuessedService, type Runner } from './compose.ts'
+import type { PortOverrideResult } from './port-override.ts'
 import { listEnvFiles, readEnvFile, writeEnvFile, createMissingEnvFiles, type EnvFs } from './env-files.ts'
 import { isExampleName } from '../shared/envfiles.ts'
 import { isNestedDir, nestedDir, siteOf } from '../shared/layout.ts'
@@ -57,6 +58,12 @@ export type ProvisionDeps = {
     // Writes <key>=<port> into the environment's root .env (port-env.ts), answering what was there. A
     // dependency rather than a direct call, so a test never writes to a real /var/www.
     setPortEnv: (environment: EnvironmentEntry, key: string, port: number) => Promise<{ ok: true, previous: string | null } | { ok: false, problem: string }>
+    // Writes hostd.ports.yml into location.dir from the environment's own compose files and answers its
+    // full compose list, override last (port-override.ts). A dependency so a test never runs compose or
+    // writes into a real /var/www.
+    portOverride: (location: ComposeLocation, portEnv: string) => Promise<PortOverrideResult>
+    // Removes an environment's hostd.ports.yml, for a port change's undo. A file already gone is not an error.
+    removePortOverride: (dir: string) => Promise<void>
     // Never recursive: a missing parent is a refusal, not something to make on the way.
     mkdir(dir: string): Promise<void>
     // A plain rename, only ever within one site folder: how a new site's repository leaves live/.git for
@@ -121,10 +128,10 @@ function invalidRegistryProblem(registry: Registry): string | null {
     return `fix these invalid projects before provisioning: ${[...registry.invalid.keys()].sort().join(', ')}`
 }
 
-// Said the same way by create, add-environment and a port change, so the operator always learns what the
-// compose file has to say, not only that it did not say it.
-export function notPublishedProblem(key: string, port: number): string {
-    return `no service publishes port ${port}; publish \${${key}} in the compose file, like "127.0.0.1:\${${key}}:3000"`
+// Said the same way by create, add-environment and a port change. hostd wrote the override itself, so
+// this only happens when it did not take effect, and the operator is pointed at the file, not the repo.
+export function notPublishedProblem(dir: string, port: number): string {
+    return `hostd could not publish port ${port} (its override did not take effect); check ${PORT_OVERRIDE_FILE} in ${dir}`
 }
 
 function isDatabaseKey(key: string): boolean {
@@ -233,14 +240,15 @@ type ProvisionAttempt = {
     // Runs after a successful clone or checkout, before resolve. A no-op for create; addEnvironment copies
     // and rewrites env files here, using the composePath's directory as the new test folder.
     afterClone: (composePath: string) => Promise<{ ok: true } | { ok: false, problem: string }>
-    // Given the services resolve found (each guessed site or database), attempts the registry write. Only
+    // Given the services resolve found (each guessed site or database) and the environment's compose
+    // list relative to dir (the repo's files, then hostd.ports.yml), attempts the registry write. Only
     // createProject's services are ever non-empty going in; addEnvironment's write ignores the argument.
     // `conflict: true` on a failure (set by registry-write.ts's own edit(), not guessed from the message
     // text) means someone else's entry already claims this id or environment: the folder this call made
     // is then not this call's to remove, because it may not even be this call's folder any more. The
     // single global provisioning lock in agent.ts is the primary defense against that race; this is the
     // fallback for whatever reaches the write despite it.
-    write: (services: Record<string, GuessedService>) => Promise<{ ok: true } | { ok: false, problem: string, conflict?: true }>
+    write: (services: Record<string, GuessedService>, compose: string[]) => Promise<{ ok: true } | { ok: false, problem: string, conflict?: true }>
 }
 
 // The mkdir/clone/resolve/write sequence shared by createProject and addEnvironment: the exact ordering
@@ -347,6 +355,16 @@ async function provisionOnDisk(attempt: ProvisionAttempt, deps: ProvisionDeps): 
             return refuse('failed', portWritten.problem)
         }
 
+        // After the port is in .env, which the repo's own mappings may read, and before own, so the new
+        // file is owned with the rest of the tree
+        const override = await deps.portOverride({ dir, composePaths, composeName: attempt.composeName }, attempt.portEnv)
+        if (!override.ok) {
+            await rollback('publishing the port failed')
+            return refuse('invalid-project', override.problem)
+        }
+        deps.log(`provision ${id}: published ${attempt.port} to ${override.service}:${override.target}`)
+        const merged = override.composePaths
+
         // Everything under `root` is root's until here: the clone or checkout ran as root in the fetcher,
         // the repository split out beside a new live moved with it, and the env files afterClone just
         // created or copied were written as root by this process, into a directory
@@ -365,7 +383,7 @@ async function provisionOnDisk(attempt: ProvisionAttempt, deps: ProvisionDeps): 
         // <id>-test for a nested test, and the folder basename for a flat test (/var/www/<id>-test).
         // Comparing test's resolved name against the bare id would refuse the ordinary case for every
         // repo.
-        const resolved = await deps.resolve(attempt.composeName, dir, composePaths, attempt.collidesWith)
+        const resolved = await deps.resolve(attempt.composeName, dir, merged, attempt.collidesWith)
         if (!resolved.ok) {
             // Named plainly, both in the log and the refusal: this is docker compose's own error (a
             // missing env_file, a syntax error, a command that could not run), not "no site service",
@@ -379,10 +397,10 @@ async function provisionOnDisk(attempt: ProvisionAttempt, deps: ProvisionDeps): 
         }
         if (!resolved.published.includes(attempt.port)) {
             await rollback(`compose does not publish port ${attempt.port}`)
-            return refuse('invalid-project', notPublishedProblem(attempt.portEnv, attempt.port))
+            return refuse('invalid-project', notPublishedProblem(dir, attempt.port))
         }
 
-        const written = await attempt.write(resolved.services)
+        const written = await attempt.write(resolved.services, merged.map(path => posix.relative(dir, path)))
         if (!written.ok) {
             if (written.conflict) {
                 deps.log(`provision ${id}: registry write failed, leaving ${root} in place (already claimed)`)
@@ -393,7 +411,7 @@ async function provisionOnDisk(attempt: ProvisionAttempt, deps: ProvisionDeps): 
         }
 
         deps.log(`provision ${id}: created`)
-        return { ok: true, composePaths }
+        return { ok: true, composePaths: merged }
     } catch (error) {
         await rollback(`unexpected error (${describeError(error)})`)
         return refuse('failed', describeError(error))
@@ -465,7 +483,7 @@ export async function createProject(args: ProvisionCreateArgs, deps: ProvisionDe
             for (const path of created) deps.log(`provision ${args.id}: created an empty ${path} for its .example`)
             return { ok: true }
         },
-        write: services => deps.writer.write({
+        write: (services, written) => deps.writer.write({
             kind: 'add-project',
             id: args.id,
             project: {
@@ -477,7 +495,7 @@ export async function createProject(args: ProvisionCreateArgs, deps: ProvisionDe
                 services,
                 environment: {
                     name: 'live', dir, branch: args.branch, domain: args.domain, aliases: [], port: port.port, certificate: args.certificate,
-                    compose, ...flags,
+                    compose: written, ...flags,
                 },
             },
         }),
@@ -559,10 +577,10 @@ export async function addEnvironment(project: ProjectEntry, args: ProvisionAddEn
             for (const path of created) deps.log(`provision ${project.id}: created an empty ${path} for its .example`)
             return { ok: true }
         },
-        write: () => deps.writer.write({
+        write: (_services, written) => deps.writer.write({
             kind: 'add-environment',
             id: project.id,
-            environment: { name: 'test', dir, branch: args.branch, domain: args.domain, aliases: [], port: port.port, certificate: args.certificate },
+            environment: { name: 'test', dir, branch: args.branch, domain: args.domain, aliases: [], port: port.port, certificate: args.certificate, compose: written },
         }),
     }, deps)
     if (!attempt.ok) return attempt

@@ -130,6 +130,9 @@ export function isComposeService(entry: ServiceEntry): boolean {
 // Compose merges -f files left to right, so the registry's order is the operator's order. The cap keeps
 // the argv bounded: a base file and a handful of overrides is every real shape of this.
 export const MAX_COMPOSE_FILES = 8
+// The compose file hostd writes into every environment it provisions, moves or deploys, listed last so it
+// merges over the repo's own (see agent/port-override.ts). Counted in MAX_COMPOSE_FILES like any other.
+export const PORT_OVERRIDE_FILE = 'hostd.ports.yml'
 const DEFAULT_COMPOSE = ['docker-compose.yml']
 
 const DEFAULT_OFFSITE_KEEP: Keep = { daily: 14, weekly: 8, monthly: 6 }

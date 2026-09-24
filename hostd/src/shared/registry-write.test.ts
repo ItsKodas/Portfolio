@@ -319,6 +319,30 @@ describe('set-port', () => {
         assert.ok(back.ok, back.ok ? '' : back.problem)
         assert.equal(parseRegistry(back.text).projects.get('arbysauto')?.environments.get('live')?.port, 5011)
     })
+
+    // A port change on a site created before hostd.ports.yml adds it to the environment's list in the same
+    // write as the port, so the two can never disagree
+    it('writes the compose list beside the port when given one', () => {
+        const result = applyChange(BASE, { kind: 'set-port', id: 'acme', environment: 'live', port: 5099, compose: ['docker-compose.yml', 'hostd.ports.yml'] })
+        assert.equal(result.ok, true)
+        const live = parseRegistry(result.ok ? result.text : '').projects.get('acme')?.environments.get('live')
+        assert.equal(live?.port, 5099)
+        assert.deepEqual(live?.composePaths, ['/var/www/acme/docker-compose.yml', '/var/www/acme/hostd.ports.yml'])
+    })
+
+    it('puts the default list back as no compose key at all', () => {
+        const added = applyChange(BASE, { kind: 'set-port', id: 'acme', environment: 'live', port: 5099, compose: ['docker-compose.yml', 'hostd.ports.yml'] })
+        const undone = applyChange(added.ok ? added.text : '', { kind: 'set-port', id: 'acme', environment: 'live', port: 5010, compose: ['docker-compose.yml'] })
+        assert.equal(undone.ok, true)
+        assert.doesNotMatch(undone.ok ? undone.text : '', /compose/)
+    })
+
+    it('leaves the compose list alone when given none', () => {
+        const added = applyChange(BASE, { kind: 'set-port', id: 'acme', environment: 'live', port: 5099, compose: ['docker-compose.yml', 'hostd.ports.yml'] })
+        const moved = applyChange(added.ok ? added.text : '', { kind: 'set-port', id: 'acme', environment: 'live', port: 5098 })
+        assert.deepEqual(parseRegistry(moved.ok ? moved.text : '').projects.get('acme')?.environments.get('live')?.composePaths,
+            ['/var/www/acme/docker-compose.yml', '/var/www/acme/hostd.ports.yml'])
+    })
 })
 
 describe('configure', () => {

@@ -72,21 +72,24 @@ exists), from 5000 to 65535, and refuses a port another environment has or anyth
 listening on.
 
 hostd writes it into the environment's root `.env` as `WEB_PORT=<port>` (or the variable the registry
-entry's `portEnv` names). The site's compose file has to publish it, for example
-`ports: ["127.0.0.1:${WEB_PORT}:3000"]`. Create, add-environment and a port change all refuse a compose
-file that does not.
+entry's `portEnv` names), and publishes it itself: every environment it creates gets a compose file of
+hostd's own, `hostd.ports.yml`, listed last in its compose list. It gives the site's service
+`ports: !override ["127.0.0.1:${WEB_PORT}:<container port>"]` and every other service `ports: !reset []`,
+so whatever the repo's compose file publishes, the panel's port is the only host port the site has.
+The container port is the one the repo's first mapping resolves to, or its `expose` entry. Services still
+reach each other by service name. Every deploy rebuilds the file from the commit going out.
 
-To move an existing site that hard codes its port, in this order, so `WEB_PORT` is never empty while
-compose reads it:
+hostd refuses (and a deploy fails before building) when it cannot tell which service is the site, when
+that service names no container port (add `expose: ["3000"]` to it), or when it uses
+`network_mode: host`. Do not edit `hostd.ports.yml` by hand: the next deploy rewrites it.
 
-1. Add `WEB_PORT=<current port>` to the environment's `.env` from the Env tab. (Or write the compose
-   file as `${WEB_PORT:-<current port>}`, which falls back to the current port on its own.)
-2. Change the compose file to publish `${WEB_PORT}`, for example `"127.0.0.1:${WEB_PORT}:3000"`.
-3. Deploy, and check the site still answers on its current port.
-4. If the domain is still served by a hand-written vhost, adopt it from the Domains tab. A port change
+To move an existing site onto a port the panel chose:
+
+1. If the domain is still served by a hand-written vhost, adopt it from the Domains tab. A port change
    refuses an environment whose domain hostd has no vhost file for (`<domain> is served by a
    hand-written vhost; ...`), since Apache would go on proxying to the old port.
-5. Change the port in Settings.
+2. Change the port in Settings. For a site without `hostd.ports.yml` yet, this writes it and adds it to
+   the environment's compose list, then recreates the containers.
 
 How the check sees host services: the agent runs a throwaway `--network host` container from its own
 image that reads `/proc/net/tcp` and, when the host has IPv6, `/proc/net/tcp6`. If that fails, provisioning and port changes are

@@ -80,7 +80,9 @@ export type Change =
     | { kind: 'set-layout', id: string, environment: EnvironmentName, dir: string, composeName: string }
     // The environment's port, which the vhost proxies to and the site's .env publishes. Whether it is
     // free on the host is the agent's check; whether it is unique in the registry is parseRegistry's.
-    | { kind: 'set-port', id: string, environment: EnvironmentName, port: number }
+    // compose, relative to the environment's dir, is written in the same edit when given: a port change
+    // is what adds hostd.ports.yml to an environment created before it, and its undo takes it away.
+    | { kind: 'set-port', id: string, environment: EnvironmentName, port: number, compose?: string[] }
     // One kind rather than three, because a write takes one Change: three would be three reads, three
     // validations, three files on disk and a half-applied save if the second failed. Absent fields are
     // left alone; a null repo or branch deletes that key.
@@ -289,6 +291,12 @@ function edit(doc: Document, change: Change): EditResult {
                 return { problem: `${change.id} has no ${change.environment} environment` }
             }
             doc.setIn(['projects', change.id, 'environments', change.environment, 'port'], change.port)
+            if (change.compose) {
+                // The same rule environmentNode follows: the default list alone is written as no key
+                const path = ['projects', change.id, 'environments', change.environment, 'compose']
+                if (change.compose.length === 1 && change.compose[0] === 'docker-compose.yml') doc.deleteIn(path)
+                else doc.setIn(path, flowList(doc, change.compose))
+            }
             return null
         }
         case 'configure': {
