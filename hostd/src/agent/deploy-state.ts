@@ -85,6 +85,12 @@ export class DeployStore {
         await this.save()
     }
 
+    // What the purge of a deleted environment does, so a new environment of that name starts clean
+    async forget(key: string): Promise<void> {
+        if (!this.environments.delete(key)) return
+        await this.save()
+    }
+
     private async save(): Promise<void> {
         const saved: Saved = { environments: Object.fromEntries(this.environments) }
         // Same directory, so the rename is atomic, and a random suffix with 'wx' (O_CREAT | O_EXCL) so

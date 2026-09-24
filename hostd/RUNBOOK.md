@@ -389,17 +389,18 @@ straight into `<that folder>/live`, then moves the clone's own `.git` out into `
 before the project is even registered. There is no separate migration to wait for; a created site never
 sees the flat layout at all.
 
-`add-environment` (below) follows that: on a nested live it makes `<site>/test` as a worktree of the
+`add-environment` (see **Environments**) follows that: it makes `<site>/<name>` as a worktree of the
 already-shared `<site>/git`, rather than a second clone, and refuses with `<site>/git has no repository to
-add test from` if that repository is somehow missing (nothing but a hand edit should ever cause this, since
-`create` always moves it there). On a flat live it still makes a separate clone at `/var/www/<dir>-test`,
-exactly as before nesting; that test environment moves into the nested layout itself only once its own live
-has (see **Moving a site into the nested layout**).
+add <name> from` if that repository is somehow missing (nothing but a hand edit should ever cause this,
+since `create` always moves it there). A flat live gets no new environments at all: the add is refused
+until live has moved into the nested layout (deploy it once). An existing flat test environment keeps
+working, and moves into the nested layout itself only once its own live has (see **Moving a site into the
+nested layout**).
 
 **Who a created site belongs to.** The clone runs as root inside `hostd-fetcher`, so everything it writes
 starts out root-owned. `create` fixes that before it registers anything, by giving the whole new tree the
-ownership and mode **`/var/www` itself** has; `add-environment` uses the project's own live folder
-instead, since the test tree sits beside it. Neither is guessed: both are read off the directory at the
+ownership and mode **`/var/www` itself** has; `add-environment` uses the site folder instead, since the
+new environment's tree sits inside it. Neither is guessed: both are read off the directory at the
 time. So if you want created sites to belong to you rather than to root, `/var/www` has to belong to you
 first (`stat -c '%U:%G %a' /var/www` to check). A site left root-owned still runs, but you cannot read or
 edit its files without `sudo`, which is the one thing that makes it behave differently from a site
@@ -453,18 +454,16 @@ already correct whatever `create` left behind.
    hc -X POST http://hostd-api:8080/projects/acme-bakery/start
    ```
 
-Adding a test environment later is `POST /projects/acme-bakery/environments` with `branch`, `domain` and
-`certificate` (see the note above on whether this lands as a worktree of the shared repository or a
-separate clone, depending on whether live is already nested), then the same review and env steps (2 to 5
-above) against the new `test` environment:
-correct any wrongly-guessed service role, set its capabilities, add its storage, list and fill its env
-files. **Do not run step 6 against it, and do not start it by hand either.** There is no per-environment
+Adding another environment later (`uat1`, `staging`, any name the rule allows) is covered in
+**Environments**, below: `POST /projects/acme-bakery/environments` with `name`, `branch` and an optional
+`domain`, then the env steps (4 and 5 above) against the new environment: list and fill its env files.
+**Do not run step 6 against it, and do not start it by hand either.** There is no per-environment
 lifecycle yet: every lifecycle verb, and the compose argv it builds, only ever resolves the project's
 `live` folder. Start it with a deploy instead (see **Deploying**), which pins the compose project name to
-the test folder's own name. Starting it by hand is actively dangerous for exactly the repos step 1 above
-tells you to pin a `name:` into: running `docker compose up -d` in the test folder then resolves to that
-same fixed compose project name, which is also live's, and takes over live's already-running containers
-instead of starting a separate test stack.
+the environment's own, `<id>-<name>`. Starting it by hand is actively dangerous for exactly the repos
+step 1 above tells you to pin a `name:` into: running `docker compose up -d` in its folder then resolves to
+that same fixed compose project name, which is also live's, and takes over live's already-running
+containers instead of starting a separate stack.
 
 ## Deploying
 
@@ -526,16 +525,16 @@ one on demand (see **Moving a site into the nested layout**, below).
 
 | | flat | nested |
 | --- | --- | --- |
-| running copy | `<dir>` | `<site>/live`, `<site>/test` |
-| previous copy | `<dir>.prev` | `<site>/prev/live`, `<site>/prev/test` |
-| build in progress | `<dir>.next` | `<site>/next/live`, `<site>/next/test` |
+| running copy | `<dir>` | `<site>/live`, `<site>/<env>` |
+| previous copy | `<dir>.prev` | `<site>/prev/live`, `<site>/prev/<env>` |
+| build in progress | `<dir>.next` | `<site>/next/live`, `<site>/next/<env>` |
 | Git repository | `<dir>.git` (a separate clone for test, `<dir>-test.git`) | `<site>/git`, shared by every environment |
 
 `<site>` is the flat live folder's own name (not always the project id: `dir` at creation can differ). In
 the flat layout the repository is moved out of `<dir>` into `<dir>.git` by the first deploy, once, because
 a swap renames `<dir>` and would otherwise carry the repository into `.prev` and delete it on the next
-deploy. A nested site's `live`, `test`, `prev/live`, `prev/test`, `next/live` and `next/test` take the
-owner and mode of the flat live tree they replace, read from disk. A deploy refuses to start with less
+deploy. A nested site's `live`, `prev/live` and `next/live` (and the same three for each other
+environment) take the owner and mode of the flat live tree they replace, read from disk. A deploy refuses to start with less
 than 10 GB free.
 
 A nested site's environments share the one `git/` repository, so hostd runs git commands against a given
@@ -579,9 +578,9 @@ timeout is 150 seconds. Read `/deploys` for the outcome. A rollback rebuilds the
 than reusing the kept image, so it takes about as long as a deploy; only the automatic rollback after a
 failed health check uses the kept copy, which is what makes it seconds rather than minutes.
 
-Deploying is the supported way to start a `test` environment: it pins the compose project name to the
-environment's own folder name, so a repo whose compose file pins `name:` still gets a separate stack
-rather than taking over live's containers. Lifecycle (`start`, `stop`, `restart`) still only ever reaches
+Deploying is the supported way to start any environment other than `live`: it pins the compose project
+name to the environment's own (`<id>-<env>` once nested), so a repo whose compose file pins `name:` still
+gets a separate stack rather than taking over live's containers. Lifecycle (`start`, `stop`, `restart`) still only ever reaches
 `live`.
 
 ## Moving a site into the nested layout
@@ -682,6 +681,243 @@ undo itself cannot complete a step, it stops there and records the deploy `faile
 deploy then sees is the third row above (or the first, if the undo stopped with the tree still at
 `<site>.migrating`). For test, it is the refusal above: the old tree waits at `<site>/prev/test` for the
 operator to put back.
+
+## Environments
+
+Every site has `live`. A nested site can have any number of other environments beside it (`uat1`,
+`staging`, `test`), each on its own branch, port, compose project and hostnames. They are added, deleted
+and restored from the site's Settings tab in the portal, or with the calls below. All of it is admin-only
+and needs `provision` in the project's capabilities; a client sees the environments but can do none of
+this.
+
+### Names
+
+An environment name is a lowercase letter followed by up to 15 lowercase letters or digits
+(`^[a-z][a-z0-9]{0,15}$`). There is no hyphen, on purpose: hostd joins `<id>-<env>` into maintenance flag
+names, vhost file names (`<id>-<env>.conf`) and compose project names, and a project id may hold hyphens.
+With hyphens in both, `acme` plus `test-live` would collide with `acme-test` plus `live`; without them in
+the environment name, the last hyphen always splits the two.
+
+Five names are reserved and are never valid:
+
+| Name | Why |
+| --- | --- |
+| `git` | A folder of the nested layout: `<site>/git` is the repository every environment shares. |
+| `next` | A folder of the nested layout: a deploy builds in `<site>/next/<env>`. |
+| `prev` | A folder of the nested layout: a deploy keeps the previous copy in `<site>/prev/<env>`. |
+| `environments` | A route segment: api matches `/projects/<id>/environments` before an environment. |
+| `backups` | A route segment: api matches `/projects/<id>/backups` before an environment. |
+
+`live` is a valid name, because every project has it, but it can never be added, deleted or restored: it
+goes when the whole site does. `test` is an ordinary name like any other.
+
+### Adding one
+
+```bash
+hc -X POST http://hostd-api:8080/projects/acme/environments \
+  -H 'Content-Type: application/json' \
+  -d '{"name":"uat1","branch":"develop","domain":"uat1.acme.com"}'
+```
+
+`domain` may be `null`, and `certificate` is optional (the same values as a create). Only a nested site
+can have one: on a flat live the add is refused with `deploy live once so it moves into the nested layout,
+then add environments`.
+
+1. It refuses first, before touching anything: `live`, an invalid or reserved name, a name the project
+   already has, a name still in the trash (see **A name stays taken until its purge**), a missing
+   `<site>/git/.git`, a `<site>/<name>` already on disk, any invalid project in the registry, a domain
+   anything already serves (as a primary or an alias, this site's own environments included), and a
+   compose name another registered environment already runs under. That last one can happen because ids
+   may hold a hyphen: project `acme-uat1` runs as `acme-uat1`, which is exactly what `acme` plus `uat1`
+   would run as, and the refusal names both.
+2. It chooses a free port, the same way a create does (see **A site's port**).
+3. It fetches the branch into `<site>/git` and adds a worktree at `<site>/<name>` at its tip.
+4. It copies live's env files in (never an `.example`, which the checkout already has), rewriting two
+   things and nothing else: the database name `<id>` becomes `<id>-<name>` under keys that name a
+   database (`DATABASE_URL`, `DATABASE_NAME`, `DB_NAME`, `DB_DATABASE`, and any key ending `_DATABASE` or
+   `_DB`), and live's domain becomes the new one under keys ending `_URL`, `_HOST`, `_DOMAIN` or `_ORIGIN`
+   (only when both have a domain). An env file live never had, but the repo has an `.example` for, is
+   created empty. Then it writes the port into `.env` as `WEB_PORT` (or the project's `portEnv`), after
+   the copy so live's port cannot win, and writes `hostd.ports.yml`.
+5. It resolves compose under the name `<id>-<name>`, gives the tree the owner and mode of the site folder,
+   and registers the environment.
+6. When a domain was given, api writes its vhost straight after, as a create does for live's first. If
+   another file already serves that hostname, or Apache refuses, the environment is still added and the
+   reply's `vhost` says what is left to do from the Domains tab.
+
+A failure before the registry write removes `<site>/<name>`, which that call made, and nothing else. The
+new environment is not started, and its database starts empty (copying live's data across is not part of
+this). Deploy it once to start it (see **Deploying**), never with `docker compose up` by hand.
+
+### Its first hostname
+
+An environment added without a domain has no primary. The first hostname added to it on the Domains tab
+(pick it in the add form's Environment select, which defaults to the environment being viewed, or
+`POST /projects/<id>/<env>/domains` with `{"hostname":"..."}`) becomes its primary: it is set the way
+Settings sets a domain, its first vhost is written, and it is verified as the primary. Every hostname
+after that is an alias, as before, and `maxDomains` counts per environment.
+
+### Deleting one
+
+```bash
+hc -X DELETE http://hostd-api:8080/projects/acme/environments/uat1 \
+  -H 'Content-Type: application/json' -d '{"name":"Acme"}'
+```
+
+The body is the site's name typed back, as for removing a whole site. `live` is refused. So is an
+environment with a deploy, a port change, an env write, or another delete or restore running. Under the
+provisioning lock:
+
+1. `docker compose down --remove-orphans` under its compose name. Never `-v`: its volumes stay.
+2. Its vhost is removed, so its hostnames stop proxying to a port that is about to be free, and api drops
+   its domain verification records once the agent says it is gone.
+3. Its folders move into the site's trash, `<site>/.deleted/<env>-<unix seconds>/`: `<site>/<env>` to
+   `tree`, and `<site>/prev/<env>` and `<site>/next/<env>` to `prev` and `next` when they exist.
+   `.deleted` and the trash folder are made with the site folder's owner and mode. Every move is a rename
+   inside the site folder: nothing is copied and nothing is deleted.
+4. A record is written to `/var/lib/hostd/deleted-environments.json`, in the agent's `hostd-agent-state`
+   volume, through a temporary file and a rename: the project, the environment, `deletedAt`, the trash
+   path, the compose name, the registry entry exactly as it was, and who deleted it.
+5. The environment is removed from `projects.yaml`.
+
+A failure undoes in reverse whatever had succeeded: the record, the moves, the vhost put back, and
+`up -d --no-build`. An undo that cannot finish stops where it is, deletes nothing, and the refusal names
+what is still done.
+
+The record is kept outside `projects.yaml` on purpose: a deleted environment never counts in the
+registry's port, hostname, folder or compose name checks, so its port and hostnames are free for anything
+else meanwhile, and your own edits of the registry never see it.
+
+### Restoring one
+
+```bash
+hc http://hostd-api:8080/projects/acme/deleted-environments
+hc -X POST http://hostd-api:8080/projects/acme/deleted-environments/uat1/restore \
+  -H 'Content-Type: application/json' -d '{"deletedAt":"2026-09-24T10:00:00.000Z"}'
+```
+
+The listing gives each deleted environment's `deletedAt`, `purgeAt`, branch, domain and aliases;
+`deletedAt` says which record to restore when the same name was deleted more than once. A restore is
+refused when the project has an environment of that name again, when the record is more than 30 days old,
+when the trash folder's `tree` is gone, or when `<site>/<env>` exists.
+
+- **The port** is kept when it is still free. Otherwise a new one is chosen, and `.env` and
+  `hostd.ports.yml` are rewritten for it after the move. The reply's `portChanged` says which.
+- **The hostnames** are each kept unless another project or environment claimed it meanwhile. The taken
+  ones are dropped and listed in the reply's `droppedHostnames`; when the primary was taken, the first
+  alias kept becomes the primary.
+- `tree` moves back to `<site>/<env>`, and `prev` and `next` move back when their places are free.
+- The registry entry is written back, the vhost is written when it has a primary, and it is started with
+  `up -d --no-build`. What fails from here on (the vhost, the start) is reported beside the restore, not
+  undone: deploy it to start it.
+- The record is dropped, and the empty trash folder removed.
+
+**Leftovers.** When `prev` or `next` could not go back (its place was taken, or its parent is missing),
+it stays in the trash and the restore says so. The record is kept, marked `leftovers`: it is no longer
+listed or restorable, it does not block the name, and the purge later removes that folder and no volumes,
+since the compose name belongs to the restored environment again.
+
+A failure before the registry write moves everything back into the trash and leaves the record as it was.
+
+### The purge
+
+The agent sweeps the record every hour, and once at boot, under the same lock a delete and a restore
+take (if another provisioning action holds it, that sweep is skipped and the next one tries). For each
+record more than 30 days old:
+
+1. Its trash folder is deleted, recursively.
+2. The named volumes labelled with that environment's compose project are removed:
+   `docker volume ls --filter label=com.docker.compose.project=<compose name> -q`, then `docker volume rm`
+   for each. A volume Docker refuses to remove (still in use) keeps the record for the next sweep.
+3. The record is dropped, the environment's deploy history is forgotten, and the agent log says
+   `purge <id> <env>: removed <trash> and the volumes ...`.
+
+Nothing else is removed: no image, no container, no other folder. The purge keeps a record, deletes
+nothing of it, and logs `purge <id> <env>: kept for the next sweep: <why>` when:
+
+- the registry file is rejected (a reload failed and hostd is still on the last good version, the same
+  state `/health` warns about as `registry reload rejected`), or any project in it is invalid: either way
+  it cannot know every compose name in use;
+- the recorded compose name belongs to a registered environment;
+- the recorded trash path is not exactly `/var/www/<site>/.deleted/<env>-<seconds>`, or its real path
+  (with any symlink resolved) is not the recorded one;
+- that environment is being deleted or restored at that moment.
+
+Because the sweep is hourly, a record can outlive its 30 days by up to an hour, and longer while a volume
+refuses to go or while any of the above holds.
+
+### A name stays taken until its purge
+
+While a record for `<env>` is there, adding a new `<env>` to that project is refused with
+`<env> was deleted and is still kept for a restore; restore it or wait for it to be purged`. The old
+volumes still carry `<id>-<env>`, which is the compose name a new environment of that name would run
+under, so the name stays blocked until the purge drops the record, not merely for 30 days. A leftovers
+record does not block it.
+
+### Deploys while one moves
+
+While an environment is being deleted or restored, every deploy verb for it (deploy, rollback, a branch
+switch, and the 2-minute poll's own deploys) is refused `busy` with `<id> <env> is being deleted or
+restored`. The poller logs it and asks again on its next poll.
+
+### Restoring or purging by hand
+
+The agent holds the record in memory and writes the whole file on every change, so stop it before editing
+the file, or your edit is written over. The agent runs as root, so a file copied back with `docker cp` is
+one it can write.
+
+```bash
+docker compose stop agent
+docker cp hostd-agent:/var/lib/hostd/deleted-environments.json ./deleted-environments.json
+```
+
+**To purge early**, the safest way is to let the purge do it with every check above: set that record's
+`deletedAt` to a date more than 30 days back, copy the file back, and start the agent. The boot sweep
+purges it.
+
+```bash
+docker cp ./deleted-environments.json hostd-agent:/var/lib/hostd/deleted-environments.json
+docker compose start agent
+docker compose logs --tail 20 agent | grep purge
+```
+
+If the purge keeps refusing it and you are sure, do by hand exactly what it would, with the agent stopped:
+check nothing registered runs under the record's `composeName` (`grep` it in
+`hostd/registry/projects.yaml`, and `docker compose ls`), then remove the record's `trash` folder, which
+must be under `<site>/.deleted/`, and the volumes, then drop the entry from the file and copy it back:
+
+```bash
+sudo rm -rf /var/www/<site>/.deleted/<env>-<seconds>
+docker volume ls --filter label=com.docker.compose.project=<composeName> -q | xargs -r docker volume rm
+```
+
+**To restore by hand** (past its 30 days, or when the api refuses for a reason you have dealt with), with
+the agent stopped:
+
+1. Move `<trash>/tree` to `<site>/<env>`, and `<trash>/prev` and `<trash>/next` to `<site>/prev/<env>` and
+   `<site>/next/<env>` if you want them back.
+2. Put the record's `node` back under the project's `environments:` in `hostd/registry/projects.yaml`, as
+   `<env>:`. Check first that its port and hostnames are still free: drop any hostname something else now
+   serves, and if the port is taken, pick a free one and set it both in the entry and in the tree's
+   `.env` (the next deploy rewrites `hostd.ports.yml`).
+3. Drop the entry from the file, copy it back, and start the agent.
+4. Adopt its primary from the Domains tab to write its vhost, and deploy it to start it.
+
+### Removing a whole site
+
+Unchanged (see **What is deliberately not automatic**). The site's `/var/www/<site>` folder is left in
+place, `.deleted` included, and the records of its deleted environments stay: the purge still removes
+each one's trash folder and volumes when its time comes, since its compose name is no longer registered.
+
+Removing a whole site stops only live's compose project. Its named environments are taken off the web
+(every environment's vhost is removed) but keep running, holding their ports, until each is stopped by
+hand:
+
+```bash
+docker compose -p <id>-<env> --project-directory /var/www/<site>/<env> down
+```
+
+Never add `-v`: that deletes its volumes.
 
 ## Backups
 
@@ -1022,13 +1258,13 @@ database on a timer.
   are edited.
 - **Removing a whole project stops it first, and refuses if the stop fails.** `provision remove` runs the
   same `stop` a lifecycle call would against the live environment, then edits the registry; it never
-  unregisters a project that is still running, since nothing would then be able to stop it. Removing only
-  the test environment does not stop anything (there is no per-environment lifecycle yet, so there is
-  nothing safe for this to stop).
+  unregisters a project that is still running, since nothing would then be able to stop it. Deleting one
+  environment is a different thing, covered in **Environments**: it stops that environment and moves it
+  into the site's trash.
 - **Removing a whole project needs no capability.** `DELETE /projects/:id` is admin-only and takes the
   project's name typed back, but works whether or not the project lists `provision`, so a site the
-  portal created can be deleted from its Settings tab. Removing only the test environment still needs
-  `provision`.
+  portal created can be deleted from its Settings tab. Deleting, adding or restoring one environment
+  still needs `provision`.
 - **Removing a project leaves its folder, volumes and databases in place.** `provision remove` stops it,
   edits the registry, and takes hostd's own vhost for each environment it removed off the host; nothing
   under `/var/www` is deleted. The vhost goes because a file left behind would go on claiming those
@@ -1037,7 +1273,8 @@ database on a timer.
   be reached the removal still succeeds and the reply names the file that is still there. Clean the rest
   up by hand once you are sure: a flat site leaves `<dir>`, `<dir>.git`, `<dir>.prev` and, if it ever had
   one, `<dir>-test` and its own `.git`/`.prev` behind; a nested site leaves the single `/var/www/<site>`
-  folder (`git`, `live`, `test`, `prev/`, `next/`) instead.
+  folder (`git`, `live`, every other environment's folder, `prev/`, `next/`, and `.deleted/` if anything
+  was ever deleted) instead. None of this changed with named environments.
 
 ## Domains
 
@@ -1463,7 +1700,12 @@ the adoption that would have produced it rather than leave one behind.
 | A `create` or `add-environment` refusal `"compose resolves the project name ..., not ..."` | Same check and message as a `"valid":false` project below, but caught before anything is cloned or registered: the repo's compose file pins a `name:` that does not match the id you gave. The cloned folder was removed and nothing was registered; either add `name: <id>` to the compose file, or use the id the compose file already pins. |
 | A `create` or `add-environment` refusal `"no free port ... to ..."` | Every port from 5000 to 65535 is taken, by a registry entry or by something listening on the dedi (a published container port or any other service). In practice this means the probe misread the host: run the `ss` check under A site's port. |
 | A `create` refusal `"... is already registered"`, or an `add-environment` refusal naming a folder that `"already exists"` | The id is already taken, or its folder is already on disk under a different registration. |
-| A `create` or `add-environment` refusal `"... is already used by another project"` | The domain is already registered to a different project's environment. |
+| A `create` or `add-environment` refusal `"... is already used by another project"` (or `"... by another project or environment"`) | The domain is already registered to a different project's environment, or, for an add, to any environment at all, this site's own included, as a primary or an alias. |
+| An `add-environment` refusal `"<id> <env> would run under the compose name <id>-<env>, which <other> already uses"` | Another project's id is exactly `<id>-<env>` (ids may hold a hyphen), or a flat folder normalises to it. Pick another environment name; nothing was fetched or written. |
+| An `add-environment` refusal `"<env> was deleted and is still kept for a restore; restore it or wait for it to be purged"` | That name is in the site's trash, and stays taken until the hourly purge removes its record. Restore it, pick another name, or purge it early (see **Environments**). |
+| An `add-environment` refusal `"deploy live once so it moves into the nested layout, then add environments"` | Live is still flat. Deploy it once; the deploy moves it into the nested layout. |
+| A delete or restore refused `busy` (`"... has a deploy running"`, `"... is moving to another port"`, `"... already has an env write running ..."`) | Something else is working in that environment's folders. Wait for it to finish and try again. |
+| Agent log `purge <id> <env>: kept for the next sweep: ...` | The purge refused that record, and says why; see **The purge** under **Environments**. It tries again every hour. |
 | A `create` or `add-environment` refusal naming a Git failure | The fetcher could not clone. Check the branch exists on the remote, and that `GITHUB_TOKEN` in `.env.fetcher` can read the repo. |
 | `unknown credential <name>`, or `no credential named <name>` on a save | The registry names a credential `.env.fetcher` does not have. Add `GITHUB_TOKEN_<NAME>` there and restart the fetcher, or pick another account on the site's Settings tab. |
 | A `create` or `add-environment` refusal `"the compose file declares no services"` | The compose file has no services in it at all, not merely none marked site. The cloned folder was removed and nothing was registered. |

@@ -7,12 +7,12 @@ import 'server-only'
 import type { Caller } from './actor'
 import { hostdRequest, type HostdResult } from './client'
 import type { HostdConfig } from './config'
+import { isEnvironmentName, type EnvironmentName } from './env'
 
 export const PORT_MIN = 5000
 export const PORT_MAX = 65535
 
 export type PortCheck = { suggested: number, problem: string | null }
-type Environment = 'live' | 'test'
 
 // Matches hostd's registry id rule
 const PROJECT_ID = /^[a-z0-9][a-z0-9-]{1,30}$/
@@ -26,7 +26,7 @@ const CHECK_TIMEOUT_MS = 30_000
 export async function checkPort(
     config: HostdConfig,
     caller: Caller,
-    query: { port?: number, own?: { project: string, environment: Environment } },
+    query: { port?: number, own?: { project: string, environment: EnvironmentName } },
     fetchImpl: typeof fetch = fetch,
 ): Promise<HostdResult<PortCheck>> {
     const params = new URLSearchParams()
@@ -44,11 +44,12 @@ export async function setPort(
     config: HostdConfig,
     caller: Caller,
     id: string,
-    environment: Environment,
+    environment: EnvironmentName,
     port: number,
     fetchImpl: typeof fetch = fetch,
 ): Promise<HostdResult<{ output: string }>> {
     if (!PROJECT_ID.test(id)) return { ok: false, code: 'not-found', message: 'no such project' }
+    if (!isEnvironmentName(environment)) return { ok: false, code: 'bad-request', message: 'no such environment' }
     if (!Number.isInteger(port) || port < PORT_MIN || port > PORT_MAX) {
         return { ok: false, code: 'bad-request', message: `Use a port from ${PORT_MIN} to ${PORT_MAX}.` }
     }

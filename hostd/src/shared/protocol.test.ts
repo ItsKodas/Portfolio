@@ -16,6 +16,39 @@ function refusalOf(value: unknown): string {
     return result.ok ? '' : `${result.code}: ${result.message}`
 }
 
+// Every parser that names an environment takes it by one rule, isEnvironmentName, rather than by a list;
+// whether the project actually has it is checkStructure's question, not the parser's.
+const NAMED = ['uat1', 'staging']
+const NOT_NAMES = ['git', 'next', 'prev', 'uat-1', 'Uat1', 'a'.repeat(17)]
+const environmentRequests = (environment: string): unknown[] => [
+    { verb: 'provision', project: 'acme', args: { action: 'remove', environment } },
+    { verb: 'env', project: 'acme', args: { action: 'list', environment } },
+    { verb: 'deploy', project: 'acme', args: { action: 'deploy', environment } },
+    { verb: 'deploy', project: 'acme', args: { action: 'set-branch', environment, branch: 'main' } },
+    { verb: 'deploy-watch', project: 'acme', args: { environment } },
+    { verb: 'port', project: 'acme', args: { environment, port: 5012 } },
+    { verb: 'ports', args: { port: 5012, own: { project: 'acme', environment } } },
+    { verb: 'configure', project: 'acme', args: { branches: { [environment]: 'main' } } },
+    { verb: 'configure', project: 'acme', args: { domains: { [environment]: 'acme.com' } } },
+    { verb: 'configure', project: 'acme', args: { websockets: { [environment]: true }, flexibleSsl: { [environment]: false } } },
+]
+
+describe('environment names', () => {
+    it('accepts any environment name in every parser, not only live and test', () => {
+        for (const name of NAMED) {
+            for (const request of environmentRequests(name)) assert.equal(parsed(request).ok, true, `${name} ${JSON.stringify(request)}`)
+            assert.equal(parseDomainsArgs({ action: 'remove', environment: name }).ok, true, name)
+        }
+    })
+
+    it('refuses reserved, hyphenated, uppercase and overlong names in every parser', () => {
+        for (const name of NOT_NAMES) {
+            for (const request of environmentRequests(name)) assert.equal(parsed(request).ok, false, `${name} ${JSON.stringify(request)}`)
+            assert.equal(parseDomainsArgs({ action: 'remove', environment: name }).ok, false, name)
+        }
+    })
+})
+
 describe('parseAgentRequest', () => {
     it('parses every phase 1 verb', () => {
         assert.deepEqual(parsed({ verb: 'health' }), { ok: true, request: { verb: 'health' } })
@@ -166,20 +199,64 @@ describe('parseAgentRequest', () => {
         assert.equal(refusalOf({ verb: 'provision', args: { ...createArgs, extra: true } }), 'bad-request: create takes only id, client, name, repo, credential, branch, domain, certificate, dir, compose, capabilities, websockets, flexibleSsl, port')
     })
 
-    it('refuses provision add-environment for anything other than test, and remove for an unknown environment', () => {
+    it('parses provision add-environment for any environment name', () => {
+        for (const environment of ['uat1', 'staging', 'test']) {
+            const addArgs = { action: 'add-environment', environment, branch: 'main', domain: null, certificate: null }
+            assert.deepEqual(
+                parsed({ verb: 'provision', project: 'acme', args: addArgs }),
+                { ok: true, request: { verb: 'provision', project: 'acme', args: addArgs } },
+            )
+        }
+    })
+
+    it('refuses provision add-environment for live, a reserved name or an invalid one, and remove for an unknown environment', () => {
+        const add = (environment: unknown) => refusalOf({ verb: 'provision', project: 'acme', args: { action: 'add-environment', environment, branch: 'main', domain: null, certificate: null } })
+        assert.equal(add('live'), 'bad-request: live cannot be added')
+        for (const environment of ['git', 'next', 'prev', 'environments', 'backups', 'uat-1', 'Uat1', '1uat', '', 'a'.repeat(17), 5, null]) {
+            assert.equal(add(environment), 'bad-request: environment must be an environment name', String(environment))
+        }
         assert.equal(
-            refusalOf({ verb: 'provision', project: 'acme', args: { action: 'add-environment', environment: 'live', branch: 'main', domain: null, certificate: null } }),
-            'bad-request: environment must be test',
-        )
-        assert.equal(
-            refusalOf({ verb: 'provision', project: 'acme', args: { action: 'remove', environment: 'staging' } }),
-            'bad-request: environment must be live, test or null',
+            refusalOf({ verb: 'provision', project: 'acme', args: { action: 'remove', environment: 'uat-1' } }),
+            'bad-request: environment must be an environment name or null',
         )
         assert.equal(refusalOf({ verb: 'provision', project: '../acme', args: { action: 'remove', environment: null } }), 'bad-request: project is malformed')
     })
 
     it('refuses an unknown provision action', () => {
-        assert.equal(refusalOf({ verb: 'provision', args: { action: 'destroy' } }), 'bad-request: action must be create, add-environment or remove')
+        assert.equal(
+            refusalOf({ verb: 'provision', args: { action: 'destroy' } }),
+            'bad-request: action must be create, add-environment, remove, delete-environment, restore-environment or deleted-environments',
+        )
+    })
+
+    it('parses deleting, restoring and listing deleted environments', () => {
+        const request = (args: unknown) => parsed({ verb: 'provision', project: 'acme', args })
+        assert.deepEqual(
+            request({ action: 'delete-environment', environment: 'uat1', actor: 'koda@horizons.gg' }),
+            { ok: true, request: { verb: 'provision', project: 'acme', args: { action: 'delete-environment', environment: 'uat1', actor: 'koda@horizons.gg' } } },
+        )
+        assert.deepEqual(
+            request({ action: 'delete-environment', environment: 'uat1' }),
+            { ok: true, request: { verb: 'provision', project: 'acme', args: { action: 'delete-environment', environment: 'uat1' } } },
+        )
+        const restore = { action: 'restore-environment', environment: 'uat1', deletedAt: '2026-09-24T10:00:00.000Z', token: 'abc123def456' }
+        assert.deepEqual(request(restore), { ok: true, request: { verb: 'provision', project: 'acme', args: restore } })
+        assert.deepEqual(
+            request({ action: 'deleted-environments' }),
+            { ok: true, request: { verb: 'provision', project: 'acme', args: { action: 'deleted-environments' } } },
+        )
+    })
+
+    it('refuses a malformed delete or restore', () => {
+        const refusal = (args: unknown) => refusalOf({ verb: 'provision', project: 'acme', args })
+        assert.match(refusal({ action: 'delete-environment', environment: 'live' }), /^bad-request: live/)
+        assert.match(refusal({ action: 'delete-environment', environment: 'uat-1' }), /^bad-request/)
+        assert.match(refusal({ action: 'delete-environment', environment: 'uat1', actor: 'a b' }), /^bad-request/)
+        assert.match(refusal({ action: 'delete-environment', environment: 'uat1', extra: 1 }), /^bad-request/)
+        assert.match(refusal({ action: 'restore-environment', environment: 'live', deletedAt: '2026-09-24T10:00:00.000Z' }), /^bad-request: live/)
+        assert.match(refusal({ action: 'restore-environment', environment: 'uat1', deletedAt: 'yesterday' }), /^bad-request: deletedAt/)
+        assert.match(refusal({ action: 'restore-environment', environment: 'uat1', deletedAt: '2026-09-24T10:00:00.000Z', token: 'NOT HEX' }), /^bad-request: token/)
+        assert.match(refusal({ action: 'deleted-environments', environment: 'uat1' }), /^bad-request/)
     })
 
     describe('create port', () => {
@@ -215,7 +292,7 @@ describe('parseAgentRequest', () => {
     })
 
     it('refuses malformed env requests', () => {
-        assert.equal(refusalOf({ verb: 'env', project: 'acme', args: { action: 'list', environment: 'staging' } }), 'bad-request: environment must be live or test')
+        assert.equal(refusalOf({ verb: 'env', project: 'acme', args: { action: 'list', environment: 'git' } }), 'bad-request: environment must be an environment name')
         assert.equal(refusalOf({ verb: 'env', project: 'acme', args: { action: 'read', environment: 'live' } }), 'bad-request: path is malformed')
         assert.equal(refusalOf({ verb: 'env', project: 'acme', args: { action: 'write', environment: 'live', path: '.env' } }), 'bad-request: text is malformed')
         assert.equal(refusalOf({ verb: 'env', project: 'acme', args: { action: 'list', environment: 'live', path: '.env' } }), 'bad-request: list takes only environment')
@@ -254,12 +331,12 @@ describe('parseAgentRequest', () => {
 
     it('refuses malformed deploy requests', () => {
         assert.equal(refusalOf({ verb: 'deploy', project: 'acme', args: { action: 'destroy', environment: 'live' } }), 'bad-request: action must be deploy, rollback, set-branch, history or commits')
-        assert.equal(refusalOf({ verb: 'deploy', project: 'acme', args: { action: 'deploy', environment: 'staging' } }), 'bad-request: environment must be live or test')
+        assert.equal(refusalOf({ verb: 'deploy', project: 'acme', args: { action: 'deploy', environment: 'uat-1' } }), 'bad-request: environment must be an environment name')
         assert.equal(refusalOf({ verb: 'deploy', project: 'acme', args: { action: 'deploy', environment: 'live', force: true } }), 'bad-request: deploy takes only environment')
         assert.equal(refusalOf({ verb: 'deploy', project: 'acme', args: { action: 'set-branch', environment: 'live', branch: 'a branch' } }), 'bad-request: branch must be a plain branch name')
         assert.equal(refusalOf({ verb: 'deploy', project: 'acme', args: { action: 'set-branch', environment: 'live', branch: 'main..other' } }), 'bad-request: branch must be a plain branch name')
         assert.equal(refusalOf({ verb: 'deploy', project: 'acme', args: { action: 'commits', environment: 'live', limit: 100000 } }), `bad-request: limit must be a whole number from 1 to ${MAX_COMMITS}`)
-        assert.equal(refusalOf({ verb: 'deploy', project: 'acme', args: { action: 'history' } }), 'bad-request: environment must be live or test')
+        assert.equal(refusalOf({ verb: 'deploy', project: 'acme', args: { action: 'history' } }), 'bad-request: environment must be an environment name')
     })
 
     it('parses a configure request carrying all four fields', () => {
@@ -285,7 +362,7 @@ describe('parseAgentRequest', () => {
         assert.equal(refusalOf({ verb: 'configure', project: 'acme', args: { domains: { live: 'https://acme.com/shop' } } }), 'bad-request: live domain must be a hostname')
         assert.equal(refusalOf({ verb: 'configure', project: 'acme', args: { domains: { live: '203.0.113.7' } } }), 'bad-request: live domain must be a hostname')
         assert.equal(refusalOf({ verb: 'configure', project: 'acme', args: { domains: { live: null } } }), 'bad-request: live domain must be a hostname')
-        assert.equal(refusalOf({ verb: 'configure', project: 'acme', args: { domains: { staging: 'acme.com' } } }), 'bad-request: staging is not an environment')
+        assert.equal(refusalOf({ verb: 'configure', project: 'acme', args: { domains: { Staging: 'acme.com' } } }), 'bad-request: Staging is not an environment name')
         assert.equal(refusalOf({ verb: 'configure', project: 'acme', args: { domains: 'acme.com' } }), 'bad-request: domains is malformed')
     })
 
@@ -303,7 +380,7 @@ describe('parseAgentRequest', () => {
     it('refuses malformed configure requests', () => {
         assert.equal(refusalOf({ verb: 'configure', project: 'acme', args: { capabilities: ['teleport'] } }), 'bad-request: capabilities must be a list of known capabilities')
         assert.equal(refusalOf({ verb: 'configure', project: 'acme', args: { branches: { live: 'a branch' } } }), 'bad-request: live branch must be null or a plain branch name')
-        assert.equal(refusalOf({ verb: 'configure', project: 'acme', args: { branches: { staging: 'main' } } }), 'bad-request: staging is not an environment')
+        assert.equal(refusalOf({ verb: 'configure', project: 'acme', args: { branches: { next: 'main' } } }), 'bad-request: next is not an environment name')
         assert.equal(refusalOf({ verb: 'configure', project: 'acme', args: { capabilities: [], extra: true } }), 'bad-request: configure takes only capabilities, repo, credential, branches, domains, websockets and flexibleSsl')
     })
 
@@ -332,7 +409,7 @@ describe('configure credential', () => {
     it('accepts websockets per environment, and only as true or false', () => {
         assert.deepEqual(parseConfigureArgs({ websockets: { live: true } }), { websockets: { live: true } })
         assert.equal('ok' in parseConfigureArgs({ websockets: { live: 'yes' } }), true)
-        assert.equal('ok' in parseConfigureArgs({ websockets: { staging: true } }), true)
+        assert.equal('ok' in parseConfigureArgs({ websockets: { 'uat-1': true } }), true)
     })
 
     it('refuses a malformed name', () => {
@@ -365,7 +442,7 @@ describe('ports', () => {
         for (const line of [
             '{"verb":"ports"}',
             '{"verb":"ports","args":{"port":"5012","own":null}}',
-            '{"verb":"ports","args":{"port":null,"own":{"project":"acme","environment":"prod"}}}',
+            '{"verb":"ports","args":{"port":null,"own":{"project":"acme","environment":"uat-1"}}}',
             '{"verb":"ports","args":{"port":null,"own":null,"extra":1}}',
         ]) assert.equal(parseAgentRequest(line).ok, false)
     })
@@ -401,7 +478,7 @@ describe('parseDomainsArgs', () => {
     })
 
     it('refuses an unknown environment', () => {
-        assert.equal(parseDomainsArgs({ action: 'remove', environment: 'staging' }).ok, false)
+        assert.equal(parseDomainsArgs({ action: 'remove', environment: 'next' }).ok, false)
     })
 
     it('refuses an extra field, because the agent is root and ignores nothing', () => {
@@ -636,6 +713,25 @@ projects:
         assert.equal(result.ok, true)
     })
 
+    it('passes a named environment the project has, and refuses one it lacks as unknown-environment', () => {
+        const named = parseRegistry(`
+projects:
+  acme:
+    client: cl_1
+    name: Acme
+    services: { web: { role: site } }
+    capabilities: [env]
+    environments:
+      live: { dir: /var/www/acme/live, port: 5010 }
+      uat1: { dir: /var/www/acme/uat1, port: 5012 }
+`)
+        assert.equal(checkStructure(named, { verb: 'env', project: 'acme', args: { action: 'list', environment: 'uat1' } }, none).ok, true)
+        assert.deepEqual(
+            checkStructure(named, { verb: 'env', project: 'acme', args: { action: 'list', environment: 'staging' } }, none),
+            { ok: false, code: 'unknown-environment', message: 'acme has no staging environment' },
+        )
+    })
+
     it('refuses an env request for an environment the project does not have', () => {
         const result = checkStructure(registry, { verb: 'env', project: 'acme', args: { action: 'list', environment: 'test' } }, none)
         assert.deepEqual(result, { ok: false, code: 'unknown-environment', message: 'acme has no test environment' })
@@ -698,7 +794,7 @@ describe('port', () => {
 
     it('refuses a port outside the range, and an unknown environment', () => {
         assert.equal(parseAgentRequest('{"verb":"port","project":"acme","args":{"environment":"live","port":80}}').ok, false)
-        assert.equal(parseAgentRequest('{"verb":"port","project":"acme","args":{"environment":"prod","port":5012}}').ok, false)
+        assert.equal(parseAgentRequest('{"verb":"port","project":"acme","args":{"environment":"uat-1","port":5012}}').ok, false)
     })
 })
 
@@ -710,7 +806,7 @@ describe('deploy-watch', () => {
 
     it('refuses a malformed project, a bad environment and an extra field', () => {
         assert.equal(refusalOf({ verb: 'deploy-watch', project: '../acme', args: { environment: 'live' } }), 'bad-request: project is malformed')
-        assert.equal(refusalOf({ verb: 'deploy-watch', project: 'acme', args: { environment: 'staging' } }), 'bad-request: environment must be live or test')
+        assert.equal(refusalOf({ verb: 'deploy-watch', project: 'acme', args: { environment: 'prev' } }), 'bad-request: environment must be an environment name')
         assert.equal(refusalOf({ verb: 'deploy-watch', project: 'acme', args: { environment: 'live', follow: true } }), 'bad-request: deploy-watch takes only environment')
     })
 })

@@ -91,3 +91,24 @@ describe('DeployStore', () => {
         assert.equal(store.get('acme:live').deploys[0]!.commit, 'abc1234')
     })
 })
+
+describe('forgetting an environment', () => {
+    it('drops its history, so a new environment of that name starts clean', async () => {
+        const files = new Map<string, string>()
+        const fs: DeployStateFs = {
+            readFile: async path => files.get(path) ?? Promise.reject(new Error('missing')),
+            writeFile: async (path, text) => { files.set(path, text) },
+            rename: async (from, to) => { files.set(to, files.get(from)!); files.delete(from) },
+            mkdir: async () => {},
+        }
+        const store = new DeployStore(PATH, fs)
+        await store.record('acme:uat1', record('abc1234', 'failed'))
+        await store.record('acme:live', record('abc1234', 'ok'))
+        await store.forget('acme:uat1')
+        assert.deepEqual(store.get('acme:uat1'), emptyDeploys())
+        assert.equal(store.get('acme:live').deploys.length, 1)
+        const reloaded = new DeployStore(PATH, fs)
+        await reloaded.load()
+        assert.deepEqual(reloaded.get('acme:uat1'), emptyDeploys())
+    })
+})

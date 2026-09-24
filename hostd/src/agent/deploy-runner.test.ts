@@ -56,7 +56,7 @@ function setup(outcome: DeployRecord['outcome'] = 'ok') {
             startedAt: '2026-09-21T00:00:00.000Z', durationMs: 1, outcome, reason: null, output: null,
         }
     }
-    const deps = { store, log: (message: string) => logs.push(message), now: () => 1_000 } as unknown as DeployRunnerDeps
+    const deps = { store, registry: () => registry, log: (message: string) => logs.push(message), now: () => 1_000 } as unknown as DeployRunnerDeps
     const runner = new DeployRunner(deps, deploy)
     const finish = async () => {
         release()
@@ -75,7 +75,7 @@ function makeRunner(options: { deploy: Deploy, log?: (message: string) => void, 
     }
     const store = new DeployStore('/var/lib/hostd/deploys.json', memoryFs())
     const deps = {
-        store, runner, now: () => 1_000,
+        store, runner, registry: () => registry, now: () => 1_000,
         log: options.log ?? (() => {}),
     } as unknown as DeployRunnerDeps
     return new DeployRunner(deps, options.deploy)
@@ -142,7 +142,7 @@ describe('DeployRunner', () => {
 
     it('releases the environment when the deploy itself throws, and still counts the failure', async () => {
         const store = new DeployStore('/var/lib/hostd/deploys.json', memoryFs())
-        const deps = { store, log: () => {}, now: () => 1_000 } as unknown as DeployRunnerDeps
+        const deps = { store, registry: () => registry, log: () => {}, now: () => 1_000 } as unknown as DeployRunnerDeps
         const runner = new DeployRunner(deps, async () => { throw new Error('unexpected') })
         runner.start(project, environment, { trigger: 'manual', actor: 'admin' })
         await runner.settle()
@@ -247,7 +247,7 @@ describe('DeployRunner watch', () => {
             record: async () => {},
         }
         const deps = {
-            store, now: () => 1_000, log: () => {},
+            store, registry: () => registry, now: () => 1_000, log: () => {},
             runner: async () => ({ exitCode: 0, stdout: '', stderr: '', timedOut: false }),
         } as unknown as DeployRunnerDeps
         const runner = new DeployRunner(deps, async () => okRecord())
@@ -257,5 +257,49 @@ describe('DeployRunner watch', () => {
         const last = seen[seen.length - 1] ?? ''
         assert.ok(last.startsWith('end:'), last)
         assert.ok(last.includes('disk full'), last)
+    })
+})
+
+describe('a blocked environment', () => {
+    it('refuses to start a deploy, by poll or by hand, while its key is blocked', async () => {
+        const { runner, runs, finish } = setup()
+        const unblock = runner.block('acme:live')
+        const busy = { ok: false, code: 'busy', message: 'acme live is being deleted or restored' }
+        assert.deepEqual(runner.start(project, environment, { trigger: 'poll', actor: 'hostd', commit: 'abc1234' }), busy)
+        assert.deepEqual(runner.start(project, environment, { trigger: 'manual', actor: 'admin' }), busy)
+        assert.deepEqual(runs, [])
+        unblock()
+        assert.equal(runner.start(project, environment, { trigger: 'manual', actor: 'admin' }).ok, true)
+        await finish()
+    })
+})
+
+describe('an environment no longer in the registry', () => {
+    it('refuses to start a deploy of it', async () => {
+        const store = new DeployStore('/var/lib/hostd/deploys.json', memoryFs())
+        const runs: string[] = []
+        const emptied = parseRegistry(`
+projects:
+  acme:
+    client: cl_1
+    name: Acme
+    repo: git@github.com:ItsKodas/acme.git
+    services:
+      web: { role: site }
+    capabilities: [deploy]
+    environments:
+      live:
+        dir: /var/www/acme
+        branch: main
+        port: 5010
+`)
+        const uat1 = { ...environment, name: 'uat1', dir: '/var/www/acme/uat1', port: 5011 }
+        const deps = { store, registry: () => emptied, log: () => {}, now: () => 1_000 } as unknown as DeployRunnerDeps
+        const runner = new DeployRunner(deps, async (_p, env) => { runs.push(env.name); return okRecord() })
+        const reply = runner.start(project, uat1, { trigger: 'poll', actor: 'hostd', commit: 'abc1234' })
+        await runner.settle()
+        assert.equal(reply.ok, false)
+        assert.equal(reply.ok === false ? reply.code : '', 'unknown-environment')
+        assert.deepEqual(runs, [])
     })
 })

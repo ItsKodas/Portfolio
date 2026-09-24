@@ -5,13 +5,13 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { fireEvent, render, screen } from '@testing-library/react'
 
-const { adoptPreview, changePrimary } = vi.hoisted(() => ({ adoptPreview: vi.fn(), changePrimary: vi.fn() }))
+const { adoptPreview, changePrimary, addDomain } = vi.hoisted(() => ({ adoptPreview: vi.fn(), changePrimary: vi.fn(), addDomain: vi.fn() }))
 
 // The panel is a server component, but its controls are the client half, and importing those for real
 // drags Prisma and next/cache into a jsdom test for nothing. useRouter needs a mounted app router, which
 // this renderer has no way to give it.
 vi.mock('./actions', () => ({
-    addDomainAction: async () => ({ ok: true, message: 'ok' }),
+    addDomainAction: (...args: unknown[]) => addDomain(...args),
     removeDomainAction: async () => ({ ok: true, message: 'ok' }),
     verifyDomainAction: async () => ({ ok: true, message: 'ok' }),
     adoptAction: async () => ({ ok: true, message: 'ok' }),
@@ -30,8 +30,8 @@ const domain = (over: Partial<Domain> = {}): Domain => ({
 })
 
 const props = {
-    id: 'acme', environment: 'live' as const, projectName: 'Acme Bakery',
-    environments: [{ name: 'live' as const }, { name: 'test' as const }],
+    id: 'acme', environment: 'live', projectName: 'Acme Bakery',
+    environments: [{ name: 'live' }, { name: 'test' }],
     domains: [domain()], isAdmin: true, trouble: null,
 }
 
@@ -67,6 +67,7 @@ beforeEach(() => {
     vi.clearAllMocks()
     adoptPreview.mockResolvedValue({ ok: true, preview: preview() })
     changePrimary.mockResolvedValue({ ok: true, message: 'ok' })
+    addDomain.mockResolvedValue({ ok: true, message: 'ok' })
 })
 
 describe('DomainsPanel, for the operator', () => {
@@ -176,19 +177,52 @@ describe('DomainsPanel, for the operator', () => {
         expect(screen.queryByText(/cannot open/i)).toBeNull()
     })
 
-    // Every site on the dedi was enrolled by hand and has no address at all, so this is the tab's first
-    // interaction for all of them. The alias box stays on the page and is switched off: hiding it is
-    // what made the tab look as though it could do one of the two jobs and not the other.
-    it('offers the address form, and an alias form that is present but switched off, with no primary', () => {
+    // hostd makes the first hostname an environment gets its primary, so the add form is open whether or
+    // not the environment has one. A new environment gets its address from here.
+    it('offers the address form and an open add form, with no primary', () => {
         render(<DomainsPanel {...props} domains={[]} />)
         expect(screen.getByRole('button', { name: /set the address/i })).toBeInTheDocument()
-        expect(screen.getByRole('button', { name: /^add$/i })).toBeDisabled()
-        expect(screen.getByLabelText(/hostname/i)).toBeDisabled()
+        expect(screen.getByLabelText(/hostname/i)).toBeEnabled()
     })
 
-    it('says why the alias form is switched off, rather than leaving it unexplained', () => {
+    it('says the first name an environment gets becomes its address', () => {
         render(<DomainsPanel {...props} domains={[]} />)
-        expect(screen.getByText(/nothing to redirect to yet/i)).toBeInTheDocument()
+        expect(screen.getByText(/first name an environment gets becomes its address/i)).toBeInTheDocument()
+    })
+
+    it('adds to the environment being viewed unless another is chosen', () => {
+        render(<DomainsPanel {...props} environment="test" />)
+        expect(screen.getByRole('combobox', { name: 'Add to environment' })).toHaveValue('test')
+
+        fireEvent.change(screen.getByLabelText(/hostname/i), { target: { value: 'test.acme.com' } })
+        fireEvent.click(screen.getByRole('button', { name: /^add$/i }))
+        expect(addDomain).toHaveBeenCalledWith('acme', 'test', 'test.acme.com')
+    })
+
+    it('sends a hostname to the environment chosen in the add form', () => {
+        render(<DomainsPanel {...props} environments={[{ name: 'live' }, { name: 'test' }, { name: 'uat1' }]} />)
+
+        fireEvent.change(screen.getByRole('combobox', { name: 'Add to environment' }), { target: { value: 'uat1' } })
+        fireEvent.change(screen.getByLabelText(/hostname/i), { target: { value: 'uat.acme.com' } })
+        fireEvent.click(screen.getByRole('button', { name: /^add$/i }))
+        expect(addDomain).toHaveBeenCalledWith('acme', 'uat1', 'uat.acme.com')
+    })
+
+    // The dropdown above changes the environment by navigating to the same route, which rerenders this
+    // panel rather than remounting it. The add form has to follow, or it adds to the one left behind.
+    it('follows the environment being viewed when it changes', () => {
+        const { rerender } = render(<DomainsPanel {...props} environment="live" />)
+        rerender(<DomainsPanel {...props} environment="test" />)
+        expect(screen.getByRole('combobox', { name: 'Add to environment' })).toHaveValue('test')
+
+        fireEvent.change(screen.getByLabelText(/hostname/i), { target: { value: 'test.acme.com' } })
+        fireEvent.click(screen.getByRole('button', { name: /^add$/i }))
+        expect(addDomain).toHaveBeenCalledWith('acme', 'test', 'test.acme.com')
+    })
+
+    it('has no environment select in the add form for a site with one environment', () => {
+        render(<DomainsPanel {...props} environments={[{ name: 'live' }]} />)
+        expect(screen.queryByRole('combobox', { name: 'Add to environment' })).toBeNull()
     })
 
     it('says what setting the address does, since nothing is served from it until the site is adopted', () => {
@@ -243,9 +277,8 @@ describe('DomainsPanel, for the operator', () => {
 
     it('keeps the environment selector, because a domain belongs to an environment', () => {
         render(<DomainsPanel {...props} />)
-        // Whatever DeployPanel renders its strip with, not a second strip invented here: match its
-        // markup and assert the other environment is reachable, not which ARIA role it carries.
-        expect(screen.getByText(/test/i)).toBeInTheDocument()
+        // The same dropdown DeployPanel draws, not a second one invented here
+        expect(screen.getByRole('combobox', { name: 'Environment' })).toHaveValue('live')
     })
 })
 

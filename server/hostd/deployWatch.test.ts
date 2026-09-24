@@ -30,11 +30,20 @@ describe('openDeployStream', () => {
         expect(calls).toHaveLength(0)
     })
 
-    it('refuses an environment that is not live or test, without asking hostd', async () => {
+    it('refuses an environment that is not a valid name, without asking hostd', async () => {
         const { fetchImpl, calls } = fakeFetch(200)
-        const result = await openDeployStream(config, admin, 'acme-bakery', 'staging' as never, fetchImpl)
-        expect(result.ok).toBe(false)
+        for (const environment of ['uat-1', 'git', '../live']) {
+            const result = await openDeployStream(config, admin, 'acme-bakery', environment, fetchImpl)
+            expect(result.ok, environment).toBe(false)
+        }
         expect(calls).toHaveLength(0)
+    })
+
+    it('watches a named environment beside live', async () => {
+        const { fetchImpl, calls } = fakeFetch(200)
+        const result = await openDeployStream(config, admin, 'acme-bakery', 'uat1', fetchImpl)
+        expect(result.ok).toBe(true)
+        expect(calls[0].url).toBe('http://hostd-api:8080/projects/acme-bakery/uat1/deploy')
     })
 
     it('reports a refusal rather than handing back a broken stream', async () => {

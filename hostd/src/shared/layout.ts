@@ -1,15 +1,17 @@
 // Every shape a site's folders can take under /var/www, in one place, so the registry, the fetcher's own
 // path check and the deploy all agree on it. Flat is the layout every site had before nesting:
 // /var/www/<site> beside /var/www/<site>.git, .prev and .next. Nested keeps them all under one folder:
-// /var/www/<site>/{git, live, test, prev/<env>, next/<env>}.
+// /var/www/<site>/{git, live, test, uat1, prev/<env>, next/<env>}.
 
 import { posix } from 'node:path'
+import { ENV_NAME, RESERVED_ENVIRONMENT_NAMES } from './formats.ts'
 import type { EnvironmentName } from './registry.ts'
 
 // One segment, and never one that starts with a dot: that alone rules out . and .. anywhere.
 const SEGMENT = '[A-Za-z0-9][A-Za-z0-9._-]{0,63}'
-// Kept in step with ENVIRONMENTS in registry.ts; layout.test.ts fails if the two drift.
-const ENV = '(?:live|test)'
+// Any environment name, built from ENV_NAME itself so the two cannot drift, and never one of the site's
+// other folders. Every use ends the path right after it, so the lookahead may anchor on $.
+const ENV = `(?!(?:${[...RESERVED_ENVIRONMENT_NAMES].join('|')})$)${ENV_NAME.source.replace(/^\^|\$$/g, '')}`
 
 export const FLAT_DIR = new RegExp(`^/var/www/${SEGMENT}$`)
 export const NESTED_DIR = new RegExp(`^/var/www/${SEGMENT}/${ENV}$`)

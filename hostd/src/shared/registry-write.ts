@@ -92,10 +92,14 @@ export type Change =
         capabilities?: Capability[]
         repo?: string | null
         credential?: string | null
-        branches?: Partial<Record<EnvironmentName, string | null>>
+        branches?: Record<EnvironmentName, string | null>
     }
     | { kind: 'remove-project', id: string }
     | { kind: 'remove-environment', id: string, environment: EnvironmentName }
+    // A deleted environment coming back from the trash: the node it had, as plain data, written back
+    // verbatim (with a new port or fewer hostnames when the restore had to change them). Refused when the
+    // project has that name again.
+    | { kind: 'restore-environment', id: string, environment: EnvironmentName, node: Record<string, unknown> }
 
 const environmentNode = (draft: EnvironmentDraft) => ({
     dir: draft.dir,
@@ -358,7 +362,27 @@ function edit(doc: Document, change: Change): EditResult {
             }
             doc.deleteIn(['projects', change.id, 'environments', change.environment])
             return null
+        case 'restore-environment':
+            if (change.environment === 'live') return { problem: 'the live environment is never restored' }
+            if (!doc.hasIn(['projects', change.id, 'environments'])) return { problem: `${change.id} has no environments to restore into` }
+            if (doc.hasIn(['projects', change.id, 'environments', change.environment])) {
+                return { problem: `${change.id} already has a ${change.environment} environment`, conflict: true }
+            }
+            // createNode for the deep conversion, as toEnvironments explains: setIn alone would leave a
+            // bare object the next edit could not walk into.
+            doc.setIn(['projects', change.id, 'environments', change.environment], doc.createNode(change.node))
+            return null
     }
+}
+
+// One environment's node as the file has it, as plain data, or null when there is none. What a delete
+// records, so a restore can put back exactly what was there, keys the parsed entry does not carry
+// (an explicit composeName, the compose list as written) included.
+export function environmentNodeIn(text: string, id: string, environment: EnvironmentName): Record<string, unknown> | null {
+    const doc = parseDocument(text)
+    const node = doc.getIn(['projects', id, 'environments', environment], true)
+    if (!isMap(node)) return null
+    return node.toJSON() as Record<string, unknown>
 }
 
 export type WriteResult = { ok: true, text: string } | { ok: false, problem: string, conflict?: true }
@@ -409,6 +433,11 @@ export class RegistryWriter {
         const run = this.queue.then(() => this.writeNow(change), () => this.writeNow(change))
         this.queue = run.catch(() => {})
         return run
+    }
+
+    // The node an environment has in the file right now: see environmentNodeIn.
+    async environmentNode(id: string, environment: EnvironmentName): Promise<Record<string, unknown> | null> {
+        return environmentNodeIn(await this.fs.readFile(this.path), id, environment)
     }
 
     private async writeNow(change: Change): Promise<{ ok: true } | { ok: false, problem: string, conflict?: true }> {

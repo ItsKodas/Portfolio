@@ -45,6 +45,8 @@ const listBranches = vi.fn()
 vi.mock('@/server/hostd/branches', () => ({ listBranches: (...args: unknown[]) => listBranches(...args) }))
 const listCredentials = vi.fn()
 vi.mock('@/server/hostd/credentials', () => ({ listCredentials: (...args: unknown[]) => listCredentials(...args) }))
+const listDeletedEnvironments = vi.fn()
+vi.mock('@/server/hostd/environments', () => ({ listDeletedEnvironments: (...args: unknown[]) => listDeletedEnvironments(...args) }))
 
 const { default: SitePage } = await import('./page')
 
@@ -78,6 +80,7 @@ beforeEach(() => {
     assertOwned.mockResolvedValue(true)
     listBranches.mockResolvedValue({ ok: true, value: [] })
     listCredentials.mockResolvedValue({ ok: true, value: [] })
+    listDeletedEnvironments.mockResolvedValue({ ok: true, value: [] })
 })
 
 describe('the site page', () => {
@@ -279,7 +282,7 @@ describe('the settings tab', () => {
         listBranches.mockResolvedValue({ ok: true, value: ['main', 'develop'] })
         render(await page({ tab: 'settings' }))
         expect(listBranches.mock.calls[0]?.[2]).toBe('asot')
-        const branch = screen.getByLabelText(/branch/i)
+        const branch = screen.getByLabelText(/live branch/i)
         expect(branch.tagName).toBe('SELECT')
         const optionValues = Array.from(branch.querySelectorAll('option')).map(o => o.getAttribute('value'))
         expect(optionValues).toEqual(expect.arrayContaining(['main', 'develop']))
@@ -288,6 +291,28 @@ describe('the settings tab', () => {
     it('never asks for the branch list on a tab other than Settings', async () => {
         render(await page())
         expect(listBranches).not.toHaveBeenCalled()
+        expect(listDeletedEnvironments).not.toHaveBeenCalled()
+    })
+
+    it('shows the operator the environments, and the deleted ones hostd is keeping', async () => {
+        listProjects.mockResolvedValue({ ok: true, value: [
+            { id: 'asot', name: 'ASOT', valid: true, capabilities: ['lifecycle'], environments: [{ name: 'live', branch: null }, { name: 'uat1', branch: 'uat' }] },
+        ] })
+        listDeletedEnvironments.mockResolvedValue({ ok: true, value: [{
+            environment: 'uat2', deletedAt: '2026-09-20T10:00:00.000Z', purgeAt: '2026-10-20T10:00:00.000Z', branch: null, domain: null, aliases: [],
+        }] })
+        render(await page({ tab: 'settings' }))
+        expect(listDeletedEnvironments.mock.calls[0]?.[2]).toBe('asot')
+        expect(screen.getByRole('table', { name: 'Environments' })).toBeInTheDocument()
+        expect(screen.getByRole('button', { name: 'Delete uat1' })).toBeInTheDocument()
+        expect(screen.getByRole('button', { name: 'Restore uat2' })).toBeInTheDocument()
+    })
+
+    it('still draws the environments when the deleted ones could not be read, and says so', async () => {
+        listDeletedEnvironments.mockResolvedValue({ ok: false, code: 'unavailable', message: 'the agent is not answering' })
+        render(await page({ tab: 'settings' }))
+        expect(screen.getByRole('heading', { name: 'Environments' })).toBeInTheDocument()
+        expect(screen.getByText(/deleted environments could not be read: the agent is not answering/)).toBeInTheDocument()
     })
 
     // Failure is not an error: the field stays a plain input and a line underneath says why, in hostd's

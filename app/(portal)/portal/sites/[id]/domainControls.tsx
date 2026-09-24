@@ -31,12 +31,19 @@ function Said({ said }: { said: SiteActionResult | null }) {
         : <span className={styles.stateBad}>{said.error}</span>
 }
 
-// An alias: a name that redirects to the primary. It is rendered whether or not the environment has a
-// primary yet, and switched off rather than hidden when it has none. Hiding it is what made this tab look
-// as though it could only ever do one of the two jobs, and an operator cannot ask about a control that is
-// not on the page. Disabled with the reason beside it says the same thing honestly.
-export function AddDomain({ id, environment, disabled = false }: { id: string, environment: string, disabled?: boolean }) {
+// A hostname for any of the site's environments, the one being viewed unless another is chosen. hostd
+// makes the first name an environment gets its primary and every later one an alias redirecting to it,
+// so this is open whether or not the environment has an address yet: it is how a new environment gets
+// its first one.
+export function AddDomain({ id, environments, environment }: {
+    id: string
+    // Every environment the site has, for the select. Only the name is read.
+    environments: { name: string }[]
+    // The one being viewed, which the select starts on
+    environment: string
+}) {
     const router = useRouter()
+    const [target, setTarget] = useState(environment)
     const [hostname, setHostname] = useState('')
     const [pending, setPending] = useState(false)
     const [said, setSaid] = useState<SiteActionResult | null>(null)
@@ -45,7 +52,7 @@ export function AddDomain({ id, environment, disabled = false }: { id: string, e
         setPending(true)
         setSaid(null)
         try {
-            const result = await addDomainAction(id, environment, hostname.trim())
+            const result = await addDomainAction(id, target, hostname.trim())
             setSaid(result)
             if (result.ok) {
                 setHostname('')
@@ -60,12 +67,24 @@ export function AddDomain({ id, environment, disabled = false }: { id: string, e
 
     return (
         <section className={styles.block}>
-            <h2>Other addresses</h2>
+            <h2>Add an address</h2>
             <div className={styles.addDomain}>
+                {/* Only when there is a choice to make. A select over one environment is furniture. */}
+                {environments.length > 1 && (
+                    <div className={styles.addTarget}>
+                        <Field
+                            as="select"
+                            label="Add to environment"
+                            value={target}
+                            onChange={event => setTarget(event.target.value)}
+                        >
+                            {environments.map(one => <option key={one.name} value={one.name}>{one.name}</option>)}
+                        </Field>
+                    </div>
+                )}
                 <Field
                     label="Hostname"
                     value={hostname}
-                    disabled={disabled}
                     spellCheck={false}
                     autoComplete="off"
                     placeholder="shop.example.com"
@@ -73,16 +92,15 @@ export function AddDomain({ id, environment, disabled = false }: { id: string, e
                     onChange={event => setHostname(event.target.value)}
                 />
                 <div className={styles.addAction}>
-                    <Button variant="primary" disabled={disabled || pending || !hostname.trim()} onClick={add}>
+                    <Button variant="primary" disabled={pending || !hostname.trim()} onClick={add}>
                         {pending ? 'Adding...' : 'Add'}
                     </Button>
                     <Said said={said} />
                 </div>
             </div>
             <p className={styles.note}>
-                {disabled
-                    ? 'Set the site\'s address first. Every name added here redirects to it, and there is nothing to redirect to yet.'
-                    : 'Each of these redirects to the address above, so the site is only ever reachable at one URL.'}
+                The first name an environment gets becomes its address. Every name after that redirects to
+                it, so the site is only ever reachable at one URL.
             </p>
         </section>
     )
