@@ -2,7 +2,7 @@ import { describe, it } from 'node:test'
 import assert from 'node:assert/strict'
 import { Readable } from 'node:stream'
 
-import { loadPlan, postgresLoadErrors, renameDatabaseLine, renameStream } from './copy-plans.ts'
+import { loadPlan, postgresErrorCollector, postgresLoadErrors, renameDatabaseLine, renameStream } from './copy-plans.ts'
 
 describe('renameDatabaseLine (postgres)', () => {
     const pg = (line: string) => renameDatabaseLine('postgres', line, 'acme', 'acme-uat1')
@@ -38,12 +38,35 @@ describe('renameDatabaseLine (postgres)', () => {
         )
     })
 
+    it('rewrites only the database in GRANT and REVOKE ... ON DATABASE', () => {
+        assert.equal(pg('GRANT CONNECT ON DATABASE acme TO acme;'), 'GRANT CONNECT ON DATABASE "acme-uat1" TO acme;')
+        assert.equal(pg('GRANT CONNECT,TEMPORARY ON DATABASE "acme" TO bob WITH GRANT OPTION;'), 'GRANT CONNECT,TEMPORARY ON DATABASE "acme-uat1" TO bob WITH GRANT OPTION;')
+        assert.equal(pg('REVOKE ALL ON DATABASE acme FROM PUBLIC;'), 'REVOKE ALL ON DATABASE "acme-uat1" FROM PUBLIC;')
+        assert.equal(pg('REVOKE GRANT OPTION FOR CONNECT ON DATABASE acme FROM acme;'), 'REVOKE GRANT OPTION FOR CONNECT ON DATABASE "acme-uat1" FROM acme;')
+    })
+
+    it('rewrites only the database in SECURITY LABEL ON DATABASE, with or without a provider', () => {
+        assert.equal(pg("SECURITY LABEL ON DATABASE acme IS 'acme';"), "SECURITY LABEL ON DATABASE \"acme-uat1\" IS 'acme';")
+        assert.equal(pg("SECURITY LABEL FOR selinux ON DATABASE \"acme\" IS 'x';"), "SECURITY LABEL FOR selinux ON DATABASE \"acme-uat1\" IS 'x';")
+    })
+
+    it('rewrites the database of ALTER ROLE ... IN DATABASE, and never the role', () => {
+        assert.equal(pg('ALTER ROLE acme IN DATABASE acme SET search_path TO app;'), 'ALTER ROLE acme IN DATABASE "acme-uat1" SET search_path TO app;')
+        assert.equal(pg(`ALTER ROLE "acme" IN DATABASE "acme" SET work_mem TO '8MB';`), `ALTER ROLE "acme" IN DATABASE "acme-uat1" SET work_mem TO '8MB';`)
+    })
+
     it('leaves other databases alone, even ones whose names start with the id', () => {
         for (const line of [
             'CREATE DATABASE acmeold WITH TEMPLATE = template0;',
             'CREATE DATABASE acme_x WITH TEMPLATE = template0;',
             'CREATE DATABASE "acme-live" WITH TEMPLATE = template0;',
             'ALTER DATABASE acmeold OWNER TO acme;',
+            'GRANT CONNECT ON DATABASE acmeold TO acme;',
+            'REVOKE ALL ON DATABASE "acme-live" FROM PUBLIC;',
+            "SECURITY LABEL ON DATABASE acme_x IS 'x';",
+            'ALTER ROLE acme IN DATABASE acmeold SET search_path TO app;',
+            'ALTER ROLE acme SET search_path TO app;',
+            'GRANT acme TO bob;',
             '\\connect acmeold',
             '\\connect "acme-live"',
             "\\connect -reuse-previous=on \"dbname='acme-live'\"",
@@ -79,12 +102,20 @@ describe('renameDatabaseLine (mysql and mariadb)', () => {
         assert.equal(renameDatabaseLine('mysql', 'USE `acme`;', 'acme', 'acme-uat1'), 'USE `acme-uat1`;')
     })
 
+    it('rewrites ALTER DATABASE', () => {
+        assert.equal(
+            renameDatabaseLine('mariadb', 'ALTER DATABASE `acme` CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci ;', 'acme', 'acme-uat1'),
+            'ALTER DATABASE `acme-uat1` CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci ;',
+        )
+    })
+
     it('leaves other databases, data and comments alone', () => {
         for (const line of [
             'CREATE DATABASE /*!32312 IF NOT EXISTS*/ `acmeold` /*!40100 DEFAULT CHARACTER SET utf8mb4 */;',
             'CREATE DATABASE /*!32312 IF NOT EXISTS*/ `acme_x`;',
             'CREATE DATABASE /*!32312 IF NOT EXISTS*/ `acme-live`;',
             'USE `acmeold`;',
+            'ALTER DATABASE `acmeold` CHARACTER SET utf8mb4 ;',
             'USE `mysql`;',
             "INSERT INTO `sites` VALUES (1,'acme','USE `acme`;');",
             '-- Current Database: `acme`',
@@ -192,6 +223,12 @@ describe('loadPlan', () => {
         })
     })
 
+    it('names both databases when it refuses an odd name', () => {
+        assert.deepEqual(loadPlan('db', { role: 'database', engine: 'postgres', dump: {} }, 'acme', 'acme"x'), {
+            problem: 'db: refusing to load database "acme" into "acme\\"x", which is not a plain database name',
+        })
+    })
+
     it('refuses database names that could break out of the command', () => {
         for (const [from, to] of [['acme', 'acme"; rm -rf /'], ['acme`x', 'acme-uat1'], ["acme'", 'acme-uat1']]) {
             const plan = loadPlan('db', { role: 'database', engine: 'mysql', dump: {} }, from!, to!)
@@ -214,5 +251,27 @@ describe('postgresLoadErrors', () => {
             'psql:<stdin>:91: ERROR:  syntax error at or near "x"',
         ])
         assert.deepEqual(postgresLoadErrors(''), [])
+    })
+})
+
+describe('postgresErrorCollector', () => {
+    it('finds an ERROR line after 5 KiB of "already exists" noise, split across chunks', () => {
+        const noise = Array.from({ length: 150 }, (_, i) => `psql:<stdin>:${i}: ERROR:  role "r${i}" already exists\n`).join('')
+        assert.ok(noise.length > 5 * 1024)
+        const text = noise + 'psql:<stdin>:900: ERROR:  relation "public.users" does not exist\nNOTICE: done'
+        const collector = postgresErrorCollector()
+        for (let i = 0; i < text.length; i += 37) collector.push(Buffer.from(text.slice(i, i + 37)))
+        assert.deepEqual(collector.errors(), ['psql:<stdin>:900: ERROR:  relation "public.users" does not exist'])
+    })
+
+    it('keeps a last ERROR line with no newline, and bounds what it holds', () => {
+        const collector = postgresErrorCollector()
+        collector.push(Buffer.from('x'.repeat(100_000) + '\n'))
+        for (let i = 0; i < 500; i++) collector.push(Buffer.from(`psql:<stdin>:${i}: ERROR:  syntax error\n`))
+        collector.push(Buffer.from('psql:<stdin>:999: ERROR:  last one'))
+        const errors = collector.errors()
+        assert.equal(errors.length, 50)
+        assert.equal(errors[0], 'psql:<stdin>:0: ERROR:  syntax error')
+        assert.equal(collector.count(), 501)
     })
 })

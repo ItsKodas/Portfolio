@@ -41,7 +41,12 @@ export type DockerApi = {
     // Runs argv in an already-running container and hands stdout to the caller chunk by chunk. stdout is
     // never buffered here: it becomes a database dump, which can be larger than this process's memory.
     // With stdin, the stream is fed to the command and then closed, which is how a load reads a dump.
-    exec(id: string, argv: string[], onStdout: (chunk: Buffer) => Promise<void> | void, stdin?: Readable): Promise<ExecResult>
+    // onStderr sees every stderr chunk, uncapped (psql reports a failed load only there, possibly after
+    // more noise than the result's capped stderr holds); the result's stderr stays capped either way.
+    exec(
+        id: string, argv: string[], onStdout: (chunk: Buffer) => Promise<void> | void,
+        stdin?: Readable, onStderr?: (chunk: Buffer) => void,
+    ): Promise<ExecResult>
 }
 
 type RequestFn = (options: RequestOptions, callback: (response: IncomingMessage) => void) => ClientRequest
@@ -179,7 +184,7 @@ export function createDockerApi(socketPath = DOCKER_SOCKET, request: RequestFn =
             }
             return response
         },
-        async exec(id, argv, onStdout, stdin) {
+        async exec(id, argv, onStdout, stdin, onStderr) {
             const checked = checkedId(id)
             const created = await postJson<{ Id: string }>(`/containers/${checked}/exec`, {
                 AttachStdout: true, AttachStderr: true, AttachStdin: stdin !== undefined, Tty: false, Cmd: argv,
@@ -189,8 +194,12 @@ export function createDockerApi(socketPath = DOCKER_SOCKET, request: RequestFn =
             let stderr = ''
             const read = async (chunk: Buffer) => {
                 for (const frame of decoder.push(chunk)) {
-                    if (frame.stream === 'stdout') await onStdout(frame.data)
-                    else if (stderr.length < MAX_EXEC_STDERR) stderr += frame.data.toString('utf8')
+                    if (frame.stream === 'stdout') {
+                        await onStdout(frame.data)
+                        continue
+                    }
+                    onStderr?.(frame.data)
+                    if (stderr.length < MAX_EXEC_STDERR) stderr += frame.data.toString('utf8')
                 }
             }
             const finish = async (): Promise<ExecResult> => {
@@ -201,21 +210,27 @@ export function createDockerApi(socketPath = DOCKER_SOCKET, request: RequestFn =
             if (stdin !== undefined) {
                 const { socket, head } = await openUpgrade(`/exec/${execId}/start`, { Detach: false, Tty: false })
                 // pipeline ends the socket once stdin is done, which half-closes it: the command sees end of
-                // input, and its output keeps arriving on the read side until it exits. A failed write is
-                // kept rather than thrown at once: a command that exits early (bad credentials, say) closes
-                // the connection under the writer, and its exit code and stderr say more than EPIPE does.
+                // input, and its output keeps arriving on the read side until it exits.
+                //
+                // A command that exits before reading everything (psql with a bad password, say) closes the
+                // connection under the writer. The write then fails, pipeline destroys the socket, and the
+                // read loop throws too. Neither error is the story: the command's exit code and the stderr
+                // read so far are. So the result is returned whenever the command itself failed, and an
+                // error is thrown only when stdin's own source failed or the command did not fail.
                 let fedError: unknown = null
                 const feeding = pipeline(stdin, socket).catch(error => { fedError = error ?? new Error('stdin failed') })
+                let readError: unknown = null
                 try {
                     if (head.length > 0) await read(head)
                     for await (const chunk of socket) await read(chunk as Buffer)
                 } catch (error) {
-                    await feeding
-                    throw fedError ?? error
+                    readError = error
                 }
                 await feeding
+                if (stdin.errored) throw stdin.errored
+                const failure = fedError ?? readError
                 const result = await finish()
-                if (fedError !== null && (result.exitCode === 0 || stdin.errored)) throw fedError
+                if (failure !== null && (result.exitCode === 0 || result.exitCode === null)) throw failure
                 return result
             }
 

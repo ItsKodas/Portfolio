@@ -44,14 +44,26 @@ function renamePostgresName(rest: string, from: string, to: string): string | nu
     return null
 }
 
-const POSTGRES_STATEMENTS = ['CREATE DATABASE ', 'ALTER DATABASE ', 'COMMENT ON DATABASE ']
+// A postgres identifier as a dump writes one: bare, or double-quoted with any quote doubled.
+const PG_IDENT = '(?:"(?:[^"]|"")*"|[^ "]+)'
+// Each matches everything up to the database name, and nothing after it: only the name that follows is
+// ever rewritten, so an owner, a grantee or a role that happens to be called `<from>` stays as it is.
+const POSTGRES_STATEMENTS: RegExp[] = [
+    /^CREATE DATABASE /,
+    /^ALTER DATABASE /,
+    /^COMMENT ON DATABASE /,
+    /^(?:GRANT|REVOKE) [A-Z_, ]+? ON DATABASE /,
+    new RegExp(`^SECURITY LABEL (?:FOR ${PG_IDENT} )?ON DATABASE `),
+    new RegExp(`^ALTER ROLE ${PG_IDENT} IN DATABASE `),
+]
 const MYSQL_CREATE_OPTIONS = ['/*!32312 IF NOT EXISTS*/ ', 'IF NOT EXISTS ', '']
 
 function renamePostgres(line: string, from: string, to: string): string {
     for (const statement of POSTGRES_STATEMENTS) {
-        if (!line.startsWith(statement)) continue
-        const renamed = renamePostgresName(line.slice(statement.length), from, to)
-        return renamed === null ? line : statement + renamed
+        const match = statement.exec(line)
+        if (match === null) continue
+        const renamed = renamePostgresName(line.slice(match[0].length), from, to)
+        return renamed === null ? line : match[0] + renamed
     }
     if (line.startsWith('\\connect ')) {
         const rest = line.slice('\\connect '.length)
@@ -78,7 +90,7 @@ function renameMysql(line: string, from: string, to: string): string {
         }
         return line
     }
-    return swap('USE ') ?? line
+    return swap('USE ') ?? swap('ALTER DATABASE ') ?? line
 }
 
 // One line, without its line ending.
@@ -90,8 +102,11 @@ export function renameDatabaseLine(engine: RenameEngine, line: string, from: str
 // buffered to their end: a mysqldump INSERT line can run to megabytes. Every prefix below is shorter than
 // this, so PROBE bytes are always enough to decide.
 const PROBE = 64
-const POSTGRES_PREFIXES = [...POSTGRES_STATEMENTS, '\\connect ', 'COPY ']
-const MYSQL_PREFIXES = ['CREATE DATABASE ', 'USE ']
+const POSTGRES_PREFIXES = [
+    'CREATE DATABASE ', 'ALTER DATABASE ', 'COMMENT ON DATABASE ', 'GRANT ', 'REVOKE ', 'SECURITY LABEL ', 'ALTER ROLE ',
+    '\\connect ', 'COPY ',
+]
+const MYSQL_PREFIXES = ['CREATE DATABASE ', 'USE ', 'ALTER DATABASE ']
 const COPY_START = /^COPY .* FROM stdin;$/
 const COPY_END = '\\.'
 
@@ -178,7 +193,7 @@ export function loadPlan(service: string, entry: ServiceEntry, from: string, to:
     if (entry.engine === 'sqlite') return { kind: 'sqlite', service, file: entry.file }
     if (entry.engine === 'redis') return { kind: 'redis', service }
     if (!DATABASE_NAME.test(from) || !DATABASE_NAME.test(to)) {
-        return { problem: `${service}: refusing to load into an oddly named database` }
+        return { problem: `${service}: refusing to load database ${JSON.stringify(from)} into ${JSON.stringify(to)}, which is not a plain database name` }
     }
 
     const exec = (before: string[] | null, argv: string[], rename: boolean, errorFilter: 'postgres' | null): LoadPlan =>
@@ -230,6 +245,61 @@ export function loadPlan(service: string, entry: ServiceEntry, from: string, to:
 // already has (its own superuser, say) are expected to collide; any other ERROR: fails the load.
 const TOLERATED = /ERROR:\s+(role|database) "[^"]*" already exists/
 
+const isLoadError = (line: string): boolean => line.includes('ERROR:') && !TOLERATED.test(line)
+
 export function postgresLoadErrors(stderr: string): string[] {
-    return stderr.split(/\r?\n/).filter(line => line.includes('ERROR:') && !TOLERATED.test(line))
+    return stderr.split(/\r?\n/).filter(isLoadError)
+}
+
+// The streaming form, fed from exec's onStderr: psql's stderr for a whole dump is unbounded (one "already
+// exists" per role, and any number of real errors), so it is never held whole. Only the start of the
+// current line is kept (psql writes `psql:<stdin>:N: ERROR:` at the start of a line, well inside
+// LINE_HEAD), and only the first MAX_ERRORS error lines, while count() still says how many there were.
+const LINE_HEAD = 1024
+const MAX_ERRORS = 50
+
+export type PostgresErrorCollector = { push(chunk: Buffer): void, errors(): string[], count(): number }
+
+export function postgresErrorCollector(): PostgresErrorCollector {
+    // Bytes, decoded once the line is complete, so a character split across two chunks survives.
+    let head: Buffer[] = []
+    let headLength = 0
+    let total = 0
+    const found: string[] = []
+    const finishLine = () => {
+        const text = Buffer.concat(head).toString('utf8')
+        const line = text.endsWith('\r') ? text.slice(0, -1) : text
+        head = []
+        headLength = 0
+        if (!isLoadError(line)) return
+        total++
+        if (found.length < MAX_ERRORS) found.push(line)
+    }
+    // A last line with no newline counts too, once the caller asks.
+    const flush = () => { if (headLength > 0) finishLine() }
+    return {
+        push(chunk) {
+            let start = 0
+            while (start < chunk.length) {
+                const newline = chunk.indexOf(10, start)
+                const end = newline === -1 ? chunk.length : newline
+                if (headLength < LINE_HEAD) {
+                    const piece = chunk.subarray(start, Math.min(end, start + LINE_HEAD - headLength))
+                    head.push(piece)
+                    headLength += piece.length
+                }
+                if (newline === -1) break
+                finishLine()
+                start = newline + 1
+            }
+        },
+        errors() {
+            flush()
+            return [...found]
+        },
+        count() {
+            flush()
+            return total
+        },
+    }
 }
