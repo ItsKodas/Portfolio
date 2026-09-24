@@ -1959,7 +1959,7 @@ describe('copying from live', () => {
     name: Acme
     repo: git@github.com:ItsKodas/acme.git
     services: { web: { role: site }, db: { role: database, engine: postgres } }
-    capabilities: [provision, deploy, backups, domains]
+    capabilities: [provision, deploy, backups, domains, env]
     environments:
       live: { dir: /var/www/acme/live, branch: main, port: 5010 }
       uat1: { dir: /var/www/acme/uat1, branch: develop, port: 5011 }
@@ -1969,7 +1969,9 @@ describe('copying from live', () => {
     const getRun = (run: string): AgentRequest => ({ verb: 'copy', project: 'acme', args: { action: 'get-run', environment: 'uat1', run } })
     const busy = (message: string) => ({ ok: false, code: 'busy', message })
 
-    function copySetup(options: { deploying?: string, backingUp?: boolean, generic?: boolean } = {}) {
+    // gate holds whatever the other operation awaits first, so the test can start a copy while it runs
+    function copySetup(options: { deploying?: string, backingUp?: boolean, generic?: boolean, gate?: Promise<void> } = {}) {
+        const gated = async () => { if (options.gate) await options.gate }
         const records: CopyRecord[] = []
         const store = {
             list: (project: string, environment: string) => records.filter(entry => entry.project === project && entry.environment === environment),
@@ -2011,6 +2013,8 @@ describe('copying from live', () => {
             deps: {},
         }
         const { backups, started: backupsStarted } = backupsWiring({ running: options.backingUp ?? false })
+        const snapshots = backups.restic.snapshots
+        backups.restic.snapshots = async repo => { await gated(); return snapshots(repo) }
         const registry = options.generic
             ? parseRegistry(`projects:
   acme:
@@ -2018,7 +2022,7 @@ describe('copying from live', () => {
     name: Acme
     repo: git@github.com:ItsKodas/acme.git
     services: { web: { role: site }, db: { role: database, engine: generic } }
-    capabilities: [provision, deploy, backups, domains]
+    capabilities: [provision, deploy, backups, domains, env]
     environments:
       live: { dir: /var/www/acme/live, branch: main, port: 5010 }
       uat1: { dir: /var/www/acme/uat1, branch: develop, port: 5011 }
@@ -2044,10 +2048,22 @@ describe('copying from live', () => {
             docker,
             deploys: deploys as unknown as AgentDeps['deploys'],
             backups,
-            provision: fakeProvisionDeps({ registry: () => registry }),
+            provision: fakeProvisionDeps({
+                registry: () => registry,
+                checkPort: async () => { await gated(); return { ok: true } },
+                exists: async () => { await gated(); return false },
+                refreshRegistry: gated,
+            }),
+            envFs: fakeEnvFs({ realpath: async path => { await gated(); return path }, writeFile: gated }),
             domains: fakeDomains(registry).domains,
             trash: {
-                store: { list: () => [], add: async () => {}, update: async () => {}, remove: async () => {} },
+                store: {
+                    list: () => [{
+                        project: 'acme', environment: 'uat1', deletedAt: '2026-09-25T10:00:00.000Z', trash: '/var/www/acme/.deleted/uat1-1790330400',
+                        composeName: 'acme-uat1', node: { dir: '/var/www/acme/uat1' }, actor: 'koda',
+                    }],
+                    add: async () => {}, update: async () => {}, remove: async () => {},
+                },
                 removeEmptyDir: async () => {},
                 realpath: async path => path,
                 registryRejection: () => null,
@@ -2137,6 +2153,45 @@ describe('copying from live', () => {
         release()
         await agent.settleCopies()
         assert.equal(replyOf(await agent.handle({ verb: 'deploy', project: 'acme', args: { action: 'deploy', environment: 'uat1' } }))?.ok, true)
+    })
+
+    // Each of these holds the environment while it awaits; a copy arriving then must not slip in
+    for (const [what, request, message] of [
+        ['a port change', { verb: 'port', project: 'acme', args: { environment: 'uat1', port: 5012 } }, 'acme uat1 is moving to another port'],
+        ['a delete', { verb: 'provision', project: 'acme', args: { action: 'delete-environment', environment: 'uat1' } }, 'acme uat1 is being deleted or restored'],
+        [
+            'a restore',
+            { verb: 'provision', project: 'acme', args: { action: 'restore-environment', environment: 'uat1', deletedAt: '2026-09-25T10:00:00.000Z' } },
+            'acme uat1 is being deleted or restored',
+        ],
+        ['an env write', { verb: 'env', project: 'acme', args: { action: 'write', environment: 'uat1', path: '.env', text: 'A=1' } }, 'acme already has an env write running for uat1'],
+    ] as const) {
+        it(`refuses a copy while ${what} of the environment is under way`, async () => {
+            let open = () => {}
+            const gate = new Promise<void>(resolve => { open = resolve })
+            const { agent, runs } = copySetup({ gate })
+            const other = agent.handle(request as AgentRequest)
+            await new Promise(resolve => setImmediate(resolve))
+            assert.deepEqual(replyOf(await agent.handle(start())), busy(message))
+            assert.deepEqual(runs, [])
+            open()
+            await other
+        })
+    }
+
+    // The backup reads the disk and the snapshots before it starts; a copy begun meanwhile still wins
+    it('refuses a backup that was already reading its snapshots when a copy started', async () => {
+        let open = () => {}
+        const gate = new Promise<void>(resolve => { open = resolve })
+        const { agent, backupsStarted, release } = copySetup({ gate })
+        const backingUp = agent.handle({ verb: 'backup', project: 'acme', args: { action: 'run', tag: 'manual' } })
+        await new Promise(resolve => setImmediate(resolve))
+        assert.equal(replyOf(await agent.handle(start()))?.ok, true)
+        open()
+        assert.deepEqual(replyOf(await backingUp), busy('acme uat1 is being copied from live; a backup waits until it has finished'))
+        assert.deepEqual(backupsStarted, [])
+        release()
+        await agent.settleCopies()
     })
 
     it('refuses a backup of the project while any of its environments copies', async () => {

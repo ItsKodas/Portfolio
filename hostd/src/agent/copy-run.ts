@@ -20,7 +20,7 @@ import type { CopyRecord } from '../shared/protocol.ts'
 import { composeBase, tail, type Runner } from './compose.ts'
 import { checkedId, pickPerService, type ContainerSummary, type DockerApi } from './docker.ts'
 import { dumpPlan, isProblem } from './backup-dumps.ts'
-import { loadPlan, postgresErrorCollector, renameStream, type RenameEngine } from './copy-plans.ts'
+import { loadPlan, postgresErrorCollector, readyProbe, renameStream } from './copy-plans.ts'
 import { MIN_FREE_BYTES } from './deploy.ts'
 
 // The same margin a deploy keeps, on top of what the copy of live's storage is about to take
@@ -52,6 +52,9 @@ export type CopyFs = {
     exists(path: string): Promise<boolean>
     owner(path: string): Promise<Like>
     own(dir: string, like: Like): Promise<void>
+    // One path's owner and mode, never following into a tree: what a sqlite file copied in by root needs
+    chown(path: string, uid: number, gid: number): Promise<void>
+    chmod(path: string, mode: number): Promise<void>
     // A sink to stream a dump into, and a promise that resolves once it is on disk
     writeStream(path: string): { sink: Writable, done: Promise<void> }
     readStream(path: string): Readable
@@ -86,10 +89,11 @@ const databaseNameOf = (project: ProjectEntry, environment: EnvironmentEntry): s
 
 const gib = (bytes: number): string => (bytes / 1024 ** 3).toFixed(1)
 
-// Why a copy into this environment may not start, or null when it may. Reads only: nothing is changed
-// before a copy has passed every check. The agent refuses a busy environment, and a running backup, itself.
+// Why a copy into this environment may not start, or null when it may. Reads only, and only what is quick
+// to read, so a start answers at once: the disk is the run's own first step (spaceProblem). The agent
+// refuses a busy environment, and a running backup, itself.
 export async function copyRefusal(
-    project: ProjectEntry, name: string, deps: { dockerApi: Pick<DockerApi, 'listProjectContainers'>, fs: Pick<CopyFs, 'freeBytes' | 'sizeOf'> },
+    project: ProjectEntry, name: string, deps: { dockerApi: Pick<DockerApi, 'listProjectContainers'> },
 ): Promise<string | null> {
     if (name === 'live') return 'live is what a copy reads from; it is never copied into'
     const environment = environmentOf(project, name)
@@ -112,15 +116,19 @@ export async function copyRefusal(
         if (!isComposeService(entry)) continue
         if (running.get(service)?.State !== 'running') return `${service} has no running container in live, so there is nothing to copy from`
     }
-
-    let storage = 0
-    for (const path of storagePathsOf(project)) storage += await deps.fs.sizeOf(posix.join(live.dir, path))
-    const site = siteOf(environment.dir)
-    const free = await deps.fs.freeBytes(site)
-    if (free < COPY_MIN_FREE_BYTES + storage) {
-        return `only ${gib(free)} GiB is free under ${site}; a copy needs 10 GiB plus the size of live's storage (${gib(storage)} GiB)`
-    }
     return null
+}
+
+// Why the site's disk will not take this copy, or null when it will: 10 GiB free beyond the size of live's
+// storage, which the copy is about to duplicate. Walking a large storage tree takes a while, which is why
+// this is the run's first step rather than a refusal the start has to wait for.
+export async function spaceProblem(project: ProjectEntry, live: EnvironmentEntry, environment: EnvironmentEntry, fs: Pick<CopyFs, 'freeBytes' | 'sizeOf'>): Promise<string | null> {
+    let storage = 0
+    for (const path of storagePathsOf(project)) storage += await fs.sizeOf(posix.join(live.dir, path))
+    const site = siteOf(environment.dir)
+    const free = await fs.freeBytes(site)
+    if (free >= COPY_MIN_FREE_BYTES + storage) return null
+    return `only ${gib(free)} GiB is free under ${site}; a copy needs 10 GiB plus the size of live's storage (${gib(storage)} GiB)`
 }
 
 // Where one run stages: <site>/.copy/<run>, or null when that would be anywhere else. The one folder a
@@ -188,6 +196,10 @@ export async function runCopy(project: ProjectEntry, name: string, run: string, 
         if (!live || !environment || name === 'live') fail(`${project.id} has no ${name} environment to copy into`)
         if (!stagingOk) fail(`refusing to stage copy ${JSON.stringify(run)} anywhere but under the site's .copy folder`)
         const context = { project, live: live!, environment: environment!, staging, deps, sleep, changed }
+        step = 'space'
+        const space = await spaceProblem(project, live!, environment!, deps.fs)
+        if (space) fail(space)
+        step = 'dump'
         const dumps = await dumpLive(context)
         step = 'prepare'
         let containers = await prepare(context)
@@ -319,13 +331,34 @@ async function prepare(context: Context): Promise<Containers> {
     changed.started = stopped
     const up = await compose(context, base, ['up', '-d', '--no-build', '--pull', 'never', ...stopped])
     if (up) fail(up)
-    for (let attempt = 0; attempt < WAIT_ATTEMPTS; attempt++) {
+    let running = false
+    for (let attempt = 0; attempt < WAIT_ATTEMPTS && !running; attempt++) {
         if (attempt > 0) await context.sleep(WAIT_MS)
         containers = pickPerService(await deps.dockerApi.listProjectContainers(environment.composeName))
-        if (stopped.every(service => containers.get(service)?.State === 'running')) return containers
+        running = stopped.every(service => containers.get(service)?.State === 'running')
     }
-    const late = stopped.filter(service => containers.get(service)?.State !== 'running')
-    return fail(`${late.join(', ')} did not start in the environment`)
+    if (!running) {
+        const late = stopped.filter(service => containers.get(service)?.State !== 'running')
+        fail(`${late.join(', ')} did not start in the environment`)
+    }
+    // Running is not ready: a server the copy has just started can take a while to take connections
+    for (const service of stopped) await waitReady(context, service, project.services[service]!, containers.get(service)!.Id)
+    return containers
+}
+
+// Waits for a database's own readiness probe to answer inside its container, for up to a minute
+async function waitReady(context: Context, service: string, entry: ServiceEntry, id: string): Promise<void> {
+    const probe = readyProbe(service, entry)
+    if (probe === null) return
+    if (isProblem(probe)) fail(probe.problem)
+    let last = ''
+    for (let attempt = 0; attempt < WAIT_ATTEMPTS; attempt++) {
+        if (attempt > 0) await context.sleep(WAIT_MS)
+        const result = await context.deps.dockerApi.exec(id, probe as string[], discard)
+        if (result.exitCode === 0) return
+        last = tail(result.stderr, 300)
+    }
+    fail(`${service} did not become ready in the environment within ${(WAIT_ATTEMPTS * WAIT_MS) / 1000} seconds${last ? `: ${last}` : ''}`)
 }
 
 const discard = () => {}
@@ -343,25 +376,19 @@ async function load(context: Context, service: string, entry: ServiceEntry, dump
     if (dump === undefined) return fail(`${service} has no dump to load`)
 
     if (plan.kind === 'redis') {
-        await loadRedis(context, service, container.Id, dump)
+        await loadRedis(context, service, entry, container.Id, dump)
         return containers
     }
     if (plan.kind !== 'exec') return containers
 
     if (plan.before !== null) {
-        // A database the copy has only just started can take a few seconds to take connections
-        for (let attempt = 1; ; attempt++) {
-            const result = await deps.dockerApi.exec(container.Id, plan.before, discard)
-            if (result.exitCode === 0) break
-            if (attempt >= WAIT_ATTEMPTS) fail(`${service}: clearing the old database exited with code ${result.exitCode}: ${tail(result.stderr, 500)}`)
-            await context.sleep(WAIT_MS)
-        }
+        // The environment's own databases go first, so every database in the dump is made fresh
+        const result = await deps.dockerApi.exec(container.Id, plan.before, discard)
+        if (result.exitCode !== 0) fail(`${service}: clearing the environment's databases exited with code ${result.exitCode}: ${tail(result.stderr, 500)}`)
     }
 
     const input = deps.fs.readStream(dump)
-    const stdin: Readable = plan.rename
-        ? pipeline(input, renameStream(entry.role === 'database' ? entry.engine as RenameEngine : 'postgres', project.id, to), discard)
-        : input
+    const stdin: Readable = plan.rename === null ? input : pipeline(input, renameStream(plan.rename, project.id, to), discard)
     const errors = plan.errorFilter === 'postgres' ? postgresErrorCollector() : null
     const result = await deps.dockerApi.exec(container.Id, plan.argv, discard, stdin, errors ? chunk => errors.push(chunk) : undefined)
     if (result.exitCode !== 0) fail(`${service}: the load exited with code ${result.exitCode}: ${tail(result.stderr, 500)}`)
@@ -374,14 +401,15 @@ async function load(context: Context, service: string, entry: ServiceEntry, dump
 
 // redis loads its rdb file at start, so the file is put where the environment's redis reads it, with the
 // service stopped (a redis stopping writes its own dataset over that file) and started again after.
-async function loadRedis(context: Context, service: string, id: string, dump: string): Promise<void> {
+async function loadRedis(context: Context, service: string, entry: ServiceEntry, id: string, dump: string): Promise<void> {
     const { deps, changed } = context
-    const chunks: Buffer[] = []
-    const asked = await deps.dockerApi.exec(id, ['sh', '-c', 'redis-cli CONFIG GET dir'], chunk => { chunks.push(chunk) })
-    if (asked.exitCode !== 0) fail(`${service}: its data directory could not be read: ${tail(asked.stderr, 300)}`)
-    const lines = Buffer.concat(chunks).toString('utf8').split(/\r?\n/).map(line => line.trim()).filter(line => line !== '')
-    const dir = lines[0] === 'dir' ? lines[1] : undefined
-    if (dir === undefined || !REDIS_DIR.test(dir)) fail(`${service}: redis did not name a data directory hostd can copy to`)
+    const dir = await redisConfig(context, id, 'dir')
+    if (dir === null) fail(`${service}: its data directory could not be read`)
+    if (!REDIS_DIR.test(dir!)) fail(`${service}: redis did not name a data directory hostd can copy to`)
+    // Under appendonly, redis loads its append-only file at start and never reads dump.rdb
+    const appendonly = await redisConfig(context, id, 'appendonly')
+    if (appendonly === null) fail(`${service}: whether it runs with appendonly could not be read`)
+    if (appendonly === 'yes') fail(`${service} runs redis with appendonly, so replacing dump.rdb would not take effect; copy it by hand`)
 
     const base = changed.base!
     const stopped = await compose(context, base, ['stop', service])
@@ -392,6 +420,17 @@ async function loadRedis(context: Context, service: string, id: string, dump: st
     const started = await compose(context, base, ['start', service])
     if (started) fail(started)
     changed.stopped.delete(service)
+    // A redis that cannot read the file it was given (an owner it may not read, say) exits at start
+    await waitReady(context, service, entry, id)
+}
+
+// One setting of the environment's redis, or null when it could not be read
+async function redisConfig(context: Context, id: string, key: 'dir' | 'appendonly'): Promise<string | null> {
+    const chunks: Buffer[] = []
+    const asked = await context.deps.dockerApi.exec(id, ['sh', '-c', `redis-cli CONFIG GET ${key}`], chunk => { chunks.push(chunk) })
+    if (asked.exitCode !== 0) return null
+    const lines = Buffer.concat(chunks).toString('utf8').split(/\r?\n/).map(line => line.trim()).filter(line => line !== '')
+    return lines[0] === key && lines[1] !== undefined ? lines[1] : null
 }
 
 // Moves a leftover from an earlier copy that stopped part way into staging, where it is removed with the
@@ -434,20 +473,33 @@ async function copySqlite(context: Context, service: string, file: string): Prom
 
     const backed = await deps.runner('sqlite3', [source, `.backup ${copy}`], COPY_TIMEOUT_MS)
     if (backed.exitCode !== 0 || backed.timedOut) fail(`${service}: sqlite3 exited with code ${backed.exitCode}: ${tail(backed.stderr.trim(), 500)}`)
-    // sqlite3 runs as root, and the site's own user has to be able to write the file
+    // sqlite3 runs as root, and the site's own user has to be able to write the file: owned like the file
+    // it replaces (and moded like it), or like the folder it goes in when there was none
     const had = await deps.fs.exists(target)
-    const reference = had ? target : parent
-    for (const command of had ? ['chown', 'chmod'] : ['chown']) {
-        const result = await deps.runner(command, [`--reference=${reference}`, copy], COMPOSE_TIMEOUT_MS)
-        if (result.exitCode !== 0) fail(`${service}: ${command} exited with code ${result.exitCode}: ${tail(result.stderr.trim(), 300)}`)
-    }
+    const like = await deps.fs.owner(had ? target : parent)
+    await deps.fs.chown(copy, like.uid, like.gid)
+    if (had) await deps.fs.chmod(copy, like.mode)
 
     const old = posix.join(staging, 'old', 'sqlite', service)
     await deps.fs.mkdir(old, { private: true })
-    for (const suffix of ['', '-wal', '-shm', '-journal']) {
-        if (await deps.fs.exists(`${target}${suffix}`)) await deps.fs.move(`${target}${suffix}`, posix.join(old, `${posix.basename(target)}${suffix}`))
+    // Each move is remembered, so a failure part way puts the environment's own files back rather than
+    // leaving them in staging for the clean step to delete
+    const moved: Array<{ from: string, to: string }> = []
+    try {
+        for (const suffix of ['', '-wal', '-shm', '-journal']) {
+            const from = `${target}${suffix}`
+            if (!(await deps.fs.exists(from))) continue
+            const to = posix.join(old, `${posix.basename(target)}${suffix}`)
+            await deps.fs.move(from, to)
+            moved.push({ from, to })
+        }
+        await deps.fs.move(copy, target)
+    } catch (error) {
+        for (const { from, to } of moved.reverse()) {
+            await deps.fs.move(to, from).catch(undo => deps.log(`copy ${environment.dir}: ${to} could not be moved back to ${from}: ${describeError(undo)}`))
+        }
+        throw error
     }
-    await deps.fs.move(copy, target)
 }
 
 // Step 5, storage: live's folder copied beside the environment's, the environment's own moved into

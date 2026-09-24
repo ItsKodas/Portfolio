@@ -177,6 +177,14 @@ export class Agent {
         return false
     }
 
+    // A backup of the project refused while any of its environments is being copied into, or null
+    private copyBlocksBackup(id: string): Refusal | null {
+        for (const key of this.copying.keys()) {
+            if (key.startsWith(`${id}:`)) return refuse('busy', `${id} ${key.slice(id.length + 1)} is being copied from live; a backup waits until it has finished`)
+        }
+        return null
+    }
+
     // For the tests, and for a clean shutdown: nothing in production awaits a copy.
     async settleCopies(): Promise<void> {
         await Promise.all([...this.copying.values()])
@@ -262,6 +270,7 @@ export class Agent {
         if (this.deps.deploys?.runner.isRunning(deployKey(project.id, name))) return refuse('busy', `${project.id} ${name} has a deploy running`)
         if (this.portChanging.has(key)) return refuse('busy', `${project.id} ${name} is moving to another port`)
         if (this.trashing.has(key)) return refuse('busy', `${project.id} ${name} is being deleted or restored`)
+        if (this.envBusy.has(key)) return refuse('busy', `${project.id} already has an env write running for ${name}`)
         if (this.copying.has(key)) return refuse('busy', `${project.id} ${name} already has a copy running`)
         if (this.deps.backups?.runner.isRunning(project.id)) return refuse('busy', `${project.id} has a backup running; a copy waits until it has finished`)
         this.copying.set(key, Promise.resolve())
@@ -271,7 +280,7 @@ export class Agent {
         try {
             let problem: string | null
             try {
-                problem = await copyRefusal(project, name, { dockerApi: this.deps.docker, fs: copies.fs })
+                problem = await copyRefusal(project, name, { dockerApi: this.deps.docker })
             } catch (error) {
                 return refuse('failed', `whether a copy can start could not be checked: ${describeError(error)}`)
             }
@@ -319,9 +328,8 @@ export class Agent {
         if (args.action === 'run') {
             // A copy is reading live's databases and rewriting another environment's, and a backup reads
             // the same databases and storage, so the two never overlap. The copy refuses the other way.
-            for (const key of this.copying.keys()) {
-                if (key.startsWith(`${project.id}:`)) return reply(refuse('busy', `${project.id} ${key.slice(project.id.length + 1)} is being copied from live; a backup waits until it has finished`))
-            }
+            const copyingNow = this.copyBlocksBackup(project.id)
+            if (copyingNow) return reply(copyingNow)
             // The design's run order refuses on a full disk before it refuses a sixth manual run, and the
             // runbook lists this under "When a backup is refused", so it is a synchronous refusal like the
             // manual cap and the cooldown beside it, not a run that starts and records a reason minutes
@@ -345,6 +353,10 @@ export class Agent {
             // compromised api can mislabel a record and change nothing else. A scheduled run is 'hostd'
             // regardless of what arrived, since only api's own tick starts one. deploys.ts records the
             // same limitation on its own actor field.
+            // Again, with nothing awaited between this and the start: a copy may have begun while the disk
+            // and the snapshots were being read
+            const copyingSince = this.copyBlocksBackup(project.id)
+            if (copyingSince) return reply(copyingSince)
             return reply(runner.start(project, {
                 tag: args.tag, actor: args.tag === 'scheduled' ? 'hostd' : (args.actor ?? 'admin'),
                 run: newRunId(), keep: args.keep ?? null,

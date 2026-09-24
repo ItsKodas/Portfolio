@@ -380,6 +380,8 @@ async function main(): Promise<void> {
         exists,
         owner: ownerOf,
         own: (dir, like) => ownTree(dir, like),
+        chown: (path, uid, gid) => chown(path, uid, gid),
+        chmod: (path, mode) => chmod(path, mode),
         writeStream: backupFs.writeStream,
         readStream: path => createReadStream(path),
         freeBytes: async path => {

@@ -7,6 +7,7 @@ import type { ContainerSummary, DockerApi, ExecResult } from './docker.ts'
 import type { Runner, RunResult } from './compose.ts'
 import { parseRegistry, type ProjectEntry } from '../shared/registry.ts'
 import type { CopyRecord } from '../shared/protocol.ts'
+import { loadPlan } from './copy-plans.ts'
 
 const YAML = `projects:
   acme:
@@ -54,8 +55,19 @@ const POSTGRES_DUMP = [
     'COPY public.notes (body) FROM stdin;',
     'CREATE DATABASE acme is only data here',
     '\\.',
+    'CREATE DATABASE analytics WITH OWNER = acme;',
+    '\\connect analytics',
     '',
 ].join('\n')
+// The wipe the postgres load runs first, as copy-plans.ts builds it
+const PG_WIPE = (() => {
+    const plan = loadPlan('db', { role: 'database', engine: 'postgres', dump: {} }, 'acme', 'acme-uat1')
+    assert.ok(plan && 'before' in plan && plan.before)
+    return plan.before.at(-1)!
+})()
+const PG_LOAD = 'psql -U "$POSTGRES_USER" -d postgres'
+const PG_READY = 'pg_isready -U "$POSTGRES_USER"'
+const REDIS_READY = '[ "$(redis-cli ping)" = PONG ]'
 
 type Options = {
     // compose name -> service -> container state
@@ -68,6 +80,7 @@ type Options = {
     paths?: string[]
     // Services that never reach running after an up
     neverStart?: string[]
+    appendonly?: string
 }
 
 function setup(options: Options = {}) {
@@ -78,6 +91,8 @@ function setup(options: Options = {}) {
         'acme-uat1': { web: 'running', worker: 'exited', db: 'exited', cache: 'running' },
     })
     const files = new Map<string, string>()
+    // The environment's postgres server, as far as which databases it holds
+    const databases = new Set(['postgres', 'template0', 'template1'])
     const paths = new Set(options.paths ?? [
         LIVE, ENV, `${LIVE}/data/app.db`, `${ENV}/data/app.db`, `${ENV}/data/app.db-wal`, `${LIVE}/storage/uploads`, `${ENV}/storage/uploads`,
     ])
@@ -103,9 +118,22 @@ function setup(options: Options = {}) {
             if (failed) return failed
             const noise = options.stderr?.(who, argv)
             if (noise) onStderr?.(Buffer.from(noise))
+            if (who === 'acme-uat1/db' && argv.at(-1)!.includes('pg_terminate_backend')) {
+                for (const name of [...databases]) if (!['postgres', 'template0', 'template1'].includes(name)) databases.delete(name)
+            }
+            // What psql says about a dump that creates a database the server already has, and its tables
+            if (who === 'acme-uat1/db' && stdin) {
+                for (const line of loaded[who]!.split('\n')) {
+                    const created = /^CREATE DATABASE "?([^" ;]+)"?[ ;].*;$/.exec(line)
+                    if (!created) continue
+                    if (databases.has(created[1]!)) onStderr?.(Buffer.from(`ERROR:  database "${created[1]}" already exists\nERROR:  relation "notes" already exists\n`))
+                    databases.add(created[1]!)
+                }
+            }
             if (who === 'acme/db') await onStdout(Buffer.from(POSTGRES_DUMP))
             if (who === 'acme/cache') await onStdout(Buffer.from('REDIS0011 live cache'))
             if (who === 'acme-uat1/cache' && argv.at(-1)!.includes('CONFIG GET dir')) await onStdout(Buffer.from('dir\n/data\n'))
+            if (who === 'acme-uat1/cache' && argv.at(-1)!.includes('CONFIG GET appendonly')) await onStdout(Buffer.from(`appendonly\n${options.appendonly ?? 'no'}\n`))
             return { exitCode: 0, stderr: '' }
         },
     }
@@ -151,6 +179,8 @@ function setup(options: Options = {}) {
         exists: async path => exists(path),
         owner: async () => ({ uid: 33, gid: 33, mode: 0o755 }),
         own: async (dir, like) => { calls.push(`own ${dir} ${like.uid}`) },
+        chown: async (path, uid, gid) => { calls.push(`chown ${path} ${uid}:${gid}`) },
+        chmod: async (path, mode) => { calls.push(`chmod ${path} ${mode.toString(8)}`) },
         writeStream: path => {
             const sink = new PassThrough()
             const chunks: Buffer[] = []
@@ -180,7 +210,7 @@ function setup(options: Options = {}) {
         now: () => { clock += 1000; return clock },
         sleep: async () => {},
     }
-    return { deps, calls, loaded, states, files, paths, started, finished }
+    return { deps, calls, loaded, states, files, paths, started, finished, databases }
 }
 
 const RESTORE = ['compose acme-uat1 start web', 'compose acme-uat1 stop db']
@@ -203,17 +233,21 @@ describe('runCopy', () => {
             'compose acme-uat1 stop web worker',
             'compose acme-uat1 up -d --no-build --pull never db',
             'list acme-uat1',
-            // 4: load
-            'exec acme-uat1/db psql -U "$POSTGRES_USER" -d postgres -c "DROP DATABASE IF EXISTS \\"acme-uat1\\" WITH (FORCE)"',
-            'exec acme-uat1/db psql -U "$POSTGRES_USER" -d postgres',
+            // running is not ready
+            `exec acme-uat1/db ${PG_READY}`,
+            // 4: load, every database of the environment's server wiped first
+            `exec acme-uat1/db ${PG_WIPE}`,
+            `exec acme-uat1/db ${PG_LOAD}`,
             'exec acme-uat1/cache redis-cli CONFIG GET dir',
+            'exec acme-uat1/cache redis-cli CONFIG GET appendonly',
             'compose acme-uat1 stop cache',
             `docker cp ${STAGING}/cache/dump.rdb acme-uat1/cache:/data/dump.rdb`,
             'compose acme-uat1 start cache',
-            // 5: sqlite and storage
+            `exec acme-uat1/cache ${REDIS_READY}`,
+            // 5: sqlite and storage, the sqlite file owned and moded like the one it replaces
             `sqlite3 ${LIVE}/data/app.db .backup ${ENV}/data/app.db.hostd-copy`,
-            `chown --reference=${ENV}/data/app.db ${ENV}/data/app.db.hostd-copy`,
-            `chmod --reference=${ENV}/data/app.db ${ENV}/data/app.db.hostd-copy`,
+            `chown ${ENV}/data/app.db.hostd-copy 33:33`,
+            `chmod ${ENV}/data/app.db.hostd-copy 755`,
             `mkdir ${STAGING}/old/sqlite/files private`,
             `move ${ENV}/data/app.db -> ${STAGING}/old/sqlite/files/app.db`,
             `move ${ENV}/data/app.db-wal -> ${STAGING}/old/sqlite/files/app.db-wal`,
@@ -249,6 +283,8 @@ describe('runCopy', () => {
             'COPY public.notes (body) FROM stdin;',
             'CREATE DATABASE acme is only data here',
             '\\.',
+            'CREATE DATABASE analytics WITH OWNER = acme;',
+            '\\connect analytics',
             '',
         ].join('\n'))
         // redis is copied in as a file, never streamed through a rename
@@ -292,7 +328,7 @@ describe('runCopy', () => {
 
     it('fails a load, still restores the environment state and removes staging', async () => {
         const { deps, calls } = setup({
-            stderr: (who, argv) => (who === 'acme-uat1/db' && argv.at(-1) === 'psql -U "$POSTGRES_USER" -d postgres'
+            stderr: (who, argv) => (who === 'acme-uat1/db' && argv.at(-1) === PG_LOAD
                 ? 'psql:<stdin>:1: ERROR:  role "acme" already exists\npsql:<stdin>:9: ERROR:  relation "notes" does not exist\n'
                 : ''),
         })
@@ -309,7 +345,7 @@ describe('runCopy', () => {
 
     it('does not fail a postgres load on a role or database that already exists', async () => {
         const { deps } = setup({
-            stderr: (who, argv) => (who === 'acme-uat1/db' && argv.at(-1) === 'psql -U "$POSTGRES_USER" -d postgres'
+            stderr: (who, argv) => (who === 'acme-uat1/db' && argv.at(-1) === PG_LOAD
                 ? 'psql:<stdin>:1: ERROR:  role "acme" already exists\npsql:<stdin>:2: ERROR:  database "acme-uat1" already exists\n'
                 : ''),
         })
@@ -319,7 +355,7 @@ describe('runCopy', () => {
 
     it('fails a load whose command exits non-zero', async () => {
         const { deps } = setup({
-            execFail: (who, argv) => (who === 'acme-uat1/db' && argv.at(-1) === 'psql -U "$POSTGRES_USER" -d postgres' ? { exitCode: 2, stderr: 'FATAL: password authentication failed' } : null),
+            execFail: (who, argv) => (who === 'acme-uat1/db' && argv.at(-1) === PG_LOAD ? { exitCode: 2, stderr: 'FATAL: password authentication failed' } : null),
         })
         const record = await runCopy(project(), 'uat1', RUN, 'koda', deps)
         assert.equal(record.step, 'load:db')
@@ -383,6 +419,89 @@ describe('runCopy', () => {
         assert.deepEqual(calls.filter(call => call.startsWith('rmdir') || call.startsWith('mkdir')), [])
     })
 
+    it('checks the disk first, and fails the run before anything is staged when it is short', async () => {
+        const { deps, calls, finished } = setup({ free: 12 * GIB, sizes: { [`${LIVE}/storage/uploads`]: 5 * GIB } })
+        const record = await runCopy(project(), 'uat1', RUN, 'koda', deps)
+        assert.equal(record.outcome, 'failed')
+        assert.equal(record.step, 'space')
+        assert.match(record.reason ?? '', /only 12\.0 GiB is free under \/var\/www\/acme; a copy needs 10 GiB plus the size of live's storage \(5\.0 GiB\)/)
+        // Nothing staged; the clean step's removal of a folder that is not there is all that ran
+        assert.deepEqual(calls, [`rmdir ${STAGING}`])
+        assert.deepEqual(finished, [record])
+        const enough = setup({ free: 15 * GIB, sizes: { [`${LIVE}/storage/uploads`]: 5 * GIB } })
+        assert.equal((await runCopy(project(), 'uat1', RUN, 'koda', enough.deps)).outcome, 'ok')
+    })
+
+    it('loads cleanly a second time into an environment that already holds more than one database', async () => {
+        const { deps, databases } = setup()
+        const first = await runCopy(project(), 'uat1', RUN, 'koda', deps)
+        assert.equal(first.outcome, 'ok', JSON.stringify(first))
+        assert.deepEqual([...databases].sort(), ['acme-uat1', 'analytics', 'postgres', 'template0', 'template1'])
+        const second = await runCopy(project(), 'uat1', 'fedcba987654', 'koda', deps)
+        assert.equal(second.outcome, 'ok', JSON.stringify(second))
+    })
+
+    it('fails a load whose server has databases left over when the wipe did not run', async () => {
+        const { deps } = setup({ execFail: (who, argv) => (who === 'acme-uat1/db' && argv.at(-1) === PG_WIPE ? { exitCode: 0, stderr: '' } : null) })
+        assert.equal((await runCopy(project(), 'uat1', RUN, 'koda', deps)).outcome, 'ok')
+        // The same server, now skipping the wipe: its databases collide, which is what the wipe prevents
+        const second = await runCopy(project(), 'uat1', 'fedcba987654', 'koda', deps)
+        assert.equal(second.step, 'load:db')
+        assert.match(second.reason ?? '', /relation "notes" already exists/)
+    })
+
+    it('fails a load when clearing the environment\'s databases fails', async () => {
+        const { deps } = setup({ execFail: (who, argv) => (who === 'acme-uat1/db' && argv.at(-1) === PG_WIPE ? { exitCode: 1, stderr: 'permission denied' } : null) })
+        const record = await runCopy(project(), 'uat1', RUN, 'koda', deps)
+        assert.equal(record.step, 'load:db')
+        assert.match(record.reason ?? '', /clearing the environment's databases exited with code 1: permission denied/)
+    })
+
+    it('waits for a database it started to be ready, and fails prepare when it never is', async () => {
+        let asked = 0
+        const ready = setup({ execFail: (who, argv) => (who === 'acme-uat1/db' && argv.at(-1) === PG_READY && ++asked < 3 ? { exitCode: 2, stderr: 'no response' } : null) })
+        assert.equal((await runCopy(project(), 'uat1', RUN, 'koda', ready.deps)).outcome, 'ok')
+        assert.equal(ready.calls.filter(call => call === `exec acme-uat1/db ${PG_READY}`).length, 3)
+
+        const never = setup({ execFail: (who, argv) => (who === 'acme-uat1/db' && argv.at(-1) === PG_READY ? { exitCode: 2, stderr: 'no response' } : null) })
+        const record = await runCopy(project(), 'uat1', RUN, 'koda', never.deps)
+        assert.equal(record.step, 'prepare')
+        assert.match(record.reason ?? '', /db did not become ready in the environment within 60 seconds: no response/)
+        assert.equal(never.calls.filter(call => call === `exec acme-uat1/db ${PG_READY}`).length, 30)
+        assert.deepEqual(never.calls.slice(-3), [...RESTORE, `rmdir ${STAGING}`])
+    })
+
+    it('fails the redis load when redis runs with appendonly, touching nothing', async () => {
+        const { deps, calls } = setup({ appendonly: 'yes' })
+        const record = await runCopy(project(), 'uat1', RUN, 'koda', deps)
+        assert.equal(record.step, 'load:cache')
+        assert.match(record.reason ?? '', /^cache runs redis with appendonly, so replacing dump\.rdb would not take effect; copy it by hand/)
+        assert.equal(calls.some(call => call.includes('stop cache') || call.startsWith('docker cp')), false)
+    })
+
+    it('fails the redis load when redis does not answer after its restart', async () => {
+        const { deps } = setup({ execFail: (who, argv) => (who === 'acme-uat1/cache' && argv.at(-1) === REDIS_READY ? { exitCode: 1, stderr: '' } : null) })
+        const record = await runCopy(project(), 'uat1', RUN, 'koda', deps)
+        assert.equal(record.step, 'load:cache')
+        assert.match(record.reason ?? '', /cache did not become ready/)
+    })
+
+    it('puts the environment\'s sqlite files back when the copy cannot be moved into place', async () => {
+        const { deps, paths, calls } = setup()
+        const move = deps.fs.move
+        deps.fs.move = async (from, to) => {
+            if (from === `${ENV}/data/app.db.hostd-copy`) throw new Error('EIO')
+            return move(from, to)
+        }
+        const record = await runCopy(project(), 'uat1', RUN, 'koda', deps)
+        assert.equal(record.step, 'sqlite:files')
+        assert.match(record.reason ?? '', /EIO/)
+        assert.ok(paths.has(`${ENV}/data/app.db`))
+        assert.ok(paths.has(`${ENV}/data/app.db-wal`))
+        assert.ok(calls.includes(`move ${STAGING}/old/sqlite/files/app.db -> ${ENV}/data/app.db`))
+        assert.equal(calls.at(-1), `rmdir ${STAGING}`)
+    })
+
     it('moves a leftover copy of a storage folder into staging rather than copying into it', async () => {
         const { deps, calls } = setup({
             paths: [LIVE, ENV, `${LIVE}/data/app.db`, `${LIVE}/storage/uploads`, `${ENV}/storage/uploads.hostd-copy`],
@@ -443,14 +562,10 @@ describe('copyRefusal', () => {
         readsOnly(calls)
     })
 
-    it('refuses when the disk has less than 10 GiB free beyond the size of live storage', async () => {
+    it('leaves the disk to the run, so a start answers at once', async () => {
         assert.equal(COPY_MIN_FREE_BYTES, 10 * GIB)
-        const sizes = { [`${LIVE}/storage/uploads`]: 5 * GIB }
-        const short = await refusal({ free: 15 * GIB - 1, sizes })
-        assert.match(short.problem ?? '', /free/)
-        readsOnly(short.calls)
-        const enough = await refusal({ free: 15 * GIB, sizes })
-        assert.equal(enough.problem, null)
+        const { problem } = await refusal({ free: 0 })
+        assert.equal(problem, null)
     })
 })
 
