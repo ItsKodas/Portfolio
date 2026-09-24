@@ -94,6 +94,17 @@ export type ProvisionDeps = {
     // same name would take the folder and the compose name that restore needs back. Absent means
     // nothing is ever kept, so nothing is refused.
     deletedWithin?: (project: string, environment: string) => Promise<boolean>
+    // Which deleted environment, as "<project> <environment>", still holds this compose name, or null.
+    // Its volumes carry the name until the purge removes them, so anything new running under it would
+    // start on that environment's data. Covers what deletedWithin cannot: a new site's id, and another
+    // project's deleted environment. Absent means nothing is ever kept, so nothing is refused.
+    composeNameDeleted?: (composeName: string) => Promise<string | null>
+}
+
+async function deletedComposeProblem(who: string, composeName: string, deps: ProvisionDeps): Promise<string | null> {
+    const holder = deps.composeNameDeleted ? await deps.composeNameDeleted(composeName) : null
+    if (!holder) return null
+    return `${who} would run under the compose name ${composeName}, which the deleted environment ${holder} still holds with its volumes; restore it or wait for it to be purged`
 }
 
 function fieldProblem(args: ProvisionCreateArgs): string | null {
@@ -458,6 +469,9 @@ export async function createProject(args: ProvisionCreateArgs, deps: ProvisionDe
     if (invalidProblem) return refuse('unavailable', invalidProblem)
     if (RESERVED_PROJECT_IDS.has(args.id)) return refuse('bad-request', `${args.id} is reserved for the operator's own stacks`)
     if (registry.projects.has(args.id) || registry.invalid.has(args.id)) return refuse('bad-request', `${args.id} is already registered`)
+    // A new site's live runs under its id
+    const deletedCompose = await deletedComposeProblem(args.id, args.id, deps)
+    if (deletedCompose) return refuse('bad-request', deletedCompose)
     // Every new site is nested: one folder under /var/www holding live, and the repository split out of
     // it into git/ beside live. The site folder as a whole is what must not exist yet.
     const site = `/var/www/${args.dir ?? args.id}`
@@ -559,6 +573,8 @@ export async function addEnvironment(project: ProjectEntry, args: ProvisionAddEn
     const site = siteOf(project.dir)
     const dir = nestedDir(site, name)
     const composeName = `${project.id}-${name}`
+    const deletedCompose = await deletedComposeProblem(`${project.id} ${name}`, composeName, deps)
+    if (deletedCompose) return refuse('bad-request', deletedCompose)
     if (await deps.exists(dir)) return refuse('bad-request', `${dir} already exists`)
     // createProject splits the repository out of live straight after cloning, so a nested site without
     // one here is one somebody changed by hand: refused rather than guessed at.

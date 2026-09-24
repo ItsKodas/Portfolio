@@ -125,6 +125,15 @@ export class DeletedStore {
         return this.records.some(entry => entry.project === project && entry.environment === environment && !entry.leftovers)
     }
 
+    // Which deleted environment, as "<project> <environment>", still holds this compose name, or null. Held
+    // for as long as deletedWithin holds the name, for the same reason: the volumes carry it until the
+    // purge. Leftovers of a restore do not count: their purge never touches volumes, and the name belongs
+    // to the restored environment again, which the registry's own compose name checks already see.
+    composeNameDeleted(composeName: string): string | null {
+        const entry = this.records.find(record => record.composeName === composeName && !record.leftovers)
+        return entry ? `${entry.project} ${entry.environment}` : null
+    }
+
     add(record: DeletedRecord): Promise<void> {
         return this.change(records => [...records, record])
     }

@@ -110,6 +110,18 @@ describe('DeletedStore', () => {
 
     // What a restore leaves behind when prev or next could not go back: nothing restorable, only folders
     // for the purge to remove, so the name is not blocked by it
+    it('says which deleted environment holds a compose name, leaving leftovers out', async () => {
+        const { fs } = setup()
+        const store = new DeletedStore(PATH, fs)
+        await store.load()
+        await store.add({ ...record('test', '2026-09-20T10:00:00.000Z', 'other'), composeName: 'acme-uat1' })
+        await store.add(record('uat2', '2026-09-20T10:00:00.000Z'))
+        assert.equal(store.composeNameDeleted('acme-uat1'), 'other test')
+        assert.equal(store.composeNameDeleted('acme-uat3'), null)
+        await store.update({ ...record('uat2', '2026-09-20T10:00:00.000Z'), leftovers: true })
+        assert.equal(store.composeNameDeleted('acme-uat2'), null)
+    })
+
     it('replaces a record in place, and does not count leftovers as a deleted environment', async () => {
         const { fs } = setup()
         const store = new DeletedStore(PATH, fs)

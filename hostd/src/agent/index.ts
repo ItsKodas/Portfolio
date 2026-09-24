@@ -241,6 +241,7 @@ async function main(): Promise<void> {
         runner,
         log,
         deletedWithin: async (project, environment) => deletedStore.deletedWithin(project, environment),
+        composeNameDeleted: async composeName => deletedStore.composeNameDeleted(composeName),
     }
 
     const deployStore = new DeployStore(DEPLOY_STATE_FILE, undefined, log)

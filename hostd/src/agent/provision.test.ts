@@ -295,6 +295,30 @@ describe('createProject', () => {
         assert.deepEqual(mkdirs, [])
     })
 
+    // A deleted environment's volumes still carry its compose name until the purge removes them, so a new
+    // site running under that name would start on another client's data
+    it('refuses an id that is the compose name of a deleted environment, before touching anything', async () => {
+        const { deps, mkdirs, cloneRequests } = setup()
+        const asked: string[] = []
+        const reply = await createProject(createArgs(), {
+            ...deps,
+            composeNameDeleted: async name => { asked.push(name); return name === 'bakery' ? 'shop uat1' : null },
+        })
+        assert.deepEqual(reply, {
+            ok: false, code: 'bad-request',
+            message: 'bakery would run under the compose name bakery, which the deleted environment shop uat1 still holds with its volumes; restore it or wait for it to be purged',
+        })
+        assert.deepEqual(asked, ['bakery'])
+        assert.deepEqual(mkdirs, [])
+        assert.deepEqual(cloneRequests, [])
+    })
+
+    it('creates when no deleted environment holds the compose name', async () => {
+        const { deps } = setup()
+        const reply = await createProject(createArgs(), { ...deps, composeNameDeleted: async () => null })
+        assert.equal(reply.ok, true)
+    })
+
     it('clones a new project with the credential the create named', async () => {
         const { deps, cloneRequests } = setup()
         await createProject(createArgs({ credential: 'acme' }), deps)
@@ -736,6 +760,24 @@ describe('addEnvironment', () => {
         })
         assert.deepEqual(reply, { ok: false, code: 'bad-request', message: 'uat1 was deleted and is still kept for a restore; restore it or wait for it to be purged' })
         assert.deepEqual(asked, ['acme uat1'])
+        assert.deepEqual(calls, [])
+    })
+
+    // Another project's deleted environment, a flat one whose folder was /var/www/acme-uat1 say, can hold
+    // the same compose name: deletedWithin only knows about this project's own names
+    it('refuses a name whose compose name a deleted environment of another project still holds', async () => {
+        const asked: string[] = []
+        const { deps, calls } = nested()
+        const reply = await addEnvironment(project(), args(), {
+            ...deps,
+            deletedWithin: async () => false,
+            composeNameDeleted: async name => { asked.push(name); return 'other test' },
+        })
+        assert.deepEqual(reply, {
+            ok: false, code: 'bad-request',
+            message: 'acme uat1 would run under the compose name acme-uat1, which the deleted environment other test still holds with its volumes; restore it or wait for it to be purged',
+        })
+        assert.deepEqual(asked, ['acme-uat1'])
         assert.deepEqual(calls, [])
     })
 
