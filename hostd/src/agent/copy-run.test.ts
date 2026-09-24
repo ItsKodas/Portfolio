@@ -66,7 +66,7 @@ const PG_WIPE = (() => {
     return plan.before.at(-1)!
 })()
 const PG_LOAD = 'psql -U "$POSTGRES_USER" -d postgres'
-const PG_READY = 'pg_isready -U "$POSTGRES_USER"'
+const PG_READY = 'pg_isready -h 127.0.0.1 -U "$POSTGRES_USER"'
 const REDIS_READY = '[ "$(redis-cli ping)" = PONG ]'
 
 type Options = {
@@ -81,6 +81,7 @@ type Options = {
     // Services that never reach running after an up
     neverStart?: string[]
     appendonly?: string
+    dbfilename?: string
 }
 
 function setup(options: Options = {}) {
@@ -134,6 +135,7 @@ function setup(options: Options = {}) {
             if (who === 'acme/cache') await onStdout(Buffer.from('REDIS0011 live cache'))
             if (who === 'acme-uat1/cache' && argv.at(-1)!.includes('CONFIG GET dir')) await onStdout(Buffer.from('dir\n/data\n'))
             if (who === 'acme-uat1/cache' && argv.at(-1)!.includes('CONFIG GET appendonly')) await onStdout(Buffer.from(`appendonly\n${options.appendonly ?? 'no'}\n`))
+            if (who === 'acme-uat1/cache' && argv.at(-1)!.includes('CONFIG GET dbfilename')) await onStdout(Buffer.from(`dbfilename\n${options.dbfilename ?? 'dump.rdb'}\n`))
             return { exitCode: 0, stderr: '' }
         },
     }
@@ -256,6 +258,7 @@ describe('runCopy', () => {
             `exec acme-uat1/db ${PG_LOAD}`,
             'exec acme-uat1/cache redis-cli CONFIG GET dir',
             'exec acme-uat1/cache redis-cli CONFIG GET appendonly',
+            'exec acme-uat1/cache redis-cli CONFIG GET dbfilename',
             'compose acme-uat1 stop cache',
             `docker cp ${STAGING}/cache/dump.rdb acme-uat1/cache:/data/dump.rdb`,
             'compose acme-uat1 start cache',
@@ -503,8 +506,37 @@ describe('runCopy', () => {
         const { deps, calls } = setup({ appendonly: 'yes' })
         const record = await runCopy(project(), 'uat1', RUN, 'koda', deps)
         assert.equal(record.step, 'load:cache')
-        assert.match(record.reason ?? '', /^cache runs redis with appendonly, so replacing dump\.rdb would not take effect; copy it by hand/)
+        assert.match(record.reason ?? '', /^cache runs redis with appendonly, so replacing its rdb file would not take effect; copy it by hand/)
         assert.equal(calls.some(call => call.includes('stop cache') || call.startsWith('docker cp')), false)
+    })
+
+    it('puts the rdb file where the environment\'s redis reads it, under the name it is configured with', async () => {
+        const { deps, calls } = setup({ dbfilename: 'cache.rdb' })
+        const record = await runCopy(project(), 'uat1', RUN, 'koda', deps)
+        assert.equal(record.outcome, 'ok', JSON.stringify(record))
+        assert.ok(calls.includes(`docker cp ${STAGING}/cache/dump.rdb acme-uat1/cache:/data/cache.rdb`), calls.join('\n'))
+    })
+
+    it('fails the redis load, touching nothing, when redis names a file hostd cannot copy to', async () => {
+        const { deps, calls } = setup({ dbfilename: '../etc/passwd' })
+        const record = await runCopy(project(), 'uat1', RUN, 'koda', deps)
+        assert.equal(record.step, 'load:cache')
+        assert.match(record.reason ?? '', /did not name a data file hostd can copy to/)
+        assert.equal(calls.some(call => call.includes('stop cache') || call.startsWith('docker cp')), false)
+    })
+
+    it('needs three answers in a row from a mongodb it started before it counts it ready', async () => {
+        const mongo = YAML.replace('db: { role: database, engine: postgres }', 'db: { role: database, engine: mongodb }')
+        const answers = [0, 1, 0, 0, 0]
+        let asked = 0
+        const { deps, calls } = setup({
+            execFail: (who, argv) => (who === 'acme-uat1/db' && argv.at(-1)!.includes("adminCommand('ping')")
+                ? (answers[asked++] === 0 ? null : { exitCode: 1, stderr: 'connection refused' })
+                : null),
+        })
+        const record = await runCopy(project(mongo), 'uat1', RUN, 'koda', deps)
+        assert.equal(record.outcome, 'ok', JSON.stringify(record))
+        assert.equal(calls.filter(call => call.startsWith('exec acme-uat1/db') && call.includes("adminCommand('ping')")).length, 5)
     })
 
     it('fails the redis load when redis does not answer after its restart', async () => {

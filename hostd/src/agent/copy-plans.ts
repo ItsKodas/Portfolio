@@ -259,8 +259,11 @@ function mysqlWipe(connect: string): string {
     // CHAR(96) is a backquote, spelled so because a backquote inside the double quotes below would be
     // read by the shell as a command.
     const tick = 'CHAR(96 USING utf8mb4)'
-    const select = `SELECT CONCAT('DROP DATABASE IF EXISTS ', ${tick}, REPLACE(schema_name, ${tick}, REPEAT(${tick}, 2)), ${tick}, ';')`
-        + ` FROM information_schema.schemata WHERE schema_name NOT IN ${MYSQL_KEEP}`
+    // schema_name is utf8mb3 on older servers: converted once, so every comparison and REPLACE is between
+    // utf8mb4 strings and can never raise an illegal mix of collations
+    const name = 'CONVERT(schema_name USING utf8mb4)'
+    const select = `SELECT CONCAT('DROP DATABASE IF EXISTS ', ${tick}, REPLACE(${name}, ${tick}, REPEAT(${tick}, 2)), ${tick}, ';')`
+        + ` FROM information_schema.schemata WHERE ${name} NOT IN ${MYSQL_KEEP}`
     // -r, so a name is printed as it is rather than with its backslashes escaped
     return `drops=$(${connect} -N -B -r -e "${select}") && printf '%s\\n' "$drops" | ${connect}`
 }
@@ -270,13 +273,17 @@ function mysqlWipe(connect: string): string {
 // What says a database the copy has just started (or restarted) takes connections: a container that is
 // running is not yet a server that answers. Run in the environment's container with the dump's own
 // credential variables; exit 0 means ready. null for what has no server of its own to ask.
+//
+// Over TCP to 127.0.0.1, never the default unix socket: the official postgres, mysql and mariadb images
+// first initialise a new data directory with a temporary server that listens on the socket only, and a
+// probe that reached it would load a dump into a server about to be shut down under it.
 export function readyProbe(service: string, entry: ServiceEntry): string[] | PlanProblem | null {
     if (entry.role !== 'database') return null
     switch (entry.engine) {
         case 'postgres': {
             const user = named(service, entry.dump.userEnv, 'POSTGRES_USER')
             if (isProblem(user)) return user
-            return ['sh', '-c', `pg_isready -U "$${user}"`]
+            return ['sh', '-c', `pg_isready -h 127.0.0.1 -U "$${user}"`]
         }
         case 'mysql':
         case 'mariadb': {
@@ -287,10 +294,11 @@ export function readyProbe(service: string, entry: ServiceEntry): string[] | Pla
             const user = entry.dump.userEnv === undefined ? 'root' : named(service, entry.dump.userEnv, 'root')
             if (isProblem(user)) return user
             const userArg = entry.dump.userEnv === undefined ? '-u root' : `-u "$${user}"`
-            return ['sh', '-c', `MYSQL_PWD="$${password}" ${admin} ${userArg} ping`]
+            return ['sh', '-c', `MYSQL_PWD="$${password}" ${admin} ${userArg} -h 127.0.0.1 --protocol=tcp ping`]
         }
         case 'mongodb': {
-            const ping = `--quiet --eval "db.adminCommand('ping')"`
+            // The mongo image's first-init server takes TCP on localhost too, so readyPasses asks again
+            const ping = `--host 127.0.0.1 --quiet --eval "db.adminCommand('ping')"`
             return ['sh', '-c', `if command -v mongosh >/dev/null 2>&1; then mongosh ${ping}; else mongo ${ping}; fi`]
         }
         case 'redis':
@@ -300,6 +308,13 @@ export function readyProbe(service: string, entry: ServiceEntry): string[] | Pla
         case 'generic':
             return null
     }
+}
+
+// How many answers in a row make a database ready. mongodb's official image runs its first-init server on
+// localhost TCP as well, then stops it and starts the real one: three answers about two seconds apart
+// outlast that temporary server.
+export function readyPasses(entry: ServiceEntry): number {
+    return entry.role === 'database' && entry.engine === 'mongodb' ? 3 : 1
 }
 
 // psql reports a failed statement on stderr and carries on. Roles and databases the environment's server

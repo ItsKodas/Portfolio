@@ -21,7 +21,7 @@ import { composeBase, tail, type Runner } from './compose.ts'
 import { checkedId, pickPerService, type ContainerSummary, type DockerApi } from './docker.ts'
 import { dumpPlan, isProblem } from './backup-dumps.ts'
 import { writeChunk } from './backup-run.ts'
-import { loadPlan, postgresErrorCollector, readyProbe, renameStream } from './copy-plans.ts'
+import { loadPlan, postgresErrorCollector, readyPasses, readyProbe, renameStream } from './copy-plans.ts'
 import { MIN_FREE_BYTES } from './deploy.ts'
 
 // The same margin a deploy keeps, on top of what the copy of live's storage is about to take
@@ -40,6 +40,8 @@ const COPY_ASIDE = '.hostd-copy'
 // What the environment's redis says its data directory is: an absolute path, and nothing a shell or
 // docker cp could read as anything else
 const REDIS_DIR = /^\/[A-Za-z0-9._/-]{0,255}$/
+// And the file in it that redis loads at start: one plain file name, never a path
+const REDIS_FILE = /^(?!\.\.?$)[A-Za-z0-9._-]{1,255}$/
 
 type Like = { uid: number, gid: number, mode: number }
 
@@ -347,16 +349,23 @@ async function prepare(context: Context): Promise<Containers> {
     return containers
 }
 
-// Waits for a database's own readiness probe to answer inside its container, for up to a minute
+// Waits for a database's own readiness probe to answer inside its container, as many times in a row as
+// its engine needs (readyPasses), for up to a minute
 async function waitReady(context: Context, service: string, entry: ServiceEntry, id: string): Promise<void> {
     const probe = readyProbe(service, entry)
     if (probe === null) return
     if (isProblem(probe)) fail(probe.problem)
+    const needed = readyPasses(entry)
+    let passes = 0
     let last = ''
     for (let attempt = 0; attempt < WAIT_ATTEMPTS; attempt++) {
         if (attempt > 0) await context.sleep(WAIT_MS)
         const result = await context.deps.dockerApi.exec(id, probe as string[], discard)
-        if (result.exitCode === 0) return
+        if (result.exitCode === 0) {
+            if (++passes >= needed) return
+            continue
+        }
+        passes = 0
         last = tail(result.stderr, 300)
     }
     fail(`${service} did not become ready in the environment within ${(WAIT_ATTEMPTS * WAIT_MS) / 1000} seconds${last ? `: ${last}` : ''}`)
@@ -400,8 +409,9 @@ async function load(context: Context, service: string, entry: ServiceEntry, dump
     return containers
 }
 
-// redis loads its rdb file at start, so the file is put where the environment's redis reads it, with the
-// service stopped (a redis stopping writes its own dataset over that file) and started again after.
+// redis loads its rdb file at start, so the file is put where the environment's redis reads it (its dir and
+// dbfilename), with the service stopped (a redis stopping writes its own dataset over that file) and
+// started again after.
 async function loadRedis(context: Context, service: string, entry: ServiceEntry, id: string, dump: string): Promise<void> {
     const { deps, changed } = context
     const dir = await redisConfig(context, id, 'dir')
@@ -410,13 +420,16 @@ async function loadRedis(context: Context, service: string, entry: ServiceEntry,
     // Under appendonly, redis loads its append-only file at start and never reads dump.rdb
     const appendonly = await redisConfig(context, id, 'appendonly')
     if (appendonly === null) fail(`${service}: whether it runs with appendonly could not be read`)
-    if (appendonly === 'yes') fail(`${service} runs redis with appendonly, so replacing dump.rdb would not take effect; copy it by hand`)
+    if (appendonly === 'yes') fail(`${service} runs redis with appendonly, so replacing its rdb file would not take effect; copy it by hand`)
+    const file = await redisConfig(context, id, 'dbfilename')
+    if (file === null) fail(`${service}: the name of its data file could not be read`)
+    if (!REDIS_FILE.test(file!)) fail(`${service}: redis did not name a data file hostd can copy to`)
 
     const base = changed.base!
     const stopped = await compose(context, base, ['stop', service])
     if (stopped) fail(stopped)
     changed.stopped.add(service)
-    const copied = await deps.runner('docker', ['cp', dump, `${checkedId(id)}:${posix.join(dir!, 'dump.rdb')}`], COMPOSE_TIMEOUT_MS)
+    const copied = await deps.runner('docker', ['cp', dump, `${checkedId(id)}:${posix.join(dir!, file!)}`], COMPOSE_TIMEOUT_MS)
     if (copied.exitCode !== 0 || copied.timedOut) fail(`${service}: docker cp exited with code ${copied.exitCode}: ${tail(copied.stderr.trim(), 300)}`)
     const started = await compose(context, base, ['start', service])
     if (started) fail(started)
@@ -426,7 +439,7 @@ async function loadRedis(context: Context, service: string, entry: ServiceEntry,
 }
 
 // One setting of the environment's redis, or null when it could not be read
-async function redisConfig(context: Context, id: string, key: 'dir' | 'appendonly'): Promise<string | null> {
+async function redisConfig(context: Context, id: string, key: 'dir' | 'appendonly' | 'dbfilename'): Promise<string | null> {
     const chunks: Buffer[] = []
     const asked = await context.deps.dockerApi.exec(id, ['sh', '-c', `redis-cli CONFIG GET ${key}`], chunk => { chunks.push(chunk) })
     if (asked.exitCode !== 0) return null

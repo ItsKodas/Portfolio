@@ -2,7 +2,7 @@ import { describe, it } from 'node:test'
 import assert from 'node:assert/strict'
 import { Readable } from 'node:stream'
 
-import { loadPlan, postgresErrorCollector, postgresLoadErrors, readyProbe, renameDatabaseLine, renameStream } from './copy-plans.ts'
+import { loadPlan, postgresErrorCollector, postgresLoadErrors, readyPasses, readyProbe, renameDatabaseLine, renameStream } from './copy-plans.ts'
 
 describe('renameDatabaseLine (postgres)', () => {
     const pg = (line: string) => renameDatabaseLine('postgres', line, 'acme', 'acme-uat1')
@@ -174,8 +174,9 @@ const PG_WIPE = (user: string) => {
 }
 const MYSQL_WIPE = (connect: string) => {
     const tick = 'CHAR(96 USING utf8mb4)'
-    const select = `SELECT CONCAT('DROP DATABASE IF EXISTS ', ${tick}, REPLACE(schema_name, ${tick}, REPEAT(${tick}, 2)), ${tick}, ';')`
-        + " FROM information_schema.schemata WHERE schema_name NOT IN ('mysql', 'sys', 'information_schema', 'performance_schema')"
+    const name = 'CONVERT(schema_name USING utf8mb4)'
+    const select = `SELECT CONCAT('DROP DATABASE IF EXISTS ', ${tick}, REPLACE(${name}, ${tick}, REPEAT(${tick}, 2)), ${tick}, ';')`
+        + ` FROM information_schema.schemata WHERE ${name} NOT IN ('mysql', 'sys', 'information_schema', 'performance_schema')`
     return `drops=$(${connect} -N -B -r -e "${select}") && printf '%s\\n' "$drops" | ${connect}`
 }
 
@@ -262,18 +263,29 @@ describe('loadPlan', () => {
 })
 
 describe('readyProbe', () => {
-    it('asks each engine in its own words, with the dump\'s credentials', () => {
-        assert.deepEqual(readyProbe('db', { role: 'database', engine: 'postgres', dump: { userEnv: 'PGUSER' } }), ['sh', '-c', 'pg_isready -U "$PGUSER"'])
-        assert.deepEqual(readyProbe('db', { role: 'database', engine: 'mysql', dump: {} }), ['sh', '-c', 'MYSQL_PWD="$MYSQL_ROOT_PASSWORD" mysqladmin -u root ping'])
+    it('asks each engine over TCP, in its own words, with the dump\'s credentials', () => {
+        // Over TCP, so the socket-only server an official image runs while it first initialises never passes
+        assert.deepEqual(readyProbe('db', { role: 'database', engine: 'postgres', dump: { userEnv: 'PGUSER' } }), ['sh', '-c', 'pg_isready -h 127.0.0.1 -U "$PGUSER"'])
+        assert.deepEqual(
+            readyProbe('db', { role: 'database', engine: 'mysql', dump: {} }),
+            ['sh', '-c', 'MYSQL_PWD="$MYSQL_ROOT_PASSWORD" mysqladmin -u root -h 127.0.0.1 --protocol=tcp ping'],
+        )
         assert.deepEqual(
             readyProbe('db', { role: 'database', engine: 'mariadb', dump: { userEnv: 'DB_USER', passwordEnv: 'DB_PASS' } }),
-            ['sh', '-c', 'MYSQL_PWD="$DB_PASS" mariadb-admin -u "$DB_USER" ping'],
+            ['sh', '-c', 'MYSQL_PWD="$DB_PASS" mariadb-admin -u "$DB_USER" -h 127.0.0.1 --protocol=tcp ping'],
         )
         assert.deepEqual(readyProbe('db', { role: 'database', engine: 'mongodb', dump: {} }), [
             'sh', '-c',
-            'if command -v mongosh >/dev/null 2>&1; then mongosh --quiet --eval "db.adminCommand(\'ping\')"; else mongo --quiet --eval "db.adminCommand(\'ping\')"; fi',
+            'if command -v mongosh >/dev/null 2>&1; then mongosh --host 127.0.0.1 --quiet --eval "db.adminCommand(\'ping\')"; else mongo --host 127.0.0.1 --quiet --eval "db.adminCommand(\'ping\')"; fi',
         ])
         assert.deepEqual(readyProbe('cache', { role: 'database', engine: 'redis', dump: {} }), ['sh', '-c', '[ "$(redis-cli ping)" = PONG ]'])
+    })
+
+    it('asks mongodb three times in a row, since its first-init server takes TCP on localhost too', () => {
+        assert.equal(readyPasses({ role: 'database', engine: 'mongodb', dump: {} }), 3)
+        assert.equal(readyPasses({ role: 'database', engine: 'postgres', dump: {} }), 1)
+        assert.equal(readyPasses({ role: 'database', engine: 'mysql', dump: {} }), 1)
+        assert.equal(readyPasses({ role: 'database', engine: 'redis', dump: {} }), 1)
     })
 
     it('has nothing to ask of sqlite, generic or a site, and refuses a bad variable name', () => {
