@@ -1,8 +1,9 @@
 'use client'
 
 // A site's environments, on its Settings tab: every one it has, adding another beside live, deleting one,
-// putting a deleted one back within its 30 days, and copying live's data into one. The operator's alone end to end: hostd puts all of it
-// under its provision verb, the actions check again, and a client gets nothing drawn here at all.
+// putting a deleted one back within its 30 days, and copying live's data into one. The operator's alone
+// end to end: hostd puts all of it under its provision verb, the actions check again, and a client gets
+// nothing drawn here at all.
 
 import { useRouter } from 'next/navigation'
 import { useEffect, useState } from 'react'
@@ -108,7 +109,9 @@ export function SiteEnvironments({ id, name, isAdmin, environments, branches, de
         deployed: environment.deployed ? <span className={styles.mono}>{shortCommit(environment.deployed)}</span> : 'not deployed yet',
         act: environment.name === LIVE
             ? null
-            : <div className={styles.environmentActs}>
+            // Keyed by name: the table keys rows by position, so without this a row's state (a copy
+            // running, a confirm open) would pass to the next environment once one above it is deleted
+            : <div key={environment.name} className={styles.environmentActs}>
                 <CopyFromLive
                     id={id}
                     environment={environment.name}
@@ -414,8 +417,10 @@ function CopyFromLive({ id, environment, domain, onStarted }: {
             try {
                 const result = await copyRunsAction(id, environment)
                 if (!alive) return
+                // A failed read ends the watching, so the button is handed back rather than left disabled
                 if (!result.ok) {
                     setTrouble(result.error)
+                    setRunning(false)
                     return
                 }
                 setTrouble(null)
@@ -423,7 +428,10 @@ function CopyFromLive({ id, environment, domain, onStarted }: {
                 setRunning(result.running)
                 if (result.running) timer = setTimeout(read, POLL_MS)
             } catch {
-                if (alive) setTrouble(BROKE)
+                if (alive) {
+                    setTrouble(BROKE)
+                    setRunning(false)
+                }
             }
         }
         read()

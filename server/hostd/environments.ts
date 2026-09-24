@@ -1,8 +1,8 @@
 // A site's environments beside live: adding one, deleting one, the deleted ones hostd keeps for 30
-// days and can put back, and copying live's databases and storage into one. All four are the operator's alone, in hostd (policy verb provision) as here in
-// the actions that call them. The shapes are the api contract in
-// docs/superpowers/specs/2026-09-24-named-environments-design.md, "hostd api", and for the copies
-// docs/superpowers/specs/2026-09-25-copy-live-data-design.md, "hostd pieces".
+// days and can put back, and copying live's databases and storage into one. Every call here is the
+// operator's alone, in hostd (policy verb provision) as here in the actions that call them. The shapes
+// are the api contract in docs/superpowers/specs/2026-09-24-named-environments-design.md, "hostd api",
+// and for the copies docs/superpowers/specs/2026-09-25-copy-live-data-design.md, "hostd pieces".
 
 import 'server-only'
 
@@ -85,7 +85,9 @@ const HOSTNAME = /^(?!-)[a-z0-9-]{1,63}(?<!-)(\.(?!-)[a-z0-9-]{1,63}(?<!-))+$/
 const SLOW_MS = 180_000
 
 const NO_PROJECT: HostdResult<never> = { ok: false, code: 'not-found', message: 'no such project' }
-const NOT_LIVE: HostdResult<never> = { ok: false, code: 'bad-request', message: 'live cannot be added, deleted, restored or copied into' }
+const NOT_LIVE: HostdResult<never> = {
+    ok: false, code: 'bad-request', message: 'live cannot be added, deleted, restored or copied into',
+}
 const BAD_NAME: HostdResult<never> = { ok: false, code: 'bad-request', message: 'not an environment name' }
 const BAD_RUN: HostdResult<never> = { ok: false, code: 'bad-request', message: 'not a copy run id' }
 const UNREADABLE: HostdResult<never> = { ok: false, code: 'unavailable', message: 'hostd answered with something unreadable' }

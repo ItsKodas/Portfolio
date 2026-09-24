@@ -425,6 +425,68 @@ describe('copying live data into an environment', () => {
             expect(copyRunsAction).toHaveBeenCalledTimes(3)
         })
 
+        // The table keys its rows by position, so without a key of its own a row's copy state would
+        // stay with the position and land on the next environment once one above it is deleted
+        it("does not carry one environment's running copy onto the next row when it is deleted", async () => {
+            const three = [
+                props.environments[1],
+                { name: 'uat1', branch: 'uat', domain: null, deployed: null },
+                { name: 'uat2', branch: 'develop', domain: null, deployed: null },
+            ]
+            copyRunsAction.mockImplementation(async (_id: string, environment: string) => (environment === 'uat1'
+                ? { ok: true, runs: [record()], running: true }
+                : { ok: true, runs: [], running: false }))
+            const { rerender } = render(<SiteEnvironments {...props} environments={three} />)
+            await settle()
+            expect(screen.getByText('Copying from live...')).toBeInTheDocument()
+
+            // uat1's delete confirm is open as it goes, which must not become a confirm for uat2
+            fireEvent.click(screen.getByRole('button', { name: 'Delete uat1' }))
+            expect(screen.getByRole('dialog')).toBeInTheDocument()
+
+            rerender(<SiteEnvironments {...props} environments={[three[0], three[2]]} />)
+            // Before the next read lands, which is when a reused row would still show uat1's state
+            expect(screen.queryByText('Copying from live...')).toBeNull()
+            expect(screen.queryByRole('dialog')).toBeNull()
+            await settle()
+
+            const rows = within(screen.getByRole('table', { name: 'Environments' })).getAllByRole('row').slice(1)
+            expect(within(rows[1]).getByText('uat2')).toBeInTheDocument()
+            expect(within(rows[1]).queryByText('Copying from live...')).toBeNull()
+            expect(within(rows[1]).getByRole('button', { name: 'Copy data from live into uat2' })).toBeEnabled()
+        })
+
+        it('hands the button back when a read fails mid copy, and says why', async () => {
+            copyRunsAction
+                .mockResolvedValueOnce({ ok: true, runs: [record()], running: true })
+                .mockResolvedValue({ ok: false, error: 'hostd is not answering' })
+            render(<SiteEnvironments {...props} />)
+            await settle()
+            expect(screen.getByRole('button', { name: 'Copy data from live into uat1' })).toBeDisabled()
+
+            await wait(3000)
+            expect(screen.getByText(/The copies could not be read: hostd is not answering/)).toBeInTheDocument()
+            expect(screen.queryByText('Copying from live...')).toBeNull()
+            expect(screen.getByRole('button', { name: 'Copy data from live into uat1' })).toBeEnabled()
+        })
+
+        it('hands the button back when the read after a start fails', async () => {
+            copyRunsAction
+                .mockResolvedValueOnce({ ok: true, runs: [], running: false })
+                .mockRejectedValue(new Error('network'))
+            render(<SiteEnvironments {...props} />)
+            await settle()
+
+            fireEvent.click(screen.getByRole('button', { name: 'Copy data from live into uat1' }))
+            fireEvent.change(screen.getByLabelText('Type uat1 to confirm'), { target: { value: 'uat1' } })
+            fireEvent.click(screen.getByRole('button', { name: 'Copy data' }))
+            await settle()
+            await settle()
+
+            expect(screen.getByText(/The copies could not be read/)).toBeInTheDocument()
+            expect(screen.getByRole('button', { name: 'Copy data from live into uat1' })).toBeEnabled()
+        })
+
         it('stops polling when it is taken off the page', async () => {
             copyRunsAction.mockResolvedValue({ ok: true, runs: [record()], running: true })
             const { unmount } = render(<SiteEnvironments {...props} />)
