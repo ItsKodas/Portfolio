@@ -62,6 +62,8 @@ type Options = {
     realpath?: (path: string) => string
     // Why the registry store rejected its last reload, if it did
     registryRejection?: string
+    // Why the record file refuses writes, if it does
+    storeUnwritable?: string
 }
 
 function setup(options: Options = {}) {
@@ -97,6 +99,7 @@ function setup(options: Options = {}) {
             environmentNode: (id, environment) => writer.environmentNode(id, environment),
         },
         store: {
+            unwritable: () => options.storeUnwritable ?? null,
             list: project => records.filter(entry => project === undefined || entry.project === project),
             add: async record => {
                 if (options.failRecord) throw new Error('ENOSPC: no space left on device')
@@ -567,6 +570,21 @@ describe('purgeDeleted', () => {
         assert.deepEqual(runs, [])
         assert.equal(records.length, 1)
         assert.ok(logs.some(line => line.includes('acme uat1') && line.includes('projects.yaml line 4: bad indentation')), logs.join(' | '))
+    })
+
+    // The record could not be dropped afterwards, so the folder and the volumes would go while the record
+    // stayed, naming a trash folder that no longer exists
+    it('keeps every record, and says why, while the record file refuses writes', async () => {
+        const old = deletedRecord({ deletedAt: new Date(NOW - DELETED_KEEP_MS - 1000).toISOString() })
+        const { deps, removed, runs, records, logs } = setup({
+            yaml: WITHOUT_UAT1, records: [old], volumes: ['acme-uat1_db'], storeUnwritable: 'it has 1 malformed entry',
+        })
+        const result = await purgeDeleted(NOW, deps)
+        assert.deepEqual(result, { purged: [], kept: ['acme uat1'] })
+        assert.deepEqual(removed, [])
+        assert.deepEqual(runs, [])
+        assert.equal(records.length, 1)
+        assert.ok(logs.some(line => line.includes('acme uat1') && line.includes('1 malformed entry')), logs.join(' | '))
     })
 
     it('skips a trash folder whose real path is not the recorded one', async () => {

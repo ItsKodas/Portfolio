@@ -51,6 +51,7 @@ describe('DeletedStore', () => {
         await store.load()
         assert.deepEqual(store.list(), [])
         assert.deepEqual(store.warnings(), [])
+        assert.equal(store.unwritable(), null)
     })
 
     it('writes through a temporary file in the same folder and a rename, never over the file itself', async () => {
@@ -157,12 +158,21 @@ describe('DeletedStore', () => {
         assert.equal(files.get(PATH), 'not json')
     })
 
-    it('drops malformed entries on load rather than trusting them', async () => {
+    // A malformed entry is still a trash folder somebody deleted: the next write would drop it from the
+    // file for good, leaving a folder nothing restores or purges and its name free for reuse
+    it('treats a malformed entry as making the file unreadable: trusts none of it for writing, and warns', async () => {
         const saved = JSON.stringify({ environments: [record('uat1', '2026-09-20T10:00:00.000Z'), { project: 'acme' }] })
-        const { fs } = setup({ [PATH]: saved })
-        const store = new DeletedStore(PATH, fs)
+        const { fs, files } = setup({ [PATH]: saved })
+        const logs: string[] = []
+        const store = new DeletedStore(PATH, fs, message => logs.push(message))
         await store.load()
         assert.deepEqual(store.list().map(entry => entry.environment), ['uat1'])
         assert.equal(store.warnings().length, 1)
+        assert.match(store.warnings()[0]!, /1 malformed entry/)
+        assert.ok(logs.some(line => line.startsWith('WARN') && line.includes('malformed')))
+        assert.match(store.unwritable() ?? '', /malformed/)
+        await assert.rejects(store.add(record('uat2', '2026-09-21T10:00:00.000Z')), /could not be read/)
+        await assert.rejects(store.remove('acme', 'uat1', '2026-09-20T10:00:00.000Z'), /could not be read/)
+        assert.equal(files.get(PATH), saved)
     })
 })

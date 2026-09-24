@@ -109,7 +109,7 @@ export type AgentDeps = {
     // have. Absent until the production entrypoint wires the record: deleting, restoring and listing
     // deleted environments then refuse unavailable instead of crashing.
     trash?: {
-        store: Pick<DeletedStore, 'list' | 'add' | 'update' | 'remove'>
+        store: Pick<DeletedStore, 'list' | 'add' | 'update' | 'remove'> & Partial<Pick<DeletedStore, 'unwritable'>>
         removeEmptyDir(dir: string): Promise<void>
         realpath(path: string): Promise<string>
         // Why the registry store rejected its last reload, or null (RegistryStore.rejected)

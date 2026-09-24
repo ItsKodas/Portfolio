@@ -53,7 +53,7 @@ export type TrashDeps = {
         write(change: Change): Promise<{ ok: true } | { ok: false, problem: string, conflict?: true }>
         environmentNode(id: string, environment: EnvironmentName): Promise<Record<string, unknown> | null>
     }
-    store: Pick<DeletedStore, 'list' | 'add' | 'update' | 'remove'>
+    store: Pick<DeletedStore, 'list' | 'add' | 'update' | 'remove'> & Partial<Pick<DeletedStore, 'unwritable'>>
     fs: {
         exists(path: string): Promise<boolean>
         // Never recursive
@@ -387,6 +387,13 @@ export async function purgeDeleted(now: number, deps: PurgeDeps): Promise<{ purg
         const rejection = deps.registryRejection()
         if (rejection !== null) {
             keep(`the registry file was rejected, so the last good version in use may be stale: ${rejection}`)
+            continue
+        }
+        // Its record could not be dropped afterwards: the folder and the volumes would go, and the record
+        // would stay behind naming a trash folder that no longer exists
+        const unwritable = deps.store.unwritable?.() ?? null
+        if (unwritable !== null) {
+            keep(`the deleted environments record refuses writes: ${unwritable}`)
             continue
         }
         const record = deps.store.list(listed.project)

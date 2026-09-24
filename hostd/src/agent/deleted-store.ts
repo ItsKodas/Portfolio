@@ -91,11 +91,14 @@ export class DeletedStore {
             const saved = JSON.parse(text) as Partial<Saved>
             if (!isRecord(saved) || !Array.isArray(saved.environments)) throw new Error('the file is not a deleted environments record')
             const valid = saved.environments.filter(isDeletedRecord)
+            // The well-formed ones are still read, so their names stay blocked and they still list. But a
+            // malformed entry is a trash folder all the same, and the next write would drop it from the
+            // file for good, so the file is treated as unreadable: nothing writes over it.
             this.records = valid
-            const dropped = saved.environments.length - valid.length
-            if (dropped > 0) {
-                this.problem = `the deleted environments record at ${this.path} had ${dropped} malformed entries, which were ignored`
-                this.log(`WARN ${this.problem}`)
+            const malformed = saved.environments.length - valid.length
+            if (malformed > 0) {
+                const entries = malformed === 1 ? '1 malformed entry' : `${malformed} malformed entries`
+                this.fail(`the deleted environments record at ${this.path} could not be read: it has ${entries}, so it is not written over until they are fixed`)
             }
         } catch (error) {
             this.fail(`the deleted environments record at ${this.path} could not be read: ${describeError(error)}`)
@@ -110,6 +113,11 @@ export class DeletedStore {
 
     warnings(): string[] {
         return this.problem ? [this.problem] : []
+    }
+
+    // Why every write refuses, or null when writes go through
+    unwritable(): string | null {
+        return this.unreadable ? this.problem : null
     }
 
     list(project?: string): DeletedRecord[] {
