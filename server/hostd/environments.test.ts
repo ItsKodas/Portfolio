@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 
 import {
-    addEnvironment, copyFromLive, copyRun, copyRuns, deleteEnvironment, listDeletedEnvironments, restoreEnvironment,
+    addEnvironment, copyFromLive, copyRuns, deleteEnvironment, listDeletedEnvironments, restoreEnvironment,
 } from './environments'
 
 const config = { url: 'http://hostd-api:8080', token: 'a'.repeat(32) }
@@ -223,27 +223,5 @@ describe('copyRuns', () => {
         const { fetchImpl, calls } = fakeFetch({ runs: [], running: false })
         expect((await copyRuns(config, admin, 'acme', 'live', fetchImpl)).ok).toBe(false)
         expect(calls).toHaveLength(0)
-    })
-})
-
-describe('copyRun', () => {
-    it('reads one run by its id', async () => {
-        const { fetchImpl, calls } = fakeFetch(record({ outcome: 'ok', durationMs: 42_000 }))
-        expect(await copyRun(config, admin, 'acme', 'uat1', 'r1', fetchImpl))
-            .toEqual({ ok: true, value: record({ outcome: 'ok', durationMs: 42_000 }) })
-        expect(calls[0].url).toBe('http://hostd-api:8080/projects/acme/uat1/copy-runs/r1')
-    })
-
-    it('refuses a run id that could not be one, and live, before asking', async () => {
-        const { fetchImpl, calls } = fakeFetch(record())
-        expect((await copyRun(config, admin, 'acme', 'uat1', '../../x', fetchImpl)).ok).toBe(false)
-        expect((await copyRun(config, admin, 'acme', 'uat1', '', fetchImpl)).ok).toBe(false)
-        expect((await copyRun(config, admin, 'acme', 'live', 'r1', fetchImpl)).ok).toBe(false)
-        expect(calls).toHaveLength(0)
-    })
-
-    it('reads a record it cannot make sense of as a failure', async () => {
-        const { fetchImpl } = fakeFetch({ nothing: true })
-        expect((await copyRun(config, admin, 'acme', 'uat1', 'r1', fetchImpl)).ok).toBe(false)
     })
 })

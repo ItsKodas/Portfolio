@@ -89,11 +89,7 @@ const NOT_LIVE: HostdResult<never> = {
     ok: false, code: 'bad-request', message: 'live cannot be added, deleted, restored or copied into',
 }
 const BAD_NAME: HostdResult<never> = { ok: false, code: 'bad-request', message: 'not an environment name' }
-const BAD_RUN: HostdResult<never> = { ok: false, code: 'bad-request', message: 'not a copy run id' }
 const UNREADABLE: HostdResult<never> = { ok: false, code: 'unavailable', message: 'hostd answered with something unreadable' }
-
-// A run id goes into a path, so only a plain segment is sent. hostd has the final word on which exist.
-const RUN_ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,79}$/
 
 // Every call here names an environment other than live, so the checks are the same for all of them
 function badTarget(id: string, environment: string): HostdResult<never> | null {
@@ -296,24 +292,4 @@ export async function copyRuns(
             running: result.value.running === true,
         },
     }
-}
-
-export async function copyRun(
-    config: HostdConfig,
-    caller: Caller,
-    id: string,
-    environment: EnvironmentName,
-    run: string,
-    fetchImpl: typeof fetch = fetch,
-): Promise<HostdResult<CopyRecord>> {
-    const bad = badTarget(id, environment)
-    if (bad) return bad
-    if (!RUN_ID.test(run)) return BAD_RUN
-
-    const result = await hostdRequest<unknown>(
-        config, caller, `/projects/${id}/${environment}/copy-runs/${encodeURIComponent(run)}`, {}, fetchImpl,
-    )
-    if (!result.ok) return result
-    const record = readRecord(result.value)
-    return record ? { ok: true, value: record } : UNREADABLE
 }
