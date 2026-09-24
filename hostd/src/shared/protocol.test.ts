@@ -223,7 +223,40 @@ describe('parseAgentRequest', () => {
     })
 
     it('refuses an unknown provision action', () => {
-        assert.equal(refusalOf({ verb: 'provision', args: { action: 'destroy' } }), 'bad-request: action must be create, add-environment or remove')
+        assert.equal(
+            refusalOf({ verb: 'provision', args: { action: 'destroy' } }),
+            'bad-request: action must be create, add-environment, remove, delete-environment, restore-environment or deleted-environments',
+        )
+    })
+
+    it('parses deleting, restoring and listing deleted environments', () => {
+        const request = (args: unknown) => parsed({ verb: 'provision', project: 'acme', args })
+        assert.deepEqual(
+            request({ action: 'delete-environment', environment: 'uat1', actor: 'koda@horizons.gg' }),
+            { ok: true, request: { verb: 'provision', project: 'acme', args: { action: 'delete-environment', environment: 'uat1', actor: 'koda@horizons.gg' } } },
+        )
+        assert.deepEqual(
+            request({ action: 'delete-environment', environment: 'uat1' }),
+            { ok: true, request: { verb: 'provision', project: 'acme', args: { action: 'delete-environment', environment: 'uat1' } } },
+        )
+        const restore = { action: 'restore-environment', environment: 'uat1', deletedAt: '2026-09-24T10:00:00.000Z', token: 'abc123def456' }
+        assert.deepEqual(request(restore), { ok: true, request: { verb: 'provision', project: 'acme', args: restore } })
+        assert.deepEqual(
+            request({ action: 'deleted-environments' }),
+            { ok: true, request: { verb: 'provision', project: 'acme', args: { action: 'deleted-environments' } } },
+        )
+    })
+
+    it('refuses a malformed delete or restore', () => {
+        const refusal = (args: unknown) => refusalOf({ verb: 'provision', project: 'acme', args })
+        assert.match(refusal({ action: 'delete-environment', environment: 'live' }), /^bad-request: live/)
+        assert.match(refusal({ action: 'delete-environment', environment: 'uat-1' }), /^bad-request/)
+        assert.match(refusal({ action: 'delete-environment', environment: 'uat1', actor: 'a b' }), /^bad-request/)
+        assert.match(refusal({ action: 'delete-environment', environment: 'uat1', extra: 1 }), /^bad-request/)
+        assert.match(refusal({ action: 'restore-environment', environment: 'live', deletedAt: '2026-09-24T10:00:00.000Z' }), /^bad-request: live/)
+        assert.match(refusal({ action: 'restore-environment', environment: 'uat1', deletedAt: 'yesterday' }), /^bad-request: deletedAt/)
+        assert.match(refusal({ action: 'restore-environment', environment: 'uat1', deletedAt: '2026-09-24T10:00:00.000Z', token: 'NOT HEX' }), /^bad-request: token/)
+        assert.match(refusal({ action: 'deleted-environments', environment: 'uat1' }), /^bad-request/)
     })
 
     describe('create port', () => {

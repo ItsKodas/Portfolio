@@ -2,7 +2,7 @@
 // or by a header line followed by a stream. Parsing is strict on purpose: the agent is root, so anything
 // it does not recognise, including an extra field, is refused rather than ignored.
 
-import { CLIENT_ID, DIR_NAME, PROJECT_ID, SERVICE_NAME, isEnvironmentName, isRecord, relativePathProblem } from './formats.ts'
+import { CLIENT_ID, DIR_NAME, PROJECT_ID, SERVICE_NAME, USER_ID, isEnvironmentName, isRecord, relativePathProblem } from './formats.ts'
 import {
     isComposeService, environmentOf, ENVIRONMENT_FLAGS, CAPABILITIES, CERTIFICATE_MODES, GIT_REF, CREDENTIAL_NAME, MAX_COMPOSE_FILES, PORT_OVERRIDE_FILE,
     type Capability, type CertificateMode, type EnvironmentFlag, type EnvironmentName, type Keep, type ProjectEntry, type Registry,
@@ -83,8 +83,15 @@ export type ProvisionAddEnvironmentArgs = {
     certificate: CertificateMode | null
 }
 export type ProvisionRemoveArgs = { action: 'remove', environment: EnvironmentName | null }
+// Deleting one environment into its site's trash, restoring one from there, and listing what is there.
+// actor is who asked, a label for the record and nothing else, exactly like a backup run's. token is the
+// verification token api minted for the restored vhost: only api mints them.
+export type ProvisionDeleteEnvironmentArgs = { action: 'delete-environment', environment: EnvironmentName, actor?: string }
+export type ProvisionRestoreEnvironmentArgs = { action: 'restore-environment', environment: EnvironmentName, deletedAt: string, token?: string }
+export type ProvisionDeletedEnvironmentsArgs = { action: 'deleted-environments' }
+export type ProvisionTrashArgs = ProvisionDeleteEnvironmentArgs | ProvisionRestoreEnvironmentArgs | ProvisionDeletedEnvironmentsArgs
 export type ProvisionCreateRequest = { verb: 'provision', args: ProvisionCreateArgs }
-export type ProvisionOnProjectRequest = { verb: 'provision', project: string, args: ProvisionAddEnvironmentArgs | ProvisionRemoveArgs }
+export type ProvisionOnProjectRequest = { verb: 'provision', project: string, args: ProvisionAddEnvironmentArgs | ProvisionRemoveArgs | ProvisionTrashArgs }
 export type ProvisionRequest = ProvisionCreateRequest | ProvisionOnProjectRequest
 
 export type EnvListArgs = { action: 'list', environment: EnvironmentName }
@@ -278,6 +285,21 @@ export type LifecycleReply = { ok: true, output: string }
 // Provisioning never starts a site on its own: an operator still has to fill in the env files this
 // names before lifecycle start makes sense, which is what state carries across the wire.
 export type ProvisionReply = { ok: true, project: { id: string, state: 'needs-setup' }, envFiles: EnvFileList }
+// One deleted environment as the portal lists it: what it was, and when the sweep will purge it.
+export type DeletedEnvironment = {
+    environment: EnvironmentName
+    deletedAt: string
+    purgeAt: string
+    branch: string | null
+    domain: string | null
+    aliases: string[]
+}
+export type DeletedEnvironmentsReply = { ok: true, environments: DeletedEnvironment[] }
+// What a restore had to change: a port someone else took meanwhile, and hostnames someone else claimed.
+// warnings are what went wrong after the environment was already back in the registry (its vhost, its
+// start), which the operator has to put right but which do not undo the restore. vhost says whether hostd
+// wrote the environment's vhost with the token api sent, which is what api records its hostnames against.
+export type RestoreEnvironmentReply = { ok: true, port: number, portChanged: boolean, droppedHostnames: string[], warnings: string[], vhost: boolean }
 export type EnvListReply = { ok: true, files: EnvFileList }
 export type EnvReadReply = { ok: true, text: string }
 // A deploy is minutes of building and api's own call timeout is 150 seconds, so a deploy, a rollback and
@@ -309,7 +331,7 @@ export type StreamHeader = { ok: true, stream: true }
 export type AgentReply =
     | HealthReply | StatusReply | StatusesReply | LifecycleReply | ProvisionReply | EnvListReply | EnvReadReply
     | DeployStartedReply | DeployHistoryReply | DeployCommitsReply | BranchesReply | CredentialsReply | PortsReply | ConfigureReply
-    | BackupStartedReply | BackupListReply | BackupRunReply
+    | BackupStartedReply | BackupListReply | BackupRunReply | DeletedEnvironmentsReply | RestoreEnvironmentReply
     | DomainsWritten | AdoptPreview | Refusal
 export type LogLine = { stream: 'stdout' | 'stderr', ts: string | null, text: string, truncated: boolean }
 
@@ -521,13 +543,51 @@ function parseProvisionRemove(raw: Record<string, unknown>): Parsed {
     }
 }
 
+// Exactly what Date#toISOString writes, which is what a record carries
+const ISO_INSTANT = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/
+
+function parseProvisionTrash(raw: Record<string, unknown>): Parsed {
+    if (!onlyKeys(raw, ['verb', 'project', 'args'])) return refuse('bad-request', 'provision takes only project and args')
+    const project = projectOf(raw)
+    if (!project) return refuse('bad-request', 'project is malformed')
+    const args = raw.args as Record<string, unknown>
+    const onProject = (parsedArgs: ProvisionTrashArgs): Parsed => ({ ok: true, request: { verb: 'provision', project, args: parsedArgs } })
+
+    if (args.action === 'deleted-environments') {
+        if (!onlyKeys(args, ['action'])) return refuse('bad-request', 'deleted-environments takes nothing else')
+        return onProject({ action: 'deleted-environments' })
+    }
+
+    const environment = args.environment
+    if (!isEnvironmentName(environment)) return refuse('bad-request', 'environment must be an environment name')
+    if (environment === 'live') return refuse('bad-request', 'live is never deleted or restored on its own')
+
+    if (args.action === 'delete-environment') {
+        if (!onlyKeys(args, ['action', 'environment', 'actor'])) return refuse('bad-request', 'delete-environment takes only environment and actor')
+        if (args.actor !== undefined && (typeof args.actor !== 'string' || !USER_ID.test(args.actor))) return refuse('bad-request', 'actor is malformed')
+        return onProject({ action: 'delete-environment', environment, ...(args.actor !== undefined ? { actor: args.actor as string } : {}) })
+    }
+
+    if (!onlyKeys(args, ['action', 'environment', 'deletedAt', 'token'])) return refuse('bad-request', 'restore-environment takes only environment, deletedAt and token')
+    if (typeof args.deletedAt !== 'string' || !ISO_INSTANT.test(args.deletedAt)) return refuse('bad-request', 'deletedAt must be the instant the record gives')
+    if (args.token !== undefined && (typeof args.token !== 'string' || !DOMAIN_TOKEN.test(args.token))) return refuse('bad-request', 'token must be lowercase hex')
+    return onProject({
+        action: 'restore-environment', environment, deletedAt: args.deletedAt,
+        ...(args.token !== undefined ? { token: args.token as string } : {}),
+    })
+}
+
 function parseProvisionRequest(raw: Record<string, unknown>): Parsed {
     if (!isRecord(raw.args) || typeof raw.args.action !== 'string') return refuse('bad-request', 'provision requires args.action')
     switch (raw.args.action) {
         case 'create': return parseProvisionCreate(raw)
         case 'add-environment': return parseProvisionAddEnvironment(raw)
         case 'remove': return parseProvisionRemove(raw)
-        default: return refuse('bad-request', 'action must be create, add-environment or remove')
+        case 'delete-environment':
+        case 'restore-environment':
+        case 'deleted-environments':
+            return parseProvisionTrash(raw)
+        default: return refuse('bad-request', 'action must be create, add-environment, remove, delete-environment, restore-environment or deleted-environments')
     }
 }
 
@@ -979,7 +1039,7 @@ export function checkStructure(
     // them, so a project the guard has just failed must stay refused. Removing a project touches no files
     // at all, so it is safe regardless, and a guard failure is exactly the kind of problem that makes an
     // operator want to unregister the project in the first place.
-    const removingProject = request.verb === 'provision' && request.args.action === 'remove'
+    const removingProject = request.verb === 'provision' && request.args.action === 'remove' && request.args.environment === null
     const guardProblem = guardInvalid.get(id)
     if (guardProblem !== undefined && !removingProject) return refuse('invalid-project', `${id} is invalid: ${guardProblem}`)
 

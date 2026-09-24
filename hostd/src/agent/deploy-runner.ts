@@ -19,6 +19,9 @@ type Deploy = (project: ProjectEntry, environment: EnvironmentEntry, request: De
 
 export class DeployRunner {
     private readonly running = new Map<string, Promise<void>>()
+    // Environments the agent is deleting or restoring, counted so two holders cannot release each other.
+    // Checked in start, which every deploy passes through: the poller's as much as a person's.
+    private readonly blocked = new Map<string, number>()
     // Beside `running`, and for the same reason: this class is what knows a deploy is happening.
     readonly watch: DeployWatch
 
@@ -32,8 +35,22 @@ export class DeployRunner {
         return this.running.has(key)
     }
 
+    // Refuses every deploy of this environment until the returned function is called
+    block(key: string): () => void {
+        this.blocked.set(key, (this.blocked.get(key) ?? 0) + 1)
+        let released = false
+        return () => {
+            if (released) return
+            released = true
+            const left = (this.blocked.get(key) ?? 1) - 1
+            if (left > 0) this.blocked.set(key, left)
+            else this.blocked.delete(key)
+        }
+    }
+
     start(project: ProjectEntry, environment: EnvironmentEntry, request: DeployRequest): DeployStartedReply | Refusal {
         const key = deployKey(project.id, environment.name)
+        if (this.blocked.has(key)) return refuse('busy', `${project.id} ${environment.name} is being deleted or restored`)
         // Taken before any await, so two requests arriving together cannot both see a free slot.
         if (this.running.has(key)) return refuse('busy', `${project.id} ${environment.name} already has a deploy running`)
         // A person asking is what resumes a paused environment; the poller is what must stay stopped.
