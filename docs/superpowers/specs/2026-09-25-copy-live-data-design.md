@@ -54,7 +54,7 @@ any time later as a refresh.
 - A backup of the project is running (and a backup is refused while a copy runs).
 - Any registered database service has no running container in live's compose project.
 - Free space on the site's filesystem is below 10 GiB plus the total size of live's registered storage
-  folders.
+  folders plus a best-effort estimate of live's database sizes (checked as the run's first step, `space`).
 
 ## The run
 
@@ -91,7 +91,8 @@ A copy starts, answers at once with a run id, and runs in the background, like a
 5. **sqlite and storage.** For each sqlite service, `sqlite3 <live>/<file> ".backup <env>/<file>.hostd-copy"`
    then rename over the environment's file. For each registered storage folder, `cp -a` live's folder to
    `<env>/<path>.hostd-copy`, move the environment's current folder to `<site>/.copy/<run>/old/<path>`,
-   move the copy into place, then own it like the environment's tree.
+   move the copy into place. The copy keeps the owners `cp -a` preserved from live (a deploy's storage carry
+   never changes ownership either); only folders the copy itself creates are owned like the environment's tree.
 6. **Restore the environment's state.** Start the site services that were running before step 3. Stop the
    database services step 3 started, so the environment ends in the state it began in.
 7. **Clean up.** Remove `<site>/.copy/<run>/` (staging dumps and old storage) whatever the outcome.
