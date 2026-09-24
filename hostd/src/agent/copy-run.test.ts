@@ -68,6 +68,9 @@ const PG_WIPE = (() => {
 const PG_LOAD = 'psql -U "$POSTGRES_USER" -d postgres'
 const PG_READY = 'pg_isready -h 127.0.0.1 -U "$POSTGRES_USER"'
 const REDIS_READY = '[ "$(redis-cli ping)" = PONG ]'
+const PG_SIZE = 'psql -U "$POSTGRES_USER" -d postgres -Atq -c "SELECT sum(pg_database_size(datname)) FROM pg_database"'
+const REDIS_SIZE = 'redis-cli INFO memory'
+const SIZING = /pg_database_size|INFO memory|data_length|totalSize/
 
 type Options = {
     // compose name -> service -> container state
@@ -82,6 +85,8 @@ type Options = {
     neverStart?: string[]
     appendonly?: string
     dbfilename?: string
+    // who -> what its size query prints
+    dbSizes?: Record<string, string>
 }
 
 function setup(options: Options = {}) {
@@ -117,6 +122,10 @@ function setup(options: Options = {}) {
             }
             const failed = options.execFail?.(who, argv)
             if (failed) return failed
+            if (SIZING.test(argv.at(-1)!)) {
+                await onStdout(Buffer.from(options.dbSizes?.[who] ?? ''))
+                return { exitCode: 0, stderr: '' }
+            }
             const noise = options.stderr?.(who, argv)
             if (noise) onStderr?.(Buffer.from(noise))
             if (who === 'acme-uat1/db' && argv.at(-1)!.includes('pg_terminate_backend')) {
@@ -202,17 +211,18 @@ function setup(options: Options = {}) {
     const started: CopyRecord[] = []
     const finished: CopyRecord[] = []
     let clock = Date.parse('2026-09-25T10:00:00.000Z')
+    const logged: string[] = []
     const deps: CopyDeps = {
         dockerApi, runner, fs,
         store: {
             start: async record => { started.push(record) },
             finish: async record => { finished.push(record) },
         },
-        log: () => {},
+        log: message => { logged.push(message) },
         now: () => { clock += 1000; return clock },
         sleep: async () => {},
     }
-    return { deps, calls, loaded, states, files, paths, started, finished, databases }
+    return { deps, calls, loaded, states, files, paths, started, finished, databases, logged }
 }
 
 const RESTORE = ['compose acme-uat1 start web', 'compose acme-uat1 stop db']
@@ -239,7 +249,11 @@ describe('runCopy', () => {
         const record = await runCopy(project(), 'uat1', RUN, 'koda', deps)
         assert.equal(record.outcome, 'ok', JSON.stringify(record))
         assert.deepEqual(calls, [
-            // 1 and 2: the block is the agent's; the dump reads live only
+            // 1: the block is the agent's. The space step estimates live's databases (sqlite by its file)
+            'list acme',
+            `exec acme/db ${PG_SIZE}`,
+            `exec acme/cache ${REDIS_SIZE}`,
+            // 2: the dump reads live only
             `mkdir ${STAGING} private`,
             'list acme',
             `mkdir ${STAGING}/db private`,
@@ -329,7 +343,7 @@ describe('runCopy', () => {
         await runCopy(project(), 'uat1', RUN, 'koda', deps)
         assert.deepEqual(calls.filter(call => call.startsWith('compose acme ')), [])
         assert.deepEqual(calls.filter(call => /^(move|rmdir|mkdir|own) \/var\/www\/acme\/live/.test(call)), [])
-        assert.deepEqual(calls.filter(call => call.startsWith('exec acme/') && !/pg_dumpall|redis-cli --rdb/.test(call)), [])
+        assert.deepEqual(calls.filter(call => call.startsWith('exec acme/') && !/pg_dumpall|redis-cli --rdb|pg_database_size|INFO memory/.test(call)), [])
     })
 
     it('fails at the dump, still puts nothing back it did not change, and removes staging', async () => {
@@ -455,12 +469,41 @@ describe('runCopy', () => {
         const record = await runCopy(project(), 'uat1', RUN, 'koda', deps)
         assert.equal(record.outcome, 'failed')
         assert.equal(record.step, 'space')
-        assert.match(record.reason ?? '', /only 12\.0 GiB is free under \/var\/www\/acme; a copy needs 10 GiB plus the size of live's storage \(5\.0 GiB\)/)
-        // Nothing staged; the clean step's removal of a folder that is not there is all that ran
-        assert.deepEqual(calls, [`rmdir ${STAGING}`])
+        assert.match(record.reason ?? '', /only 12\.0 GiB is free under \/var\/www\/acme; a copy needs 10 GiB plus the size of live's storage \(5\.0 GiB\) and an estimate of its databases \(0\.0 GiB\)/)
+        // Nothing staged: the size queries read live, and the clean step's removal of a folder that is not
+        // there is all that ran
+        assert.deepEqual(calls, ['list acme', `exec acme/db ${PG_SIZE}`, `exec acme/cache ${REDIS_SIZE}`, `rmdir ${STAGING}`])
         assert.deepEqual(finished, [record])
         const enough = setup({ free: 15 * GIB, sizes: { [`${LIVE}/storage/uploads`]: 5 * GIB } })
         assert.equal((await runCopy(project(), 'uat1', RUN, 'koda', enough.deps)).outcome, 'ok')
+    })
+
+    it('counts an estimate of live\'s databases, sqlite by its file, on top of the storage', async () => {
+        const sizes = { [`${LIVE}/storage/uploads`]: 1 * GIB, [`${LIVE}/data/app.db`]: 1 * GIB }
+        const dbSizes = { 'acme/db': `${2 * GIB}\n`, 'acme/cache': `# Memory\r\nused_memory:${1 * GIB}\r\n` }
+        // 10 + 1 of storage + 2 + 1 + 1 of databases
+        const short = setup({ free: 14.5 * GIB, sizes, dbSizes })
+        const record = await runCopy(project(), 'uat1', RUN, 'koda', short.deps)
+        assert.equal(record.step, 'space')
+        assert.match(record.reason ?? '', /storage \(1\.0 GiB\) and an estimate of its databases \(4\.0 GiB\)/)
+        const enough = setup({ free: 15 * GIB, sizes, dbSizes })
+        assert.equal((await runCopy(project(), 'uat1', RUN, 'koda', enough.deps)).outcome, 'ok')
+    })
+
+    it('counts a database whose size cannot be read as nothing, and says so in the log', async () => {
+        const { deps, logged } = setup({
+            free: 10.5 * GIB,
+            dbSizes: { 'acme/cache': `used_memory:${1 * GIB}\n` },
+            execFail: (who, argv) => (who === 'acme/db' && argv.at(-1) === PG_SIZE ? { exitCode: 2, stderr: 'FATAL: role does not exist' } : null),
+        })
+        // The failed query is logged and the redis answer still counts
+        const record = await runCopy(project(), 'uat1', RUN, 'koda', deps)
+        assert.equal(record.step, 'space')
+        assert.match(record.reason ?? '', /databases \(1\.0 GiB\)/)
+        assert.ok(logged.some(line => /db: the size of live's database could not be read.*FATAL: role does not exist/.test(line)), logged.join('\n'))
+        const unreadable = setup({ free: 10.5 * GIB, dbSizes: { 'acme/db': 'nonsense', 'acme/cache': 'NOAUTH' } })
+        assert.equal((await runCopy(project(), 'uat1', RUN, 'koda', unreadable.deps)).outcome, 'ok')
+        assert.equal(unreadable.logged.filter(line => /could not be read/.test(line)).length, 2)
     })
 
     it('loads cleanly a second time into an environment that already holds more than one database', async () => {

@@ -21,10 +21,10 @@ import { composeBase, tail, type Runner } from './compose.ts'
 import { checkedId, pickPerService, type ContainerSummary, type DockerApi } from './docker.ts'
 import { dumpPlan, isProblem } from './backup-dumps.ts'
 import { writeChunk } from './backup-run.ts'
-import { loadPlan, postgresErrorCollector, readyPasses, readyProbe, renameStream } from './copy-plans.ts'
+import { loadPlan, parseSize, postgresErrorCollector, readyPasses, readyProbe, renameStream, sizeProbe } from './copy-plans.ts'
 import { MIN_FREE_BYTES } from './deploy.ts'
 
-// The same margin a deploy keeps, on top of what the copy of live's storage is about to take
+// The same margin a deploy keeps, on top of what the copy of live's storage and databases is about to take
 export const COPY_MIN_FREE_BYTES = MIN_FREE_BYTES
 // compose stop, up and start, and each database command that is not the load itself
 const COMPOSE_TIMEOUT_MS = 120_000
@@ -123,15 +123,75 @@ export async function copyRefusal(
 }
 
 // Why the site's disk will not take this copy, or null when it will: 10 GiB free beyond the size of live's
-// storage, which the copy is about to duplicate. Walking a large storage tree takes a while, which is why
-// this is the run's first step rather than a refusal the start has to wait for.
-export async function spaceProblem(project: ProjectEntry, live: EnvironmentEntry, environment: EnvironmentEntry, fs: Pick<CopyFs, 'freeBytes' | 'sizeOf'>): Promise<string | null> {
+// storage, which the copy is about to duplicate, and an estimate of live's databases, which it dumps into
+// staging and loads into the environment. Walking a large storage tree takes a while, which is why this is
+// the run's first step rather than a refusal the start has to wait for.
+export async function spaceProblem(
+    project: ProjectEntry, live: EnvironmentEntry, environment: EnvironmentEntry,
+    deps: { fs: Pick<CopyFs, 'freeBytes' | 'sizeOf'>, dockerApi: Pick<DockerApi, 'exec' | 'listProjectContainers'>, log(message: string): void },
+): Promise<string | null> {
     let storage = 0
-    for (const path of storagePathsOf(project)) storage += await fs.sizeOf(posix.join(live.dir, path))
+    for (const path of storagePathsOf(project)) storage += await deps.fs.sizeOf(posix.join(live.dir, path))
+    const databases = await databaseEstimate(project, live, deps)
     const site = siteOf(environment.dir)
-    const free = await fs.freeBytes(site)
-    if (free >= COPY_MIN_FREE_BYTES + storage) return null
+    const free = await deps.fs.freeBytes(site)
+    if (free >= COPY_MIN_FREE_BYTES + storage + databases) return null
     return `only ${gib(free)} GiB is free under ${site}; a copy needs 10 GiB plus the size of live's storage (${gib(storage)} GiB)`
+        + ` and an estimate of its databases (${gib(databases)} GiB)`
+}
+
+// Size answers are a line or two; anything longer is not one
+const MAX_SIZE_ANSWER = 64 * 1024
+
+// Best effort: each of live's databases asked its own size in its own container (sqlite measured by its
+// file). A database that cannot say counts as nothing, and the log says which.
+async function databaseEstimate(
+    project: ProjectEntry, live: EnvironmentEntry,
+    deps: { fs: Pick<CopyFs, 'sizeOf'>, dockerApi: Pick<DockerApi, 'exec' | 'listProjectContainers'>, log(message: string): void },
+): Promise<number> {
+    const unknown = (service: string, why: string) => {
+        deps.log(`WARN copy ${project.id}: ${service}: the size of live's database could not be read, so it counts as nothing towards the space a copy needs: ${why}`)
+        return 0
+    }
+    let containers: Containers | null = null
+    let total = 0
+    for (const [service, entry] of databasesOf(project)) {
+        if (entry.role !== 'database') continue
+        if (entry.engine === 'sqlite') {
+            total += await deps.fs.sizeOf(posix.join(live.dir, entry.file)).catch(error => unknown(service, describeError(error)))
+            continue
+        }
+        const probe = sizeProbe(service, entry)
+        if (probe === null) continue
+        if (isProblem(probe)) {
+            total += unknown(service, probe.problem)
+            continue
+        }
+        try {
+            containers ??= pickPerService(await deps.dockerApi.listProjectContainers(live.composeName))
+            const container = containers.get(service)
+            if (container?.State !== 'running') {
+                total += unknown(service, 'it has no running container in live')
+                continue
+            }
+            const chunks: Buffer[] = []
+            let length = 0
+            const result = await deps.dockerApi.exec(container.Id, probe, chunk => {
+                if (length >= MAX_SIZE_ANSWER) return
+                chunks.push(chunk)
+                length += chunk.length
+            })
+            if (result.exitCode !== 0) {
+                total += unknown(service, `the size query exited with code ${result.exitCode}: ${tail(result.stderr, 300)}`)
+                continue
+            }
+            const size = parseSize(entry.engine, Buffer.concat(chunks).toString('utf8'))
+            total += size ?? unknown(service, 'the size query did not answer with a byte count')
+        } catch (error) {
+            total += unknown(service, describeError(error))
+        }
+    }
+    return total
 }
 
 // Where one run stages: <site>/.copy/<run>, or null when that would be anywhere else. The one folder a
@@ -200,7 +260,7 @@ export async function runCopy(project: ProjectEntry, name: string, run: string, 
         if (!stagingOk) fail(`refusing to stage copy ${JSON.stringify(run)} anywhere but under the site's .copy folder`)
         const context = { project, live: live!, environment: environment!, staging, deps, sleep, changed }
         step = 'space'
-        const space = await spaceProblem(project, live!, environment!, deps.fs)
+        const space = await spaceProblem(project, live!, environment!, deps)
         if (space) fail(space)
         step = 'dump'
         const dumps = await dumpLive(context)

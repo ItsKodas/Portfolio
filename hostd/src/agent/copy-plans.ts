@@ -310,6 +310,62 @@ export function readyProbe(service: string, entry: ServiceEntry): string[] | Pla
     }
 }
 
+// ---- how large live's databases are ----------------------------------------------------------------
+//
+// A best-effort estimate for the space step, run in live's own container with the dump's credential
+// variables: it only reads. What it prints goes through parseSize; a query that fails, or an answer that is
+// not a byte count, is counted as nothing by the caller, which logs it. null for sqlite (the caller measures
+// its file), generic (never copied) and anything that is not a database.
+
+const MONGO_SIZE = "'var t = 0; db.getMongo().getDBNames().forEach(function (n) { t += db.getSiblingDB(n).stats().totalSize || 0 }); print(t)'"
+
+export function sizeProbe(service: string, entry: ServiceEntry): string[] | PlanProblem | null {
+    if (entry.role !== 'database') return null
+    switch (entry.engine) {
+        case 'postgres': {
+            const user = named(service, entry.dump.userEnv, 'POSTGRES_USER')
+            if (isProblem(user)) return user
+            return ['sh', '-c', `psql -U "$${user}" -d postgres -Atq -c "SELECT sum(pg_database_size(datname)) FROM pg_database"`]
+        }
+        case 'mysql':
+        case 'mariadb': {
+            const defaultPassword = entry.engine === 'mysql' ? 'MYSQL_ROOT_PASSWORD' : 'MARIADB_ROOT_PASSWORD'
+            const password = passwordNamed(service, entry.dump.passwordEnv, defaultPassword)
+            if (isProblem(password)) return password
+            const user = entry.dump.userEnv === undefined ? 'root' : named(service, entry.dump.userEnv, 'root')
+            if (isProblem(user)) return user
+            const userArg = entry.dump.userEnv === undefined ? '-u root' : `-u "$${user}"`
+            return ['sh', '-c', `MYSQL_PWD="$${password}" ${entry.engine} ${userArg} -N -B -e "SELECT COALESCE(SUM(data_length + index_length), 0) FROM information_schema.tables"`]
+        }
+        case 'mongodb': {
+            const user = named(service, entry.dump.userEnv, 'MONGO_INITDB_ROOT_USERNAME')
+            if (isProblem(user)) return user
+            const password = passwordNamed(service, entry.dump.passwordEnv, 'MONGO_INITDB_ROOT_PASSWORD')
+            if (isProblem(password)) return password
+            const args = `--host 127.0.0.1 --quiet \${${user}:+-u "$${user}" -p "$${password}" --authenticationDatabase admin} --eval ${MONGO_SIZE}`
+            return ['sh', '-c', `if command -v mongosh >/dev/null 2>&1; then mongosh ${args}; else mongo ${args}; fi`]
+        }
+        case 'redis':
+            return ['sh', '-c', 'redis-cli INFO memory']
+        case 'sqlite':
+        case 'generic':
+            return null
+    }
+}
+
+// The byte count in a size query's answer, or null when there is none: redis's used_memory line, and for
+// the others the last line printed (mongosh may print a warning first), a plain number.
+export function parseSize(engine: string, stdout: string): number | null {
+    if (engine === 'redis') {
+        const match = /^used_memory:(\d+)\s*$/m.exec(stdout)
+        return match ? Number(match[1]) : null
+    }
+    const lines = stdout.split(/\r?\n/).map(line => line.trim()).filter(line => line !== '')
+    const last = lines.at(-1)
+    if (last === undefined || !/^\d+(\.\d+)?$/.test(last)) return null
+    return Math.round(Number(last))
+}
+
 // How many answers in a row make a database ready. mongodb's official image runs its first-init server on
 // localhost TCP as well, then stops it and starts the real one: three answers about two seconds apart
 // outlast that temporary server.

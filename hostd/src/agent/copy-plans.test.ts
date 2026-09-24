@@ -2,7 +2,7 @@ import { describe, it } from 'node:test'
 import assert from 'node:assert/strict'
 import { Readable } from 'node:stream'
 
-import { loadPlan, postgresErrorCollector, postgresLoadErrors, readyPasses, readyProbe, renameDatabaseLine, renameStream } from './copy-plans.ts'
+import { loadPlan, parseSize, postgresErrorCollector, postgresLoadErrors, readyPasses, readyProbe, renameDatabaseLine, renameStream, sizeProbe } from './copy-plans.ts'
 
 describe('renameDatabaseLine (postgres)', () => {
     const pg = (line: string) => renameDatabaseLine('postgres', line, 'acme', 'acme-uat1')
@@ -293,6 +293,47 @@ describe('readyProbe', () => {
         assert.equal(readyProbe('files', { role: 'database', engine: 'generic', dump: {} }), null)
         assert.equal(readyProbe('web', { role: 'site' }), null)
         assert.deepEqual(readyProbe('db', { role: 'database', engine: 'postgres', dump: { userEnv: 'x y' } }), { problem: 'db: dump.userEnv is not an environment variable name' })
+    })
+})
+
+describe('sizeProbe', () => {
+    it('asks each engine how large its data is, with the dump\'s credentials', () => {
+        assert.deepEqual(sizeProbe('db', { role: 'database', engine: 'postgres', dump: { userEnv: 'PGUSER' } }), [
+            'sh', '-c', 'psql -U "$PGUSER" -d postgres -Atq -c "SELECT sum(pg_database_size(datname)) FROM pg_database"',
+        ])
+        assert.deepEqual(sizeProbe('db', { role: 'database', engine: 'mysql', dump: {} }), [
+            'sh', '-c', 'MYSQL_PWD="$MYSQL_ROOT_PASSWORD" mysql -u root -N -B -e "SELECT COALESCE(SUM(data_length + index_length), 0) FROM information_schema.tables"',
+        ])
+        assert.deepEqual(sizeProbe('db', { role: 'database', engine: 'mariadb', dump: { userEnv: 'DB_USER', passwordEnv: 'DB_PASS' } }), [
+            'sh', '-c', 'MYSQL_PWD="$DB_PASS" mariadb -u "$DB_USER" -N -B -e "SELECT COALESCE(SUM(data_length + index_length), 0) FROM information_schema.tables"',
+        ])
+        const mongoEval = "'var t = 0; db.getMongo().getDBNames().forEach(function (n) { t += db.getSiblingDB(n).stats().totalSize || 0 }); print(t)'"
+        const mongoAuth = '${MONGO_INITDB_ROOT_USERNAME:+-u "$MONGO_INITDB_ROOT_USERNAME" -p "$MONGO_INITDB_ROOT_PASSWORD" --authenticationDatabase admin}'
+        assert.deepEqual(sizeProbe('db', { role: 'database', engine: 'mongodb', dump: {} }), [
+            'sh', '-c',
+            `if command -v mongosh >/dev/null 2>&1; then mongosh --host 127.0.0.1 --quiet ${mongoAuth} --eval ${mongoEval}; else mongo --host 127.0.0.1 --quiet ${mongoAuth} --eval ${mongoEval}; fi`,
+        ])
+        assert.deepEqual(sizeProbe('cache', { role: 'database', engine: 'redis', dump: {} }), ['sh', '-c', 'redis-cli INFO memory'])
+    })
+
+    it('has nothing to ask of sqlite (its file is measured), generic or a site, and refuses a bad variable name', () => {
+        assert.equal(sizeProbe('lite', { role: 'database', engine: 'sqlite', file: 'a.db' }), null)
+        assert.equal(sizeProbe('files', { role: 'database', engine: 'generic', dump: {} }), null)
+        assert.equal(sizeProbe('web', { role: 'site' }), null)
+        assert.deepEqual(sizeProbe('db', { role: 'database', engine: 'postgres', dump: { userEnv: 'x y' } }), { problem: 'db: dump.userEnv is not an environment variable name' })
+    })
+})
+
+describe('parseSize', () => {
+    it('reads a byte count from each engine\'s answer, and null from anything else', () => {
+        assert.equal(parseSize('postgres', '8123456\n'), 8123456)
+        assert.equal(parseSize('mysql', '1048576\n'), 1048576)
+        assert.equal(parseSize('mariadb', '1048576.0000\n'), 1048576)
+        assert.equal(parseSize('mongodb', 'some warning\n2097152\n'), 2097152)
+        assert.equal(parseSize('redis', '# Memory\r\nused_memory:1024000\r\nused_memory_human:1000.00K\r\n'), 1024000)
+        assert.equal(parseSize('postgres', ''), null)
+        assert.equal(parseSize('postgres', 'psql: error\n'), null)
+        assert.equal(parseSize('redis', 'NOAUTH Authentication required.\n'), null)
     })
 })
 
