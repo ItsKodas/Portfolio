@@ -405,6 +405,36 @@ describe('copying live data into an environment', () => {
             expect(copyRunsAction).toHaveBeenCalledTimes(2)
         })
 
+        // hostd's first step checks the disk, before anything is dumped or changed
+        it('does not call a copy that failed its space check partly copied', async () => {
+            const reason = 'only 3.0 GiB is free under /var/www/acme; a copy needs 10 GiB plus the size of live\'s storage (1.0 GiB)'
+            copyRunsAction.mockResolvedValue({ ok: true, runs: [record({ outcome: 'failed', step: 'space', reason })], running: false })
+            render(<SiteEnvironments {...props} />)
+            await settle()
+            const state = screen.getByText(/The copy from live failed at space: only 3\.0 GiB is free/)
+            expect(state.textContent).not.toMatch(/partly copied/)
+        })
+
+        // hostd adds its own note for the steps that write into the environment, so it is said once
+        it('says partly copied once when hostd already says it', async () => {
+            const reason = 'db: the load exited with code 3: boom The environment may be partly copied; a new copy will overwrite it.'
+            copyRunsAction.mockResolvedValue({ ok: true, runs: [record({ outcome: 'failed', step: 'load:db', reason })], running: false })
+            render(<SiteEnvironments {...props} />)
+            await settle()
+            const state = screen.getByText(/The copy from live failed at load:db/)
+            expect(state.textContent?.match(/partly copied/g)).toHaveLength(1)
+        })
+
+        // A run the agent restarted during has no step, and may have got as far as the load
+        it('says a copy the agent restarted during may be partly copied', async () => {
+            copyRunsAction.mockResolvedValue({
+                ok: true, runs: [record({ outcome: 'failed', step: null, reason: 'the agent restarted during the copy' })], running: false,
+            })
+            render(<SiteEnvironments {...props} />)
+            await settle()
+            expect(screen.getByText(/The copy from live failed: the agent restarted during the copy\. It may be partly copied/)).toBeInTheDocument()
+        })
+
         it('starts polling once a copy is started from the dialog', async () => {
             copyRunsAction
                 .mockResolvedValueOnce({ ok: true, runs: [], running: false })

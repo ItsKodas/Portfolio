@@ -381,11 +381,11 @@ function CopyState({ latest, running, trouble }: { latest: CopyRun | null, runni
     if (latest.outcome === 'failed') {
         const where = latest.step ? ` at ${latest.step}` : ''
         const why = latest.reason ? `: ${latest.reason.replace(/\.+$/, '')}` : ''
-        return (
-            <span className={styles.stateBad}>
-                {`The copy from live failed${where}${why}. It may be partly copied, and a new copy overwrites it.`}
-            </span>
-        )
+        // hostd's reason already says so for a failed load, sqlite or storage step, and nothing was written
+        // into the environment before those. A run with no step is one the agent restarted during, which
+        // may have got anywhere.
+        const partly = latest.step === null ? ' It may be partly copied, and a new copy overwrites it.' : ''
+        return <span className={styles.stateBad}>{`The copy from live failed${where}${why}.${partly}`}</span>
     }
     return null
 }

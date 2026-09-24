@@ -151,7 +151,7 @@ export type CopyRecord = {
     startedAt: string
     durationMs: number
     outcome: CopyOutcome
-    // The step that failed (dump, prepare, load:<service>, sqlite:<service>, storage:<path>,
+    // The step that failed (space, dump, prepare, load:<service>, sqlite:<service>, storage:<path>,
     // restore-state or clean), or null
     step: string | null
     reason: string | null

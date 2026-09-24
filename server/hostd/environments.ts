@@ -32,7 +32,7 @@ export type AddedEnvironment = {
 }
 
 // One copy of live's data into an environment, as hostd records it. step names where a failed run
-// stopped (dump, prepare, load:<service>, sqlite:<service>, storage:<path>, restore-state, clean).
+// stopped (space, dump, prepare, load:<service>, sqlite:<service>, storage:<path>, restore-state, clean).
 export type CopyRecord = {
     project: string
     environment: string
