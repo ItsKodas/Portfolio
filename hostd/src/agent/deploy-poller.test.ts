@@ -165,7 +165,7 @@ describe('a poll during a delete or restore', () => {
         const store = new DeployStore('/var/lib/hostd/deploys.json', memoryFs())
         const deployed: string[] = []
         const runner = new DeployRunner(
-            { store, log: () => {}, now: () => 0 } as unknown as DeployRunnerDeps,
+            { store, registry: () => registry, log: () => {}, now: () => 0 } as unknown as DeployRunnerDeps,
             async (project, environment, request) => {
                 deployed.push(`${project.id}:${environment.name}`)
                 return { ...failure(), outcome: 'ok', trigger: request.trigger }
@@ -185,5 +185,55 @@ describe('a poll during a delete or restore', () => {
         assert.ok(!started.includes('acme:live'))
         assert.ok(!deployed.includes('acme:live'))
         assert.ok(logs.some(line => line.includes('acme:live') && line.includes('being deleted or restored')))
+    })
+})
+
+describe('an environment deleted while its tip is being read', () => {
+    const WITHOUT_TEST = REGISTRY_YAML.replace(/      test:\n(        .*\n)+/, '')
+
+    function racing(after: string) {
+        let current = parseRegistry(REGISTRY_YAML)
+        const store = new DeployStore('/var/lib/hostd/deploys.json', memoryFs())
+        const started: string[] = []
+        const logs: string[] = []
+        const poller = new DeployPoller({
+            registry: () => current,
+            store,
+            runner: {
+                isRunning: () => false,
+                start: (project: ProjectEntry, environment: EnvironmentEntry) => {
+                    started.push(`${project.id}:${environment.name}`)
+                    return { ok: true as const, started: { environment: environment.name, trigger: 'poll' as const } }
+                },
+            },
+            tip: async (_project, environment) => {
+                // The delete finishes while the fetcher is answering, so the registry the tick read is stale
+                if (environment.name === 'test') current = parseRegistry(after)
+                return { ok: true as const, commit: OTHER }
+            },
+            now: () => 0,
+            log: message => logs.push(message),
+        })
+        return { poller, started, logs }
+    }
+
+    it('is not deployed', async () => {
+        const context = racing(WITHOUT_TEST)
+        const keys = await context.poller.tick()
+        assert.ok(!keys.includes('acme:test'))
+        assert.ok(!context.started.includes('acme:test'))
+        assert.ok(context.logs.some(line => line.includes('acme:test') && line.includes('no longer')))
+    })
+
+    it('is not deployed when its dir changed meanwhile', async () => {
+        const context = racing(REGISTRY_YAML.replace('/var/www/acme-test', '/var/www/acme-other'))
+        await context.poller.tick()
+        assert.ok(!context.started.includes('acme:test'))
+    })
+
+    it('still deploys the environments that remain', async () => {
+        const context = racing(WITHOUT_TEST)
+        await context.poller.tick()
+        assert.ok(context.started.includes('acme:live'))
     })
 })

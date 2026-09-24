@@ -51,6 +51,11 @@ export class DeployRunner {
     start(project: ProjectEntry, environment: EnvironmentEntry, request: DeployRequest): DeployStartedReply | Refusal {
         const key = deployKey(project.id, environment.name)
         if (this.blocked.has(key)) return refuse('busy', `${project.id} ${environment.name} is being deleted or restored`)
+        // A caller holding objects from an older read of the registry (the poller across its fetch) must
+        // not deploy an environment a delete has since removed: its folder is in the trash by now.
+        if (!this.deps.registry().projects.get(project.id)?.environments.has(environment.name)) {
+            return refuse('unknown-environment', `${project.id} has no ${environment.name} environment`)
+        }
         // Taken before any await, so two requests arriving together cannot both see a free slot.
         if (this.running.has(key)) return refuse('busy', `${project.id} ${environment.name} already has a deploy running`)
         // A person asking is what resumes a paused environment; the poller is what must stay stopped.
