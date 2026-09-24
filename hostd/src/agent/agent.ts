@@ -273,6 +273,10 @@ export class Agent {
         if (this.envBusy.has(key)) return refuse('busy', `${project.id} already has an env write running for ${name}`)
         if (this.copying.has(key)) return refuse('busy', `${project.id} ${name} already has a copy running`)
         if (this.deps.backups?.runner.isRunning(project.id)) return refuse('busy', `${project.id} has a backup running; a copy waits until it has finished`)
+        // Nor while a provisioning action may be rewriting the registry the copy reads, or a lifecycle action
+        // is starting and stopping the project's containers under it
+        if (this.provisioningBusy) return refuse('busy', 'another provisioning action is in progress')
+        if (this.lifecycleBusy.has(project.id)) return refuse('busy', `${project.id} already has a lifecycle action running`)
         this.copying.set(key, Promise.resolve())
         // The runner's own block as well: the poller starts deploys straight through it
         const unblock = this.deps.deploys?.runner.block?.(deployKey(project.id, name))

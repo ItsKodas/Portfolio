@@ -1959,7 +1959,7 @@ describe('copying from live', () => {
     name: Acme
     repo: git@github.com:ItsKodas/acme.git
     services: { web: { role: site }, db: { role: database, engine: postgres } }
-    capabilities: [provision, deploy, backups, domains, env]
+    capabilities: [provision, deploy, backups, domains, env, lifecycle]
     environments:
       live: { dir: /var/www/acme/live, branch: main, port: 5010 }
       uat1: { dir: /var/www/acme/uat1, branch: develop, port: 5011 }
@@ -2069,6 +2069,7 @@ describe('copying from live', () => {
                 registryRejection: () => null,
             },
             copies: { store, fs, newRunId: () => 'abcdef012345', log: () => {}, now: () => 0, run },
+            recheck: async () => { await gated(); return null },
         })
         return { ...context, records, runs, blocks, started, backupsStarted, release }
     }
@@ -2174,6 +2175,30 @@ describe('copying from live', () => {
             await new Promise(resolve => setImmediate(resolve))
             assert.deepEqual(replyOf(await agent.handle(start())), busy(message))
             assert.deepEqual(runs, [])
+            open()
+            await other
+        })
+    }
+
+    // And while the project as a whole is busy: a lifecycle action restarts its containers, and a
+    // provisioning action may be rewriting the registry the copy reads
+    for (const [what, request, message] of [
+        ['a lifecycle action on the project', { verb: 'lifecycle', project: 'acme', args: { action: 'restart' } }, 'acme already has a lifecycle action running'],
+        [
+            'a provisioning action',
+            { verb: 'provision', project: 'acme', args: { action: 'add-environment', environment: 'staging', branch: 'develop', domain: null, certificate: null } },
+            'another provisioning action is in progress',
+        ],
+    ] as const) {
+        it(`refuses a copy while ${what} is under way`, async () => {
+            let open = () => {}
+            const gate = new Promise<void>(resolve => { open = resolve })
+            const { agent, runs, blocks } = copySetup({ gate })
+            const other = agent.handle(request as AgentRequest)
+            await new Promise(resolve => setImmediate(resolve))
+            assert.deepEqual(replyOf(await agent.handle(start())), busy(message))
+            assert.deepEqual(runs, [])
+            assert.deepEqual(blocks, [])
             open()
             await other
         })
