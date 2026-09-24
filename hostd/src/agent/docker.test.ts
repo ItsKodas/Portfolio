@@ -1,7 +1,7 @@
 import { describe, it } from 'node:test'
 import assert from 'node:assert/strict'
 import { EventEmitter } from 'node:events'
-import { PassThrough } from 'node:stream'
+import { Duplex, PassThrough, Readable } from 'node:stream'
 import type { ClientRequest, IncomingMessage, RequestOptions } from 'node:http'
 import {
     containersPath, logsPath, checkedId, createDockerApi, pickPerService, buildServiceStatuses,
@@ -268,6 +268,94 @@ describe('exec', () => {
         const { request } = execSetup({ exitCode: 0, frames: [], execId: 'exec123' })
         const docker = createDockerApi('/var/run/docker.sock', request as any)
         await assert.rejects(() => docker.exec(ID, ['sh', '-c', 'true'], () => {}), /refusing malformed container id/)
+    })
+})
+
+// Stands in for Docker's hijacked exec connection: it answers the start call with 101 and a socket that
+// records what is written to it, and only sends the command's output once the write side is half-closed,
+// which is what a real `psql` fed a dump on stdin does.
+function execStdinSetup(options: { exitCode: number, frames: Buffer[], head?: Buffer }) {
+    const calls: Array<{ path: string, headers: Record<string, string>, body: string }> = []
+    const written: Buffer[] = []
+    let halfClosed = false
+    const socket = new Duplex({
+        read() {},
+        write(chunk, _encoding, callback) { written.push(chunk as Buffer); callback() },
+        final(callback) {
+            halfClosed = true
+            for (const chunk of options.frames) socket.push(chunk)
+            socket.push(null)
+            callback()
+        },
+    })
+    let socketTimeout: number | null = null
+    Object.assign(socket, { setTimeout: (ms: number) => { socketTimeout = ms; return socket } })
+    const request = (opts: any, callback: (response: any) => void) => {
+        let body = ''
+        const listeners: Record<string, (...args: any[]) => void> = {}
+        const req: any = {
+            on: (event: string, listener: (...args: any[]) => void) => { listeners[event] = listener; return req },
+            setTimeout: () => req,
+            end: (chunk?: string) => {
+                if (chunk) body += chunk
+                calls.push({ path: opts.path, headers: opts.headers ?? {}, body })
+                queueMicrotask(() => {
+                    if (opts.path === '/containers/' + ID + '/exec') {
+                        const response = new PassThrough() as any
+                        response.statusCode = 201
+                        callback(response)
+                        response.end(JSON.stringify({ Id: EXEC_ID }))
+                    } else if (opts.path === '/exec/' + EXEC_ID + '/start') {
+                        const response = new PassThrough() as any
+                        response.statusCode = 101
+                        listeners.upgrade!(response, socket, options.head ?? Buffer.alloc(0))
+                    } else {
+                        const response = new PassThrough() as any
+                        response.statusCode = 200
+                        callback(response)
+                        response.end(JSON.stringify({ ExitCode: options.exitCode, Running: false }))
+                    }
+                })
+            },
+        }
+        return req
+    }
+    return { request, calls, written, halfClosed: () => halfClosed, socketTimeout: () => socketTimeout }
+}
+
+describe('exec with stdin', () => {
+    it('attaches stdin, writes the stream to the hijacked connection and half-closes it', async () => {
+        const setup = execStdinSetup({ exitCode: 0, frames: [frame(1, 'CREATE DATABASE'), frame(2, 'NOTICE: hi')] })
+        const docker = createDockerApi('/var/run/docker.sock', setup.request as any)
+        const stdout: Buffer[] = []
+        const result = await docker.exec(ID, ['sh', '-c', 'psql'], chunk => { stdout.push(chunk) }, Readable.from([Buffer.from('CREATE '), Buffer.from('TABLE t;\n')]))
+        assert.equal(Buffer.concat(setup.written).toString(), 'CREATE TABLE t;\n')
+        assert.equal(setup.halfClosed(), true)
+        assert.equal(setup.socketTimeout(), 0, 'a slow load is never cut off for taking its time')
+        assert.equal(Buffer.concat(stdout).toString(), 'CREATE DATABASE')
+        assert.deepEqual(result, { exitCode: 0, stderr: 'NOTICE: hi' })
+        assert.deepEqual(JSON.parse(setup.calls[0]!.body), {
+            AttachStdout: true, AttachStderr: true, AttachStdin: true, Tty: false, Cmd: ['sh', '-c', 'psql'],
+        })
+        const start = setup.calls[1]!
+        assert.equal(start.path, '/exec/' + EXEC_ID + '/start')
+        assert.equal(start.headers.connection, 'Upgrade')
+        assert.equal(start.headers.upgrade, 'tcp')
+        assert.deepEqual(JSON.parse(start.body), { Detach: false, Tty: false })
+    })
+
+    it('reads output that arrived with the upgrade response itself', async () => {
+        const setup = execStdinSetup({ exitCode: 3, frames: [frame(2, ' failed')], head: frame(2, 'psql:') })
+        const docker = createDockerApi('/var/run/docker.sock', setup.request as any)
+        const result = await docker.exec(ID, ['sh', '-c', 'psql'], () => {}, Readable.from([Buffer.from('x')]))
+        assert.deepEqual(result, { exitCode: 3, stderr: 'psql: failed' })
+    })
+
+    it('fails when the stdin stream fails', async () => {
+        const setup = execStdinSetup({ exitCode: 0, frames: [] })
+        const docker = createDockerApi('/var/run/docker.sock', setup.request as any)
+        const broken = new Readable({ read() { this.destroy(new Error('disk read failed')) } })
+        await assert.rejects(() => docker.exec(ID, ['sh', '-c', 'psql'], () => {}, broken), /disk read failed/)
     })
 })
 
