@@ -19,9 +19,10 @@ export type RenameEngine = 'postgres' | 'mysql' | 'mariadb'
 
 export type LoadPlan =
     // Run `before` (if any) in the environment's container, then run argv there with the dump on stdin,
-    // through renameStream when `rename` is set. errorFilter 'postgres' means psql's exit code is not
-    // enough on its own: psql carries on past a failed statement, so its stderr is read for ERROR: lines.
-    | { kind: 'exec', service: string, before: string[] | null, argv: string[], rename: boolean, errorFilter: 'postgres' | null }
+    // through renameStream for the engine `rename` names, when it names one. errorFilter 'postgres' means
+    // psql's exit code is not enough on its own: psql carries on past a failed statement, so its stderr is
+    // read for ERROR: lines.
+    | { kind: 'exec', service: string, before: string[] | null, argv: string[], rename: RenameEngine | null, errorFilter: 'postgres' | null }
     // The run reads the environment's redis data directory and copies the rdb file in itself.
     | { kind: 'redis', service: string }
     // The run copies the sqlite file itself, with sqlite3's .backup.
@@ -196,20 +197,14 @@ export function loadPlan(service: string, entry: ServiceEntry, from: string, to:
         return { problem: `${service}: refusing to load database ${JSON.stringify(from)} into ${JSON.stringify(to)}, which is not a plain database name` }
     }
 
-    const exec = (before: string[] | null, argv: string[], rename: boolean, errorFilter: 'postgres' | null): LoadPlan =>
+    const exec = (before: string[] | null, argv: string[], rename: RenameEngine | null, errorFilter: 'postgres' | null): LoadPlan =>
         ({ kind: 'exec', service, before, argv, rename, errorFilter })
 
     switch (entry.engine) {
         case 'postgres': {
             const user = named(service, entry.dump.userEnv, 'POSTGRES_USER')
             if (isProblem(user)) return user
-            // The dump's own CREATE DATABASE then makes the database fresh, rather than loading into an
-            // old copy's tables. FORCE ends any session the environment's site still has open.
-            return exec(
-                ['sh', '-c', `psql -U "$${user}" -d postgres -c "DROP DATABASE IF EXISTS \\"${to}\\" WITH (FORCE)"`],
-                ['sh', '-c', `psql -U "$${user}" -d postgres`],
-                true, 'postgres',
-            )
+            return exec(['sh', '-c', postgresWipe(user)], ['sh', '-c', `psql -U "$${user}" -d postgres`], 'postgres', 'postgres')
         }
         case 'mysql':
         case 'mariadb': {
@@ -223,8 +218,7 @@ export function loadPlan(service: string, entry: ServiceEntry, from: string, to:
             if (isProblem(user)) return user
             const userArg = entry.dump.userEnv === undefined ? '-u root' : `-u "$${user}"`
             const connect = `MYSQL_PWD="$${password}" ${client} ${userArg}`
-            // Single quotes, so the shell leaves the backquotes alone.
-            return exec(['sh', '-c', `${connect} -e 'DROP DATABASE IF EXISTS \`${to}\`'`], ['sh', '-c', connect], true, null)
+            return exec(['sh', '-c', mysqlWipe(connect)], ['sh', '-c', connect], client, null)
         }
         case 'mongodb': {
             const user = named(service, entry.dump.userEnv, 'MONGO_INITDB_ROOT_USERNAME')
@@ -236,8 +230,75 @@ export function loadPlan(service: string, entry: ServiceEntry, from: string, to:
             return exec(null, [
                 'sh', '-c',
                 `mongorestore --archive --gzip --drop --nsFrom "${from}.*" --nsTo "${to}.*" \${${user}:+-u "$${user}" -p "$${password}" --authenticationDatabase admin}`,
-            ], false, null)
+            ], null, null)
         }
+    }
+}
+
+// ---- wiping the environment's databases before a load --------------------------------------------------
+//
+// Every database the environment's server has goes, not only <id>-<env>: pg_dumpall and mysqldump
+// --all-databases recreate every database live has, and one the environment already holds from an earlier
+// copy would otherwise fail its CREATE TABLEs with "already exists". What stays is what the server itself
+// needs. The names to drop are read from the server and quoted by it (format's %I, and doubled backquotes
+// for mysql), so no name ever reaches the shell as code.
+
+const POSTGRES_KEEP = "('postgres', 'template0', 'template1')"
+const MYSQL_KEEP = "('mysql', 'sys', 'information_schema', 'performance_schema')"
+
+function postgresWipe(user: string): string {
+    const psql = `psql -U "$${user}" -d postgres -v ON_ERROR_STOP=1 -Atq`
+    // Every other connection ends first: a database cannot be dropped while anything is connected to it.
+    // By hand rather than DROP ... WITH (FORCE), which postgres before 13 does not have.
+    return `${psql} -c "SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE pid <> pg_backend_pid() AND datname NOT IN ${POSTGRES_KEEP}" >/dev/null`
+        + ` && drops=$(${psql} -c "SELECT format('DROP DATABASE IF EXISTS %I;', datname) FROM pg_database WHERE datname NOT IN ${POSTGRES_KEEP}")`
+        + ` && printf '%s\\n' "$drops" | ${psql}`
+}
+
+function mysqlWipe(connect: string): string {
+    // CHAR(96) is a backquote, spelled so because a backquote inside the double quotes below would be
+    // read by the shell as a command.
+    const tick = 'CHAR(96 USING utf8mb4)'
+    const select = `SELECT CONCAT('DROP DATABASE IF EXISTS ', ${tick}, REPLACE(schema_name, ${tick}, REPEAT(${tick}, 2)), ${tick}, ';')`
+        + ` FROM information_schema.schemata WHERE schema_name NOT IN ${MYSQL_KEEP}`
+    // -r, so a name is printed as it is rather than with its backslashes escaped
+    return `drops=$(${connect} -N -B -r -e "${select}") && printf '%s\\n' "$drops" | ${connect}`
+}
+
+// ---- readiness ---------------------------------------------------------------------------------------
+
+// What says a database the copy has just started (or restarted) takes connections: a container that is
+// running is not yet a server that answers. Run in the environment's container with the dump's own
+// credential variables; exit 0 means ready. null for what has no server of its own to ask.
+export function readyProbe(service: string, entry: ServiceEntry): string[] | PlanProblem | null {
+    if (entry.role !== 'database') return null
+    switch (entry.engine) {
+        case 'postgres': {
+            const user = named(service, entry.dump.userEnv, 'POSTGRES_USER')
+            if (isProblem(user)) return user
+            return ['sh', '-c', `pg_isready -U "$${user}"`]
+        }
+        case 'mysql':
+        case 'mariadb': {
+            const admin = entry.engine === 'mysql' ? 'mysqladmin' : 'mariadb-admin'
+            const defaultPassword = entry.engine === 'mysql' ? 'MYSQL_ROOT_PASSWORD' : 'MARIADB_ROOT_PASSWORD'
+            const password = passwordNamed(service, entry.dump.passwordEnv, defaultPassword)
+            if (isProblem(password)) return password
+            const user = entry.dump.userEnv === undefined ? 'root' : named(service, entry.dump.userEnv, 'root')
+            if (isProblem(user)) return user
+            const userArg = entry.dump.userEnv === undefined ? '-u root' : `-u "$${user}"`
+            return ['sh', '-c', `MYSQL_PWD="$${password}" ${admin} ${userArg} ping`]
+        }
+        case 'mongodb': {
+            const ping = `--quiet --eval "db.adminCommand('ping')"`
+            return ['sh', '-c', `if command -v mongosh >/dev/null 2>&1; then mongosh ${ping}; else mongo ${ping}; fi`]
+        }
+        case 'redis':
+            // redis-cli exits 0 on an error reply (LOADING, say), so the answer itself is checked
+            return ['sh', '-c', '[ "$(redis-cli ping)" = PONG ]']
+        case 'sqlite':
+        case 'generic':
+            return null
     }
 }
 

@@ -2,7 +2,7 @@ import { describe, it } from 'node:test'
 import assert from 'node:assert/strict'
 import { Readable } from 'node:stream'
 
-import { loadPlan, postgresErrorCollector, postgresLoadErrors, renameDatabaseLine, renameStream } from './copy-plans.ts'
+import { loadPlan, postgresErrorCollector, postgresLoadErrors, readyProbe, renameDatabaseLine, renameStream } from './copy-plans.ts'
 
 describe('renameDatabaseLine (postgres)', () => {
     const pg = (line: string) => renameDatabaseLine('postgres', line, 'acme', 'acme-uat1')
@@ -165,14 +165,31 @@ describe('renameStream', () => {
     })
 })
 
+const PG_WIPE = (user: string) => {
+    const psql = `psql -U "$${user}" -d postgres -v ON_ERROR_STOP=1 -Atq`
+    const keep = "('postgres', 'template0', 'template1')"
+    return `${psql} -c "SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE pid <> pg_backend_pid() AND datname NOT IN ${keep}" >/dev/null`
+        + ` && drops=$(${psql} -c "SELECT format('DROP DATABASE IF EXISTS %I;', datname) FROM pg_database WHERE datname NOT IN ${keep}")`
+        + ` && printf '%s\\n' "$drops" | ${psql}`
+}
+const MYSQL_WIPE = (connect: string) => {
+    const tick = 'CHAR(96 USING utf8mb4)'
+    const select = `SELECT CONCAT('DROP DATABASE IF EXISTS ', ${tick}, REPLACE(schema_name, ${tick}, REPEAT(${tick}, 2)), ${tick}, ';')`
+        + " FROM information_schema.schemata WHERE schema_name NOT IN ('mysql', 'sys', 'information_schema', 'performance_schema')"
+    return `drops=$(${connect} -N -B -r -e "${select}") && printf '%s\\n' "$drops" | ${connect}`
+}
+
 describe('loadPlan', () => {
-    it('drops the environment database, then feeds pg_dumpall output to psql', () => {
+    it('ends every other connection and drops every database but postgres and the templates, then feeds pg_dumpall output to psql', () => {
         assert.deepEqual(loadPlan('db', { role: 'database', engine: 'postgres', dump: {} }, 'acme', 'acme-uat1'), {
             kind: 'exec', service: 'db',
-            before: ['sh', '-c', 'psql -U "$POSTGRES_USER" -d postgres -c "DROP DATABASE IF EXISTS \\"acme-uat1\\" WITH (FORCE)"'],
+            before: ['sh', '-c', PG_WIPE('POSTGRES_USER')],
             argv: ['sh', '-c', 'psql -U "$POSTGRES_USER" -d postgres'],
-            rename: true, errorFilter: 'postgres',
+            rename: 'postgres', errorFilter: 'postgres',
         })
+        // No WITH (FORCE), which postgres before 13 does not know
+        const plan = loadPlan('db', { role: 'database', engine: 'postgres', dump: {} }, 'acme', 'acme-uat1')
+        assert.ok(plan && 'before' in plan && !plan.before!.join(' ').includes('FORCE'))
         const custom = loadPlan('db', { role: 'database', engine: 'postgres', dump: { userEnv: 'PGUSER' } }, 'acme', 'acme-uat1')
         assert.ok(custom && 'argv' in custom && custom.argv[2] === 'psql -U "$PGUSER" -d postgres')
     })
@@ -180,25 +197,32 @@ describe('loadPlan', () => {
     it('uses the dump\'s mysql and mariadb credentials, through MYSQL_PWD', () => {
         assert.deepEqual(loadPlan('db', { role: 'database', engine: 'mysql', dump: {} }, 'acme', 'acme-uat1'), {
             kind: 'exec', service: 'db',
-            before: ['sh', '-c', 'MYSQL_PWD="$MYSQL_ROOT_PASSWORD" mysql -u root -e \'DROP DATABASE IF EXISTS `acme-uat1`\''],
+            before: ['sh', '-c', MYSQL_WIPE('MYSQL_PWD="$MYSQL_ROOT_PASSWORD" mysql -u root')],
             argv: ['sh', '-c', 'MYSQL_PWD="$MYSQL_ROOT_PASSWORD" mysql -u root'],
-            rename: true, errorFilter: null,
+            rename: 'mysql', errorFilter: null,
         })
         assert.deepEqual(loadPlan('db', { role: 'database', engine: 'mariadb', dump: { userEnv: 'DB_USER', passwordEnv: 'DB_PASS' } }, 'acme', 'acme-uat1'), {
             kind: 'exec', service: 'db',
-            before: ['sh', '-c', 'MYSQL_PWD="$DB_PASS" mariadb -u "$DB_USER" -e \'DROP DATABASE IF EXISTS `acme-uat1`\''],
+            before: ['sh', '-c', MYSQL_WIPE('MYSQL_PWD="$DB_PASS" mariadb -u "$DB_USER"')],
             argv: ['sh', '-c', 'MYSQL_PWD="$DB_PASS" mariadb -u "$DB_USER"'],
-            rename: true, errorFilter: null,
+            rename: 'mariadb', errorFilter: null,
         })
         const mariadb = loadPlan('db', { role: 'database', engine: 'mariadb', dump: {} }, 'acme', 'acme-uat1')
         assert.ok(mariadb && 'argv' in mariadb && mariadb.argv[2] === 'MYSQL_PWD="$MARIADB_ROOT_PASSWORD" mariadb -u root')
+    })
+
+    it('never puts a backquote where the shell would read it as a command', () => {
+        for (const engine of ['mysql', 'mariadb'] as const) {
+            const plan = loadPlan('db', { role: 'database', engine, dump: {} }, 'acme', 'acme-uat1')
+            assert.ok(plan && 'before' in plan && !plan.before!.join(' ').includes('`'), engine)
+        }
     })
 
     it('restores mongodb under the new name with the dump\'s credentials', () => {
         assert.deepEqual(loadPlan('db', { role: 'database', engine: 'mongodb', dump: {} }, 'acme', 'acme-uat1'), {
             kind: 'exec', service: 'db', before: null,
             argv: ['sh', '-c', 'mongorestore --archive --gzip --drop --nsFrom "acme.*" --nsTo "acme-uat1.*" ${MONGO_INITDB_ROOT_USERNAME:+-u "$MONGO_INITDB_ROOT_USERNAME" -p "$MONGO_INITDB_ROOT_PASSWORD" --authenticationDatabase admin}'],
-            rename: false, errorFilter: null,
+            rename: null, errorFilter: null,
         })
     })
 
@@ -234,6 +258,29 @@ describe('loadPlan', () => {
             const plan = loadPlan('db', { role: 'database', engine: 'mysql', dump: {} }, from!, to!)
             assert.ok(plan && 'problem' in plan, `${from} -> ${to}`)
         }
+    })
+})
+
+describe('readyProbe', () => {
+    it('asks each engine in its own words, with the dump\'s credentials', () => {
+        assert.deepEqual(readyProbe('db', { role: 'database', engine: 'postgres', dump: { userEnv: 'PGUSER' } }), ['sh', '-c', 'pg_isready -U "$PGUSER"'])
+        assert.deepEqual(readyProbe('db', { role: 'database', engine: 'mysql', dump: {} }), ['sh', '-c', 'MYSQL_PWD="$MYSQL_ROOT_PASSWORD" mysqladmin -u root ping'])
+        assert.deepEqual(
+            readyProbe('db', { role: 'database', engine: 'mariadb', dump: { userEnv: 'DB_USER', passwordEnv: 'DB_PASS' } }),
+            ['sh', '-c', 'MYSQL_PWD="$DB_PASS" mariadb-admin -u "$DB_USER" ping'],
+        )
+        assert.deepEqual(readyProbe('db', { role: 'database', engine: 'mongodb', dump: {} }), [
+            'sh', '-c',
+            'if command -v mongosh >/dev/null 2>&1; then mongosh --quiet --eval "db.adminCommand(\'ping\')"; else mongo --quiet --eval "db.adminCommand(\'ping\')"; fi',
+        ])
+        assert.deepEqual(readyProbe('cache', { role: 'database', engine: 'redis', dump: {} }), ['sh', '-c', '[ "$(redis-cli ping)" = PONG ]'])
+    })
+
+    it('has nothing to ask of sqlite, generic or a site, and refuses a bad variable name', () => {
+        assert.equal(readyProbe('lite', { role: 'database', engine: 'sqlite', file: 'a.db' }), null)
+        assert.equal(readyProbe('files', { role: 'database', engine: 'generic', dump: {} }), null)
+        assert.equal(readyProbe('web', { role: 'site' }), null)
+        assert.deepEqual(readyProbe('db', { role: 'database', engine: 'postgres', dump: { userEnv: 'x y' } }), { problem: 'db: dump.userEnv is not an environment variable name' })
     })
 })
 
