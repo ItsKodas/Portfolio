@@ -2,7 +2,7 @@ import { describe, it } from 'node:test'
 import assert from 'node:assert/strict'
 import { PassThrough, Readable } from 'node:stream'
 
-import { copyRefusal, runCopy, COPY_MIN_FREE_BYTES, type CopyDeps, type CopyFs } from './copy-run.ts'
+import { copyRefusal, removeInterruptedStaging, runCopy, stagingOf, COPY_MIN_FREE_BYTES, type CopyDeps, type CopyFs } from './copy-run.ts'
 import type { ContainerSummary, DockerApi, ExecResult } from './docker.ts'
 import type { Runner, RunResult } from './compose.ts'
 import { parseRegistry, type ProjectEntry } from '../shared/registry.ts'
@@ -448,5 +448,31 @@ describe('copyRefusal', () => {
         readsOnly(short.calls)
         const enough = await refusal({ free: 15 * GIB, sizes })
         assert.equal(enough.problem, null)
+    })
+})
+
+describe('after an agent restart', () => {
+    const interrupted = (overrides: Partial<CopyRecord>): CopyRecord => ({
+        project: 'acme', environment: 'uat1', run: RUN, actor: 'koda', startedAt: '2026-09-25T10:00:00.000Z', durationMs: 1,
+        outcome: 'failed', step: null, reason: 'the agent restarted during the copy', services: [], storage: [],
+        ...overrides,
+    })
+
+    it('names the staging folder of a run, and nothing for a run id or environment that would put it elsewhere', () => {
+        assert.equal(stagingOf(project(), 'uat1', RUN), STAGING)
+        assert.equal(stagingOf(project(), 'uat1', '../x'), null)
+        assert.equal(stagingOf(project(), 'staging', RUN), null)
+    })
+
+    it('removes the staging folder of each interrupted run, and says what it could not', async () => {
+        const removed: string[] = []
+        const logged: string[] = []
+        const registry = parseRegistry(YAML)
+        await removeInterruptedStaging(
+            [interrupted({}), interrupted({ environment: 'gone' }), interrupted({ run: 'not-a-run' })],
+            registry, { rmdir: async dir => { removed.push(dir) } }, message => logged.push(message),
+        )
+        assert.deepEqual(removed, [STAGING])
+        assert.equal(logged.filter(line => line.startsWith('WARN')).length, 2)
     })
 })

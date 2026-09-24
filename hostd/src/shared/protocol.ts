@@ -274,7 +274,7 @@ export type PortRequest = { verb: 'port', project: string, args: { environment: 
 
 export type ProjectRequest =
     | StatusRequest | LifecycleRequest | LogsRequest | ProvisionOnProjectRequest | EnvRequest | DeployRequest | DeployWatchRequest
-    | BackupRequest | DomainsRequest | ConfigureRequest | BranchesRequest | PortRequest
+    | BackupRequest | DomainsRequest | ConfigureRequest | BranchesRequest | PortRequest | CopyRequest
 export type AgentRequest = HealthRequest | StatusesRequest | ProvisionCreateRequest | CredentialsRequest | PortsRequest | ProjectRequest
 export type Verb = AgentRequest['verb']
 
@@ -363,6 +363,7 @@ export type AgentReply =
     | HealthReply | StatusReply | StatusesReply | LifecycleReply | ProvisionReply | EnvListReply | EnvReadReply
     | DeployStartedReply | DeployHistoryReply | DeployCommitsReply | BranchesReply | CredentialsReply | PortsReply | ConfigureReply
     | BackupStartedReply | BackupListReply | BackupRunReply | DeletedEnvironmentsReply | RestoreEnvironmentReply
+    | CopyStartedReply | CopyListReply | CopyRunReply
     | DomainsWritten | AdoptPreview | Refusal
 export type LogLine = { stream: 'stdout' | 'stderr', ts: string | null, text: string, truncated: boolean }
 
@@ -396,6 +397,8 @@ export const VERB_CAPABILITY: Record<Verb, Capability | null> = {
     ports: null,
     // Null, like configure: api's policy makes it admin-only.
     port: null,
+    // provision, as adding the environment it copies into is, and admin-only by api's policy
+    copy: 'provision',
 }
 
 type Parsed = { ok: true, request: AgentRequest } | Refusal
@@ -708,6 +711,28 @@ function parseBackupArgs(raw: unknown): BackupArgs | Refusal {
         return { action: raw.action, snapshot: raw.snapshot }
     }
     return refuse('bad-request', 'backup action must be run, list, get-run, delete or download')
+}
+
+function parseCopyArgs(raw: unknown): CopyArgs | Refusal {
+    if (!isRecord(raw)) return refuse('bad-request', 'copy needs args')
+    const environment = raw.environment
+    if (!isEnvironmentName(environment)) return refuse('bad-request', 'environment must be an environment name')
+    if (raw.action === 'start') {
+        if (!onlyKeys(raw, ['action', 'environment', 'actor'])) return refuse('bad-request', 'start takes only environment and actor')
+        if (environment === 'live') return refuse('bad-request', 'live is what a copy reads from; it is never copied into')
+        if (raw.actor !== undefined && (typeof raw.actor !== 'string' || !USER_ID.test(raw.actor))) return refuse('bad-request', 'actor is malformed')
+        return { action: 'start', environment, ...(raw.actor !== undefined ? { actor: raw.actor as string } : {}) }
+    }
+    if (raw.action === 'list') {
+        if (!onlyKeys(raw, ['action', 'environment'])) return refuse('bad-request', 'list takes only environment')
+        return { action: 'list', environment }
+    }
+    if (raw.action === 'get-run') {
+        if (!onlyKeys(raw, ['action', 'environment', 'run'])) return refuse('bad-request', 'get-run takes only environment and run')
+        if (typeof raw.run !== 'string' || !RUN_ID.test(raw.run)) return refuse('bad-request', 'get-run needs a run id')
+        return { action: 'get-run', environment, run: raw.run }
+    }
+    return refuse('bad-request', 'copy action must be start, list or get-run')
 }
 
 // Hex only, and bounded. This string is interpolated into a <Location> and into a header value in the
@@ -1049,6 +1074,15 @@ export function parseAgentRequest(line: string): Parsed {
             return { ok: true, request: { verb: 'port', project, args: { environment, port } } }
         }
 
+        case 'copy': {
+            if (!onlyKeys(raw, ['verb', 'project', 'args'])) return refuse('bad-request', 'copy takes only project and args')
+            const project = projectOf(raw)
+            if (!project) return refuse('bad-request', 'project is malformed')
+            const args = parseCopyArgs(raw.args)
+            if ('ok' in args) return args
+            return { ok: true, request: { verb: 'copy', project, args } }
+        }
+
         default:
             return refuse('bad-request', 'unknown verb')
     }
@@ -1086,7 +1120,7 @@ export function checkStructure(
         const entry = Object.hasOwn(project.services, service) ? project.services[service] : undefined
         if (!entry || !isComposeService(entry)) return refuse('unknown-service', `${service} is not a registered service of ${id}`)
     }
-    if ((request.verb === 'env' || request.verb === 'deploy' || request.verb === 'deploy-watch' || request.verb === 'port') && !environmentOf(project, request.args.environment)) {
+    if ((request.verb === 'env' || request.verb === 'deploy' || request.verb === 'deploy-watch' || request.verb === 'port' || request.verb === 'copy') && !environmentOf(project, request.args.environment)) {
         return refuse('unknown-environment', `${id} has no ${request.args.environment} environment`)
     }
     return { ok: true, project }

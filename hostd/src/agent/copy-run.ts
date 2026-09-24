@@ -15,7 +15,7 @@ import { pipeline, type Readable, type Writable } from 'node:stream'
 
 import { describeError } from '../shared/formats.ts'
 import { isNestedDir, siteOf } from '../shared/layout.ts'
-import { environmentOf, isComposeService, type EnvironmentEntry, type ProjectEntry, type ServiceEntry } from '../shared/registry.ts'
+import { environmentOf, isComposeService, type EnvironmentEntry, type ProjectEntry, type Registry, type ServiceEntry } from '../shared/registry.ts'
 import type { CopyRecord } from '../shared/protocol.ts'
 import { composeBase, tail, type Runner } from './compose.ts'
 import { checkedId, pickPerService, type ContainerSummary, type DockerApi } from './docker.ts'
@@ -123,6 +123,36 @@ export async function copyRefusal(
     return null
 }
 
+// Where one run stages: <site>/.copy/<run>, or null when that would be anywhere else. The one folder a
+// copy removes recursively, so both the run and the boot sweep ask this rather than building the path.
+export function stagingOf(project: ProjectEntry, name: string, run: string): string | null {
+    const environment = environmentOf(project, name)
+    if (!environment || !isNestedDir(environment.dir)) return null
+    const staging = posix.join(siteOf(environment.dir), '.copy', run)
+    return STAGING_DIR.test(staging) ? staging : null
+}
+
+// At boot, for each run the store has just marked interrupted: its staging holds a copy of live's data,
+// so it goes. A run whose environment has since gone from the registry is logged for the operator.
+export async function removeInterruptedStaging(
+    records: CopyRecord[], registry: Registry, fs: Pick<CopyFs, 'rmdir'>, log: (message: string) => void,
+): Promise<void> {
+    for (const record of records) {
+        const project = registry.projects.get(record.project)
+        const staging = project ? stagingOf(project, record.environment, record.run) : null
+        if (staging === null) {
+            log(`WARN copy ${record.project} ${record.environment} ${record.run} was interrupted, and where it staged could not be worked out; look under the site's .copy folder`)
+            continue
+        }
+        try {
+            await fs.rmdir(staging)
+            log(`copy ${record.project} ${record.environment} ${record.run} was interrupted; removed ${staging}`)
+        } catch (error) {
+            log(`WARN copy ${record.project} ${record.environment} ${record.run} was interrupted, and ${staging} could not be removed: ${describeError(error)}`)
+        }
+    }
+}
+
 // The environment's state as the copy found it, and what the copy has changed about it so far: what step 6
 // puts back. Filled in as each change is made, so a failure part way puts back exactly what was changed.
 type Changed = {
@@ -151,12 +181,12 @@ export async function runCopy(project: ProjectEntry, name: string, run: string, 
     let step = 'dump'
     let failure: { step: string, reason: string } | null = null
     const changed: Changed = { base: null, wasRunning: [], started: [], stopped: new Set() }
-    const staging = environment ? posix.join(siteOf(environment.dir), '.copy', run) : ''
-    const stagingOk = environment !== null && STAGING_DIR.test(staging)
+    const staging = stagingOf(project, name, run) ?? ''
+    const stagingOk = staging !== ''
 
     try {
         if (!live || !environment || name === 'live') fail(`${project.id} has no ${name} environment to copy into`)
-        if (!stagingOk) fail(`refusing to stage a copy at ${JSON.stringify(staging)}`)
+        if (!stagingOk) fail(`refusing to stage copy ${JSON.stringify(run)} anywhere but under the site's .copy folder`)
         const context = { project, live: live!, environment: environment!, staging, deps, sleep, changed }
         const dumps = await dumpLive(context)
         step = 'prepare'

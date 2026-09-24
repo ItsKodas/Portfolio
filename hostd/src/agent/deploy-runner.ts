@@ -19,7 +19,7 @@ type Deploy = (project: ProjectEntry, environment: EnvironmentEntry, request: De
 
 export class DeployRunner {
     private readonly running = new Map<string, Promise<void>>()
-    // Environments the agent is deleting or restoring, counted so two holders cannot release each other.
+    // Environments the agent is deleting, restoring or copying live's data into, counted so two holders cannot release each other.
     // Checked in start, which every deploy passes through: the poller's as much as a person's.
     private readonly blocked = new Map<string, number>()
     // Beside `running`, and for the same reason: this class is what knows a deploy is happening.
@@ -50,7 +50,7 @@ export class DeployRunner {
 
     start(project: ProjectEntry, environment: EnvironmentEntry, request: DeployRequest): DeployStartedReply | Refusal {
         const key = deployKey(project.id, environment.name)
-        if (this.blocked.has(key)) return refuse('busy', `${project.id} ${environment.name} is being deleted or restored`)
+        if (this.blocked.has(key)) return refuse('busy', `${project.id} ${environment.name} is being deleted, restored or copied into`)
         // A caller holding objects from an older read of the registry (the poller across its fetch) must
         // not deploy an environment a delete has since removed: its folder is in the trash by now.
         if (!this.deps.registry().projects.get(project.id)?.environments.has(environment.name)) {

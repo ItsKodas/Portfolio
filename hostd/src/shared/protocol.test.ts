@@ -27,6 +27,8 @@ const environmentRequests = (environment: string): unknown[] => [
     { verb: 'deploy', project: 'acme', args: { action: 'set-branch', environment, branch: 'main' } },
     { verb: 'deploy-watch', project: 'acme', args: { environment } },
     { verb: 'port', project: 'acme', args: { environment, port: 5012 } },
+    { verb: 'copy', project: 'acme', args: { action: 'start', environment } },
+    { verb: 'copy', project: 'acme', args: { action: 'list', environment } },
     { verb: 'ports', args: { port: 5012, own: { project: 'acme', environment } } },
     { verb: 'configure', project: 'acme', args: { branches: { [environment]: 'main' } } },
     { verb: 'configure', project: 'acme', args: { domains: { [environment]: 'acme.com' } } },
@@ -795,6 +797,50 @@ describe('port', () => {
     it('refuses a port outside the range, and an unknown environment', () => {
         assert.equal(parseAgentRequest('{"verb":"port","project":"acme","args":{"environment":"live","port":80}}').ok, false)
         assert.equal(parseAgentRequest('{"verb":"port","project":"acme","args":{"environment":"uat-1","port":5012}}').ok, false)
+    })
+})
+
+describe('copy', () => {
+    it('parses a start, a list and a get-run for one environment', () => {
+        assert.deepEqual(
+            parsed({ verb: 'copy', project: 'acme', args: { action: 'start', environment: 'uat1', actor: 'koda' } }),
+            { ok: true, request: { verb: 'copy', project: 'acme', args: { action: 'start', environment: 'uat1', actor: 'koda' } } },
+        )
+        assert.deepEqual(
+            parsed({ verb: 'copy', project: 'acme', args: { action: 'list', environment: 'uat1' } }),
+            { ok: true, request: { verb: 'copy', project: 'acme', args: { action: 'list', environment: 'uat1' } } },
+        )
+        assert.deepEqual(
+            parsed({ verb: 'copy', project: 'acme', args: { action: 'get-run', environment: 'uat1', run: 'abcdef012345' } }),
+            { ok: true, request: { verb: 'copy', project: 'acme', args: { action: 'get-run', environment: 'uat1', run: 'abcdef012345' } } },
+        )
+    })
+
+    it('refuses a copy into live, a bad run id, a bad actor and an extra field', () => {
+        assert.equal(refusalOf({ verb: 'copy', project: 'acme', args: { action: 'start', environment: 'live' } }), 'bad-request: live is what a copy reads from; it is never copied into')
+        assert.equal(refusalOf({ verb: 'copy', project: 'acme', args: { action: 'get-run', environment: 'uat1', run: '../x' } }), 'bad-request: get-run needs a run id')
+        assert.equal(refusalOf({ verb: 'copy', project: 'acme', args: { action: 'start', environment: 'uat1', actor: 'a b' } }), 'bad-request: actor is malformed')
+        assert.equal(refusalOf({ verb: 'copy', project: 'acme', args: { action: 'list', environment: 'uat1', run: 'abcdef012345' } }), 'bad-request: list takes only environment')
+        assert.equal(refusalOf({ verb: 'copy', project: 'acme', args: { action: 'drop', environment: 'uat1' } }), 'bad-request: copy action must be start, list or get-run')
+    })
+
+    it('needs the provision capability and an environment the project has', () => {
+        assert.equal(VERB_CAPABILITY.copy, 'provision')
+        const registry = parseRegistry(`projects:
+  acme:
+    client: cl_1
+    name: Acme
+    repo: git@github.com:ItsKodas/acme.git
+    services: { web: { role: site } }
+    capabilities: [provision]
+    environments:
+      live: { dir: /var/www/acme/live, branch: main, port: 5010 }
+      uat1: { dir: /var/www/acme/uat1, branch: develop, port: 5011 }
+`)
+        const none = new Map<string, string>()
+        assert.equal(checkStructure(registry, { verb: 'copy', project: 'acme', args: { action: 'list', environment: 'uat1' } }, none).ok, true)
+        const missing = checkStructure(registry, { verb: 'copy', project: 'acme', args: { action: 'list', environment: 'staging' } }, none)
+        assert.equal(missing.ok === false && missing.code, 'unknown-environment')
     })
 })
 

@@ -18,6 +18,8 @@ import type { SystemUsage } from '../shared/system.ts'
 import { emptyBackups, type BackupRecord, type Snapshot } from '../shared/backups.ts'
 import type { BackupRequest } from './backup-run.ts'
 import type { Restic } from './restic.ts'
+import type { runCopy, CopyFs } from './copy-run.ts'
+import type { CopyRecord } from '../shared/protocol.ts'
 
 const registry = parseRegistry(`
 projects:
@@ -1947,5 +1949,203 @@ describe('deleting and restoring an environment', () => {
         const { agent } = baseSetup({ provision: fakeProvisionDeps() })
         const reply = replyOf(await agent.handle({ verb: 'provision', project: 'acme', args: { action: 'deleted-environments' } }))
         assert.equal(reply?.ok === false && reply.code, 'unavailable')
+    })
+})
+
+describe('copying from live', () => {
+    const copyRegistry = parseRegistry(`projects:
+  acme:
+    client: cl_1
+    name: Acme
+    repo: git@github.com:ItsKodas/acme.git
+    services: { web: { role: site }, db: { role: database, engine: postgres } }
+    capabilities: [provision, deploy, backups, domains]
+    environments:
+      live: { dir: /var/www/acme/live, branch: main, port: 5010 }
+      uat1: { dir: /var/www/acme/uat1, branch: develop, port: 5011 }
+`)
+    const start = (environment = 'uat1'): AgentRequest => ({ verb: 'copy', project: 'acme', args: { action: 'start', environment, actor: 'koda' } })
+    const list = (environment = 'uat1'): AgentRequest => ({ verb: 'copy', project: 'acme', args: { action: 'list', environment } })
+    const getRun = (run: string): AgentRequest => ({ verb: 'copy', project: 'acme', args: { action: 'get-run', environment: 'uat1', run } })
+    const busy = (message: string) => ({ ok: false, code: 'busy', message })
+
+    function copySetup(options: { deploying?: string, backingUp?: boolean, generic?: boolean } = {}) {
+        const records: CopyRecord[] = []
+        const store = {
+            list: (project: string, environment: string) => records.filter(entry => entry.project === project && entry.environment === environment),
+            get: (project: string, environment: string, run: string) => records.find(entry => entry.project === project && entry.environment === environment && entry.run === run) ?? null,
+            start: async (record: CopyRecord) => { records.unshift(record) },
+            finish: async (record: CopyRecord) => { records[records.findIndex(entry => entry.run === record.run)] = record },
+        }
+        // The run itself is copy-run.ts's, tested there: here it is held open, so the block can be watched
+        let release = () => {}
+        const held = new Promise<void>(resolve => { release = resolve })
+        const runs: Array<{ environment: string, run: string, actor: string }> = []
+        const run: typeof runCopy = async (project, environment, id, actor, deps) => {
+            runs.push({ environment, run: id, actor })
+            const record: CopyRecord = {
+                project: project.id, environment, run: id, actor, startedAt: new Date(0).toISOString(), durationMs: 0,
+                outcome: 'running', step: null, reason: null, services: ['db'], storage: [],
+            }
+            await deps.store.start(record)
+            await held
+            const finished = { ...record, outcome: 'ok' as const }
+            await deps.store.finish(finished)
+            return finished
+        }
+        const blocks: string[] = []
+        const started: string[] = []
+        const deploys = {
+            runner: {
+                start: (_project: ProjectEntry, environment: { name: string }) => {
+                    started.push(environment.name)
+                    return { ok: true as const, started: { environment: environment.name, trigger: 'manual' as const } }
+                },
+                isRunning: (key: string) => key === options.deploying,
+                block: (key: string) => {
+                    blocks.push(key)
+                    return () => { blocks.push(`released ${key}`) }
+                },
+            },
+            store: { get: () => emptyDeploys(), resume: async () => {} },
+            deps: {},
+        }
+        const { backups, started: backupsStarted } = backupsWiring({ running: options.backingUp ?? false })
+        const registry = options.generic
+            ? parseRegistry(`projects:
+  acme:
+    client: cl_1
+    name: Acme
+    repo: git@github.com:ItsKodas/acme.git
+    services: { web: { role: site }, db: { role: database, engine: generic } }
+    capabilities: [provision, deploy, backups, domains]
+    environments:
+      live: { dir: /var/www/acme/live, branch: main, port: 5010 }
+      uat1: { dir: /var/www/acme/uat1, branch: develop, port: 5011 }
+`)
+            : copyRegistry
+        const docker: DockerApi = {
+            ping: async () => true,
+            listProjectContainers: async () => [
+                { Id: WEB, State: 'running', Labels: { 'com.docker.compose.service': 'web' } },
+                { Id: 'd'.repeat(64), State: 'running', Labels: { 'com.docker.compose.service': 'db' } },
+            ],
+            listAllContainers: async () => [],
+            inspect: async () => inspectWeb,
+            logs: async () => new PassThrough(),
+            exec: async () => ({ exitCode: 0, stderr: '' }),
+        }
+        const fs = {
+            freeBytes: async () => 100 * 1024 ** 3,
+            sizeOf: async () => 0,
+        } as unknown as CopyFs
+        const context = setup({
+            registry: () => registry,
+            docker,
+            deploys: deploys as unknown as AgentDeps['deploys'],
+            backups,
+            provision: fakeProvisionDeps({ registry: () => registry }),
+            domains: fakeDomains(registry).domains,
+            trash: {
+                store: { list: () => [], add: async () => {}, update: async () => {}, remove: async () => {} },
+                removeEmptyDir: async () => {},
+                realpath: async path => path,
+                registryRejection: () => null,
+            },
+            copies: { store, fs, newRunId: () => 'abcdef012345', log: () => {}, now: () => 0, run },
+        })
+        return { ...context, records, runs, blocks, started, backupsStarted, release }
+    }
+
+    it('starts a copy and answers at once with its run id, then records it', async () => {
+        const { agent, records, runs, release } = copySetup()
+        assert.deepEqual(replyOf(await agent.handle(start())), { ok: true, run: 'abcdef012345' })
+        assert.deepEqual(runs, [{ environment: 'uat1', run: 'abcdef012345', actor: 'koda' }])
+        assert.deepEqual(replyOf(await agent.handle(getRun('abcdef012345'))), { ok: true, record: records[0], running: true })
+        release()
+        await agent.settleCopies()
+        const listed = replyOf(await agent.handle(list()))
+        assert.ok(listed?.ok && 'runs' in listed)
+        assert.equal(listed.runs[0]!.outcome, 'ok')
+        assert.equal((listed as { running: boolean }).running, false)
+        assert.deepEqual(replyOf(await agent.handle(getRun('fedcba987654'))), { ok: true, record: null, running: false })
+    })
+
+    it('refuses to copy into live, and refuses unavailable when nothing wired copies up', async () => {
+        const { agent, runs } = copySetup()
+        assert.deepEqual(replyOf(await agent.handle(start('live'))), { ok: false, code: 'bad-request', message: 'live is what a copy reads from; it is never copied into' })
+        assert.deepEqual(runs, [])
+        const bare = setup({ registry: () => copyRegistry })
+        assert.equal((replyOf(await bare.agent.handle(start())) as { code?: string }).code, 'unavailable')
+    })
+
+    it('refuses a copy that copyRefusal refuses, starting nothing and releasing the block', async () => {
+        const { agent, runs, blocks } = copySetup({ generic: true })
+        assert.deepEqual(replyOf(await agent.handle(start())), {
+            ok: false, code: 'bad-request', message: 'db uses the generic engine, which cannot be copied while live runs; give it a real engine in the registry',
+        })
+        assert.deepEqual(runs, [])
+        assert.deepEqual(blocks, ['acme:uat1', 'released acme:uat1'])
+        assert.equal((replyOf(await agent.handle(list())) as { running: boolean }).running, false)
+    })
+
+    it('refuses a second copy of the same environment', async () => {
+        const { agent, release } = copySetup()
+        replyOf(await agent.handle(start()))
+        assert.deepEqual(replyOf(await agent.handle(start())), busy('acme uat1 already has a copy running'))
+        release()
+        await agent.settleCopies()
+    })
+
+    it('refuses a copy while the environment is deploying, and while the project is backing up', async () => {
+        assert.deepEqual(replyOf(await copySetup({ deploying: 'acme:uat1' }).agent.handle(start())), busy('acme uat1 has a deploy running'))
+        assert.deepEqual(replyOf(await copySetup({ backingUp: true }).agent.handle(start())), busy('acme has a backup running; a copy waits until it has finished'))
+    })
+
+    it('holds the deploy block for the whole run and releases it after', async () => {
+        const { agent, blocks, release } = copySetup()
+        replyOf(await agent.handle(start()))
+        assert.deepEqual(blocks, ['acme:uat1'])
+        release()
+        await agent.settleCopies()
+        assert.deepEqual(blocks, ['acme:uat1', 'released acme:uat1'])
+    })
+
+    it('refuses deploys, port changes, domains, configure, delete and restore of the environment while it copies', async () => {
+        const { agent, started, release } = copySetup()
+        replyOf(await agent.handle(start()))
+        const copying = busy('acme uat1 is being copied from live')
+        assert.deepEqual(replyOf(await agent.handle({ verb: 'deploy', project: 'acme', args: { action: 'deploy', environment: 'uat1' } })), copying)
+        assert.deepEqual(started, [])
+        assert.deepEqual(replyOf(await agent.handle({ verb: 'port', project: 'acme', args: { environment: 'uat1', port: 5012 } })), copying)
+        assert.deepEqual(await agent.domains({ verb: 'domains', project: 'acme', args: { action: 'write', environment: 'uat1', token: 'abc123' } }), copying)
+        assert.deepEqual(
+            replyOf(await agent.handle({ verb: 'configure', project: 'acme', args: { capabilities: ['provision'] } })),
+            busy('acme has an environment being copied from live'),
+        )
+        assert.deepEqual(replyOf(await agent.handle({ verb: 'provision', project: 'acme', args: { action: 'delete-environment', environment: 'uat1' } })), copying)
+        assert.deepEqual(
+            replyOf(await agent.handle({ verb: 'provision', project: 'acme', args: { action: 'restore-environment', environment: 'uat1', deletedAt: '2026-09-25T10:00:00.000Z' } })),
+            copying,
+        )
+        assert.deepEqual(
+            replyOf(await agent.handle({ verb: 'provision', project: 'acme', args: { action: 'remove', environment: null } })),
+            busy('acme has an environment being copied from live'),
+        )
+        // live is not the one copying, so it deploys as ever
+        assert.equal(replyOf(await agent.handle({ verb: 'deploy', project: 'acme', args: { action: 'deploy', environment: 'live' } }))?.ok, true)
+        release()
+        await agent.settleCopies()
+        assert.equal(replyOf(await agent.handle({ verb: 'deploy', project: 'acme', args: { action: 'deploy', environment: 'uat1' } }))?.ok, true)
+    })
+
+    it('refuses a backup of the project while any of its environments copies', async () => {
+        const { agent, backupsStarted, release } = copySetup()
+        replyOf(await agent.handle(start()))
+        const reply = replyOf(await agent.handle({ verb: 'backup', project: 'acme', args: { action: 'run', tag: 'manual' } }))
+        assert.deepEqual(reply, busy('acme uat1 is being copied from live; a backup waits until it has finished'))
+        assert.deepEqual(backupsStarted, [])
+        release()
+        await agent.settleCopies()
     })
 })

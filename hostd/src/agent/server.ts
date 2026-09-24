@@ -81,6 +81,7 @@ function describe(request: AgentRequest): string {
         // safe to name, and this line is written for every keystroke of the portal's live check.
         case 'ports': return `ports ${request.args.port ?? 'suggest'}`
         case 'port': return `port ${request.project} ${request.args.environment} ${request.args.port}`
+        case 'copy': return `copy ${request.args.action} ${request.project} ${request.args.environment}`
     }
 }
 
