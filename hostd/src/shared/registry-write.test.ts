@@ -2,7 +2,7 @@ import { describe, it } from 'node:test'
 import assert from 'node:assert/strict'
 
 import { parseRegistry } from './registry.ts'
-import { RegistryWriter, applyChange, type Change, type RegistryWriteFs } from './registry-write.ts'
+import { RegistryWriter, applyChange, environmentNodeIn, type Change, type RegistryWriteFs } from './registry-write.ts'
 
 const BASE = `reserved: [horizons.gg]
 projects:
@@ -318,6 +318,30 @@ describe('set-port', () => {
         const back = applyChange(moved.text, { kind: 'set-port', id: 'arbysauto', environment: 'live', port: 5011 })
         assert.ok(back.ok, back.ok ? '' : back.problem)
         assert.equal(parseRegistry(back.text).projects.get('arbysauto')?.environments.get('live')?.port, 5011)
+    })
+
+    // A port change on a site created before hostd.ports.yml adds it to the environment's list in the same
+    // write as the port, so the two can never disagree
+    it('writes the compose list beside the port when given one', () => {
+        const result = applyChange(BASE, { kind: 'set-port', id: 'acme', environment: 'live', port: 5099, compose: ['docker-compose.yml', 'hostd.ports.yml'] })
+        assert.equal(result.ok, true)
+        const live = parseRegistry(result.ok ? result.text : '').projects.get('acme')?.environments.get('live')
+        assert.equal(live?.port, 5099)
+        assert.deepEqual(live?.composePaths, ['/var/www/acme/docker-compose.yml', '/var/www/acme/hostd.ports.yml'])
+    })
+
+    it('puts the default list back as no compose key at all', () => {
+        const added = applyChange(BASE, { kind: 'set-port', id: 'acme', environment: 'live', port: 5099, compose: ['docker-compose.yml', 'hostd.ports.yml'] })
+        const undone = applyChange(added.ok ? added.text : '', { kind: 'set-port', id: 'acme', environment: 'live', port: 5010, compose: ['docker-compose.yml'] })
+        assert.equal(undone.ok, true)
+        assert.doesNotMatch(undone.ok ? undone.text : '', /compose/)
+    })
+
+    it('leaves the compose list alone when given none', () => {
+        const added = applyChange(BASE, { kind: 'set-port', id: 'acme', environment: 'live', port: 5099, compose: ['docker-compose.yml', 'hostd.ports.yml'] })
+        const moved = applyChange(added.ok ? added.text : '', { kind: 'set-port', id: 'acme', environment: 'live', port: 5098 })
+        assert.deepEqual(parseRegistry(moved.ok ? moved.text : '').projects.get('acme')?.environments.get('live')?.composePaths,
+            ['/var/www/acme/docker-compose.yml', '/var/www/acme/hostd.ports.yml'])
     })
 })
 
@@ -728,5 +752,80 @@ describe('RegistryWriter', () => {
         assert.deepEqual([a, b], [{ ok: true }, { ok: true }])
         const registry = parseRegistry(files.get('/etc/hostd/projects.yaml')!)
         assert.deepEqual([...registry.projects.keys()].sort(), ['acme', 'bakery', 'cafe'])
+    })
+})
+
+describe('restoring a deleted environment', () => {
+    const NESTED = `projects:
+  acme:
+    client: cl_1
+    name: Acme
+    repo: git@github.com:ItsKodas/acme.git
+    services:
+      web: { role: site }
+    environments:
+      live:
+        dir: /var/www/acme/live
+        branch: main
+        domain: acme.com
+        port: 5010
+      uat1:
+        dir: /var/www/acme/uat1
+        branch: develop
+        domain: uat1.acme.com
+        aliases: [www.uat1.acme.com]
+        port: 5020
+        deployed: abc1234
+`
+
+    it('reads an environment node back as plain data, exactly as written', () => {
+        assert.deepEqual(environmentNodeIn(NESTED, 'acme', 'uat1'), {
+            dir: '/var/www/acme/uat1', branch: 'develop', domain: 'uat1.acme.com', aliases: ['www.uat1.acme.com'], port: 5020, deployed: 'abc1234',
+        })
+        assert.equal(environmentNodeIn(NESTED, 'acme', 'uat2'), null)
+        assert.equal(environmentNodeIn(NESTED, 'other', 'uat1'), null)
+    })
+
+    it('writes a stored node back verbatim', () => {
+        const node = environmentNodeIn(NESTED, 'acme', 'uat1')!
+        const removed = applyChange(NESTED, { kind: 'remove-environment', id: 'acme', environment: 'uat1' })
+        assert.ok(removed.ok)
+        const restored = applyChange(removed.text, { kind: 'restore-environment', id: 'acme', environment: 'uat1', node })
+        assert.ok(restored.ok)
+        const entry = parseRegistry(restored.text).projects.get('acme')!.environments.get('uat1')!
+        assert.equal(entry.port, 5020)
+        assert.equal(entry.deployed, 'abc1234')
+        assert.deepEqual(entry.aliases, ['www.uat1.acme.com'])
+        assert.deepEqual(environmentNodeIn(restored.text, 'acme', 'uat1'), node)
+    })
+
+    it('refuses a name the project has again, live, and a project that is not there', () => {
+        const node = environmentNodeIn(NESTED, 'acme', 'uat1')!
+        const taken = applyChange(NESTED, { kind: 'restore-environment', id: 'acme', environment: 'uat1', node })
+        assert.equal(taken.ok, false)
+        assert.match(taken.ok ? '' : taken.problem, /already has a uat1 environment/)
+        const live = applyChange(NESTED, { kind: 'restore-environment', id: 'acme', environment: 'live', node })
+        assert.equal(live.ok, false)
+        const missing = applyChange(NESTED, { kind: 'restore-environment', id: 'nobody', environment: 'uat1', node })
+        assert.equal(missing.ok, false)
+    })
+
+    it('refuses a node the registry would not load, such as a port another environment took meanwhile', () => {
+        const node = { ...environmentNodeIn(NESTED, 'acme', 'uat1')!, port: 5010 }
+        const removed = applyChange(NESTED, { kind: 'remove-environment', id: 'acme', environment: 'uat1' })
+        assert.ok(removed.ok)
+        const restored = applyChange(removed.text, { kind: 'restore-environment', id: 'acme', environment: 'uat1', node })
+        assert.equal(restored.ok, false)
+    })
+
+    it('reads a node through the writer\'s own file', async () => {
+        const fs: RegistryWriteFs = {
+            readFile: async () => NESTED,
+            stat: async () => ({ mode: 0o644, uid: 0, gid: 0 }),
+            writeFile: async () => {}, chmod: async () => {}, chown: async () => {}, rename: async () => {}, unlink: async () => {},
+        }
+        const writer = new RegistryWriter('/etc/hostd/projects.yaml', fs)
+        assert.equal((await writer.environmentNode('acme', 'uat1'))?.port, 5020)
+        assert.equal(await writer.environmentNode('acme', 'nope'), null)
     })
 })

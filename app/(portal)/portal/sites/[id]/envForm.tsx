@@ -16,7 +16,16 @@ const WHAT_SAVING_DOES =
     'Saving writes the file and restarts the containers. The environment is unavailable for about twenty '
     + 'seconds while they come back, and visitors see the holding page.'
 
-export function EnvForm({ id, path, text, example }: { id: string, path: string, text: string, example: string | null }) {
+type Props = {
+    id: string
+    // Which environment's file this is, since every environment has its own
+    environment: string
+    path: string
+    text: string
+    example: string | null
+}
+
+export function EnvForm({ id, environment, path, text, example }: Props) {
     const [value, setValue] = useState(text)
     const [pending, setPending] = useState(false)
     const [said, setSaid] = useState<SiteActionResult | null>(null)
@@ -32,7 +41,7 @@ export function EnvForm({ id, path, text, example }: { id: string, path: string,
         setPending(true)
         setSaid(null)
         try {
-            setSaid(await saveEnvAction(id, path, value))
+            setSaid(await saveEnvAction(id, environment, path, value))
         } catch {
             setSaid({ ok: false, error: 'That did not work. Try reloading the page.' })
         } finally {

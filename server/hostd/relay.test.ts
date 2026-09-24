@@ -60,11 +60,24 @@ describe('relayDeployWatch', () => {
     })
 
     // The one piece of logic here that the log relay's own tests do not already cover. An environment is
-    // part of the path hostd is asked for, so a value that is neither is refused here rather than sent on.
-    it('refuses an environment that is neither live nor test, before hostd is asked', async () => {
+    // part of the path hostd is asked for, so a value that is not a name is refused here rather than sent on.
+    it('refuses an environment that is not a valid name, before hostd is asked', async () => {
         const open = async () => { throw new Error('should not be called') }
-        const response = await relayDeployWatch(deps(open), 'acme-bakery', new URLSearchParams({ environment: 'staging' }))
-        expect(response.status).toBe(400)
+        for (const environment of ['uat-1', '../live', 'next']) {
+            const response = await relayDeployWatch(deps(open), 'acme-bakery', new URLSearchParams({ environment }))
+            expect(response.status, environment).toBe(400)
+        }
+    })
+
+    it('passes a named environment beside live through to hostd', async () => {
+        const asked: string[] = []
+        const open = async (_c: unknown, _a: unknown, _id: string, environment: string) => {
+            asked.push(environment)
+            return { ok: true, response: new Response('', { headers: { 'content-type': 'text/event-stream' } }) }
+        }
+        const response = await relayDeployWatch(deps(open as never), 'acme-bakery', new URLSearchParams({ environment: 'uat1' }))
+        expect(response.status).toBe(200)
+        expect(asked).toEqual(['uat1'])
     })
 
     it('refuses without an environment, since hostd watches one at a time', async () => {

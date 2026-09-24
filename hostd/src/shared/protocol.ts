@@ -2,13 +2,14 @@
 // or by a header line followed by a stream. Parsing is strict on purpose: the agent is root, so anything
 // it does not recognise, including an extra field, is refused rather than ignored.
 
-import { CLIENT_ID, DIR_NAME, PROJECT_ID, SERVICE_NAME, isRecord, relativePathProblem } from './formats.ts'
+import { CLIENT_ID, DIR_NAME, PROJECT_ID, SERVICE_NAME, USER_ID, isEnvironmentName, isRecord, relativePathProblem } from './formats.ts'
 import {
-    isComposeService, environmentOf, ENVIRONMENTS, ENVIRONMENT_FLAGS, CAPABILITIES, CERTIFICATE_MODES, GIT_REF, CREDENTIAL_NAME, MAX_COMPOSE_FILES,
+    isComposeService, environmentOf, ENVIRONMENT_FLAGS, CAPABILITIES, CERTIFICATE_MODES, GIT_REF, CREDENTIAL_NAME, MAX_COMPOSE_FILES, PORT_OVERRIDE_FILE,
     type Capability, type CertificateMode, type EnvironmentFlag, type EnvironmentName, type Keep, type ProjectEntry, type Registry,
 } from './registry.ts'
 import { normaliseHostname } from './hostnames.ts'
 import { PORT_RANGE, type OwnPort } from './ports.ts'
+import { posix } from 'node:path'
 import type { Commit } from './fetch-protocol.ts'
 import type { DeployRecord, DeployTrigger } from './deploys.ts'
 import type { EnvFileList } from './envfiles.ts'
@@ -75,14 +76,22 @@ export type ProvisionCreateArgs = {
 }
 export type ProvisionAddEnvironmentArgs = {
     action: 'add-environment'
-    environment: 'test'
+    // Any environment name but live, which every project already has from its create
+    environment: string
     branch: string
     domain: string | null
     certificate: CertificateMode | null
 }
 export type ProvisionRemoveArgs = { action: 'remove', environment: EnvironmentName | null }
+// Deleting one environment into its site's trash, restoring one from there, and listing what is there.
+// actor is who asked, a label for the record and nothing else, exactly like a backup run's. token is the
+// verification token api minted for the restored vhost: only api mints them.
+export type ProvisionDeleteEnvironmentArgs = { action: 'delete-environment', environment: EnvironmentName, actor?: string }
+export type ProvisionRestoreEnvironmentArgs = { action: 'restore-environment', environment: EnvironmentName, deletedAt: string, token?: string }
+export type ProvisionDeletedEnvironmentsArgs = { action: 'deleted-environments' }
+export type ProvisionTrashArgs = ProvisionDeleteEnvironmentArgs | ProvisionRestoreEnvironmentArgs | ProvisionDeletedEnvironmentsArgs
 export type ProvisionCreateRequest = { verb: 'provision', args: ProvisionCreateArgs }
-export type ProvisionOnProjectRequest = { verb: 'provision', project: string, args: ProvisionAddEnvironmentArgs | ProvisionRemoveArgs }
+export type ProvisionOnProjectRequest = { verb: 'provision', project: string, args: ProvisionAddEnvironmentArgs | ProvisionRemoveArgs | ProvisionTrashArgs }
 export type ProvisionRequest = ProvisionCreateRequest | ProvisionOnProjectRequest
 
 export type EnvListArgs = { action: 'list', environment: EnvironmentName }
@@ -200,18 +209,18 @@ export type ConfigureArgs = {
     // The name of one of the fetcher's tokens, never a token. null clears the key, which puts the
     // project back on the default GITHUB_TOKEN.
     credential?: string | null
-    branches?: Partial<Record<EnvironmentName, string | null>>
+    branches?: Record<EnvironmentName, string | null>
     // No null member, unlike branches: this gives an environment an address or moves it to another one,
     // and never takes one away. Moving it rewrites the vhost hostd owns (see the agent's configure), so
     // the caller is expected to have confirmed it with whoever asked for it.
-    domains?: Partial<Record<EnvironmentName, string>>
+    domains?: Record<EnvironmentName, string>
     // Whether each environment's vhost passes WebSocket upgrades through. Changing it rewrites the vhost
     // hostd owns, if it owns one yet; an environment still served by hand only has it recorded, for the
     // adoption that writes hostd's file to render.
-    websockets?: Partial<Record<EnvironmentName, boolean>>
+    websockets?: Record<EnvironmentName, boolean>
     // Whether each environment's origin serves the site on port 80 for a CDN in Flexible mode, rather than
     // redirecting it to https. Rewrites the vhost exactly as websockets does.
-    flexibleSsl?: Partial<Record<EnvironmentName, boolean>>
+    flexibleSsl?: Record<EnvironmentName, boolean>
 }
 export type ConfigureRequest = { verb: 'configure', project: string, args: ConfigureArgs }
 
@@ -276,6 +285,21 @@ export type LifecycleReply = { ok: true, output: string }
 // Provisioning never starts a site on its own: an operator still has to fill in the env files this
 // names before lifecycle start makes sense, which is what state carries across the wire.
 export type ProvisionReply = { ok: true, project: { id: string, state: 'needs-setup' }, envFiles: EnvFileList }
+// One deleted environment as the portal lists it: what it was, and when the sweep will purge it.
+export type DeletedEnvironment = {
+    environment: EnvironmentName
+    deletedAt: string
+    purgeAt: string
+    branch: string | null
+    domain: string | null
+    aliases: string[]
+}
+export type DeletedEnvironmentsReply = { ok: true, environments: DeletedEnvironment[] }
+// What a restore had to change: a port someone else took meanwhile, and hostnames someone else claimed.
+// warnings are what went wrong after the environment was already back in the registry (its vhost, its
+// start), which the operator has to put right but which do not undo the restore. vhost says whether hostd
+// wrote the environment's vhost with the token api sent, which is what api records its hostnames against.
+export type RestoreEnvironmentReply = { ok: true, port: number, portChanged: boolean, droppedHostnames: string[], warnings: string[], vhost: boolean }
 export type EnvListReply = { ok: true, files: EnvFileList }
 export type EnvReadReply = { ok: true, text: string }
 // A deploy is minutes of building and api's own call timeout is 150 seconds, so a deploy, a rollback and
@@ -307,7 +331,7 @@ export type StreamHeader = { ok: true, stream: true }
 export type AgentReply =
     | HealthReply | StatusReply | StatusesReply | LifecycleReply | ProvisionReply | EnvListReply | EnvReadReply
     | DeployStartedReply | DeployHistoryReply | DeployCommitsReply | BranchesReply | CredentialsReply | PortsReply | ConfigureReply
-    | BackupStartedReply | BackupListReply | BackupRunReply
+    | BackupStartedReply | BackupListReply | BackupRunReply | DeletedEnvironmentsReply | RestoreEnvironmentReply
     | DomainsWritten | AdoptPreview | Refusal
 export type LogLine = { stream: 'stdout' | 'stderr', ts: string | null, text: string, truncated: boolean }
 
@@ -406,13 +430,18 @@ export function parseCreateExtras(raw: Record<string, unknown>): { ok: true, ext
     }
     if (raw.compose !== undefined) {
         const list = raw.compose
-        if (!Array.isArray(list) || list.length === 0 || list.length > MAX_COMPOSE_FILES) {
-            return { ok: false, message: `compose must name 1 to ${MAX_COMPOSE_FILES} files` }
+        // One short of the registry's limit: hostd adds hostd.ports.yml to every list it creates
+        const most = MAX_COMPOSE_FILES - 1
+        if (!Array.isArray(list) || list.length === 0 || list.length > most) {
+            return { ok: false, message: `compose must name 1 to ${most} files` }
         }
         for (const file of list) {
             if (typeof file !== 'string') return { ok: false, message: 'compose is malformed' }
             const problem = relativePathProblem(file)
             if (problem) return { ok: false, message: `compose file ${file}: ${problem}` }
+            if (posix.basename(file) === PORT_OVERRIDE_FILE) {
+                return { ok: false, message: `${PORT_OVERRIDE_FILE} is the file hostd writes; name your own compose files` }
+            }
         }
         if (new Set(list).size !== list.length) return { ok: false, message: 'compose names a file twice' }
         extras.compose = list as string[]
@@ -481,7 +510,9 @@ function parseProvisionAddEnvironment(raw: Record<string, unknown>): Parsed {
     if (!onlyKeys(args, ['action', 'environment', 'branch', 'domain', 'certificate'])) {
         return refuse('bad-request', 'add-environment takes only environment, branch, domain and certificate')
     }
-    if (args.environment !== 'test') return refuse('bad-request', 'environment must be test')
+    const environment = args.environment
+    if (environment === 'live') return refuse('bad-request', 'live cannot be added')
+    if (!isEnvironmentName(environment)) return refuse('bad-request', 'environment must be an environment name')
     if (typeof args.branch !== 'string') return refuse('bad-request', 'branch is malformed')
     const domain = args.domain
     if (domain !== null && typeof domain !== 'string') return refuse('bad-request', 'domain is malformed')
@@ -491,7 +522,7 @@ function parseProvisionAddEnvironment(raw: Record<string, unknown>): Parsed {
         ok: true,
         request: {
             verb: 'provision', project,
-            args: { action: 'add-environment', environment: 'test', branch: args.branch, domain: domain as string | null, certificate: certificate as CertificateMode | null },
+            args: { action: 'add-environment', environment, branch: args.branch, domain: domain as string | null, certificate: certificate as CertificateMode | null },
         },
     }
 }
@@ -503,13 +534,47 @@ function parseProvisionRemove(raw: Record<string, unknown>): Parsed {
     const args = raw.args as Record<string, unknown>
     if (!onlyKeys(args, ['action', 'environment'])) return refuse('bad-request', 'remove takes only environment')
     const environment = args.environment
-    if (environment !== null && !(ENVIRONMENTS as readonly string[]).includes(environment as string)) {
-        return refuse('bad-request', 'environment must be live, test or null')
+    if (environment !== null && !isEnvironmentName(environment)) {
+        return refuse('bad-request', 'environment must be an environment name or null')
     }
     return {
         ok: true,
-        request: { verb: 'provision', project, args: { action: 'remove', environment: environment as EnvironmentName | null } },
+        request: { verb: 'provision', project, args: { action: 'remove', environment } },
     }
+}
+
+// Exactly what Date#toISOString writes, which is what a record carries
+const ISO_INSTANT = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/
+
+function parseProvisionTrash(raw: Record<string, unknown>): Parsed {
+    if (!onlyKeys(raw, ['verb', 'project', 'args'])) return refuse('bad-request', 'provision takes only project and args')
+    const project = projectOf(raw)
+    if (!project) return refuse('bad-request', 'project is malformed')
+    const args = raw.args as Record<string, unknown>
+    const onProject = (parsedArgs: ProvisionTrashArgs): Parsed => ({ ok: true, request: { verb: 'provision', project, args: parsedArgs } })
+
+    if (args.action === 'deleted-environments') {
+        if (!onlyKeys(args, ['action'])) return refuse('bad-request', 'deleted-environments takes nothing else')
+        return onProject({ action: 'deleted-environments' })
+    }
+
+    const environment = args.environment
+    if (!isEnvironmentName(environment)) return refuse('bad-request', 'environment must be an environment name')
+    if (environment === 'live') return refuse('bad-request', 'live is never deleted or restored on its own')
+
+    if (args.action === 'delete-environment') {
+        if (!onlyKeys(args, ['action', 'environment', 'actor'])) return refuse('bad-request', 'delete-environment takes only environment and actor')
+        if (args.actor !== undefined && (typeof args.actor !== 'string' || !USER_ID.test(args.actor))) return refuse('bad-request', 'actor is malformed')
+        return onProject({ action: 'delete-environment', environment, ...(args.actor !== undefined ? { actor: args.actor as string } : {}) })
+    }
+
+    if (!onlyKeys(args, ['action', 'environment', 'deletedAt', 'token'])) return refuse('bad-request', 'restore-environment takes only environment, deletedAt and token')
+    if (typeof args.deletedAt !== 'string' || !ISO_INSTANT.test(args.deletedAt)) return refuse('bad-request', 'deletedAt must be the instant the record gives')
+    if (args.token !== undefined && (typeof args.token !== 'string' || !DOMAIN_TOKEN.test(args.token))) return refuse('bad-request', 'token must be lowercase hex')
+    return onProject({
+        action: 'restore-environment', environment, deletedAt: args.deletedAt,
+        ...(args.token !== undefined ? { token: args.token as string } : {}),
+    })
 }
 
 function parseProvisionRequest(raw: Record<string, unknown>): Parsed {
@@ -518,30 +583,34 @@ function parseProvisionRequest(raw: Record<string, unknown>): Parsed {
         case 'create': return parseProvisionCreate(raw)
         case 'add-environment': return parseProvisionAddEnvironment(raw)
         case 'remove': return parseProvisionRemove(raw)
-        default: return refuse('bad-request', 'action must be create, add-environment or remove')
+        case 'delete-environment':
+        case 'restore-environment':
+        case 'deleted-environments':
+            return parseProvisionTrash(raw)
+        default: return refuse('bad-request', 'action must be create, add-environment, remove, delete-environment, restore-environment or deleted-environments')
     }
 }
 
 function parseEnvArgs(raw: unknown): EnvArgs | Refusal {
     if (!isRecord(raw)) return refuse('bad-request', 'env requires args')
     const environment = raw.environment
-    if (typeof environment !== 'string' || !(ENVIRONMENTS as readonly string[]).includes(environment)) {
-        return refuse('bad-request', 'environment must be live or test')
+    if (!isEnvironmentName(environment)) {
+        return refuse('bad-request', 'environment must be an environment name')
     }
     if (raw.action === 'list') {
         if (!onlyKeys(raw, ['action', 'environment'])) return refuse('bad-request', 'list takes only environment')
-        return { action: 'list', environment: environment as EnvironmentName }
+        return { action: 'list', environment }
     }
     if (raw.action === 'read') {
         if (!onlyKeys(raw, ['action', 'environment', 'path'])) return refuse('bad-request', 'read takes only environment and path')
         if (typeof raw.path !== 'string') return refuse('bad-request', 'path is malformed')
-        return { action: 'read', environment: environment as EnvironmentName, path: raw.path }
+        return { action: 'read', environment, path: raw.path }
     }
     if (raw.action === 'write') {
         if (!onlyKeys(raw, ['action', 'environment', 'path', 'text'])) return refuse('bad-request', 'write takes only environment, path and text')
         if (typeof raw.path !== 'string') return refuse('bad-request', 'path is malformed')
         if (typeof raw.text !== 'string') return refuse('bad-request', 'text is malformed')
-        return { action: 'write', environment: environment as EnvironmentName, path: raw.path, text: raw.text }
+        return { action: 'write', environment, path: raw.path, text: raw.text }
     }
     return refuse('bad-request', 'action must be list, read or write')
 }
@@ -549,10 +618,10 @@ function parseEnvArgs(raw: unknown): EnvArgs | Refusal {
 function parseDeployArgs(raw: unknown): DeployArgs | Refusal {
     if (!isRecord(raw)) return refuse('bad-request', 'deploy requires args')
     const environment = raw.environment
-    if (typeof environment !== 'string' || !(ENVIRONMENTS as readonly string[]).includes(environment)) {
-        return refuse('bad-request', 'environment must be live or test')
+    if (!isEnvironmentName(environment)) {
+        return refuse('bad-request', 'environment must be an environment name')
     }
-    const name = environment as EnvironmentName
+    const name = environment
 
     if (raw.action === 'deploy' || raw.action === 'rollback' || raw.action === 'history') {
         if (!onlyKeys(raw, ['action', 'environment'])) return refuse('bad-request', `${raw.action} takes only environment`)
@@ -621,10 +690,10 @@ const SITES_ENABLED = '/etc/apache2/sites-enabled/'
 export function parseDomainsArgs(args: unknown): { ok: true, args: DomainsArgs } | Refusal {
     if (!isRecord(args)) return refuse('bad-request', 'domains args must be an object')
     const environment = args.environment
-    if (typeof environment !== 'string' || !(ENVIRONMENTS as readonly string[]).includes(environment)) {
-        return refuse('bad-request', `environment must be one of ${ENVIRONMENTS.join(', ')}`)
+    if (!isEnvironmentName(environment)) {
+        return refuse('bad-request', 'environment must be an environment name')
     }
-    const name = environment as EnvironmentName
+    const name = environment
 
     const token = (): string | null => (typeof args.token === 'string' && DOMAIN_TOKEN.test(args.token) ? args.token : null)
 
@@ -734,48 +803,48 @@ export function parseConfigureArgs(raw: unknown): ConfigureArgs | Refusal {
         credential = raw.credential as string | null
     }
 
-    let branches: Partial<Record<EnvironmentName, string | null>> | undefined
+    let branches: Record<EnvironmentName, string | null> | undefined
     if (raw.branches !== undefined) {
         if (!isRecord(raw.branches)) return refuse('bad-request', 'branches is malformed')
-        const parsed: Partial<Record<EnvironmentName, string | null>> = {}
+        const parsed: Record<EnvironmentName, string | null> = {}
         for (const [name, branch] of Object.entries(raw.branches)) {
-            if (!(ENVIRONMENTS as readonly string[]).includes(name)) return refuse('bad-request', `${name} is not an environment`)
+            if (!isEnvironmentName(name)) return refuse('bad-request', `${name} is not an environment name`)
             if (branch !== null && (typeof branch !== 'string' || !GIT_REF.test(branch))) {
                 return refuse('bad-request', `${name} branch must be null or a plain branch name`)
             }
-            parsed[name as EnvironmentName] = branch
+            parsed[name] = branch
         }
         branches = parsed
     }
 
-    let domains: Partial<Record<EnvironmentName, string>> | undefined
+    let domains: Record<EnvironmentName, string> | undefined
     if (raw.domains !== undefined) {
         if (!isRecord(raw.domains)) return refuse('bad-request', 'domains is malformed')
-        const parsed: Partial<Record<EnvironmentName, string>> = {}
+        const parsed: Record<EnvironmentName, string> = {}
         for (const [name, domain] of Object.entries(raw.domains)) {
-            if (!(ENVIRONMENTS as readonly string[]).includes(name)) return refuse('bad-request', `${name} is not an environment`)
+            if (!isEnvironmentName(name)) return refuse('bad-request', `${name} is not an environment name`)
             // Unlike branches, null is not a value here: an address can be given or moved, never taken
             // away.
             // normaliseHostname is the one place that decides what a hostname is, and it answers the
             // single spelling the registry should hold whichever way the operator typed it.
             const host = normaliseHostname(domain)
             if (host === null) return refuse('bad-request', `${name} domain must be a hostname`)
-            parsed[name as EnvironmentName] = host
+            parsed[name] = host
         }
         domains = parsed
     }
 
     // Both render-only switches share one shape: a mapping of environment to true or false.
-    const flags: Partial<Record<EnvironmentFlag, Partial<Record<EnvironmentName, boolean>>>> = {}
+    const flags: Partial<Record<EnvironmentFlag, Record<EnvironmentName, boolean>>> = {}
     for (const key of ENVIRONMENT_FLAGS) {
         const value = raw[key]
         if (value === undefined) continue
         if (!isRecord(value)) return refuse('bad-request', `${key} is malformed`)
-        const parsed: Partial<Record<EnvironmentName, boolean>> = {}
+        const parsed: Record<EnvironmentName, boolean> = {}
         for (const [name, enabled] of Object.entries(value)) {
-            if (!(ENVIRONMENTS as readonly string[]).includes(name)) return refuse('bad-request', `${name} is not an environment`)
+            if (!isEnvironmentName(name)) return refuse('bad-request', `${name} is not an environment name`)
             if (typeof enabled !== 'boolean') return refuse('bad-request', `${name} ${key} must be true or false`)
-            parsed[name as EnvironmentName] = enabled
+            parsed[name] = enabled
         }
         flags[key] = parsed
     }
@@ -820,7 +889,7 @@ export function parseAgentRequest(line: string): Parsed {
             }
             if (own !== null && (!isRecord(own) || !onlyKeys(own, ['project', 'environment'])
                 || typeof own.project !== 'string' || !PROJECT_ID.test(own.project)
-                || !(ENVIRONMENTS as readonly unknown[]).includes(own.environment))) {
+                || !isEnvironmentName(own.environment))) {
                 return refuse('bad-request', 'own must be null or a project and one of its environments')
             }
             return { ok: true, request: { verb: 'ports', args: { port: port as number | null, own: own as OwnPort | null } } }
@@ -896,10 +965,10 @@ export function parseAgentRequest(line: string): Parsed {
             if (!isRecord(raw.args)) return refuse('bad-request', 'deploy-watch requires args')
             if (!onlyKeys(raw.args, ['environment'])) return refuse('bad-request', 'deploy-watch takes only environment')
             const environment = raw.args.environment
-            if (typeof environment !== 'string' || !(ENVIRONMENTS as readonly string[]).includes(environment)) {
-                return refuse('bad-request', 'environment must be live or test')
+            if (!isEnvironmentName(environment)) {
+                return refuse('bad-request', 'environment must be an environment name')
             }
-            return { ok: true, request: { verb: 'deploy-watch', project, args: { environment: environment as EnvironmentName } } }
+            return { ok: true, request: { verb: 'deploy-watch', project, args: { environment } } }
         }
 
         case 'backup': {
@@ -942,11 +1011,11 @@ export function parseAgentRequest(line: string): Parsed {
             if (!project) return refuse('bad-request', 'project is malformed')
             if (!isRecord(raw.args) || !onlyKeys(raw.args, ['environment', 'port'])) return refuse('bad-request', 'port takes only args.environment and args.port')
             const { environment, port } = raw.args
-            if (!(ENVIRONMENTS as readonly unknown[]).includes(environment)) return refuse('bad-request', 'environment must be live or test')
+            if (!isEnvironmentName(environment)) return refuse('bad-request', 'environment must be an environment name')
             if (typeof port !== 'number' || !Number.isInteger(port) || port < PORT_RANGE.from || port > PORT_RANGE.to) {
                 return refuse('bad-request', `port must be a whole number from ${PORT_RANGE.from} to ${PORT_RANGE.to}`)
             }
-            return { ok: true, request: { verb: 'port', project, args: { environment: environment as EnvironmentName, port } } }
+            return { ok: true, request: { verb: 'port', project, args: { environment, port } } }
         }
 
         default:
@@ -970,7 +1039,7 @@ export function checkStructure(
     // them, so a project the guard has just failed must stay refused. Removing a project touches no files
     // at all, so it is safe regardless, and a guard failure is exactly the kind of problem that makes an
     // operator want to unregister the project in the first place.
-    const removingProject = request.verb === 'provision' && request.args.action === 'remove'
+    const removingProject = request.verb === 'provision' && request.args.action === 'remove' && request.args.environment === null
     const guardProblem = guardInvalid.get(id)
     if (guardProblem !== undefined && !removingProject) return refuse('invalid-project', `${id} is invalid: ${guardProblem}`)
 

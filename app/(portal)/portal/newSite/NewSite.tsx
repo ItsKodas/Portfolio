@@ -323,7 +323,7 @@ function NewSiteDialog({ onClose }: { onClose: () => void }) {
                         inputMode="numeric"
                         hint={portCheck.error
                             ? `The dedi's ports could not be checked: ${portCheck.error}`
-                            : 'The port the site listens on, written into its .env as WEB_PORT. Its compose file has to publish ${WEB_PORT}.'}
+                            : 'The port the site listens on. hostd publishes it to the site\'s service on 127.0.0.1, whatever the compose file says.'}
                         value={values.port}
                         onChange={event => { setPortTyped(true); set('port', event.target.value) }}
                         error={portCheck.problem ?? problem('port')}

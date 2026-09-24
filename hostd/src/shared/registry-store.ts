@@ -108,6 +108,11 @@ export class RegistryStore {
         return this.registry
     }
 
+    // Why the last reload was rejected, or null once the file on disk is the one in use
+    rejected(): string | null {
+        return this.rejection
+    }
+
     warnings(): string[] {
         return this.rejection ? [`registry reload rejected, still using the last good version: ${this.rejection}`] : []
     }

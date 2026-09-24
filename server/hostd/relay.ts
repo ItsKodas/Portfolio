@@ -6,7 +6,7 @@ import 'server-only'
 
 import type { Caller } from './actor'
 import type { HostdConfig } from './config'
-import type { EnvironmentName } from './deployWatch'
+import { isEnvironmentName, type EnvironmentName } from './env'
 import { forClient } from './errors'
 import type { LogStream } from './logs'
 
@@ -83,7 +83,7 @@ export async function relayLogs(deps: RelayDeps, id: string, params: URLSearchPa
 
 export async function relayDeployWatch(deps: DeployWatchRelayDeps, id: string, params: URLSearchParams): Promise<Response> {
     const environment = params.get('environment')
-    if (environment !== 'live' && environment !== 'test') return problem('bad-request')
+    if (!isEnvironmentName(environment)) return problem('bad-request')
 
     // A client may only watch their own site. Answering 404 rather than 403 means the portal does not
     // confirm that a project id exists to somebody who has no business knowing.

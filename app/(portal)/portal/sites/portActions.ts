@@ -4,20 +4,19 @@
 // are; hostd refuses anyone else too (hostd/src/api/routes.ts).
 
 import { readHostd } from '@/server/hostd/config'
+import { isEnvironmentName } from '@/server/hostd/env'
 import { forAdmin } from '@/server/hostd/errors'
 import { checkPort } from '@/server/hostd/ports'
 import { callerFromSession } from '@/server/hostd/session'
 
 export type PortCheckResult = { ok: true, suggested: number, problem: string | null } | { ok: false, error: string }
 
-const ENVIRONMENTS = ['live', 'test'] as const
-
 export async function checkPortAction(
     port: number | null,
     own: { project: string, environment: string } | null,
 ): Promise<PortCheckResult> {
     if (port !== null && !Number.isInteger(port)) return { ok: false, error: 'That is not a port.' }
-    const environment = own ? ENVIRONMENTS.find(name => name === own.environment) : undefined
+    const environment = own && isEnvironmentName(own.environment) ? own.environment : undefined
     if (own && (!environment || typeof own.project !== 'string')) return { ok: false, error: 'That is not something this form can do.' }
 
     const who = await callerFromSession()

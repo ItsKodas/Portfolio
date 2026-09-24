@@ -1,5 +1,6 @@
 import { describe, it } from 'node:test'
 import assert from 'node:assert/strict'
+import { posix } from 'node:path'
 
 import { createProject, addEnvironment, removeProject, notPublishedProblem, type ProvisionDeps } from './provision.ts'
 import { RegistryWriter, type RegistryWriteFs } from '../shared/registry-write.ts'
@@ -9,6 +10,7 @@ import { lifecycleArgv, type GuessedService, type Runner, type RunResult } from 
 import type { ProvisionCreateArgs, ProvisionAddEnvironmentArgs } from '../shared/protocol.ts'
 import type { FetchReply, FetchRequest } from '../shared/fetch-protocol.ts'
 import type { PortVerdict } from '../shared/ports.ts'
+import type { PortOverrideResult } from './port-override.ts'
 
 const REGISTRY_PATH = '/etc/hostd/projects.yaml'
 
@@ -114,6 +116,7 @@ type SetupOptions = {
     envTree?: Record<string, string>
     runnerResult?: Partial<RunResult>
     owners?: Record<string, { uid: number, gid: number, mode: number }>
+    overrideResult?: PortOverrideResult
 }
 
 // Every dependency is a plain recorder, in the style the rest of hostd's tests use: no mocking library,
@@ -138,6 +141,7 @@ function setup(options: SetupOptions = {}) {
     const ownerPaths: string[] = []
     const ownCalls: Array<{ dir: string, like: { uid: number, gid: number, mode: number } }> = []
     const portEnvCalls: Array<{ dir: string, key: string, port: number }> = []
+    const overrideCalls: Array<{ dir: string, composePaths: string[], portEnv: string }> = []
 
     const registryFiles = new Map<string, string>([[REGISTRY_PATH, yaml]])
     const registryFs: RegistryWriteFs = {
@@ -192,6 +196,12 @@ function setup(options: SetupOptions = {}) {
             portEnvCalls.push({ dir: environment.dir, key, port })
             return options.setPortResult ?? { ok: true, previous: null }
         },
+        portOverride: async (location, portEnv) => {
+            calls.push('portOverride')
+            overrideCalls.push({ dir: location.dir, composePaths: location.composePaths, portEnv })
+            return options.overrideResult ?? { ok: true, composePaths: [...location.composePaths, posix.join(location.dir, 'hostd.ports.yml')], service: 'web', target: 3000 }
+        },
+        removePortOverride: async () => { calls.push('removePortOverride') },
         mkdir: async dir => { calls.push('mkdir'); mkdirs.push(dir); steps.push(`mkdir ${dir}`) },
         move: async (from, to) => { calls.push('move'); moves.push(`${from} ${to}`); steps.push(`move ${from} ${to}`) },
         rmdir: async dir => { calls.push('rmdir'); rmdirs.push(dir); steps.push(`rmdir ${dir}`) },
@@ -216,7 +226,7 @@ function setup(options: SetupOptions = {}) {
         log: message => logs.push(message),
     }
 
-    return { deps, registry, calls, steps, mkdirs, moves, rmdirs, cloneRequests, fetchRequests, logs, registryFiles, envFs, envFsFiles, runnerCalls, resolveCalls, ownerPaths, ownCalls, portEnvCalls }
+    return { deps, registry, calls, steps, mkdirs, moves, rmdirs, cloneRequests, fetchRequests, logs, registryFiles, envFs, envFsFiles, runnerCalls, resolveCalls, ownerPaths, ownCalls, portEnvCalls, overrideCalls }
 }
 
 const createArgs = (overrides: Partial<ProvisionCreateArgs> = {}): ProvisionCreateArgs => ({
@@ -240,7 +250,7 @@ describe('createProject', () => {
         assert.deepEqual(cloneRequests, [{ verb: 'clone', repo: 'git@github.com:ItsKodas/bakery.git', dir: '/var/www/bakery/live', branch: 'main', credential: null }])
         // The expected compose name is the project id, the default for a nested live, with no collision to
         // guard against: live has no other environment yet.
-        assert.deepEqual(resolveCalls, [{ expectedName: 'bakery', dir: '/var/www/bakery/live', composePaths: ['/var/www/bakery/live/docker-compose.yml'], collidesWith: undefined }])
+        assert.deepEqual(resolveCalls, [{ expectedName: 'bakery', dir: '/var/www/bakery/live', composePaths: ['/var/www/bakery/live/docker-compose.yml', '/var/www/bakery/live/hostd.ports.yml'], collidesWith: undefined }])
 
         const written = parseRegistry(registryFiles.get(REGISTRY_PATH)!)
         const bakery = written.projects.get('bakery')
@@ -264,7 +274,7 @@ describe('createProject', () => {
         // folder is called, so an unpinned compose file never resolves to the folder name here.
         assert.deepEqual(resolveCalls, [{
             expectedName: 'bakery', dir: '/var/www/bakery_site/live',
-            composePaths: ['/var/www/bakery_site/live/docker-compose.yml', '/var/www/bakery_site/live/docker-compose.prod.yml'], collidesWith: undefined,
+            composePaths: ['/var/www/bakery_site/live/docker-compose.yml', '/var/www/bakery_site/live/docker-compose.prod.yml', '/var/www/bakery_site/live/hostd.ports.yml'], collidesWith: undefined,
         }])
 
         const bakery = parseRegistry(registryFiles.get(REGISTRY_PATH)!).projects.get('bakery')!
@@ -273,7 +283,7 @@ describe('createProject', () => {
         const live = bakery.environments.get('live')!
         assert.equal(live.dir, '/var/www/bakery_site/live')
         assert.equal(live.composeName, 'bakery')
-        assert.deepEqual(live.composePaths, ['/var/www/bakery_site/live/docker-compose.yml', '/var/www/bakery_site/live/docker-compose.prod.yml'])
+        assert.deepEqual(live.composePaths, ['/var/www/bakery_site/live/docker-compose.yml', '/var/www/bakery_site/live/docker-compose.prod.yml', '/var/www/bakery_site/live/hostd.ports.yml'])
         assert.equal(live.websockets, true)
         assert.equal(live.flexibleSsl, true)
     })
@@ -283,6 +293,30 @@ describe('createProject', () => {
         const reply = await createProject(createArgs({ dir: 'taken' }), { ...deps, exists: async dir => dir === '/var/www/taken' })
         assert.deepEqual(reply, { ok: false, code: 'bad-request', message: '/var/www/taken already exists' })
         assert.deepEqual(mkdirs, [])
+    })
+
+    // A deleted environment's volumes still carry its compose name until the purge removes them, so a new
+    // site running under that name would start on another client's data
+    it('refuses an id that is the compose name of a deleted environment, before touching anything', async () => {
+        const { deps, mkdirs, cloneRequests } = setup()
+        const asked: string[] = []
+        const reply = await createProject(createArgs(), {
+            ...deps,
+            composeNameDeleted: async name => { asked.push(name); return name === 'bakery' ? 'shop uat1' : null },
+        })
+        assert.deepEqual(reply, {
+            ok: false, code: 'bad-request',
+            message: 'bakery would run under the compose name bakery, which the deleted environment shop uat1 still holds with its volumes; restore it or wait for it to be purged',
+        })
+        assert.deepEqual(asked, ['bakery'])
+        assert.deepEqual(mkdirs, [])
+        assert.deepEqual(cloneRequests, [])
+    })
+
+    it('creates when no deleted environment holds the compose name', async () => {
+        const { deps } = setup()
+        const reply = await createProject(createArgs(), { ...deps, composeNameDeleted: async () => null })
+        assert.equal(reply.ok, true)
     })
 
     it('clones a new project with the credential the create named', async () => {
@@ -311,7 +345,7 @@ describe('createProject', () => {
     it('does those in order, so nothing is registered before it exists on disk', async () => {
         const { deps, calls } = setup()
         await createProject(createArgs(), deps)
-        assert.deepEqual(calls, ['exists', 'choosePort', 'mkdir', 'mkdir', 'clone', 'mkdir', 'move', 'setPortEnv', 'owner', 'own', 'resolve', 'write'])
+        assert.deepEqual(calls, ['exists', 'choosePort', 'mkdir', 'mkdir', 'clone', 'mkdir', 'move', 'setPortEnv', 'portOverride', 'owner', 'own', 'resolve', 'write'])
     })
 
     it('writes the chosen port into .env under WEB_PORT before resolving', async () => {
@@ -347,8 +381,33 @@ describe('createProject', () => {
     it('rolls back when no service publishes the port', async () => {
         const { deps, rmdirs, calls } = setup({ resolveResult: { ok: true, services: { web: { role: 'site' } }, published: [3000] } })
         const reply = await createProject(createArgs(), deps)
-        assert.deepEqual(reply, { ok: false, code: 'invalid-project', message: notPublishedProblem('WEB_PORT', 5100) })
+        assert.deepEqual(reply, { ok: false, code: 'invalid-project', message: notPublishedProblem('/var/www/bakery/live', 5100) })
         assert.deepEqual(rmdirs, ['/var/www/bakery'])
+        assert.ok(!calls.includes('write'))
+    })
+
+    it('writes the override from the repo\'s own files after the port is in .env', async () => {
+        const { deps, overrideCalls, calls, logs } = setup()
+        await createProject(createArgs(), deps)
+        assert.deepEqual(overrideCalls, [{ dir: '/var/www/bakery/live', composePaths: ['/var/www/bakery/live/docker-compose.yml'], portEnv: 'WEB_PORT' }])
+        assert.ok(calls.indexOf('setPortEnv') < calls.indexOf('portOverride'))
+        assert.ok(calls.indexOf('portOverride') < calls.indexOf('own'))
+        assert.ok(logs.includes('provision bakery: published 5100 to web:3000'), logs.join('\n'))
+    })
+
+    it('records the override as the last compose file', async () => {
+        const { deps, registryFiles } = setup()
+        await createProject(createArgs(), deps)
+        assert.deepEqual(parseRegistry(registryFiles.get(REGISTRY_PATH)!).projects.get('bakery')?.environments.get('live')?.composePaths,
+            ['/var/www/bakery/live/docker-compose.yml', '/var/www/bakery/live/hostd.ports.yml'])
+    })
+
+    it('rolls back when the override cannot be built', async () => {
+        const problem = 'web does not say which port it listens on; add expose: ["3000"] (the port inside the container) to it in the compose file'
+        const { deps, rmdirs, calls } = setup({ overrideResult: { ok: false, problem } })
+        assert.deepEqual(await createProject(createArgs(), deps), { ok: false, code: 'invalid-project', message: problem })
+        assert.deepEqual(rmdirs, ['/var/www/bakery'])
+        assert.ok(!calls.includes('resolve'))
         assert.ok(!calls.includes('write'))
     })
 
@@ -468,7 +527,7 @@ describe('createProject', () => {
         assert.equal(reply.ok, false)
         assert.equal(reply.ok === false && reply.code, 'failed')
         assert.deepEqual(rmdirs, ['/var/www/bakery'])
-        assert.deepEqual(calls, ['exists', 'choosePort', 'mkdir', 'mkdir', 'clone', 'mkdir', 'move', 'setPortEnv', 'owner', 'own', 'resolve', 'rmdir'])
+        assert.deepEqual(calls, ['exists', 'choosePort', 'mkdir', 'mkdir', 'clone', 'mkdir', 'move', 'setPortEnv', 'portOverride', 'owner', 'own', 'resolve', 'rmdir'])
     })
 
     it('refuses an id that is taken, reserved or malformed, before touching the disk', async () => {
@@ -605,83 +664,194 @@ describe('createProject', () => {
     })
 })
 
+// acme nested, with a test environment already beside live: what a site that added test before
+// environments could take any name looks like.
+const NESTED_WITH_TEST_YAML = `${NESTED_LIVE_YAML}      test:
+        dir: /var/www/acme/test
+        branch: develop
+        domain: test.acme.com
+        port: 5110
+        certificate: letsencrypt
+`
+
 describe('addEnvironment', () => {
-    const project = (yaml = REGISTRY_YAML): ProjectEntry => parseRegistry(yaml).projects.get('acme')!
+    const project = (yaml = NESTED_LIVE_YAML): ProjectEntry => parseRegistry(yaml).projects.get('acme')!
     const args = (overrides: Partial<ProvisionAddEnvironmentArgs> = {}): ProvisionAddEnvironmentArgs => ({
-        action: 'add-environment', environment: 'test', branch: 'develop', domain: 'test.acme.com', certificate: 'letsencrypt',
+        action: 'add-environment', environment: 'uat1', branch: 'develop', domain: 'uat1.acme.com', certificate: 'letsencrypt',
         ...overrides,
     })
+    // A nested site with its shared repository in place, which every add needs
+    const nested = (options: SetupOptions = {}) => setup({ registryYaml: NESTED_LIVE_YAML, existsPaths: ['/var/www/acme/git/.git'], ...options })
 
-    it('names the test environment folder <id>-test and gives it its own port', async () => {
-        const { deps, mkdirs, cloneRequests, registryFiles } = setup({
+    it('adds uat1 to a nested site as a worktree of the shared repository, with its own compose name, env files and port', async () => {
+        const { deps, steps, fetchRequests, resolveCalls, portEnvCalls, overrideCalls, registryFiles, envFs, envFsFiles } = nested({
             portResult: { ok: true, port: 5200 },
             resolveResult: { ok: true, services: { web: { role: 'site' } }, published: [5200] },
+            envTree: { '/var/www/acme/live/.env': 'SITE_URL=https://acme.com\nDATABASE_URL=postgres://user:pw@db:5432/acme\n' },
         })
-        const reply = await addEnvironment(project(), args(), deps)
-        assert.equal(reply.ok, true)
-        assert.deepEqual(mkdirs, ['/var/www/acme-test'])
-        assert.deepEqual(cloneRequests, [{ verb: 'clone', repo: 'git@github.com:ItsKodas/acme.git', dir: '/var/www/acme-test', branch: 'develop', credential: null }])
-
-        const written = parseRegistry(registryFiles.get(REGISTRY_PATH)!)
-        const test = written.projects.get('acme')!.environments.get('test')
-        assert.equal(test?.dir, '/var/www/acme-test')
-        assert.equal(test?.port, 5200)
-        assert.equal(test?.domain, 'test.acme.com')
-    })
-
-    it('writes the test environment\'s own port over the one copied from live', async () => {
-        const { deps, portEnvCalls } = setup()
-        const reply = await addEnvironment(project(), args(), deps)
-        assert.equal(reply.ok, true)
-        assert.deepEqual(portEnvCalls, [{ dir: '/var/www/acme-test', key: 'WEB_PORT', port: 5100 }])
-    })
-
-    it('clones a new environment with the credential the project already has', async () => {
-        const { deps, cloneRequests } = setup()
-        await addEnvironment({ ...project(), credential: 'acme' }, args(), deps)
-        assert.deepEqual(cloneRequests, [{ verb: 'clone', repo: 'git@github.com:ItsKodas/acme.git', dir: '/var/www/acme-test', branch: 'develop', credential: 'acme' }])
-    })
-
-    // Regression, per the whole-branch re-review: this used to pass the bare project id ('acme') as the
-    // expected compose name for the test environment's own folder ('/var/www/acme-test'), which an
-    // unpinned compose file (the ordinary case for most repos) never resolves to, since compose defaults
-    // to the folder's own basename. The expected name must be the folder basename, and collidesWith must
-    // be the project id, so a compose file pinning live's own name gets the specific collision refusal.
-    it('checks the compose name against the test folder\'s own basename, not the bare project id, and flags live\'s id as the collision to avoid', async () => {
-        const { deps, resolveCalls } = setup()
-        await addEnvironment(project(), args(), deps)
-        assert.deepEqual(resolveCalls, [{
-            expectedName: 'acme-test', dir: '/var/www/acme-test', composePaths: ['/var/www/acme-test/docker-compose.yml'], collidesWith: 'acme',
-        }])
-    })
-
-    // Unlike a create, this one does have a sibling to read: the live environment's own folder, which is
-    // the directory the new test tree sits beside and is a copy of. Same rule as deploy.ts's ensureRepo,
-    // which patterns the repository directory on <dir> itself.
-    it('gives the cloned test tree the ownership and mode of the live environment folder, not of /var/www', async () => {
-        const { deps, ownerPaths, ownCalls } = setup()
-        const reply = await addEnvironment(project(), args(), deps)
-        assert.equal(reply.ok, true)
-        assert.deepEqual(ownerPaths, ['/var/www/acme'])
-        assert.deepEqual(ownCalls, [{ dir: '/var/www/acme-test', like: { uid: 1000, gid: 1000, mode: 0o775 } }])
-    })
-
-    // The env files copied out of live are written by this process, as root, so they are part of what
-    // needs owning: owning before the copy would leave every one of them root-only.
-    it('owns the tree after the env files are copied across, and before it registers anything', async () => {
-        const { deps, calls, envFs, envFsFiles } = setup({ envTree: { '/var/www/acme/.env': 'DATABASE_URL=postgres://db/acme\n' } })
         const reply = await addEnvironment(project(), args(), deps, envFs)
         assert.equal(reply.ok, true)
-        assert.equal(envFsFiles.has('/var/www/acme-test/.env'), true)
-        assert.ok(calls.includes('own'))
-        assert.ok(calls.indexOf('clone') < calls.indexOf('own'))
-        assert.ok(calls.indexOf('own') < calls.indexOf('write'))
+        assert.deepEqual(fetchRequests, [
+            { verb: 'fetch', dir: '/var/www/acme/git', branch: 'develop', credential: null },
+            { verb: 'tip', dir: '/var/www/acme/git', branch: 'develop' },
+            { verb: 'checkout', dir: '/var/www/acme/git', worktree: '/var/www/acme/uat1', commit: 'abc1234' },
+        ])
+        assert.deepEqual(steps, ['fetch /var/www/acme/git', 'tip /var/www/acme/git', 'checkout /var/www/acme/uat1'])
+        assert.equal(envFsFiles.get('/var/www/acme/uat1/.env'), 'SITE_URL=https://uat1.acme.com\nDATABASE_URL=postgres://user:pw@db:5432/acme-uat1\n')
+        assert.deepEqual(portEnvCalls, [{ dir: '/var/www/acme/uat1', key: 'WEB_PORT', port: 5200 }])
+        assert.deepEqual(overrideCalls, [{ dir: '/var/www/acme/uat1', composePaths: ['/var/www/acme/uat1/docker-compose.yml'], portEnv: 'WEB_PORT' }])
+        assert.deepEqual(resolveCalls, [{
+            expectedName: 'acme-uat1', dir: '/var/www/acme/uat1', composePaths: ['/var/www/acme/uat1/docker-compose.yml', '/var/www/acme/uat1/hostd.ports.yml'], collidesWith: 'acme',
+        }])
+
+        const uat1 = parseRegistry(registryFiles.get(REGISTRY_PATH)!).projects.get('acme')!.environments.get('uat1')!
+        assert.equal(uat1.dir, '/var/www/acme/uat1')
+        assert.equal(uat1.composeName, 'acme-uat1')
+        assert.equal(uat1.port, 5200)
+        assert.equal(uat1.domain, 'uat1.acme.com')
+        assert.equal(uat1.branch, 'develop')
+        assert.deepEqual(uat1.composePaths, ['/var/www/acme/uat1/docker-compose.yml', '/var/www/acme/uat1/hostd.ports.yml'])
+        assert.doesNotMatch(registryFiles.get(REGISTRY_PATH)!, /composeName/)
     })
 
-    // The copy carries live's WEB_PORT across, so writing test's own port first would be overwritten by
-    // live's and test would start on live's port
+    it('adds a second environment beside an existing test one', async () => {
+        const { deps, registryFiles } = nested({ registryYaml: NESTED_WITH_TEST_YAML })
+        const reply = await addEnvironment(project(NESTED_WITH_TEST_YAML), args({ environment: 'uat2', domain: 'uat2.acme.com' }), deps)
+        assert.equal(reply.ok, true)
+        const environments = parseRegistry(registryFiles.get(REGISTRY_PATH)!).projects.get('acme')!.environments
+        assert.deepEqual([...environments.keys()], ['live', 'test', 'uat2'])
+        assert.equal(environments.get('uat2')?.dir, '/var/www/acme/uat2')
+        assert.equal(environments.get('uat2')?.composeName, 'acme-uat2')
+    })
+
+    it('refuses a name the project already has, before touching anything', async () => {
+        const { deps, calls } = nested({ registryYaml: NESTED_WITH_TEST_YAML })
+        const reply = await addEnvironment(project(NESTED_WITH_TEST_YAML), args({ environment: 'test' }), deps)
+        assert.deepEqual(reply, { ok: false, code: 'bad-request', message: 'acme already has a test environment' })
+        assert.deepEqual(calls, [])
+    })
+
+    it('refuses live, and a reserved or invalid name, before touching anything', async () => {
+        const { deps, calls } = nested()
+        assert.deepEqual(await addEnvironment(project(), args({ environment: 'live' }), deps), { ok: false, code: 'bad-request', message: 'live cannot be added' })
+        for (const environment of ['git', 'next', 'prev', 'environments', 'backups', 'uat-1', 'UAT1']) {
+            assert.deepEqual(
+                await addEnvironment(project(), args({ environment }), deps),
+                { ok: false, code: 'bad-request', message: 'environment must be an environment name' },
+                environment,
+            )
+        }
+        assert.deepEqual(calls, [])
+    })
+
+    it('refuses a flat live, pointing at the deploy that nests it', async () => {
+        const { deps, calls } = setup()
+        const reply = await addEnvironment(project(REGISTRY_YAML), args(), deps)
+        assert.deepEqual(reply, { ok: false, code: 'bad-request', message: 'deploy live once so it moves into the nested layout, then add environments' })
+        assert.deepEqual(calls, [])
+    })
+
+    it('refuses a name whose deleted environment the purge has not removed yet, and asks only about this project and name', async () => {
+        const asked: string[] = []
+        const { deps, calls } = nested()
+        const reply = await addEnvironment(project(), args(), {
+            ...deps,
+            deletedWithin: async (id, environment) => { asked.push(`${id} ${environment}`); return true },
+        })
+        assert.deepEqual(reply, { ok: false, code: 'bad-request', message: 'uat1 was deleted and is still kept for a restore; restore it or wait for it to be purged' })
+        assert.deepEqual(asked, ['acme uat1'])
+        assert.deepEqual(calls, [])
+    })
+
+    // Another project's deleted environment, a flat one whose folder was /var/www/acme-uat1 say, can hold
+    // the same compose name: deletedWithin only knows about this project's own names
+    it('refuses a name whose compose name a deleted environment of another project still holds', async () => {
+        const asked: string[] = []
+        const { deps, calls } = nested()
+        const reply = await addEnvironment(project(), args(), {
+            ...deps,
+            deletedWithin: async () => false,
+            composeNameDeleted: async name => { asked.push(name); return 'other test' },
+        })
+        assert.deepEqual(reply, {
+            ok: false, code: 'bad-request',
+            message: 'acme uat1 would run under the compose name acme-uat1, which the deleted environment other test still holds with its volumes; restore it or wait for it to be purged',
+        })
+        assert.deepEqual(asked, ['acme-uat1'])
+        assert.deepEqual(calls, [])
+    })
+
+    it('goes ahead when the deleted-name check answers false', async () => {
+        const { deps } = nested()
+        const reply = await addEnvironment(project(), args(), { ...deps, deletedWithin: async () => false })
+        assert.equal(reply.ok, true)
+    })
+
+    it('refuses a domain another environment of the same project already has', async () => {
+        const { deps, calls } = nested({ registryYaml: NESTED_WITH_TEST_YAML })
+        const reply = await addEnvironment(project(NESTED_WITH_TEST_YAML), args({ domain: 'test.acme.com' }), deps)
+        assert.deepEqual(reply, { ok: false, code: 'bad-request', message: 'test.acme.com is already used by another project or environment' })
+        assert.equal(calls.includes('choosePort'), false)
+    })
+
+    it('refreshes the registry before checking the domain, not only inside choosePort', async () => {
+        const { deps } = nested()
+        const claimed = parseRegistry(`${NESTED_LIVE_YAML}  widget:
+    client: cl_9
+    name: Widget
+    repo: git@github.com:ItsKodas/widget.git
+    services: { web: { role: site } }
+    environments:
+      live: { dir: /var/www/widget, branch: main, domain: uat1.acme.com, port: 5099 }
+`)
+        let registry = parseRegistry(NESTED_LIVE_YAML)
+        const reply = await addEnvironment(project(), args(), {
+            ...deps,
+            registry: () => registry,
+            refreshRegistry: async () => { registry = claimed },
+        })
+        assert.equal(reply.ok, false)
+        assert.equal(reply.ok === false && reply.code, 'bad-request')
+        assert.match(reply.ok === false ? reply.message : '', /uat1\.acme\.com is already used by another project or environment/)
+    })
+
+    it('refuses provisioning entirely while the registry has any invalid entry, naming it', async () => {
+        const yaml = `${NESTED_LIVE_YAML}  broken:\n    client: cl_9\n`
+        const { deps, calls } = nested({ registryYaml: yaml })
+        const reply = await addEnvironment(project(yaml), args(), deps)
+        assert.equal(reply.ok, false)
+        assert.equal(reply.ok === false && reply.code, 'unavailable')
+        assert.match(reply.ok === false ? reply.message : '', /broken/)
+        // The folder and repository checks already ran, but choosePort never does
+        assert.deepEqual(calls, ['exists', 'exists'])
+    })
+
+    // Project ids may hold a hyphen, so another project's own compose name can be exactly <id>-<name>.
+    // The registry write refuses it too, but only after a full checkout: this refuses it before any of it.
+    it('refuses a compose name another project already runs under, naming both, before any disk work', async () => {
+        const yaml = `${NESTED_LIVE_YAML}  acme-uat1:
+    client: cl_9
+    name: Acme UAT
+    repo: git@github.com:ItsKodas/acme-uat1.git
+    services: { web: { role: site } }
+    environments:
+      live: { dir: /var/www/acme-uat1/live, branch: main, port: 5099 }
+`
+        const { deps, calls, fetchRequests } = nested({ registryYaml: yaml })
+        const reply = await addEnvironment(project(yaml), args(), deps)
+        assert.deepEqual(reply, {
+            ok: false, code: 'bad-request',
+            message: 'acme uat1 would run under the compose name acme-uat1, which acme-uat1 live already uses',
+        })
+        assert.equal(calls.includes('choosePort'), false)
+        assert.equal(calls.includes('mkdir'), false)
+        assert.deepEqual(fetchRequests, [])
+    })
+
+    // The copy carries live's WEB_PORT across, so writing the new environment's own port first would be
+    // overwritten by live's and it would start on live's port
     it('writes the port into .env after the live env files are copied across', async () => {
-        const { deps, envFs, envFsFiles } = setup({ envTree: { '/var/www/acme/.env': 'WEB_PORT=5010\n' } })
+        const { deps, envFs, envFsFiles } = nested({ envTree: { '/var/www/acme/live/.env': 'WEB_PORT=5010\n' } })
         let copiedFirst: string | undefined
         deps.setPortEnv = async (environment, key, port) => {
             copiedFirst = envFsFiles.get(`${environment.dir}/.env`)
@@ -691,38 +861,49 @@ describe('addEnvironment', () => {
         const reply = await addEnvironment(project(), args(), deps, envFs)
         assert.equal(reply.ok, true)
         assert.equal(copiedFirst, 'WEB_PORT=5010\n')
-        assert.equal(envFsFiles.get('/var/www/acme-test/.env'), 'WEB_PORT=5100\n')
+        assert.equal(envFsFiles.get('/var/www/acme/uat1/.env'), 'WEB_PORT=5100\n')
     })
 
-    it('removes the folder and writes nothing when the cloned tree cannot be given that ownership', async () => {
-        const { deps, calls, rmdirs } = setup()
+    // The env files copied out of live are written by this process, as root, so they are part of what
+    // needs owning: owning before the copy would leave every one of them root-only.
+    it('owns the tree after the env files are copied across, and before it registers anything', async () => {
+        const { deps, calls, envFs, envFsFiles, ownerPaths, ownCalls } = nested({ envTree: { '/var/www/acme/live/.env': 'DATABASE_URL=postgres://db/acme\n' } })
+        const reply = await addEnvironment(project(), args(), deps, envFs)
+        assert.equal(reply.ok, true)
+        assert.equal(envFsFiles.has('/var/www/acme/uat1/.env'), true)
+        assert.ok(calls.indexOf('checkout') < calls.indexOf('own'))
+        assert.ok(calls.indexOf('own') < calls.indexOf('write'))
+        // Patterned on the site folder, and applied to the new environment's own tree only
+        assert.deepEqual(ownerPaths, ['/var/www/acme'])
+        assert.deepEqual(ownCalls, [{ dir: '/var/www/acme/uat1', like: { uid: 1000, gid: 1000, mode: 0o775 } }])
+    })
+
+    it('removes only its own folder and writes nothing when the tree cannot be given that ownership', async () => {
+        const { deps, calls, rmdirs } = nested()
         deps.own = async () => { throw new Error('operation not permitted') }
         const reply = await addEnvironment(project(), args(), deps)
         assert.equal(reply.ok, false)
         assert.match(reply.ok === false ? reply.message : '', /operation not permitted/)
-        assert.deepEqual(rmdirs, ['/var/www/acme-test'])
+        assert.deepEqual(rmdirs, ['/var/www/acme/uat1'])
         assert.equal(calls.includes('write'), false)
     })
 
-    // The same rule the deploy's carry follows, and for the same reason: listEnvFiles lists an .example
-    // on purpose, envWriteProblem refuses to write one, and the clone has already put the repo's own
-    // committed copy in the test folder. Copying it over is both refused and pointless, and here the
-    // refusal surfaces as a file reported to the operator as one that could not be copied.
-    it('leaves an .example to the clone, rather than reporting one it was never going to copy', async () => {
-        const { deps, envFs, envFsFiles } = setup({
-            envTree: { '/var/www/acme/.env': 'A=1\n', '/var/www/acme/.env.example': 'A=\n' },
+    // listEnvFiles lists an .example on purpose, envWriteProblem refuses to write one, and the checkout
+    // has already put the repo's own committed copy in place.
+    it('leaves an .example to the checkout, rather than reporting one it was never going to copy', async () => {
+        const { deps, envFs, envFsFiles } = nested({
+            envTree: { '/var/www/acme/live/.env': 'A=1\n', '/var/www/acme/live/.env.example': 'A=\n' },
         })
         const reply = await addEnvironment(project(), args(), deps, envFs)
         assert.equal(reply.ok, true)
-        assert.equal(envFsFiles.get('/var/www/acme-test/.env'), 'A=1\n')
-        assert.equal(envFsFiles.has('/var/www/acme-test/.env.example'), false)
-        assert.equal(JSON.stringify(reply).includes('could not be copied'), false, JSON.stringify(reply))
+        assert.equal(envFsFiles.get('/var/www/acme/uat1/.env'), 'A=1\n')
+        assert.equal(envFsFiles.has('/var/www/acme/uat1/.env.example'), false)
     })
 
-    it('copies live env files into a new test environment, pointing the site URL and database at test', async () => {
-        const { deps, envFs, envFsFiles } = setup({
+    it('points only the site URL and database at the new environment, leaving values that merely contain the id', async () => {
+        const { deps, envFs, envFsFiles } = nested({
             envTree: {
-                '/var/www/acme/.env': [
+                '/var/www/acme/live/.env': [
                     'SITE_URL=https://acme.com',
                     'DATABASE_URL=postgres://user:pw@db:5432/acme',
                     // None of these name a database, and none of them may be touched even though every
@@ -738,11 +919,9 @@ describe('addEnvironment', () => {
         const reply = await addEnvironment(project(), args(), deps, envFs)
         assert.equal(reply.ok, true)
         assert.ok(reply.ok && 'envFiles' in reply && reply.envFiles.some(file => file.path === '.env'))
-
-        const copied = envFsFiles.get('/var/www/acme-test/.env')
-        assert.equal(copied, [
-            'SITE_URL=https://test.acme.com',
-            'DATABASE_URL=postgres://user:pw@db:5432/acme-test',
+        assert.equal(envFsFiles.get('/var/www/acme/uat1/.env'), [
+            'SITE_URL=https://uat1.acme.com',
+            'DATABASE_URL=postgres://user:pw@db:5432/acme-uat1',
             'S3_BUCKET=acme-assets',
             'GITHUB_REPO=ItsKodas/acme',
             'SMTP_USER=noreply@acme.com',
@@ -752,127 +931,42 @@ describe('addEnvironment', () => {
     })
 
     it('refuses and rolls back when an env file fails to copy, naming it in the refusal', async () => {
-        const { deps, rmdirs, envFs } = setup({ envTree: { '/var/www/acme/.env': 'A=1' } })
+        const { deps, rmdirs, envFs } = nested({ envTree: { '/var/www/acme/live/.env': 'A=1' } })
         const flakyEnvFs: EnvFs = { ...envFs, writeFile: async () => { throw new Error('disk full') } }
         const reply = await addEnvironment(project(), args(), deps, flakyEnvFs)
         assert.equal(reply.ok, false)
         assert.equal(reply.ok === false && reply.code, 'failed')
         assert.match(reply.ok === false ? reply.message : '', /\.env/)
-        assert.deepEqual(rmdirs, ['/var/www/acme-test'])
+        assert.deepEqual(rmdirs, ['/var/www/acme/uat1'])
     })
 
-    it('removes the folder and writes nothing when the clone fails', async () => {
-        const { deps, rmdirs, calls } = setup({ cloneResult: { ok: false, code: 'failed', message: 'git clone failed: authentication required' } })
-        const reply = await addEnvironment(project(), args(), deps)
-        assert.deepEqual(reply, { ok: false, code: 'failed', message: 'git clone failed: authentication required' })
-        assert.deepEqual(rmdirs, ['/var/www/acme-test'])
-        assert.equal(calls.includes('write'), false)
-    })
-
-    it('removes the folder and writes nothing when the compose file has no site service', async () => {
-        const { deps, rmdirs, calls } = setup({ resolveResult: { ok: true, services: {}, published: [] } })
+    it('removes its folder and writes nothing when the compose file has no services', async () => {
+        const { deps, rmdirs, calls } = nested({ resolveResult: { ok: true, services: {}, published: [] } })
         const reply = await addEnvironment(project(), args(), deps)
         assert.equal(reply.ok, false)
         assert.equal(reply.ok === false && reply.code, 'invalid-project')
-        assert.deepEqual(rmdirs, ['/var/www/acme-test'])
+        assert.deepEqual(rmdirs, ['/var/www/acme/uat1'])
         assert.equal(calls.includes('write'), false)
     })
 
-    it('removes the folder and writes nothing when the registry write fails for an unrelated reason', async () => {
-        const { deps, rmdirs } = setup()
+    it('removes its folder when the registry write fails for an unrelated reason', async () => {
+        const { deps, rmdirs } = nested()
         const otherFailure = { write: async () => ({ ok: false, problem: 'the registry could not be written: disk full' }) } as unknown as RegistryWriter
         const reply = await addEnvironment(project(), args(), { ...deps, writer: otherFailure })
         assert.equal(reply.ok, false)
-        assert.deepEqual(rmdirs, ['/var/www/acme-test'])
+        assert.deepEqual(rmdirs, ['/var/www/acme/uat1'])
     })
 
-    it('does not remove its folder when the write fails with a structural conflict', async () => {
-        const { deps, rmdirs } = setup()
-        const conflictingWriter = { write: async () => ({ ok: false, problem: 'acme already has a test environment', conflict: true as const }) } as unknown as RegistryWriter
-        const reply = await addEnvironment(project(), args(), { ...deps, writer: conflictingWriter })
-        assert.deepEqual(reply, { ok: false, code: 'failed', message: 'acme already has a test environment' })
-        assert.deepEqual(rmdirs, [])
-    })
-
-    // The end-to-end version: a real RegistryWriter (backed by the in-memory fs fake) refusing a genuine
-    // conflict, rather than a fake writer asserting the shape we expect it to produce.
+    // A real RegistryWriter refusing a genuine conflict: a winner added uat1 between this call's
+    // pre-checks and its own write, so the folder may be the winner's and is left alone.
     it('does not roll back when a real RegistryWriter meets a genuine conflict at write time', async () => {
-        const withTest = REGISTRY_YAML.replace(
-            '      live:\n        dir: /var/www/acme\n        branch: main\n        domain: acme.com\n        port: 5010\n        certificate: letsencrypt\n',
-            '      live:\n        dir: /var/www/acme\n        branch: main\n        domain: acme.com\n        port: 5010\n        certificate: letsencrypt\n'
-            + '      test:\n        dir: /var/www/acme-test\n        branch: develop\n        domain: someone-else.acme.com\n        port: 5099\n',
-        )
-        const { deps, rmdirs, registryFiles } = setup()
-        // Simulate a winner having added the test environment between this call's own pre-checks (which
-        // already read the registry() snapshot, taken before this) and its own write.
-        registryFiles.set(REGISTRY_PATH, withTest)
+        const { deps, rmdirs, registryFiles } = nested()
+        registryFiles.set(REGISTRY_PATH, `${NESTED_LIVE_YAML}      uat1:\n        dir: /var/www/acme/uat1\n        branch: develop\n        port: 5099\n`)
         const reply = await addEnvironment(project(), args(), deps)
         assert.equal(reply.ok, false)
         assert.equal(reply.ok === false && reply.code, 'failed')
-        assert.match(reply.ok === false ? reply.message : '', /acme already has a test environment/)
+        assert.match(reply.ok === false ? reply.message : '', /acme already has a uat1 environment/)
         assert.deepEqual(rmdirs, [])
-    })
-
-    it('rolls back when the fetcher throws instead of returning a failure', async () => {
-        const { deps, rmdirs } = setup()
-        const throwingFetcher: ProvisionDeps['fetcher'] = { call: async () => { throw new Error('the fetcher connection failed: socket reset') } }
-        const reply = await addEnvironment(project(), args(), { ...deps, fetcher: throwingFetcher })
-        assert.equal(reply.ok, false)
-        assert.equal(reply.ok === false && reply.code, 'failed')
-        assert.deepEqual(rmdirs, ['/var/www/acme-test'])
-    })
-
-    it('refreshes the registry before checking the domain, not only inside choosePort', async () => {
-        const { deps } = setup()
-        const claimed = parseRegistry(`${REGISTRY_YAML}  widget:
-    client: cl_9
-    name: Widget
-    repo: git@github.com:ItsKodas/widget.git
-    services: { web: { role: site } }
-    environments:
-      live: { dir: /var/www/widget, branch: main, domain: test.acme.com, port: 5099 }
-`)
-        let registry = parseRegistry(REGISTRY_YAML)
-        const reply = await addEnvironment(project(), args(), {
-            ...deps,
-            registry: () => registry,
-            refreshRegistry: async () => { registry = claimed },
-        })
-        assert.equal(reply.ok, false)
-        assert.equal(reply.ok === false && reply.code, 'bad-request')
-        assert.match(reply.ok === false ? reply.message : '', /test\.acme\.com is already used by another project/)
-    })
-
-    it('refuses provisioning entirely while the registry has any invalid entry, naming it', async () => {
-        const yaml = `${REGISTRY_YAML}  broken:\n    client: cl_9\n`
-        const { deps, calls } = setup({ registryYaml: yaml })
-        const reply = await addEnvironment(project(yaml), args(), deps)
-        assert.equal(reply.ok, false)
-        assert.equal(reply.ok === false && reply.code, 'unavailable')
-        assert.match(reply.ok === false ? reply.message : '', /broken/)
-        // exists() already ran (addEnvironment checks the folder before refreshing the registry), but
-        // choosePort never does: the refusal lands before it.
-        assert.deepEqual(calls, ['exists'])
-    })
-
-    it('refuses a second test environment', async () => {
-        const yaml = `
-projects:
-  acme:
-    client: cl_1
-    name: Acme
-    repo: git@github.com:ItsKodas/acme.git
-    services: { web: { role: site } }
-    capabilities: [provision, env]
-    environments:
-      live: { dir: /var/www/acme, branch: main, domain: acme.com, port: 5010, certificate: letsencrypt }
-      test: { dir: /var/www/acme-test, branch: develop, domain: test.acme.com, port: 5110, certificate: letsencrypt }
-`
-        const { deps, calls } = setup({ registryYaml: yaml })
-        const reply = await addEnvironment(project(yaml), args(), deps)
-        assert.equal(reply.ok, false)
-        assert.equal(reply.ok === false && reply.code, 'bad-request')
-        assert.deepEqual(calls, [])
     })
 })
 
@@ -949,7 +1043,7 @@ describe('nested sites', () => {
         ])
         assert.deepEqual(steps, ['fetch /var/www/acme/git', 'tip /var/www/acme/git', 'checkout /var/www/acme/test'])
         assert.deepEqual(resolveCalls, [{
-            expectedName: 'acme-test', dir: '/var/www/acme/test', composePaths: ['/var/www/acme/test/docker-compose.yml'], collidesWith: 'acme',
+            expectedName: 'acme-test', dir: '/var/www/acme/test', composePaths: ['/var/www/acme/test/docker-compose.yml', '/var/www/acme/test/hostd.ports.yml'], collidesWith: 'acme',
         }])
         // Patterned on the site folder both environments live in, and applied to test's own tree only.
         assert.deepEqual(ownerPaths, ['/var/www/acme'])
@@ -1056,7 +1150,7 @@ describe('removeProject', () => {
     // call would run.
     it('stops the project before unregistering it, and deletes no files', async () => {
         const { deps, rmdirs, registryFiles, runnerCalls } = setup()
-        const reply = await removeProject(project(), null, deps)
+        const reply = await removeProject(project(), deps)
         assert.equal(reply.ok, true)
         assert.ok(reply.ok && 'output' in reply && reply.output.includes('/var/www/acme'))
         assert.ok(reply.ok && 'output' in reply && reply.output.includes('stopped'))
@@ -1072,45 +1166,11 @@ describe('removeProject', () => {
     // project by hand and then remove it.
     it('refuses and leaves the registry untouched when the stop fails', async () => {
         const { deps, registryFiles, runnerCalls } = setup({ runnerResult: { exitCode: 1, stderr: 'no such image' } })
-        const reply = await removeProject(project(), null, deps)
+        const reply = await removeProject(project(), deps)
         assert.equal(reply.ok, false)
         assert.equal(reply.ok === false && reply.code, 'failed')
         assert.match(reply.ok === false ? reply.message : '', /could not stop acme/)
         assert.equal(runnerCalls.length, 1)
-        assert.equal(parseRegistry(registryFiles.get(REGISTRY_PATH)!).projects.has('acme'), true)
-    })
-
-    // Removing only the test environment must never run a stop through this path: runLifecycle's argv is
-    // always built from the project's own (live) dir and compose path, so asking it to stop here would
-    // stop live's containers while claiming to remove test, exactly the mistake there is no per-environment
-    // lifecycle yet to safely avoid (see RUNBOOK.md).
-    it('does not attempt to stop anything when only the test environment is removed', async () => {
-        const yaml = `
-projects:
-  acme:
-    client: cl_1
-    name: Acme
-    repo: git@github.com:ItsKodas/acme.git
-    services: { web: { role: site } }
-    capabilities: [provision, env]
-    environments:
-      live: { dir: /var/www/acme, branch: main, domain: acme.com, port: 5010, certificate: letsencrypt }
-      test: { dir: /var/www/acme-test, branch: develop, domain: test.acme.com, port: 5110, certificate: letsencrypt }
-`
-        const { deps, runnerCalls, registryFiles } = setup({ registryYaml: yaml })
-        const reply = await removeProject(parseRegistry(yaml).projects.get('acme')!, 'test', deps)
-        assert.equal(reply.ok, true)
-        assert.deepEqual(runnerCalls, [])
-        assert.equal(parseRegistry(registryFiles.get(REGISTRY_PATH)!).projects.get('acme')!.environments.has('test'), false)
-    })
-
-    it('refuses to remove the live environment on its own', async () => {
-        const { deps, rmdirs, registryFiles, runnerCalls } = setup()
-        const reply = await removeProject(project(), 'live', deps)
-        assert.equal(reply.ok, false)
-        assert.equal(reply.ok === false && reply.message.includes('live environment cannot be removed on its own'), true)
-        assert.deepEqual(rmdirs, [])
-        assert.deepEqual(runnerCalls, [])
         assert.equal(parseRegistry(registryFiles.get(REGISTRY_PATH)!).projects.has('acme'), true)
     })
 
@@ -1136,9 +1196,9 @@ describe('secrecy', () => {
         assert.ok(createLogs.length > 0)
         assert.ok(createLogs.every(line => !line.includes('ghp_SECRETTOKEN')))
 
-        const acme = parseRegistry(REGISTRY_YAML).projects.get('acme')!
+        const acme = parseRegistry(NESTED_LIVE_YAML).projects.get('acme')!
         const secret = 'DB_PASSWORD=super-secret-value'
-        const { deps, logs, envFs } = setup({ envTree: { '/var/www/acme/.env': secret } })
+        const { deps, logs, envFs } = setup({ registryYaml: NESTED_LIVE_YAML, existsPaths: ['/var/www/acme/git/.git'], envTree: { '/var/www/acme/live/.env': secret } })
         const args: ProvisionAddEnvironmentArgs = { action: 'add-environment', environment: 'test', branch: 'develop', domain: 'test.acme.com', certificate: 'letsencrypt' }
         await addEnvironment(acme, args, deps, envFs)
         assert.ok(logs.length > 0)

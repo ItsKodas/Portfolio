@@ -136,6 +136,9 @@
 
 .said { margin-bottom: 16px; }
 
+/* Which environment the Deploys, Domains and Environment tabs are about. Narrow: it holds a short name. */
+.envSwitcher { max-width: 220px; margin-bottom: 16px; }
+
 /* The env file list. Links rather than buttons, because which file is open is part of the URL: it
    reloads, it is shareable, and it keeps this panel a server component. */
 .files {
@@ -171,6 +174,14 @@
 }
 
 .save { margin-top: 12px; display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+
+/* The Settings tab's environments: set apart from the registry form above by a rule, the same way the
+   delete section below is set apart from it. */
+.environments { margin-top: 32px; padding-top: 4px; border-top: 1px solid var(--rule); }
+
+/* Name, branch and hostname on one line where there is room, each as wide as what it holds */
+.addEnvironment { display: flex; flex-wrap: wrap; align-items: flex-start; gap: 12px; }
+.addEnvironment > * { flex: 1 1 180px; max-width: 280px; }
 
 /* Set apart from Save by a rule and some room: it is the one thing on the tab that cannot be undone here. */
 .deleteSite {
@@ -243,6 +254,9 @@
     margin-bottom: 4px;
 }
 .addDomain > :first-child { flex: 1 1 260px; max-width: 360px; }
+/* The environment a new hostname goes to, beside it. Declared after the rule above so it wins when it is
+   the first child: it holds a short name, not a hostname. */
+.addDomain > .addTarget { flex: 0 0 180px; }
 
 /* Nudged down so the button meets the input, not the label above it */
 .addAction { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; padding-top: 21px; }

@@ -6,6 +6,7 @@ import { DeployStore, type DeployStateFs } from './deploy-state.ts'
 import { parseRegistry, type EnvironmentEntry, type ProjectEntry } from '../shared/registry.ts'
 import type { DeployRequest } from './deploy.ts'
 import type { DeployRecord } from '../shared/deploys.ts'
+import { DeployRunner, type DeployRunnerDeps } from './deploy-runner.ts'
 
 const TIP = '3f7c1a2b5d9e0f1a2b3c4d5e6f7a8b9c0d1e2f3a'
 const OTHER = 'f00dcafedeadbeef0000111122223333444455556'
@@ -155,5 +156,84 @@ describe('DeployPoller', () => {
         const keys = await context.poller.tick()
         assert.deepEqual(keys, [])
         assert.ok(context.logs.some(line => line.includes('did not answer')))
+    })
+})
+
+describe('a poll during a delete or restore', () => {
+    it('starts no deploy of an environment the agent has blocked', async () => {
+        const registry = parseRegistry(REGISTRY_YAML)
+        const store = new DeployStore('/var/lib/hostd/deploys.json', memoryFs())
+        const deployed: string[] = []
+        const runner = new DeployRunner(
+            { store, registry: () => registry, log: () => {}, now: () => 0 } as unknown as DeployRunnerDeps,
+            async (project, environment, request) => {
+                deployed.push(`${project.id}:${environment.name}`)
+                return { ...failure(), outcome: 'ok', trigger: request.trigger }
+            },
+        )
+        const logs: string[] = []
+        const poller = new DeployPoller({
+            registry: () => registry, store, runner,
+            tip: async () => ({ ok: true as const, commit: OTHER }),
+            now: () => 0,
+            log: message => logs.push(message),
+        })
+        const unblock = runner.block('acme:live')
+        const started = await poller.tick()
+        await runner.settle()
+        unblock()
+        assert.ok(!started.includes('acme:live'))
+        assert.ok(!deployed.includes('acme:live'))
+        assert.ok(logs.some(line => line.includes('acme:live') && line.includes('being deleted or restored')))
+    })
+})
+
+describe('an environment deleted while its tip is being read', () => {
+    const WITHOUT_TEST = REGISTRY_YAML.replace(/      test:\n(        .*\n)+/, '')
+
+    function racing(after: string) {
+        let current = parseRegistry(REGISTRY_YAML)
+        const store = new DeployStore('/var/lib/hostd/deploys.json', memoryFs())
+        const started: string[] = []
+        const logs: string[] = []
+        const poller = new DeployPoller({
+            registry: () => current,
+            store,
+            runner: {
+                isRunning: () => false,
+                start: (project: ProjectEntry, environment: EnvironmentEntry) => {
+                    started.push(`${project.id}:${environment.name}`)
+                    return { ok: true as const, started: { environment: environment.name, trigger: 'poll' as const } }
+                },
+            },
+            tip: async (_project, environment) => {
+                // The delete finishes while the fetcher is answering, so the registry the tick read is stale
+                if (environment.name === 'test') current = parseRegistry(after)
+                return { ok: true as const, commit: OTHER }
+            },
+            now: () => 0,
+            log: message => logs.push(message),
+        })
+        return { poller, started, logs }
+    }
+
+    it('is not deployed', async () => {
+        const context = racing(WITHOUT_TEST)
+        const keys = await context.poller.tick()
+        assert.ok(!keys.includes('acme:test'))
+        assert.ok(!context.started.includes('acme:test'))
+        assert.ok(context.logs.some(line => line.includes('acme:test') && line.includes('no longer')))
+    })
+
+    it('is not deployed when its dir changed meanwhile', async () => {
+        const context = racing(REGISTRY_YAML.replace('/var/www/acme-test', '/var/www/acme-other'))
+        await context.poller.tick()
+        assert.ok(!context.started.includes('acme:test'))
+    })
+
+    it('still deploys the environments that remain', async () => {
+        const context = racing(WITHOUT_TEST)
+        await context.poller.tick()
+        assert.ok(context.started.includes('acme:live'))
     })
 })

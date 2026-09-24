@@ -8,6 +8,7 @@ import type { EnvFs } from './env-files.ts'
 import type { Runner, RunResult } from './compose.ts'
 import type { ContainerInspect, ContainerSummary, DockerApi } from './docker.ts'
 import type { FetchReply, FetchRequest } from '../shared/fetch-protocol.ts'
+import type { PortOverrideResult } from './port-override.ts'
 
 const REGISTRY_PATH = '/etc/hostd/registry/projects.yaml'
 const TIP = '3f7c1a2b5d9e0f1a2b3c4d5e6f7a8b9c0d1e2f3a'
@@ -46,6 +47,26 @@ projects:
       live:
         dir: /var/www/acme
         compose: [ docker-compose.yml, docker-compose.override.yml ]
+        branch: main
+        domain: acme.com
+        port: 5010
+        deployed: abc1234
+`
+
+// A site hostd created: its compose list ends with the override hostd writes, which the repo never has
+const REGISTRY_YAML_PORTS = `
+projects:
+  acme:
+    client: cl_1
+    name: Acme
+    repo: git@github.com:ItsKodas/acme.git
+    services:
+      web: { role: site }
+    capabilities: [deploy, env]
+    environments:
+      live:
+        dir: /var/www/acme
+        compose: [ docker-compose.yml, hostd.ports.yml ]
         branch: main
         domain: acme.com
         port: 5010
@@ -102,6 +123,7 @@ type SetupOptions = {
     // What Docker reports once the previous copy is back in place, so a rollback can be watched all the
     // way to the end. Defaults to a healthy container, which is the case a rollback exists for.
     afterRollback?: { state: string, health?: string }
+    overrideResult?: PortOverrideResult
 }
 
 // Every dependency is a plain recorder, the same style provision.test.ts uses: a factory that hands back
@@ -187,7 +209,15 @@ function setup(options: SetupOptions = {}) {
         },
         // A folder holds something when any path the fake knows of is inside it.
         holdsData: async path => [...exists].some(known => known.startsWith(`${path}/`)),
-        copyFile: async (from, to) => { calls.push(`copy ${from} ${to}`); if (copyFails) throw new Error('read-only file system'); exists.add(to) },
+        copyFile: async (from, to) => {
+            calls.push(`copy ${from} ${to}`)
+            if (copyFails) throw new Error('read-only file system')
+            // hostd.ports.yml is the one compose file this fake ever models as absent from the running
+            // tree: real copyFile throws ENOENT on a missing source, and carryComposeFiles is meant to
+            // skip this particular name rather than ever attempt the copy in the first place.
+            if (from.endsWith('hostd.ports.yml') && !exists.has(from)) throw new Error(`ENOENT: no such file, open '${from}'`)
+            exists.add(to)
+        },
         move: async (from, to) => {
             calls.push(`move ${from} ${to}`)
             if (from.endsWith('.prev') || from.includes('/prev/')) rolledBack = true
@@ -258,6 +288,10 @@ function setup(options: SetupOptions = {}) {
         runner,
         fs,
         envFs,
+        portOverride: async (location, portEnv) => {
+            calls.push(`override ${location.dir} ${portEnv}`)
+            return options.overrideResult ?? { ok: true, composePaths: location.composePaths, service: 'web', target: 3000 }
+        },
         // A clock that only moves when something waits, so the health check's 60 second budget is spent
         // instantly here and the suite never sleeps for real.
         now: () => clock,
@@ -428,6 +462,48 @@ describe('runDeploy, before the swap', () => {
         })
         await runDeploy(context.project(), context.environment(), { ...request, commit: TIP }, context.deps)
         assert.equal(context.calls.some(call => call.startsWith('copy ')), false, context.calls.join(', '))
+    })
+
+    // Rebuilt rather than carried, so a commit that adds a service publishing a host port, or moves the
+    // site's container port, is covered at this deploy and not only at the next port change
+    it('rebuilds hostd.ports.yml in the new tree before it is owned and built', async () => {
+        const context = setup({ registryYaml: REGISTRY_YAML_PORTS, existsPaths: ['/var/www/acme/.git', '/var/www/acme/docker-compose.yml', '/var/www/acme.next/docker-compose.yml'] })
+        const record = await runDeploy(context.project(), context.environment(), { ...request, commit: TIP }, context.deps)
+        assert.equal(record.outcome, 'ok', record.reason ?? '')
+        const override = context.calls.indexOf('override /var/www/acme.next WEB_PORT')
+        assert.ok(override !== -1, context.calls.join(', '))
+        assert.ok(override < context.calls.findIndex(call => call.startsWith('own /var/www/acme.next')), context.calls.join(', '))
+    })
+
+    // hostd.ports.yml need not exist in the running tree at all: a site provisioned before this feature
+    // existed, or one whose override was removed by hand, has none. The rebuild step above recreates it
+    // from the commit going out, so a missing copy in the running tree is never a reason to fail a
+    // deploy one step earlier trying to carry a file that is not there.
+    it('deploys fine when hostd.ports.yml is missing from the running tree, never copying it and still rebuilding it', async () => {
+        const context = setup({ registryYaml: REGISTRY_YAML_PORTS, existsPaths: ['/var/www/acme/.git', '/var/www/acme/docker-compose.yml', '/var/www/acme.next/docker-compose.yml'] })
+        const record = await runDeploy(context.project(), context.environment(), { ...request, commit: TIP }, context.deps)
+        assert.equal(record.outcome, 'ok', record.reason ?? '')
+        assert.equal(context.calls.some(call => call.startsWith('copy') && call.includes('hostd.ports.yml')), false, context.calls.join(', '))
+        assert.ok(context.calls.includes('override /var/www/acme.next WEB_PORT'), context.calls.join(', '))
+    })
+
+    it('fails the deploy before building when the override cannot be rebuilt', async () => {
+        const problem = 'web does not say which port it listens on; add expose: ["3000"] (the port inside the container) to it in the compose file'
+        const context = setup({
+            registryYaml: REGISTRY_YAML_PORTS, existsPaths: ['/var/www/acme/.git', '/var/www/acme/docker-compose.yml', '/var/www/acme.next/docker-compose.yml'],
+            overrideResult: { ok: false, problem },
+        })
+        const record = await runDeploy(context.project(), context.environment(), { ...request, commit: TIP }, context.deps)
+        assert.equal(record.outcome, 'failed')
+        assert.equal(record.reason, `the port could not be published: ${problem}`)
+        assert.ok(!context.calls.some(call => call.includes('build')), context.calls.join(', '))
+        assert.ok(!context.calls.includes('maintenance on'))
+    })
+
+    it('leaves an environment without hostd.ports.yml as it was', async () => {
+        const context = setup({ registryYaml: REGISTRY_YAML_OVERRIDE, existsPaths: ['/var/www/acme/.git', '/var/www/acme.next/docker-compose.yml'] })
+        await runDeploy(context.project(), context.environment(), { ...request, commit: TIP }, context.deps)
+        assert.ok(!context.calls.some(call => call.startsWith('override ')))
     })
 
     // Before the own, so a file this process wrote as root does not stay root-owned in a tree the

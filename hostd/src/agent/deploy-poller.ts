@@ -59,6 +59,14 @@ export class DeployPoller {
                     this.deps.log(`poll ${key}: could not read the branch tip: ${tip.problem}`)
                     continue
                 }
+                // The tip took a fetch, and a delete can finish meanwhile: it has already released its
+                // block on the runner by then, so the objects this tick read at the top are stale. Read
+                // the environment again and leave it alone when it is gone or has moved.
+                const current = this.deps.registry().projects.get(project.id)?.environments.get(environment.name)
+                if (!current || current.dir !== environment.dir) {
+                    this.deps.log(`poll ${key}: not deploying, the environment is no longer registered where it was`)
+                    continue
+                }
                 // The registry's `deployed` may be abbreviated (the operator can write one by hand), so
                 // it is compared as a prefix of the full hash the fetcher returns rather than for
                 // equality, which would redeploy the same commit for ever.

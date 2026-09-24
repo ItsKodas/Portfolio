@@ -9,7 +9,7 @@ import { readEnvFileIfPresent, writeEnvFile, type EnvFs } from './env-files.ts'
 
 export const PORT_ENV_FILE = '.env'
 
-// key is always an ENV_NAME (capitals, digits, underscores; see registry.ts's parsePortEnv), so it is safe
+// key is always an ENV_VAR_NAME (capitals, digits, underscores; see registry.ts's parsePortEnv), so it is safe
 // to put straight into a pattern. An `export` prefix and spaces around = are the same key to compose, and
 // a later copy of it would win over the one written here, so later copies are dropped.
 export function withEnvValue(text: string, key: string, value: string): string {

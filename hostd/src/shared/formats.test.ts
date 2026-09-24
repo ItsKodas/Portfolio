@@ -1,11 +1,39 @@
 import { describe, it } from 'node:test'
 import assert from 'node:assert/strict'
 import {
-    PROJECT_ID, CLIENT_ID, SERVICE_NAME, USER_ID, RESERVED_PROJECT_IDS,
-    isRecord, relativePathProblem, isWithin, overlaps, describeError,
+    PROJECT_ID, CLIENT_ID, SERVICE_NAME, USER_ID, RESERVED_PROJECT_IDS, ENV_NAME, ENV_VAR_NAME, RESERVED_ENVIRONMENT_NAMES,
+    isEnvironmentName, isRecord, relativePathProblem, isWithin, overlaps, describeError,
 } from './formats.ts'
 
 describe('identifier patterns', () => {
+    it('accepts any short lowercase environment name, not only live and test', () => {
+        for (const name of ['live', 'test', 'uat1', 'staging', 'a', 'a'.repeat(16)]) {
+            assert.equal(isEnvironmentName(name), true, name)
+            assert.ok(ENV_NAME.test(name), name)
+        }
+    })
+
+    it('refuses reserved, hyphenated, uppercase, overlong and non-string environment names', () => {
+        for (const name of ['git', 'next', 'prev', 'environments', 'backups', 'uat-1', 'Uat1', 'UAT', '1uat', '', 'a'.repeat(17), 'uat_1', 'uat.1', '__proto__']) {
+            assert.equal(isEnvironmentName(name), false, name)
+        }
+        for (const value of [null, undefined, 1, ['live'], { name: 'live' }]) assert.equal(isEnvironmentName(value), false)
+    })
+
+    it('reserves exactly the folders of the nested layout and the project routes read before an environment', () => {
+        assert.deepEqual([...RESERVED_ENVIRONMENT_NAMES].sort(), ['backups', 'environments', 'git', 'next', 'prev'])
+    })
+
+    it('refuses environments and backups, which /projects/:id/ routes read before an environment', () => {
+        assert.equal(isEnvironmentName('environments'), false)
+        assert.equal(isEnvironmentName('backups'), false)
+    })
+
+    it('keeps environment variable names a separate grammar', () => {
+        assert.ok(ENV_VAR_NAME.test('WEB_PORT'))
+        assert.equal(ENV_VAR_NAME.test('live'), false)
+    })
+
     it('accepts the project ids the registry uses', () => {
         assert.ok(PROJECT_ID.test('acme-bakery'))
         assert.ok(PROJECT_ID.test('a1'))

@@ -8,6 +8,13 @@ const writeSettings = vi.fn()
 const setPort = vi.fn()
 const removeProject = vi.fn()
 const deleteSites = vi.fn()
+const listEnvironments = vi.fn()
+const startDeploy = vi.fn()
+const writeEnvFile = vi.fn()
+const addDomain = vi.fn()
+const addEnvironment = vi.fn()
+const deleteEnvironment = vi.fn()
+const restoreEnvironment = vi.fn()
 
 vi.mock('next/cache', () => ({ revalidatePath: () => {} }))
 vi.mock('@/server/db', () => ({ getDb: () => ({ site: { deleteMany: (...args: unknown[]) => deleteSites(...args) } }) }))
@@ -16,8 +23,42 @@ vi.mock('@/server/hostd/config', () => ({ readHostd: () => ({ url: 'http://hostd
 vi.mock('@/server/hostd/session', () => ({ callerFromSession: () => callerFromSession() }))
 vi.mock('@/server/hostd/settings', () => ({ writeSettings: (...args: unknown[]) => writeSettings(...args) }))
 vi.mock('@/server/hostd/ports', () => ({ setPort: (...args: unknown[]) => setPort(...args) }))
+vi.mock('@/server/hostd/projects', () => ({
+    assertOwned: async () => true,
+    lifecycle: vi.fn(),
+    listEnvironments: (...args: unknown[]) => listEnvironments(...args),
+}))
+vi.mock('@/server/hostd/deploys', () => ({
+    startDeploy: (...args: unknown[]) => startDeploy(...args),
+    rollback: vi.fn(),
+    setBranch: vi.fn(),
+}))
+vi.mock('@/server/hostd/env', async importOriginal => ({
+    ...(await importOriginal<typeof import('@/server/hostd/env')>()),
+    writeEnvFile: (...args: unknown[]) => writeEnvFile(...args),
+}))
+vi.mock('@/server/hostd/domains', () => ({
+    addDomain: (...args: unknown[]) => addDomain(...args),
+    adoptSite: vi.fn(),
+    previewAdopt: vi.fn(),
+    removeDomain: vi.fn(),
+    verifyDomain: vi.fn(),
+}))
 
-const { changePrimaryDomainAction, deleteSiteAction, saveSettingsAction, setPortAction, setPrimaryDomainAction } = await import('./actions')
+vi.mock('@/server/hostd/environments', () => ({
+    addEnvironment: (...args: unknown[]) => addEnvironment(...args),
+    deleteEnvironment: (...args: unknown[]) => deleteEnvironment(...args),
+    restoreEnvironment: (...args: unknown[]) => restoreEnvironment(...args),
+}))
+
+const {
+    addDomainAction, addEnvironmentAction, deleteEnvironmentAction, restoreEnvironmentAction, changePrimaryDomainAction, deleteSiteAction, deployAction, saveEnvAction, saveSettingsAction,
+    setPortAction, setPrimaryDomainAction,
+} = await import('./actions')
+
+const ADMIN = { caller: { actor: 'admin', user: 'koda@horizons.gg' }, clientId: null }
+const CLIENT = { caller: { actor: 'client:cl_1', user: 'cl_1' }, clientId: 'cl_1' }
+const env = (name: string) => ({ name, branch: null, domain: null, certificate: null, deployed: null })
 
 const CANNOT = { ok: false, error: 'That is not something this page can do.' }
 
@@ -26,6 +67,81 @@ beforeEach(() => {
     // No session, which is the first thing past the shape check: a well-formed object gets this answer
     // and a malformed one never gets that far.
     callerFromSession.mockResolvedValue(null)
+    listEnvironments.mockResolvedValue({ ok: true, value: [env('live')] })
+})
+
+// An environment is any valid name now, so which ones exist is the site's own list, read from hostd,
+// rather than a fixed pair written here.
+describe('an action naming an environment', () => {
+    it('accepts uat1 when the site has it', async () => {
+        callerFromSession.mockResolvedValue(ADMIN)
+        listEnvironments.mockResolvedValue({ ok: true, value: [env('live'), env('uat1')] })
+        startDeploy.mockResolvedValue({ ok: true, value: { environment: 'uat1', trigger: 'manual' } })
+
+        expect((await deployAction('acme', 'uat1')).ok).toBe(true)
+        expect(listEnvironments).toHaveBeenCalledWith(expect.anything(), ADMIN.caller, 'acme')
+        expect(startDeploy).toHaveBeenCalledWith(expect.anything(), expect.anything(), 'acme', 'uat1')
+    })
+
+    it('refuses a well formed name the site does not have, without asking hostd to act', async () => {
+        callerFromSession.mockResolvedValue(ADMIN)
+
+        expect(await deployAction('acme', 'uat1')).toEqual({ ok: false, error: 'This site has no uat1 environment.' })
+        expect(startDeploy).not.toHaveBeenCalled()
+    })
+
+    it('refuses a name that could never be one, before the session is read', async () => {
+        for (const name of ['uat-1', 'next', 'Live', '', 5]) {
+            expect(await deployAction('acme', name as never)).toEqual(CANNOT)
+        }
+        expect(callerFromSession).not.toHaveBeenCalled()
+    })
+
+    it('says so when the list itself could not be read', async () => {
+        callerFromSession.mockResolvedValue(ADMIN)
+        listEnvironments.mockResolvedValue({ ok: false, code: 'unavailable', message: 'hostd is not answering' })
+
+        const result = await deployAction('acme', 'live')
+
+        expect(result.ok).toBe(false)
+        expect(startDeploy).not.toHaveBeenCalled()
+    })
+})
+
+describe('saveEnvAction', () => {
+    it('writes to the environment it was given, not always live', async () => {
+        callerFromSession.mockResolvedValue(ADMIN)
+        listEnvironments.mockResolvedValue({ ok: true, value: [env('live'), env('uat1')] })
+        writeEnvFile.mockResolvedValue({ ok: true, value: { output: 'written' } })
+
+        expect((await saveEnvAction('acme', 'uat1', '.env', 'A=1')).ok).toBe(true)
+        expect(writeEnvFile).toHaveBeenCalledWith(expect.anything(), expect.anything(), 'acme', 'uat1', '.env', 'A=1')
+    })
+
+    it('refuses an environment the site does not have', async () => {
+        callerFromSession.mockResolvedValue(ADMIN)
+
+        expect(await saveEnvAction('acme', 'uat1', '.env', 'A=1')).toEqual({ ok: false, error: 'This site has no uat1 environment.' })
+        expect(writeEnvFile).not.toHaveBeenCalled()
+    })
+
+    it('refuses a client outright', async () => {
+        callerFromSession.mockResolvedValue({ caller: { kind: 'client' }, clientId: 'cl_1' })
+
+        expect(await saveEnvAction('acme', 'live', '.env', 'A=1')).toEqual({ ok: false, error: 'This is not set up yet.' })
+        expect(writeEnvFile).not.toHaveBeenCalled()
+    })
+})
+
+describe('addDomainAction', () => {
+    it('adds the hostname to the environment chosen, which need not be the one being viewed', async () => {
+        callerFromSession.mockResolvedValue(ADMIN)
+        listEnvironments.mockResolvedValue({ ok: true, value: [env('live'), env('uat1')] })
+        addDomain.mockResolvedValue({ ok: true, value: { ok: true } })
+
+        expect((await addDomainAction('acme', 'uat1', ' UAT.acme.com ')).ok).toBe(true)
+        expect(addDomain).toHaveBeenCalledWith(expect.anything(), expect.anything(), 'acme', 'uat1', 'uat.acme.com')
+    })
 })
 
 describe('saveSettingsAction', () => {
@@ -86,7 +202,7 @@ describe('setPortAction', () => {
     })
 
     it('refuses an environment or a port the page could not have sent, before the session is read', async () => {
-        expect(await setPortAction('acme', 'staging', 5013)).toEqual(CANNOT)
+        expect(await setPortAction('acme', 'uat-1', 5013)).toEqual(CANNOT)
         expect(await setPortAction('acme', 'live', 5013.5 as never)).toEqual(CANNOT)
         expect(await setPortAction('acme', 'live', '5013' as never)).toEqual(CANNOT)
         expect(callerFromSession).not.toHaveBeenCalled()
@@ -106,7 +222,7 @@ describe('setPortAction', () => {
 
 describe('setPrimaryDomainAction', () => {
     it('refuses an environment or a hostname the page could not have sent, before the session is read', async () => {
-        expect(await setPrimaryDomainAction('acme', 'staging', 'acme.com')).toEqual(CANNOT)
+        expect(await setPrimaryDomainAction('acme', 'uat-1', 'acme.com')).toEqual(CANNOT)
         expect(await setPrimaryDomainAction('acme', 'live', 5 as never)).toEqual(CANNOT)
         expect(callerFromSession).not.toHaveBeenCalled()
         expect(writeSettings).not.toHaveBeenCalled()
@@ -152,7 +268,7 @@ describe('setPrimaryDomainAction', () => {
 // disabled button proves nothing about what actually arrived.
 describe('changePrimaryDomainAction', () => {
     it('refuses an environment, a hostname or a confirmation the page could not have sent', async () => {
-        expect(await changePrimaryDomainAction('acme', 'staging', 'acme.com', 'acme.com')).toEqual(CANNOT)
+        expect(await changePrimaryDomainAction('acme', 'uat-1', 'acme.com', 'acme.com')).toEqual(CANNOT)
         expect(await changePrimaryDomainAction('acme', 'live', 5 as never, 'acme.com')).toEqual(CANNOT)
         expect(await changePrimaryDomainAction('acme', 'live', 'acme.com', 5 as never)).toEqual(CANNOT)
         expect(callerFromSession).not.toHaveBeenCalled()
@@ -228,5 +344,189 @@ describe('deleteSiteAction', () => {
 
         expect(result.ok).toBe(true)
         expect(result.ok && result.message).toMatch(/still linked/)
+    })
+})
+
+describe('addEnvironmentAction', () => {
+    it('sends the name, the branch and a trimmed, lowercased hostname', async () => {
+        callerFromSession.mockResolvedValue(ADMIN)
+        addEnvironment.mockResolvedValue({ ok: true, value: {} })
+
+        const result = await addEnvironmentAction('acme', 'uat1', 'uat', '  UAT.acme.com ')
+
+        expect(result).toEqual({ ok: true, message: 'uat1 is added. Its first deploy starts it.' })
+        expect(addEnvironment).toHaveBeenCalledWith(expect.anything(), ADMIN.caller, 'acme', { name: 'uat1', branch: 'uat', domain: 'uat.acme.com' })
+    })
+
+    it('sends a blank hostname as none', async () => {
+        callerFromSession.mockResolvedValue(ADMIN)
+        addEnvironment.mockResolvedValue({ ok: true, value: {} })
+
+        await addEnvironmentAction('acme', 'uat1', 'uat', '  ')
+
+        expect(addEnvironment).toHaveBeenCalledWith(expect.anything(), expect.anything(), 'acme', { name: 'uat1', branch: 'uat', domain: null })
+    })
+
+    it('says the environment exists when only its address could not be set up', async () => {
+        callerFromSession.mockResolvedValue(ADMIN)
+        addEnvironment.mockResolvedValue({ ok: true, value: { vhost: { ok: false, message: 'Apache refused it' } } })
+
+        const result = await addEnvironmentAction('acme', 'uat1', 'uat', 'uat.acme.com')
+
+        expect(result.ok).toBe(true)
+        expect(result.ok && result.message).toMatch(/uat1 is added.*Apache refused it.*Domains tab/)
+    })
+
+    it('refuses live, a reserved name or a hyphen with the reason, before the session is read', async () => {
+        expect(await addEnvironmentAction('acme', 'live', 'uat', null)).toEqual({ ok: false, error: 'Every site has live already.' })
+        expect(await addEnvironmentAction('acme', 'next', 'uat', null)).toEqual({ ok: false, error: 'next is reserved. Choose another name.' })
+        expect((await addEnvironmentAction('acme', 'uat-1', 'uat', null)).ok).toBe(false)
+        expect(await addEnvironmentAction('acme', 'uat1', '', null)).toEqual(CANNOT)
+        expect(await addEnvironmentAction('acme', 'uat1', 'uat', 5 as never)).toEqual(CANNOT)
+        expect(callerFromSession).not.toHaveBeenCalled()
+    })
+
+    it('refuses a client outright', async () => {
+        callerFromSession.mockResolvedValue(CLIENT)
+
+        expect(await addEnvironmentAction('acme', 'uat1', 'uat', null)).toEqual({ ok: false, error: 'This is not set up yet.' })
+        expect(addEnvironment).not.toHaveBeenCalled()
+    })
+
+    it('shows hostd\'s refusal to the operator', async () => {
+        callerFromSession.mockResolvedValue(ADMIN)
+        addEnvironment.mockResolvedValue({ ok: false, code: 'conflict', message: 'uat1 was deleted and is still kept for a restore; restore it or wait for it to be purged' })
+
+        const result = await addEnvironmentAction('acme', 'uat1', 'uat', null)
+
+        expect(result.ok).toBe(false)
+        expect(!result.ok && result.error).toMatch(/restore it or wait/)
+    })
+})
+
+describe('deleteEnvironmentAction', () => {
+    it('sends the site name as typed, for an environment the site has', async () => {
+        callerFromSession.mockResolvedValue(ADMIN)
+        listEnvironments.mockResolvedValue({ ok: true, value: [env('live'), env('uat1')] })
+        deleteEnvironment.mockResolvedValue({ ok: true, value: {} })
+
+        const result = await deleteEnvironmentAction('acme', 'uat1', 'Acme Bakery')
+
+        expect(deleteEnvironment).toHaveBeenCalledWith(expect.anything(), ADMIN.caller, 'acme', 'uat1', 'Acme Bakery')
+        expect(result.ok && result.message).toMatch(/kept for 30 days/)
+    })
+
+    it('never deletes live, whatever is sent', async () => {
+        expect(await deleteEnvironmentAction('acme', 'live', 'Acme Bakery')).toEqual(CANNOT)
+        expect(callerFromSession).not.toHaveBeenCalled()
+    })
+
+    it('refuses an environment the site does not have', async () => {
+        callerFromSession.mockResolvedValue(ADMIN)
+
+        expect(await deleteEnvironmentAction('acme', 'uat1', 'Acme Bakery')).toEqual({ ok: false, error: 'This site has no uat1 environment.' })
+        expect(deleteEnvironment).not.toHaveBeenCalled()
+    })
+
+    it('refuses a client outright', async () => {
+        callerFromSession.mockResolvedValue(CLIENT)
+
+        expect(await deleteEnvironmentAction('acme', 'uat1', 'Acme Bakery')).toEqual({ ok: false, error: 'This is not set up yet.' })
+        expect(deleteEnvironment).not.toHaveBeenCalled()
+    })
+})
+
+describe('restoreEnvironmentAction', () => {
+    it('says it is back, and nothing more, when nothing changed on the way', async () => {
+        callerFromSession.mockResolvedValue(ADMIN)
+        restoreEnvironment.mockResolvedValue({ ok: true, value: { port: 5014, portChanged: false, droppedHostnames: [], warnings: [] } })
+
+        const result = await restoreEnvironmentAction('acme', 'uat1', '2026-09-20T10:00:00.000Z')
+
+        expect(restoreEnvironment).toHaveBeenCalledWith(expect.anything(), ADMIN.caller, 'acme', 'uat1', '2026-09-20T10:00:00.000Z')
+        expect(result).toEqual({ ok: true, message: 'uat1 is back and starting.' })
+    })
+
+    it('names a new port and every hostname it came back without', async () => {
+        callerFromSession.mockResolvedValue(ADMIN)
+        restoreEnvironment.mockResolvedValue({ ok: true, value: { port: 5019, portChanged: true, droppedHostnames: ['uat.acme.com', 'beta.acme.com'], warnings: [] } })
+
+        const result = await restoreEnvironmentAction('acme', 'uat1', '2026-09-20T10:00:00.000Z')
+
+        expect(result).toEqual({
+            ok: true,
+            message: 'uat1 is back and starting. Its old port was taken, so it is on port 5019 now. '
+                + 'These hostnames were taken while it was deleted, so it came back without them: uat.acme.com, beta.acme.com.',
+        })
+    })
+
+    it('says the port changed without naming one hostd did not send', async () => {
+        callerFromSession.mockResolvedValue(ADMIN)
+        restoreEnvironment.mockResolvedValue({ ok: true, value: { port: null, portChanged: true, droppedHostnames: [], warnings: [] } })
+
+        expect(await restoreEnvironmentAction('acme', 'uat1', '2026-09-20T10:00:00.000Z'))
+            .toEqual({ ok: true, message: 'uat1 is back and starting. Its old port was taken, so it is on another port now.' })
+    })
+
+    it('says a restore that could not start it is back but not running, and passes on why', async () => {
+        callerFromSession.mockResolvedValue(ADMIN)
+        restoreEnvironment.mockResolvedValue({
+            ok: true,
+            value: { port: 5014, portChanged: false, droppedHostnames: [], warnings: ['it could not be started (up exited 1); deploy it to start it'] },
+        })
+
+        const result = await restoreEnvironmentAction('acme', 'uat1', '2026-09-20T10:00:00.000Z')
+
+        expect(result.ok && result.message).not.toMatch(/starting/)
+        expect(result).toEqual({
+            ok: true,
+            message: 'uat1 is back, but it is not running. hostd reported: it could not be started (up exited 1); deploy it to start it.',
+        })
+    })
+
+    it('says not running when it could not even be read back', async () => {
+        callerFromSession.mockResolvedValue(ADMIN)
+        restoreEnvironment.mockResolvedValue({
+            ok: true,
+            value: { port: 5014, portChanged: false, droppedHostnames: [], warnings: ['acme uat1 was restored but could not be read back, so it was neither put on the web nor started'] },
+        })
+
+        const result = await restoreEnvironmentAction('acme', 'uat1', '2026-09-20T10:00:00.000Z')
+
+        expect(result.ok && result.message).not.toMatch(/starting/)
+        expect(result.ok && result.message).toMatch(/^uat1 is back, but it is not running\. hostd reported: acme uat1 was restored but could not be read back/)
+    })
+
+    it('still says starting when only the vhost or the trash went wrong, and passes on each warning', async () => {
+        callerFromSession.mockResolvedValue(ADMIN)
+        restoreEnvironment.mockResolvedValue({
+            ok: true,
+            value: {
+                port: 5014, portChanged: false, droppedHostnames: [],
+                warnings: [
+                    'its vhost could not be written: apache said no',
+                    'prev stayed in the trash, because the folder it came from is taken or missing; the purge removes it with the rest',
+                ],
+            },
+        })
+
+        expect(await restoreEnvironmentAction('acme', 'uat1', '2026-09-20T10:00:00.000Z')).toEqual({
+            ok: true,
+            message: 'uat1 is back and starting. hostd reported: its vhost could not be written: apache said no; '
+                + 'prev stayed in the trash, because the folder it came from is taken or missing; the purge removes it with the rest.',
+        })
+    })
+
+    it('never restores live, and wants to know which deletion', async () => {
+        expect(await restoreEnvironmentAction('acme', 'live', '2026-09-20T10:00:00.000Z')).toEqual(CANNOT)
+        expect(await restoreEnvironmentAction('acme', 'uat1', 5 as never)).toEqual(CANNOT)
+        expect(callerFromSession).not.toHaveBeenCalled()
+    })
+
+    it('refuses a client outright', async () => {
+        callerFromSession.mockResolvedValue(CLIENT)
+
+        expect(await restoreEnvironmentAction('acme', 'uat1', '2026-09-20T10:00:00.000Z')).toEqual({ ok: false, error: 'This is not set up yet.' })
+        expect(restoreEnvironment).not.toHaveBeenCalled()
     })
 })

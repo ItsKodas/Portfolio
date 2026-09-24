@@ -29,7 +29,8 @@ import type { RegistryWriter } from '../shared/registry-write.ts'
 import type { Commit } from '../shared/fetch-protocol.ts'
 import { maintenanceKey, type DeployRecord, type DeployTrigger } from '../shared/deploys.ts'
 import type { FetchClient } from './fetch-client.ts'
-import type { Runner } from './compose.ts'
+import type { ComposeLocation, Runner } from './compose.ts'
+import { isPortOverride, type PortOverrideResult } from './port-override.ts'
 import type { DockerApi } from './docker.ts'
 import { listEnvFiles, readEnvFile, writeEnvFile, type EnvFs } from './env-files.ts'
 import { isExampleName } from '../shared/envfiles.ts'
@@ -88,6 +89,8 @@ export type DeployDeps = {
     docker: DockerApi
     runner: Runner
     fs: DeployFs
+    // Rebuilds hostd.ports.yml in the new tree from the commit going out (port-override.ts)
+    portOverride: (location: ComposeLocation, portEnv: string) => Promise<PortOverrideResult>
     envFs?: EnvFs
     now: () => number
     sleep: (ms: number) => Promise<void>
@@ -276,6 +279,10 @@ async function carryComposeFiles(
     for (const [index, from] of environment.composePaths.entries()) {
         const to = next.composePaths[index]
         if (!to) continue
+        // hostd.ports.yml is rebuilt a few steps down, not carried: a running tree that predates this
+        // feature, or one whose override was removed by hand, has none, and carrying would fail the
+        // deploy one step before the rebuild that recreates it anyway.
+        if (isPortOverride(from)) continue
         if (await deps.fs.exists(to)) continue
         try {
             await deps.fs.copyFile(from, to)
@@ -717,6 +724,19 @@ export async function runDeploy(
         if (!named.ok) {
             await deps.fs.rmdir(build.next).catch(() => {})
             return fail(named.problem)
+        }
+
+        // hostd.ports.yml is rebuilt from the commit going out, over the copy carryComposeFiles brought
+        // across: a commit that adds a service publishing a host port, or moves the site's container
+        // port, is then covered at this deploy, not at the next port change. Before own, so the file is
+        // owned with the rest of the tree, and before the build, so a refusal leaves the site untouched.
+        if (nextEnvironment.composePaths.some(isPortOverride)) {
+            const override = await deps.portOverride({ dir: build.next, composePaths: nextEnvironment.composePaths, composeName: name }, project.portEnv)
+            if (!override.ok) {
+                await deps.fs.rmdir(build.next).catch(() => {})
+                return fail(`the port could not be published: ${override.problem}`)
+            }
+            deps.log(`deploy ${project.id} ${environment.name} ${commit.slice(0, 7)}: published ${environment.port} to ${override.service}:${override.target}`)
         }
 
         // The checkout above runs as root, in the fetcher, and the env files just carried across run as

@@ -2,7 +2,7 @@
 // before the agent hears of it; every change, every stream opened and every refusal is audited.
 
 import type { IncomingMessage, ServerResponse } from 'node:http'
-import { PROJECT_ID, SERVICE_NAME, isRecord, describeError } from '../shared/formats.ts'
+import { PROJECT_ID, SERVICE_NAME, isEnvironmentName, isRecord, describeError } from '../shared/formats.ts'
 import {
     LIFECYCLE_ACTIONS, MAX_TAIL, DEFAULT_TAIL, MAX_REQUEST_BYTES, MAX_COMMITS, DEFAULT_COMMITS,
     SNAPSHOT_ID, RUN_ID, CREATE_KEYS, parseConfigureArgs, parseCreateExtras,
@@ -10,7 +10,7 @@ import {
     type RefusalCode, type ProvisionCreateArgs, type ProvisionAddEnvironmentArgs,
 } from '../shared/protocol.ts'
 import {
-    ENVIRONMENTS, CERTIFICATE_MODES, CREDENTIAL_NAME, hostnamesOf,
+    CERTIFICATE_MODES, CREDENTIAL_NAME, hostnamesOf,
     type CertificateMode, type EnvironmentEntry, type EnvironmentName, type ProjectEntry, type Registry,
 } from '../shared/registry.ts'
 import { envPathProblem } from '../shared/envfiles.ts'
@@ -83,6 +83,8 @@ export type Route =
     | { verb: 'settings', project: string }
     | { verb: 'branches', project: string }
     | { verb: 'remove-environment', project: string, environment: EnvironmentName }
+    | { verb: 'deleted-environments', project: string }
+    | { verb: 'restore-environment', project: string, environment: EnvironmentName }
     | { verb: 'env-list', project: string, environment: EnvironmentName }
     | { verb: 'env-file', project: string, environment: EnvironmentName, path: string }
     | { verb: 'deploy', project: string, environment: EnvironmentName }
@@ -153,14 +155,15 @@ export function matchRoute(method: string, pathname: string): Route {
         if (segment === 'logs') return only('GET', { verb: 'logs', project })
         if (segment === 'audit') return only('GET', { verb: 'audit', project })
         if (segment === 'environments') return only('POST', { verb: 'add-environment', project })
+        if (segment === 'deleted-environments') return only('GET', { verb: 'deleted-environments', project })
         if (segment === 'backups') {
             if (method === 'GET') return { verb: 'backups', project }
             if (method === 'POST') return { verb: 'backup-run', project }
             return { verb: 'method-not-allowed' }
         }
         if (segment === 'settings') return only('PUT', { verb: 'settings', project })
-        // Project level, not under an environment: repo is a project-level field and both environments
-        // draw from the one list.
+        // Project level, not under an environment: repo is a project-level field and every environment
+        // draws from the one list.
         if (segment === 'branches') return only('GET', { verb: 'branches', project })
         return { verb: 'not-found' }
     }
@@ -168,8 +171,15 @@ export function matchRoute(method: string, pathname: string): Route {
     if (segment === 'environments') {
         if (parts.length !== 4) return { verb: 'not-found' }
         const environment = parts[3] ?? ''
-        if (!(ENVIRONMENTS as readonly string[]).includes(environment)) return { verb: 'not-found' }
-        return only('DELETE', { verb: 'remove-environment', project, environment: environment as EnvironmentName })
+        if (!isEnvironmentName(environment)) return { verb: 'not-found' }
+        return only('DELETE', { verb: 'remove-environment', project, environment })
+    }
+
+    // One deleted environment, restored. Hyphenated, so it can never be read as an environment's name.
+    if (segment === 'deleted-environments') {
+        const environment = parts[3] ?? ''
+        if (parts.length !== 5 || parts[4] !== 'restore' || !isEnvironmentName(environment)) return { verb: 'not-found' }
+        return only('POST', { verb: 'restore-environment', project, environment })
     }
 
     if (segment === 'backups') {
@@ -196,9 +206,11 @@ export function matchRoute(method: string, pathname: string): Route {
         return { verb: 'not-found' }
     }
 
-    // Everything under one environment: the deploy actions, and /env with a path inside it.
-    if ((ENVIRONMENTS as readonly string[]).includes(segment)) {
-        const environment = segment as EnvironmentName
+    // Everything under one environment: the deploy actions, and /env with a path inside it. Any
+    // environment name matches here; whether the project has it is the registry's answer, given as a 404
+    // by whichever handler looks it up.
+    if (isEnvironmentName(segment)) {
+        const environment = segment
         if (parts.length === 4) {
             switch (parts[3]) {
                 case 'env': return only('GET', { verb: 'env-list', project, environment })
@@ -373,16 +385,21 @@ function parseCreateBody(value: Record<string, unknown>): { ok: true, args: Prov
     }
 }
 
+// The body names the environment `name`, which is what the operator typed; the agent's args call it
+// `environment`, as every other provision action does. certificate may be left out, meaning none.
 function parseAddEnvironmentBody(value: Record<string, unknown>): { ok: true, args: ProvisionAddEnvironmentArgs } | { ok: false, message: string } {
-    if (!onlyKeys(value, ['branch', 'domain', 'certificate'])) {
-        return { ok: false, message: 'add-environment takes only branch, domain and certificate' }
+    if (!onlyKeys(value, ['name', 'branch', 'domain', 'certificate'])) {
+        return { ok: false, message: 'add-environment takes only name, branch, domain and certificate' }
     }
+    const name = value.name
+    if (name === 'live') return { ok: false, message: 'live cannot be added' }
+    if (!isEnvironmentName(name)) return { ok: false, message: 'name must be an environment name' }
     if (typeof value.branch !== 'string') return { ok: false, message: 'branch is malformed' }
     const domain = value.domain
     if (domain !== null && typeof domain !== 'string') return { ok: false, message: 'domain is malformed' }
-    const certificate = value.certificate
+    const certificate = value.certificate ?? null
     if (certificate !== null && !(CERTIFICATE_MODES as readonly string[]).includes(certificate as string)) return { ok: false, message: 'certificate is malformed' }
-    return { ok: true, args: { action: 'add-environment', environment: 'test', branch: value.branch, domain: domain as string | null, certificate: certificate as CertificateMode | null } }
+    return { ok: true, args: { action: 'add-environment', environment: name, branch: value.branch, domain: domain as string | null, certificate: certificate as CertificateMode | null } }
 }
 
 // Shared by both delete routes: the whole-project one and the single-environment one. Typing the name
@@ -392,6 +409,13 @@ function parseConfirmBody(value: Record<string, unknown>): { ok: true, name: str
     if (!onlyKeys(value, ['name'])) return { ok: false, message: 'delete takes only name' }
     if (typeof value.name !== 'string') return { ok: false, message: 'name is malformed' }
     return { ok: true, name: value.name }
+}
+
+// Which record, when the same name was deleted more than once. Its grammar is the agent's to check.
+function parseRestoreBody(value: Record<string, unknown>): { ok: true, deletedAt: string } | { ok: false, message: string } {
+    if (!onlyKeys(value, ['deletedAt'])) return { ok: false, message: 'restoring takes only deletedAt' }
+    if (typeof value.deletedAt !== 'string') return { ok: false, message: 'deletedAt is malformed' }
+    return { ok: true, deletedAt: value.deletedAt }
 }
 
 function parseBranchBody(value: Record<string, unknown>): { ok: true, branch: string } | { ok: false, message: string } {
@@ -425,12 +449,12 @@ function parsePortsQuery(params: URLSearchParams): { ok: true, args: PortsArgs }
     const environment = params.get('environment')
     if ((project === null) !== (environment === null)) return { ok: false, message: 'project and environment go together' }
     if (project !== null && !PROJECT_ID.test(project)) return { ok: false, message: 'project is malformed' }
-    if (environment !== null && !(ENVIRONMENTS as readonly string[]).includes(environment)) return { ok: false, message: 'environment must be live or test' }
+    if (environment !== null && !isEnvironmentName(environment)) return { ok: false, message: 'environment must be an environment name' }
     return {
         ok: true,
         args: {
             port: raw === null ? null : Number(raw),
-            own: project !== null && environment !== null ? { project, environment: environment as EnvironmentName } : null,
+            own: project !== null && environment !== null ? { project, environment } : null,
         },
     }
 }
@@ -479,7 +503,7 @@ function parseEnvWriteBody(value: Record<string, unknown>): { ok: true, text: st
     return { ok: true, text: value.text }
 }
 
-// One project's environments as this actor may see them, live first, then test. Answered from the
+// One project's environments as this actor may see them, live first, then the others. Answered from the
 // registry rather than the agent, because the registry is what knows them and api is the only process
 // that knows who is asking.
 //
@@ -502,6 +526,8 @@ function environmentsFor(project: ProjectEntry, actor: Actor): Array<Record<stri
             : {}),
         branch: environment.branch,
         domain: environment.domain,
+        // Every hostname beside the primary, so the portal can show an environment's whole list
+        aliases: [...environment.aliases],
         certificate: environment.certificate,
         websockets: environment.websockets,
         flexibleSsl: environment.flexibleSsl,
@@ -650,6 +676,10 @@ export function createHandler(deps: ApiDeps): (req: IncomingMessage, res: Server
             const target = environment ? `${project} remove ${environment}` : `${project} remove`
             const entry = await authorizeProject(project, environment ? 'provision' : 'remove', target)
             if (!entry) return
+            // live is the site itself: it goes when the whole site does, never on its own
+            if (environment === 'live') {
+                return refuseRoute(400, 'bad-request', 'the live environment cannot be deleted; delete the whole site instead', project, 'provision', target)
+            }
 
             const body = await readJsonBody(req, MAX_REQUEST_BYTES)
             if (!body.ok) return refuseRoute(400, 'bad-request', body.message, project, 'provision', target)
@@ -659,9 +689,24 @@ export function createHandler(deps: ApiDeps): (req: IncomingMessage, res: Server
                 return refuseRoute(400, 'bad-request', 'name must match the project name to confirm deletion', project, 'provision', target)
             }
 
-            const reply = await callAgentAudited({ verb: 'provision', project, args: { action: 'remove', environment } }, project, 'provision', target)
+            if (environment === null) {
+                const reply = await callAgentAudited({ verb: 'provision', project, args: { action: 'remove', environment: null } }, project, 'provision', target)
+                if (!reply) return
+                return respondAgentAction('provision', reply, project, target, true)
+            }
+
+            // One environment goes into its site's trash, restorable for 30 days. Its verification records
+            // go once the agent says it is gone, and only then: a refused delete leaves it serving.
+            const reply = await callAgentAudited(
+                { verb: 'provision', project, args: { action: 'delete-environment', environment, actor: caller.user } },
+                project, 'provision', target,
+            )
             if (!reply) return
-            return respondAgentAction('provision', reply, project, target, true)
+            return respondAgentAction('provision', reply, project, target, true, async () => {
+                for (const record of deps.domains.forEnvironment(project, environment)) {
+                    await deps.domains.remove(domainKey(project, environment, record.hostname))
+                }
+            })
         }
 
         // Deploy, rollback and branch all start work on the operator's behalf, so all three are
@@ -877,25 +922,29 @@ export function createHandler(deps: ApiDeps): (req: IncomingMessage, res: Server
             return sendJson(res, 200, { ok: true, domains: domainsFor(entry, environment) })
         }
 
-        // A new site's first vhost, written straight after the create that registered it, so the operator
-        // does not have to go and adopt a site that has nothing to adopt. The same preview and adopt the
-        // Domains tab runs, with nothing to disable: if another file already serves the hostname, that is
-        // a displacement the operator should preview and confirm themselves, so this stops and says so.
+        // An environment's first vhost, written straight after whatever gave it its first address: a new
+        // site's create (live), an add-environment with a domain, or a first hostname added from the
+        // Domains tab. The operator does not have to go and adopt a site that has nothing to adopt. The
+        // same preview and adopt the Domains tab runs, with nothing to disable: if another file already
+        // serves the hostname, that is a displacement the operator should preview and confirm
+        // themselves, so this stops and says so.
         //
-        // Never throws and never answers the request itself: the site already exists by the time this
-        // runs, so whatever goes wrong here is reported beside a create that succeeded, not instead of it.
-        const firstVhost = async (id: string): Promise<{ ok: true } | { ok: false, message: string }> => {
+        // Never throws and never answers the request itself: the environment already exists by the time
+        // this runs, so whatever goes wrong here is reported beside the change that succeeded, not instead
+        // of it.
+        const firstVhost = async (id: string, name: EnvironmentName): Promise<{ ok: true } | { ok: false, message: string }> => {
             const entry = deps.registry().projects.get(id)
-            const environment = entry?.environments.get('live')
+            const environment = entry?.environments.get(name)
             if (!entry || !environment || environment.domain === null) {
-                return { ok: false, message: `${id} was created, but its entry could not be read back to write its vhost` }
+                const what = name === 'live' ? id : `${id} ${name}`
+                return { ok: false, message: `${what} was created, but its entry could not be read back to write its vhost` }
             }
             const target = environment.domain
             try {
                 // Records for the new hostname first, so the token minted below is stored on them
                 await deps.domains.reconcile(deps.registry(), new Date(now()).toISOString())
-                const token = await tokenFor(id, 'live')
-                const preview = await deps.agent.call({ verb: 'domains', project: id, args: { action: 'preview', environment: 'live', token } })
+                const token = await tokenFor(id, name)
+                const preview = await deps.agent.call({ verb: 'domains', project: id, args: { action: 'preview', environment: name, token } })
                 if (!preview.ok) return { ok: false, message: preview.message }
                 if (!('preview' in preview)) return { ok: false, message: 'the agent did not answer the preview with one' }
                 const claims = preview.preview.claims.map(claim => claim.path)
@@ -903,16 +952,16 @@ export function createHandler(deps: ApiDeps): (req: IncomingMessage, res: Server
                     return { ok: false, message: `${target} is already served by ${claims.join(', ')}. Adopt it from the Domains tab to replace that file.` }
                 }
 
-                const reply = await deps.agent.call({ verb: 'domains', project: id, args: { action: 'adopt', environment: 'live', token, disable: [] } })
+                const reply = await deps.agent.call({ verb: 'domains', project: id, args: { action: 'adopt', environment: name, token, disable: [] } })
                 if (!reply.ok) {
-                    if (reply.code === 'failed') await recordVhost(id, 'live', { ok: false, output: reply.output ?? '' })
+                    if (reply.code === 'failed') await recordVhost(id, name, { ok: false, output: reply.output ?? '' })
                     const outcome: AuditOutcome = reply.code === 'failed' ? 'failed' : 'refused'
                     await audit(who, { project: id, verb: 'domains', target, outcome, reason: outcome === 'failed' ? reply.message : reply.code })
                     return { ok: false, message: reply.message }
                 }
                 const written = 'written' in reply && !Array.isArray(reply.written) ? reply.written.hostnames : hostnamesOf(environment)
-                await recordWritten(id, 'live', token, written, environment.domain)
-                await recordVhost(id, 'live', null)
+                await recordWritten(id, name, token, written, environment.domain)
+                await recordVhost(id, name, null)
                 await audit(who, { project: id, verb: 'domains', target, outcome: 'ok' })
                 return { ok: true }
             } catch (error) {
@@ -1105,7 +1154,7 @@ export function createHandler(deps: ApiDeps): (req: IncomingMessage, res: Server
                 } catch (error) {
                     console.error(`[api] ${new Date().toISOString()} registry refresh after provision ${target} failed: ${describeError(error)}`)
                 }
-                const vhost = await firstVhost(parsed.args.id)
+                const vhost = await firstVhost(parsed.args.id, 'live')
                 return sendJson(res, 200, { ...reply, vhost })
             }
 
@@ -1127,11 +1176,59 @@ export function createHandler(deps: ApiDeps): (req: IncomingMessage, res: Server
                     route.project, 'provision', target,
                 )
                 if (!reply) return
-                return respondAgentAction('provision', reply, route.project, target, true)
+                if (!reply.ok || parsed.args.domain === null) return respondAgentAction('provision', reply, route.project, target, true)
+
+                // As a create does for live: the ok path of respondAgentAction, then the new
+                // environment's vhost, beside the agent's reply rather than instead of it.
+                await audit(who, { project: route.project, verb: 'provision', target, outcome: 'ok' })
+                try {
+                    await deps.refreshRegistry()
+                } catch (error) {
+                    console.error(`[api] ${new Date().toISOString()} registry refresh after provision ${target} failed: ${describeError(error)}`)
+                }
+                const vhost = await firstVhost(route.project, parsed.args.environment)
+                return sendJson(res, 200, { ...reply, vhost })
             }
 
             case 'remove-environment':
                 return removeProject(route.project, route.environment)
+
+            // What sits in the site's trash. Admin only, like everything else about provisioning.
+            case 'deleted-environments': {
+                const target = `${route.project} deleted-environments`
+                if (!(await decide(route.project, 'provision', target))) return
+                const reply = await callAgent({ verb: 'provision', project: route.project, args: { action: 'deleted-environments' } })
+                if (!reply) return
+                if (!reply.ok) return refuseRoute(AGENT_STATUS[reply.code], reply.code, reply.message, route.project, 'provision', target)
+                return sendJson(res, 200, reply)
+            }
+
+            // A fresh token for the vhost the agent writes, minted here because only api mints them, and
+            // the restored hostnames recorded against it once the agent says the vhost is down: the
+            // records were dropped when the environment was deleted, so they start their countdown again.
+            case 'restore-environment': {
+                const target = `${route.project} restore ${route.environment}`
+                if (!(await decide(route.project, 'provision', target))) return
+                const body = await readJsonBody(req, MAX_REQUEST_BYTES)
+                if (!body.ok) return refuseRoute(400, 'bad-request', body.message, route.project, 'provision', target)
+                const parsed = parseRestoreBody(body.value)
+                if (!parsed.ok) return refuseRoute(400, 'bad-request', parsed.message, route.project, 'provision', target)
+
+                const token = newToken()
+                const reply = await callAgentAudited(
+                    { verb: 'provision', project: route.project, args: { action: 'restore-environment', environment: route.environment, deletedAt: parsed.deletedAt, token } },
+                    route.project, 'provision', target,
+                )
+                if (!reply) return
+                const environment = route.environment
+                return respondAgentAction('provision', reply, route.project, target, true, async () => {
+                    if (!('vhost' in reply) || !reply.vhost) return
+                    const entry = deps.registry().projects.get(route.project)?.environments.get(environment)
+                    if (!entry) return
+                    await deps.domains.reconcile(deps.registry(), new Date(now()).toISOString())
+                    await recordWritten(route.project, environment, token, hostnamesOf(entry), entry.domain)
+                })
+            }
 
             case 'settings': {
                 const target = 'settings'
@@ -1145,6 +1242,11 @@ export function createHandler(deps: ApiDeps): (req: IncomingMessage, res: Server
                 // in this file use, so writing a second copy of the same checks is not needed here.
                 const args = parseConfigureArgs(body.value)
                 if ('ok' in args) return refuseRoute(400, 'bad-request', args.message, route.project, 'configure', target)
+                // The parser takes any environment name, so whether this project has each one is asked
+                // here, against the entry just authorised, rather than left for the writer to fail on.
+                const named = [args.branches, args.domains, args.websockets, args.flexibleSsl].flatMap(map => Object.keys(map ?? {}))
+                const missing = named.find(name => !entry.environments.has(name))
+                if (missing !== undefined) return refuseRoute(400, 'bad-request', `${route.project} has no ${missing} environment`, route.project, 'configure', target)
 
                 const reply = await callAgentAudited({ verb: 'configure', project: route.project, args }, route.project, 'configure', target)
                 if (!reply) return
@@ -1301,6 +1403,28 @@ export function createHandler(deps: ApiDeps): (req: IncomingMessage, res: Server
                 const { hostname } = parsed
                 if (hostnamesOf(environment).includes(hostname)) {
                     return refuseRoute(400, 'bad-request', `${entry.id} ${environment.name} already serves ${hostname}`, entry.id, 'domains', hostname)
+                }
+
+                // An environment with no address yet (one added without a domain) takes its first
+                // hostname as its primary, never as an alias of nothing. Set the way Settings sets one,
+                // through configure's domains, which records it; then its first vhost is written, as an
+                // add-environment with a domain would have, which records the hostname as the primary.
+                if (environment.domain === null) {
+                    const reply = await callAgentAudited(
+                        { verb: 'configure', project: entry.id, args: { domains: { [environment.name]: hostname } } },
+                        entry.id, 'domains', hostname,
+                    )
+                    if (!reply) return
+                    if (!reply.ok) return refuseDomains(reply, entry.id, hostname)
+                    await audit(who, { project: entry.id, verb: 'domains', target: `${hostname} primary`, outcome: 'ok' })
+                    try {
+                        await deps.refreshRegistry()
+                    } catch (error) {
+                        console.error(`[api] ${new Date().toISOString()} registry refresh after domains ${hostname} failed: ${describeError(error)}`)
+                    }
+                    const vhost = await firstVhost(entry.id, environment.name)
+                    const current = deps.registry().projects.get(entry.id)?.environments.get(environment.name) ?? environment
+                    return sendJson(res, 200, { ok: true, domains: domainsFor(entry, current), vhost })
                 }
 
                 // Task 8's set-aliases writes the registry and rewrites the vhost in this one call, so

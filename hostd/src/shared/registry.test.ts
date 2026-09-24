@@ -1,6 +1,6 @@
 import { describe, it } from 'node:test'
 import assert from 'node:assert/strict'
-import { parseRegistry, RegistryError, isComposeService, MAX_COMPOSE_FILES, hostnamesOf } from './registry.ts'
+import { parseRegistry, RegistryError, isComposeService, MAX_COMPOSE_FILES, hostnamesOf, environmentOf } from './registry.ts'
 
 const valid = `
 reserved: [horizons.gg]
@@ -390,9 +390,51 @@ projects:
             'dir and environments cannot both be given')
     })
 
-    it('requires a live environment, and refuses an unknown environment name', () => {
+    it('requires a live environment, and refuses a name that is not an environment name', () => {
         assert.match(invalidEnvironmentReason('environments: { test: { dir: /var/www/acme-test, port: 5010 } }')!, /live/)
-        assert.match(invalidEnvironmentReason('environments: { live: { dir: /var/www/a, port: 5010 }, staging: { dir: /var/www/b, port: 5011 } }')!, /staging/)
+        for (const name of ['git', 'next', 'prev', 'backups', 'environments', 'uat-1', 'Uat1', 'a'.repeat(17)]) {
+            const reason = invalidEnvironmentReason(`environments: { live: { dir: /var/www/a, port: 5010 }, ${name}: { dir: /var/www/b, port: 5011 } }`)
+            assert.match(reason ?? '', new RegExp(`environments\\.${name} is not an environment name`), name)
+        }
+    })
+
+    it('accepts any environment name beside live, not only test', () => {
+        for (const name of ['uat1', 'staging']) {
+            assert.equal(invalidEnvironmentReason(`environments: { live: { dir: /var/www/a, port: 5010 }, ${name}: { dir: /var/www/b, port: 5011 } }`), null, name)
+        }
+    })
+
+    it('orders environments live first, then as the file lists them', () => {
+        const order = (body: string): string[] => [...parseRegistry(envProject(body)).projects.get('acme')!.environments.keys()]
+        assert.deepEqual(order(`      live: { dir: /var/www/acme/live, port: 5010 }
+      test: { dir: /var/www/acme/test, port: 5011 }
+      uat1: { dir: /var/www/acme/uat1, port: 5012 }
+`), ['live', 'test', 'uat1'])
+        assert.deepEqual(order(`      uat1: { dir: /var/www/acme/uat1, port: 5012 }
+      staging: { dir: /var/www/acme/staging, port: 5013 }
+      live: { dir: /var/www/acme/live, port: 5010 }
+`), ['live', 'uat1', 'staging'])
+    })
+
+    it('checks every pair of environments, not only live and test, naming both', () => {
+        const reason = (third: string): string => parseRegistry(envProject(`      live: { dir: /var/www/acme/live, port: 5010 }
+      test: { dir: /var/www/acme/test, port: 5011 }
+${third}`)).invalid.get('acme') ?? ''
+        assert.match(reason('      uat1: { dir: /var/www/acme/uat1, port: 5011 }\n'), /environments test and uat1 share port 5011/)
+        assert.match(reason('      uat1: { dir: /var/www/acme/uat1, port: 5012, composeName: acme-test }\n'), /environments test and uat1 share compose name acme-test/)
+        assert.match(reason('      uat1: { dir: /var/www/other/uat1, port: 5012 }\n'), /environments live and uat1 must be nested under the same site/)
+        assert.match(reason('      uat1: { dir: /var/www/acme-flat, port: 5012 }\n      staging: { dir: /var/www/acme-flat, port: 5013 }\n'), /environments uat1 and staging share dir \/var\/www\/acme-flat/)
+    })
+
+    it('answers environmentOf with the project\'s own environment, or null', () => {
+        const project = parseRegistry(envProject(`      live: { dir: /var/www/acme/live, port: 5010 }
+      uat1: { dir: /var/www/acme/uat1, port: 5012 }
+`)).projects.get('acme')!
+        assert.equal(environmentOf(project, 'uat1')!.dir, '/var/www/acme/uat1')
+        assert.equal(environmentOf(project, 'live')!.port, 5010)
+        assert.equal(environmentOf(project, 'test'), null)
+        assert.equal(environmentOf(project, 'staging'), null)
+        assert.equal(environmentOf(project, '__proto__'), null)
     })
 
     it('refuses two environments sharing a folder or a port', () => {

@@ -62,4 +62,17 @@ describe('setPort', () => {
         expect((await setPort(config, admin, '../x', 'live', 5012, fetchImpl)).ok).toBe(false)
         expect(calls).toHaveLength(0)
     })
+
+    it('moves a named environment beside live', async () => {
+        const { fetchImpl, calls } = fakeFetch({ ok: true, output: 'acme uat1 now uses port 5014' })
+        await setPort(config, admin, 'acme', 'uat1', 5014, fetchImpl)
+        expect(calls[0].url).toBe('http://hostd-api:8080/projects/acme/uat1/port')
+    })
+
+    it('refuses an environment that is not a valid name before asking', async () => {
+        const { fetchImpl, calls } = fakeFetch({})
+        expect(await setPort(config, admin, 'acme', 'uat-1', 5014, fetchImpl))
+            .toEqual({ ok: false, code: 'bad-request', message: 'no such environment' })
+        expect(calls).toHaveLength(0)
+    })
 })

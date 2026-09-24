@@ -11,15 +11,16 @@
 import { posix } from 'node:path'
 import { randomBytes } from 'node:crypto'
 
-import { PROJECT_ID, CLIENT_ID, HOSTNAME, RESERVED_PROJECT_IDS, describeError } from '../shared/formats.ts'
+import { PROJECT_ID, CLIENT_ID, HOSTNAME, RESERVED_PROJECT_IDS, describeError, isEnvironmentName } from '../shared/formats.ts'
 import {
-    GIT_REF, GIT_REPO, DEFAULT_PORT_ENV,
+    GIT_REF, GIT_REPO, DEFAULT_PORT_ENV, PORT_OVERRIDE_FILE,
     type CertificateMode, type EnvironmentEntry, type EnvironmentName, type ProjectEntry, type Registry,
 } from '../shared/registry.ts'
 import type { OwnPort, PortVerdict } from '../shared/ports.ts'
 import { RegistryWriter, type Change } from '../shared/registry-write.ts'
 import type { FetchClient } from './fetch-client.ts'
-import { runLifecycle, type GuessedService, type Runner } from './compose.ts'
+import { runLifecycle, type ComposeLocation, type GuessedService, type Runner } from './compose.ts'
+import type { PortOverrideResult } from './port-override.ts'
 import { listEnvFiles, readEnvFile, writeEnvFile, createMissingEnvFiles, type EnvFs } from './env-files.ts'
 import { isExampleName } from '../shared/envfiles.ts'
 import { isNestedDir, nestedDir, siteOf } from '../shared/layout.ts'
@@ -57,6 +58,12 @@ export type ProvisionDeps = {
     // Writes <key>=<port> into the environment's root .env (port-env.ts), answering what was there. A
     // dependency rather than a direct call, so a test never writes to a real /var/www.
     setPortEnv: (environment: EnvironmentEntry, key: string, port: number) => Promise<{ ok: true, previous: string | null } | { ok: false, problem: string }>
+    // Writes hostd.ports.yml into location.dir from the environment's own compose files and answers its
+    // full compose list, override last (port-override.ts). A dependency so a test never runs compose or
+    // writes into a real /var/www.
+    portOverride: (location: ComposeLocation, portEnv: string) => Promise<PortOverrideResult>
+    // Removes an environment's hostd.ports.yml, for a port change's undo. A file already gone is not an error.
+    removePortOverride: (dir: string) => Promise<void>
     // Never recursive: a missing parent is a refusal, not something to make on the way.
     mkdir(dir: string): Promise<void>
     // A plain rename, only ever within one site folder: how a new site's repository leaves live/.git for
@@ -71,9 +78,9 @@ export type ProvisionDeps = {
     own(dir: string, like: { uid: number, gid: number, mode: number }): Promise<void>
     // expectedName is the environment's own compose name, the one it will actually run under:
     // resolveNewProject checks it against the compose file's own project name, the same guard the ongoing
-    // sweep runs, but here before anything is written. collidesWith, only ever passed for a test
-    // environment, is the live environment's own expected name, so pinning it there gets a message about
-    // the collision.
+    // sweep runs, but here before anything is written. collidesWith, only ever passed for an environment
+    // other than live, is the live environment's own expected name, so pinning it there gets a message
+    // about the collision.
     // composePaths is every file the environment runs with, in compose's merge order: whatever the
     // operator named at create (docker-compose.yml when they named nothing), so a file missing from the
     // clone, or an override that does not merge, refuses the create instead of surfacing at first deploy.
@@ -82,6 +89,22 @@ export type ProvisionDeps = {
     // is no per-environment lifecycle yet (see RUNBOOK.md), so this is never asked to touch test.
     runner: Runner
     log(message: string): void
+    // Whether this project deleted an environment of this name that the purge has not removed yet
+    // (environment-trash.ts), whose files and volumes are still kept for a restore. Adding one under the
+    // same name would take the folder and the compose name that restore needs back. Absent means
+    // nothing is ever kept, so nothing is refused.
+    deletedWithin?: (project: string, environment: string) => Promise<boolean>
+    // Which deleted environment, as "<project> <environment>", still holds this compose name, or null.
+    // Its volumes carry the name until the purge removes them, so anything new running under it would
+    // start on that environment's data. Covers what deletedWithin cannot: a new site's id, and another
+    // project's deleted environment. Absent means nothing is ever kept, so nothing is refused.
+    composeNameDeleted?: (composeName: string) => Promise<string | null>
+}
+
+async function deletedComposeProblem(who: string, composeName: string, deps: ProvisionDeps): Promise<string | null> {
+    const holder = deps.composeNameDeleted ? await deps.composeNameDeleted(composeName) : null
+    if (!holder) return null
+    return `${who} would run under the compose name ${composeName}, which the deleted environment ${holder} still holds with its volumes; restore it or wait for it to be purged`
 }
 
 function fieldProblem(args: ProvisionCreateArgs): string | null {
@@ -98,16 +121,39 @@ function fieldProblem(args: ProvisionCreateArgs): string | null {
     return null
 }
 
-// Only ever compares against a project other than the one this domain would land on: a create has no
-// existing project to exclude, an add-environment excludes the project it is adding to.
-function domainTaken(registry: Registry, domain: string, excludeId?: string): boolean {
-    for (const [id, project] of registry.projects) {
-        if (id === excludeId) continue
+// A create's domain against every other project's: a create has no environments of its own yet.
+function domainTaken(registry: Registry, domain: string): boolean {
+    for (const project of registry.projects.values()) {
         for (const environment of project.environments.values()) {
             if (environment.domain === domain) return true
         }
     }
     return false
+}
+
+// An add-environment's domain against every hostname anything already serves, this project's own other
+// environments included: two environments of one site answering one name collide exactly as two sites
+// would, and an alias is as much a claim on a name as a primary is.
+function hostnameTaken(registry: Registry, hostname: string): boolean {
+    for (const project of registry.projects.values()) {
+        for (const environment of project.environments.values()) {
+            if (environment.domain === hostname || environment.aliases.includes(hostname)) return true
+        }
+    }
+    return false
+}
+
+// Which registered environment already runs under a compose name, named as "<id> <env>". Project ids may
+// hold a hyphen, so another project's own name can be exactly the <id>-<name> a new environment would
+// take (project acme-uat1 beside acme's uat1), and a flat dir's basename can be too. The registry write
+// refuses that as well, but only after a whole checkout; this is the same check before any disk work.
+function composeNameUser(registry: Registry, composeName: string): string | null {
+    for (const project of registry.projects.values()) {
+        for (const environment of project.environments.values()) {
+            if (environment.composeName === composeName) return `${project.id} ${environment.name}`
+        }
+    }
+    return null
 }
 
 // The port check's registry side only ever sees registry.projects, which excludes anything already
@@ -121,10 +167,10 @@ function invalidRegistryProblem(registry: Registry): string | null {
     return `fix these invalid projects before provisioning: ${[...registry.invalid.keys()].sort().join(', ')}`
 }
 
-// Said the same way by create, add-environment and a port change, so the operator always learns what the
-// compose file has to say, not only that it did not say it.
-export function notPublishedProblem(key: string, port: number): string {
-    return `no service publishes port ${port}; publish \${${key}} in the compose file, like "127.0.0.1:\${${key}}:3000"`
+// Said the same way by create, add-environment and a port change. hostd wrote the override itself, so
+// this only happens when it did not take effect, and the operator is pointed at the file, not the repo.
+export function notPublishedProblem(dir: string, port: number): string {
+    return `hostd could not publish port ${port} (its override did not take effect); check ${PORT_OVERRIDE_FILE} in ${dir}`
 }
 
 function isDatabaseKey(key: string): boolean {
@@ -135,7 +181,7 @@ function isDatabaseKey(key: string): boolean {
 // line, something malformed) is carried through untouched rather than guessed at.
 //
 // The domain substitution runs behind a one-off placeholder, generated fresh per call, rather than
-// straight into the value: the test domain conventionally embeds the project id itself (test.acme.com,
+// straight into the value: the new domain conventionally embeds the project id itself (uat1.acme.com,
 // for project acme), so substituting the domain first and then blindly replacing every occurrence of the
 // database name would re-match "acme" inside the domain this just wrote, corrupting it. Parking the
 // substituted domain behind a placeholder the database rule cannot match, then restoring it last, avoids
@@ -145,7 +191,7 @@ function isDatabaseKey(key: string): boolean {
 function rewriteEnvText(
     text: string,
     live: { domain: string | null, database: string },
-    test: { domain: string | null, database: string },
+    target: { domain: string | null, database: string },
 ): string {
     const placeholder = `__hostd_domain_${randomBytes(8).toString('hex')}__`
     return text.split('\n').map(line => {
@@ -153,25 +199,26 @@ function rewriteEnvText(
         if (!match) return line
         const key = match[1]!
         let value = match[2]!
-        const rewriteDomain = Boolean(live.domain && test.domain && value.includes(live.domain) && DOMAIN_KEY_SUFFIXES.some(suffix => key.endsWith(suffix)))
+        const rewriteDomain = Boolean(live.domain && target.domain && value.includes(live.domain) && DOMAIN_KEY_SUFFIXES.some(suffix => key.endsWith(suffix)))
         const rewriteDatabase = isDatabaseKey(key) && value.includes(live.database)
         if (rewriteDomain) value = value.split(live.domain!).join(placeholder)
-        if (rewriteDatabase) value = value.split(live.database).join(test.database)
-        if (rewriteDomain) value = value.split(placeholder).join(test.domain!)
+        if (rewriteDatabase) value = value.split(live.database).join(target.database)
+        if (rewriteDomain) value = value.split(placeholder).join(target.domain!)
         return `${key}=${value}`
     }).join('\n')
 }
 
-// Copies every env file the live environment has into the freshly cloned test folder, pointing anything
-// that looks like the site's own URL or database at the test side instead. Returns the paths that could
-// not be copied: a silently-missing file is not a safe outcome here, because the clone has already put
-// the repo's own committed copy of that file in place, which plausibly still points at the live database.
+// Copies every env file the live environment has into the freshly checked out folder of a new
+// environment, pointing anything that looks like the site's own URL or database at the new one instead:
+// database <id> becomes <id>-<name>. Returns the paths that could not be copied: a silently-missing file
+// is not a safe outcome here, because the checkout has already put the repo's own committed copy of that
+// file in place, which plausibly still points at the live database.
 async function copyEnvFiles(
-    projectId: string, live: EnvironmentEntry, test: EnvironmentEntry, envFs: EnvFs | undefined, deps: ProvisionDeps,
+    projectId: string, live: EnvironmentEntry, target: EnvironmentEntry, envFs: EnvFs | undefined, deps: ProvisionDeps,
 ): Promise<string[]> {
     const files = await listEnvFiles(live, envFs)
     const liveDatabase = projectId
-    const testDatabase = `${projectId}-test`
+    const targetDatabase = `${projectId}-${target.name}`
     const failures: string[] = []
     for (const file of files) {
         // The clone has already put the repo's own committed copy in place, which is the point of an
@@ -185,10 +232,10 @@ async function copyEnvFiles(
         const rewritten = rewriteEnvText(
             read.text,
             { domain: live.domain, database: liveDatabase },
-            { domain: test.domain, database: testDatabase },
+            { domain: target.domain, database: targetDatabase },
         )
-        const written = await writeEnvFile(test, file.path, rewritten, envFs)
-        if (written.ok) deps.log(`provision ${projectId}: copied ${file.path} into the test environment`)
+        const written = await writeEnvFile(target, file.path, rewritten, envFs)
+        if (written.ok) deps.log(`provision ${projectId}: copied ${file.path} into the ${target.name} environment`)
         else failures.push(file.path)
     }
     return failures
@@ -200,8 +247,8 @@ type ProvisionAttempt = {
     dir: string
     // The folder this call makes, owns, and removes again on a rollback. A new nested site's is the site
     // folder, which holds live and the repository split out of it; everywhere else it is dir itself. A
-    // test worktree's root is its own folder only, never the site around it, which is live's as much as
-    // test's.
+    // new environment's worktree root is its own folder only, never the site around it, which is live's
+    // as much as its own.
     root: string
     // Where the tree comes from: a fresh clone of repo into dir, or a worktree of a repository already on
     // disk (a nested site's shared git/), which git makes the folder for itself.
@@ -211,7 +258,7 @@ type ProvisionAttempt = {
     // Which of the fetcher's tokens the clone authenticates with. null is the default GITHUB_TOKEN, the
     // same meaning it carries on the registry entry and on the fetch protocol itself.
     credential: string | null
-    // Only ever set by addEnvironment, to the live environment's own compose name, which is what a test
+    // Only ever set by addEnvironment, to the live environment's own compose name, which is what another
     // environment's compose file must never be pinned to (see composeNameProblem in compose.ts). Absent
     // for createProject, since live has no other environment to collide with yet.
     collidesWith?: string
@@ -221,8 +268,7 @@ type ProvisionAttempt = {
     // The existing directory whose ownership and mode the new tree should take. Read, never assumed, the
     // same rule deploy.ts follows for a checkout and a repository directory. createProject names the
     // parent, /var/www, because a brand new project has no directory of its own anywhere yet;
-    // addEnvironment names the folder the test tree sits in or beside: the site folder for a nested live,
-    // live's own folder for a flat one.
+    // addEnvironment names the site folder the new environment's tree sits in.
     likeDir: string
     // Relative to dir, in compose's merge order
     compose: string[]
@@ -231,16 +277,17 @@ type ProvisionAttempt = {
     port: number
     portEnv: string
     // Runs after a successful clone or checkout, before resolve. A no-op for create; addEnvironment copies
-    // and rewrites env files here, using the composePath's directory as the new test folder.
+    // and rewrites env files here, into the new environment's folder.
     afterClone: (composePath: string) => Promise<{ ok: true } | { ok: false, problem: string }>
-    // Given the services resolve found (each guessed site or database), attempts the registry write. Only
+    // Given the services resolve found (each guessed site or database) and the environment's compose
+    // list relative to dir (the repo's files, then hostd.ports.yml), attempts the registry write. Only
     // createProject's services are ever non-empty going in; addEnvironment's write ignores the argument.
     // `conflict: true` on a failure (set by registry-write.ts's own edit(), not guessed from the message
     // text) means someone else's entry already claims this id or environment: the folder this call made
     // is then not this call's to remove, because it may not even be this call's folder any more. The
     // single global provisioning lock in agent.ts is the primary defense against that race; this is the
     // fallback for whatever reaches the write despite it.
-    write: (services: Record<string, GuessedService>) => Promise<{ ok: true } | { ok: false, problem: string, conflict?: true }>
+    write: (services: Record<string, GuessedService>, compose: string[]) => Promise<{ ok: true } | { ok: false, problem: string, conflict?: true }>
 }
 
 // The mkdir/clone/resolve/write sequence shared by createProject and addEnvironment: the exact ordering
@@ -292,7 +339,7 @@ async function provisionOnDisk(attempt: ProvisionAttempt, deps: ProvisionDeps): 
                 return refuse('failed', cloned.message)
             }
             // The repository leaves live straight away for the site's shared git/ folder, which is where
-            // the first deploy (and adding test) look for it. A rename within one folder, so it is whole
+            // the first deploy (and adding an environment) look for it. A rename within one folder, so it is whole
             // or not done at all, and a failure removes the site folder like any other step.
             if (dir !== root) {
                 const git = posix.join(root, 'git')
@@ -347,6 +394,16 @@ async function provisionOnDisk(attempt: ProvisionAttempt, deps: ProvisionDeps): 
             return refuse('failed', portWritten.problem)
         }
 
+        // After the port is in .env, which the repo's own mappings may read, and before own, so the new
+        // file is owned with the rest of the tree
+        const override = await deps.portOverride({ dir, composePaths, composeName: attempt.composeName }, attempt.portEnv)
+        if (!override.ok) {
+            await rollback('publishing the port failed')
+            return refuse('invalid-project', override.problem)
+        }
+        deps.log(`provision ${id}: published ${attempt.port} to ${override.service}:${override.target}`)
+        const merged = override.composePaths
+
         // Everything under `root` is root's until here: the clone or checkout ran as root in the fetcher,
         // the repository split out beside a new live moved with it, and the env files afterClone just
         // created or copied were written as root by this process, into a directory
@@ -362,10 +419,9 @@ async function provisionOnDisk(attempt: ProvisionAttempt, deps: ProvisionDeps): 
 
         // The expected compose project name is the environment's own composeName, checked against what
         // compose actually resolves before anything is registered: the project id for a nested live,
-        // <id>-test for a nested test, and the folder basename for a flat test (/var/www/<id>-test).
-        // Comparing test's resolved name against the bare id would refuse the ordinary case for every
-        // repo.
-        const resolved = await deps.resolve(attempt.composeName, dir, composePaths, attempt.collidesWith)
+        // and <id>-<name> for any other environment. Comparing another environment's resolved name
+        // against the bare id would refuse the ordinary case for every repo.
+        const resolved = await deps.resolve(attempt.composeName, dir, merged, attempt.collidesWith)
         if (!resolved.ok) {
             // Named plainly, both in the log and the refusal: this is docker compose's own error (a
             // missing env_file, a syntax error, a command that could not run), not "no site service",
@@ -379,10 +435,10 @@ async function provisionOnDisk(attempt: ProvisionAttempt, deps: ProvisionDeps): 
         }
         if (!resolved.published.includes(attempt.port)) {
             await rollback(`compose does not publish port ${attempt.port}`)
-            return refuse('invalid-project', notPublishedProblem(attempt.portEnv, attempt.port))
+            return refuse('invalid-project', notPublishedProblem(dir, attempt.port))
         }
 
-        const written = await attempt.write(resolved.services)
+        const written = await attempt.write(resolved.services, merged.map(path => posix.relative(dir, path)))
         if (!written.ok) {
             if (written.conflict) {
                 deps.log(`provision ${id}: registry write failed, leaving ${root} in place (already claimed)`)
@@ -393,7 +449,7 @@ async function provisionOnDisk(attempt: ProvisionAttempt, deps: ProvisionDeps): 
         }
 
         deps.log(`provision ${id}: created`)
-        return { ok: true, composePaths }
+        return { ok: true, composePaths: merged }
     } catch (error) {
         await rollback(`unexpected error (${describeError(error)})`)
         return refuse('failed', describeError(error))
@@ -413,6 +469,9 @@ export async function createProject(args: ProvisionCreateArgs, deps: ProvisionDe
     if (invalidProblem) return refuse('unavailable', invalidProblem)
     if (RESERVED_PROJECT_IDS.has(args.id)) return refuse('bad-request', `${args.id} is reserved for the operator's own stacks`)
     if (registry.projects.has(args.id) || registry.invalid.has(args.id)) return refuse('bad-request', `${args.id} is already registered`)
+    // A new site's live runs under its id
+    const deletedCompose = await deletedComposeProblem(args.id, args.id, deps)
+    if (deletedCompose) return refuse('bad-request', deletedCompose)
     // Every new site is nested: one folder under /var/www holding live, and the repository split out of
     // it into git/ beside live. The site folder as a whole is what must not exist yet.
     const site = `/var/www/${args.dir ?? args.id}`
@@ -465,7 +524,7 @@ export async function createProject(args: ProvisionCreateArgs, deps: ProvisionDe
             for (const path of created) deps.log(`provision ${args.id}: created an empty ${path} for its .example`)
             return { ok: true }
         },
-        write: services => deps.writer.write({
+        write: (services, written) => deps.writer.write({
             kind: 'add-project',
             id: args.id,
             project: {
@@ -477,7 +536,7 @@ export async function createProject(args: ProvisionCreateArgs, deps: ProvisionDe
                 services,
                 environment: {
                     name: 'live', dir, branch: args.branch, domain: args.domain, aliases: [], port: port.port, certificate: args.certificate,
-                    compose, ...flags,
+                    compose: written, ...flags,
                 },
             },
         }),
@@ -492,23 +551,35 @@ export async function createProject(args: ProvisionCreateArgs, deps: ProvisionDe
 }
 
 export async function addEnvironment(project: ProjectEntry, args: ProvisionAddEnvironmentArgs, deps: ProvisionDeps, envFs?: EnvFs): Promise<AgentReply> {
+    // The agent's own check of the name, rather than a trust in the parser's: live is every project's
+    // from its create, and a reserved name is a folder of the nested layout or a route segment.
+    const name = args.environment
+    if (name === 'live') return refuse('bad-request', 'live cannot be added')
+    if (!isEnvironmentName(name)) return refuse('bad-request', 'environment must be an environment name')
     if (!GIT_REF.test(args.branch)) return refuse('bad-request', 'branch must be a plain branch name')
     if (args.domain !== null && !HOSTNAME.test(args.domain)) return refuse('bad-request', 'domain must be a lowercase hostname')
     if (!project.repo) return refuse('invalid-project', `${project.id} has no repo to clone from`)
-    if (project.environments.has('test')) return refuse('bad-request', `${project.id} already has a test environment`)
+    if (project.environments.has(name)) return refuse('bad-request', `${project.id} already has a ${name} environment`)
+    // A deleted environment's tree and volumes wait under its name for a restore; a new one taking the
+    // name would take the folder and the compose project that restore puts back.
+    if (deps.deletedWithin && await deps.deletedWithin(project.id, name)) {
+        return refuse('bad-request', `${name} was deleted and is still kept for a restore; restore it or wait for it to be purged`)
+    }
 
-    // A nested live gets a nested test: a worktree at <site>/test of the one repository the site already
-    // shares, rather than a second clone. A flat live keeps its flat sibling, a separate clone at
-    // <dir>-test, exactly as before nesting.
-    const nested = isNestedDir(project.dir)
+    // Every environment beside live is a worktree at <site>/<name> of the one repository the site
+    // shares. A flat live has no site folder or shared repository to put one in: its first deploy moves
+    // it into the nested layout, and that is the only route there.
+    if (!isNestedDir(project.dir)) return refuse('bad-request', 'deploy live once so it moves into the nested layout, then add environments')
     const site = siteOf(project.dir)
-    const dir = nested ? nestedDir(site, 'test') : `${project.dir}-test`
-    const composeName = nested ? `${project.id}-test` : posix.basename(dir)
+    const dir = nestedDir(site, name)
+    const composeName = `${project.id}-${name}`
+    const deletedCompose = await deletedComposeProblem(`${project.id} ${name}`, composeName, deps)
+    if (deletedCompose) return refuse('bad-request', deletedCompose)
     if (await deps.exists(dir)) return refuse('bad-request', `${dir} already exists`)
     // createProject splits the repository out of live straight after cloning, so a nested site without
     // one here is one somebody changed by hand: refused rather than guessed at.
     const repository = posix.join(site, 'git')
-    if (nested && !(await deps.exists(posix.join(repository, '.git')))) return refuse('unavailable', `${repository} has no repository to add test from`)
+    if (!(await deps.exists(posix.join(repository, '.git')))) return refuse('unavailable', `${repository} has no repository to add ${name} from`)
 
     // Same reasoning as createProject: refresh before the domain and port checks, not just inside
     // choosePort, so both see the same snapshot.
@@ -516,7 +587,9 @@ export async function addEnvironment(project: ProjectEntry, args: ProvisionAddEn
     const registry = deps.registry()
     const invalidProblem = invalidRegistryProblem(registry)
     if (invalidProblem) return refuse('unavailable', invalidProblem)
-    if (args.domain && domainTaken(registry, args.domain, project.id)) return refuse('bad-request', `${args.domain} is already used by another project`)
+    if (args.domain && hostnameTaken(registry, args.domain)) return refuse('bad-request', `${args.domain} is already used by another project or environment`)
+    const composeUser = composeNameUser(registry, composeName)
+    if (composeUser) return refuse('bad-request', `${project.id} ${name} would run under the compose name ${composeName}, which ${composeUser} already uses`)
 
     const port = await deps.choosePort()
     if (!port.ok) return refuse('unavailable', port.problem)
@@ -524,22 +597,21 @@ export async function addEnvironment(project: ProjectEntry, args: ProvisionAddEn
     const attempt = await provisionOnDisk({
         id: project.id,
         dir,
-        // Test's own folder only, in either layout: never the site folder, which is live's as much as
-        // test's.
+        // The new environment's own folder only: never the site folder, which is live's and every other
+        // environment's as much as this one's.
         root: dir,
-        source: nested ? { kind: 'worktree', repo: repository } : { kind: 'clone' },
+        source: { kind: 'worktree', repo: repository },
         repo: project.repo,
         branch: args.branch,
-        // The project already has a registry entry, so its own credential is what the test clone
-        // authenticates with too: the two environments of one project are one GitHub account.
+        // The project already has a registry entry, so its own credential is what the fetch
+        // authenticates with too: every environment of one project is one GitHub account.
         credential: project.credential,
-        // The live environment's own expected compose name: a test environment pinning it would share
-        // one compose project with live, and starting test would take over live's running containers.
+        // The live environment's own expected compose name: another environment pinning it would share
+        // one compose project with live, and starting it would take over live's running containers.
         collidesWith: project.composeName,
-        // The project's own folder, not /var/www: the site folder a nested test sits in, or the flat live
-        // folder a flat test sits beside and is a copy of. Whatever the operator chose for live is what
-        // test should match, the same way deploy.ts patterns a checkout on <dir> rather than on anything
-        // further out.
+        // The site folder the new environment sits in, not /var/www: whatever the operator chose for the
+        // site is what its environments should match, the same way deploy.ts patterns a checkout on
+        // <dir> rather than on anything further out.
         likeDir: site,
         composeName,
         compose: DEFAULT_COMPOSE,
@@ -548,10 +620,10 @@ export async function addEnvironment(project: ProjectEntry, args: ProvisionAddEn
         afterClone: async composePath => {
             const live = project.environments.get('live')
             if (!live) return { ok: true }
-            const test: EnvironmentEntry = {
-                name: 'test', dir, composePaths: [composePath], composeName, branch: args.branch, domain: args.domain, aliases: [], port: port.port, certificate: args.certificate, deployed: null, websockets: false, flexibleSsl: false,
+            const added: EnvironmentEntry = {
+                name, dir, composePaths: [composePath], composeName, branch: args.branch, domain: args.domain, aliases: [], port: port.port, certificate: args.certificate, deployed: null, websockets: false, flexibleSsl: false,
             }
-            const failures = await copyEnvFiles(project.id, live, test, envFs, deps)
+            const failures = await copyEnvFiles(project.id, live, added, envFs, deps)
             if (failures.length > 0) return { ok: false, problem: `could not copy ${failures.join(', ')} from the live environment` }
             // Fills any gap the copy above left: an env file live never had at all (so there was nothing
             // to copy) but the repo still commits an example for, on the same reasoning as createProject.
@@ -559,45 +631,36 @@ export async function addEnvironment(project: ProjectEntry, args: ProvisionAddEn
             for (const path of created) deps.log(`provision ${project.id}: created an empty ${path} for its .example`)
             return { ok: true }
         },
-        write: () => deps.writer.write({
+        write: (_services, written) => deps.writer.write({
             kind: 'add-environment',
             id: project.id,
-            environment: { name: 'test', dir, branch: args.branch, domain: args.domain, aliases: [], port: port.port, certificate: args.certificate },
+            environment: { name, dir, branch: args.branch, domain: args.domain, aliases: [], port: port.port, certificate: args.certificate, compose: written },
         }),
     }, deps)
     if (!attempt.ok) return attempt
 
-    const test: EnvironmentEntry = {
-        name: 'test', dir, composePaths: attempt.composePaths, composeName, branch: args.branch, domain: args.domain, aliases: [], port: port.port, certificate: args.certificate, deployed: null, websockets: false, flexibleSsl: false,
+    const added: EnvironmentEntry = {
+        name, dir, composePaths: attempt.composePaths, composeName, branch: args.branch, domain: args.domain, aliases: [], port: port.port, certificate: args.certificate, deployed: null, websockets: false, flexibleSsl: false,
     }
-    const envFiles = await listEnvFiles(test, envFs)
+    const envFiles = await listEnvFiles(added, envFs)
     return { ok: true, project: { id: project.id, state: 'needs-setup' }, envFiles }
 }
 
-export async function removeProject(project: ProjectEntry, environment: EnvironmentName | null, deps: ProvisionDeps): Promise<AgentReply> {
+// Removing a whole site. One environment is deleted into the site's trash instead (environment-trash.ts).
+export async function removeProject(project: ProjectEntry, deps: ProvisionDeps): Promise<AgentReply> {
     // Removing the whole project must stop it first: otherwise the site keeps serving with nothing left
     // in the registry able to stop it, since every lifecycle verb answers unknown-project the instant it
-    // is unregistered. runLifecycle only ever reaches the live environment's own compose file (there is
-    // no per-environment lifecycle yet, see RUNBOOK.md), which is exactly what removing a whole project,
-    // as opposed to only its test environment, needs stopped. A failed stop refuses rather than
-    // unregistering anyway: an operator can retry, or stop it by hand, but a project must never go
-    // unregistered while still running.
-    if (!environment) {
-        const stopped = await runLifecycle(project, 'stop', deps.runner)
-        if (!stopped.ok) return refuse('failed', `could not stop ${project.id} before removing it: ${stopped.message}`, stopped.output)
-    }
+    // is unregistered. A failed stop refuses rather than unregistering anyway: an operator can retry, or
+    // stop it by hand, but a project must never go unregistered while still running.
+    const stopped = await runLifecycle(project, 'stop', deps.runner)
+    if (!stopped.ok) return refuse('failed', `could not stop ${project.id} before removing it: ${stopped.message}`, stopped.output)
 
-    const change: Change = environment ? { kind: 'remove-environment', id: project.id, environment } : { kind: 'remove-project', id: project.id }
-    const written = await deps.writer.write(change)
+    const written = await deps.writer.write({ kind: 'remove-project', id: project.id })
     if (!written.ok) return refuse('failed', written.problem)
 
-    const dir = (environment ? project.environments.get(environment)?.dir : undefined) ?? project.dir
-    const stoppedNote = environment ? '' : ', its containers stopped first'
-    deps.log(`provision ${project.id}: unregistered${environment ? ` (${environment})` : ''}${stoppedNote}, left ${dir} in place`)
+    deps.log(`provision ${project.id}: unregistered, its containers stopped first, left ${project.dir} in place`)
     return {
         ok: true,
-        output: environment
-            ? `${dir} was left in place, along with its volumes and databases`
-            : `${project.id} was stopped and unregistered; ${dir} was left in place, along with its volumes and databases`,
+        output: `${project.id} was stopped and unregistered; ${project.dir} was left in place, along with its volumes and databases`,
     }
 }

@@ -188,6 +188,10 @@ export type ResolvedService = {
     // As `docker compose config --format json` writes them: published is a string ("5012", or a range
     // like "6000-6002") or, from some compose versions, a number. Absent when the port is not published.
     ports?: Array<{ target?: number, published?: string | number, host_ip?: string, protocol?: string }>
+    // As config writes them: the container ports a service says it listens on without publishing any
+    expose?: Array<string | number>
+    // 'host' makes compose ignore ports altogether, so hostd cannot choose the port such a service binds
+    network_mode?: string
 }
 export type ResolvedCompose = { name: string, services: Record<string, ResolvedService> }
 
@@ -270,7 +274,7 @@ function repositoryOf(image: string): string {
     return tagColon === -1 ? withoutDigest : withoutDigest.slice(0, tagColon)
 }
 
-function guessRole(service: ResolvedService): GuessedService {
+export function guessRole(service: ResolvedService): GuessedService {
     if (service.image) {
         const repository = repositoryOf(service.image).toLowerCase()
         const database = DATABASE_IMAGES.find(({ match }) => repository.includes(match))
