@@ -8,6 +8,7 @@ import {
     type Capability, type CertificateMode, type EnvironmentFlag, type EnvironmentName, type Keep, type ProjectEntry, type Registry,
 } from './registry.ts'
 import { normaliseHostname } from './hostnames.ts'
+import { PORT_RANGE, type OwnPort } from './ports.ts'
 import type { Commit } from './fetch-protocol.ts'
 import type { DeployRecord, DeployTrigger } from './deploys.ts'
 import type { EnvFileList } from './envfiles.ts'
@@ -68,6 +69,9 @@ export type ProvisionCreateArgs = {
     capabilities?: Capability[]
     websockets?: boolean
     flexibleSsl?: boolean
+    // The live environment's port. Absent means hostd chooses the lowest free one, which is what the
+    // runbook's hand calls and every create before this field got.
+    port?: number
 }
 export type ProvisionAddEnvironmentArgs = {
     action: 'add-environment'
@@ -99,6 +103,10 @@ export type DeployHistoryArgs = { action: 'history', environment: EnvironmentNam
 export type DeployCommitsArgs = { action: 'commits', environment: EnvironmentName, limit: number }
 export type DeployArgs = DeployStartArgs | DeployRollbackArgs | DeployBranchArgs | DeployHistoryArgs | DeployCommitsArgs
 export type DeployRequest = { verb: 'deploy', project: string, args: DeployArgs }
+
+// Its own verb rather than a deploy action, because every action in parseDeployArgs answers with an
+// AgentReply and this answers with a stream. logs is the same shape for the same reason.
+export type DeployWatchRequest = { verb: 'deploy-watch', project: string, args: { environment: EnvironmentName } }
 
 // Restic's own short ids are hex, and this is checked here, where every other request shape is checked,
 // so a malformed id can never reach a repository path or a command.
@@ -215,10 +223,19 @@ export type BranchesRequest = { verb: 'branches', project: string }
 // a fact about the machine, not about a site.
 export type CredentialsRequest = { verb: 'credentials' }
 
+// Whether a port is free, for the portal's live check, and the lowest one that is. No project: this is a
+// question about the machine. own names the environment the port is for, whose current port is its own.
+// Advice only: a create or a port change checks again, under the provisioning lock.
+export type PortsArgs = { port: number | null, own: OwnPort | null }
+export type PortsRequest = { verb: 'ports', args: PortsArgs }
+
+// Moving one environment to another port. Admin only, by api's policy (configure).
+export type PortRequest = { verb: 'port', project: string, args: { environment: EnvironmentName, port: number } }
+
 export type ProjectRequest =
-    | StatusRequest | LifecycleRequest | LogsRequest | ProvisionOnProjectRequest | EnvRequest | DeployRequest
-    | BackupRequest | DomainsRequest | ConfigureRequest | BranchesRequest
-export type AgentRequest = HealthRequest | StatusesRequest | ProvisionCreateRequest | CredentialsRequest | ProjectRequest
+    | StatusRequest | LifecycleRequest | LogsRequest | ProvisionOnProjectRequest | EnvRequest | DeployRequest | DeployWatchRequest
+    | BackupRequest | DomainsRequest | ConfigureRequest | BranchesRequest | PortRequest
+export type AgentRequest = HealthRequest | StatusesRequest | ProvisionCreateRequest | CredentialsRequest | PortsRequest | ProjectRequest
 export type Verb = AgentRequest['verb']
 
 export type RefusalCode =
@@ -276,6 +293,7 @@ export type DeployHistoryReply = {
 export type DeployCommitsReply = { ok: true, commits: Commit[] }
 export type BranchesReply = { ok: true, branches: string[] }
 export type CredentialsReply = { ok: true, credentials: string[] }
+export type PortsReply = { ok: true, suggested: number, problem: string | null }
 // What configure put on the host, one entry per environment whose address moved onto a vhost hostd
 // already owned. Deliberately the same hostnames-and-path shape DomainsWritten carries, with the
 // environment added because configure takes several at once: api turns both into the same records, so a
@@ -288,7 +306,7 @@ export type ConfigureReply = { ok: true, output: string, written: ConfigureWritt
 export type StreamHeader = { ok: true, stream: true }
 export type AgentReply =
     | HealthReply | StatusReply | StatusesReply | LifecycleReply | ProvisionReply | EnvListReply | EnvReadReply
-    | DeployStartedReply | DeployHistoryReply | DeployCommitsReply | BranchesReply | CredentialsReply | ConfigureReply
+    | DeployStartedReply | DeployHistoryReply | DeployCommitsReply | BranchesReply | CredentialsReply | PortsReply | ConfigureReply
     | BackupStartedReply | BackupListReply | BackupRunReply
     | DomainsWritten | AdoptPreview | Refusal
 export type LogLine = { stream: 'stdout' | 'stderr', ts: string | null, text: string, truncated: boolean }
@@ -305,6 +323,7 @@ export const VERB_CAPABILITY: Record<Verb, Capability | null> = {
     // Reading the history and the commit list is the half of this a client may use; api's policy is
     // where that split lives, because only api knows who is asking.
     deploy: 'deploy',
+    'deploy-watch': 'deploy',
     backup: 'backups',
     domains: 'domains',
     // Null, and this is load bearing. Gating the verb that edits capabilities on a capability would mean
@@ -318,6 +337,10 @@ export const VERB_CAPABILITY: Record<Verb, Capability | null> = {
     // Null for the same reason branches is: it fills the Settings form, and api's policy is what makes
     // it admin-only.
     credentials: null,
+    // Null for the same reason: api's policy makes it admin-only.
+    ports: null,
+    // Null, like configure: api's policy makes it admin-only.
+    port: null,
 }
 
 type Parsed = { ok: true, request: AgentRequest } | Refusal
@@ -361,10 +384,10 @@ function parseLogsArgs(args: unknown): LogsArgs | Refusal {
 // request line.
 export const CREATE_KEYS = [
     'id', 'client', 'name', 'repo', 'credential', 'branch', 'domain', 'certificate',
-    'dir', 'compose', 'capabilities', 'websockets', 'flexibleSsl',
+    'dir', 'compose', 'capabilities', 'websockets', 'flexibleSsl', 'port',
 ] as const
 
-type CreateExtras = Pick<ProvisionCreateArgs, 'client' | 'dir' | 'compose' | 'capabilities' | 'websockets' | 'flexibleSsl'>
+type CreateExtras = Pick<ProvisionCreateArgs, 'client' | 'dir' | 'compose' | 'capabilities' | 'websockets' | 'flexibleSsl' | 'port'>
 
 // The optional half of a create, shared by both parsers and by the agent's own check so the three cannot
 // drift. Each field is either absent or fully valid by the time it comes back: grammar here, and what is
@@ -406,6 +429,13 @@ export function parseCreateExtras(raw: Record<string, unknown>): { ok: true, ext
         if (raw[flag] === undefined) continue
         if (typeof raw[flag] !== 'boolean') return { ok: false, message: `${flag} must be true or false` }
         extras[flag] = raw[flag] as boolean
+    }
+    if (raw.port !== undefined) {
+        // The range only: whether a port is free is the agent's to say, against the registry and the host
+        if (typeof raw.port !== 'number' || !Number.isInteger(raw.port) || raw.port < PORT_RANGE.from || raw.port > PORT_RANGE.to) {
+            return { ok: false, message: `port must be a whole number from ${PORT_RANGE.from} to ${PORT_RANGE.to}` }
+        }
+        extras.port = raw.port
     }
     return { ok: true, extras }
 }
@@ -780,6 +810,22 @@ export function parseAgentRequest(line: string): Parsed {
             return { ok: true, request: { verb: 'credentials' } }
         }
 
+        case 'ports': {
+            if (!onlyKeys(raw, ['verb', 'args'])) return refuse('bad-request', 'ports takes only args')
+            if (!isRecord(raw.args) || !onlyKeys(raw.args, ['port', 'own'])) return refuse('bad-request', 'ports takes only args.port and args.own')
+            const { port, own } = raw.args
+            // Any whole port number: the range is part of the answer (portProblem says it), not a refusal
+            if (port !== null && (typeof port !== 'number' || !Number.isInteger(port) || port < 1 || port > 65535)) {
+                return refuse('bad-request', 'port must be null or a whole number from 1 to 65535')
+            }
+            if (own !== null && (!isRecord(own) || !onlyKeys(own, ['project', 'environment'])
+                || typeof own.project !== 'string' || !PROJECT_ID.test(own.project)
+                || !(ENVIRONMENTS as readonly unknown[]).includes(own.environment))) {
+                return refuse('bad-request', 'own must be null or a project and one of its environments')
+            }
+            return { ok: true, request: { verb: 'ports', args: { port: port as number | null, own: own as OwnPort | null } } }
+        }
+
         case 'status': {
             if (!onlyKeys(raw, ['verb', 'project'])) return refuse('bad-request', 'status takes only project')
             const project = projectOf(raw)
@@ -843,6 +889,19 @@ export function parseAgentRequest(line: string): Parsed {
             return { ok: true, request: { verb: 'deploy', project, args } }
         }
 
+        case 'deploy-watch': {
+            if (!onlyKeys(raw, ['verb', 'project', 'args'])) return refuse('bad-request', 'deploy-watch takes only project and args')
+            const project = projectOf(raw)
+            if (!project) return refuse('bad-request', 'project is malformed')
+            if (!isRecord(raw.args)) return refuse('bad-request', 'deploy-watch requires args')
+            if (!onlyKeys(raw.args, ['environment'])) return refuse('bad-request', 'deploy-watch takes only environment')
+            const environment = raw.args.environment
+            if (typeof environment !== 'string' || !(ENVIRONMENTS as readonly string[]).includes(environment)) {
+                return refuse('bad-request', 'environment must be live or test')
+            }
+            return { ok: true, request: { verb: 'deploy-watch', project, args: { environment: environment as EnvironmentName } } }
+        }
+
         case 'backup': {
             if (!onlyKeys(raw, ['verb', 'project', 'args'])) return refuse('bad-request', 'backup takes only project and args')
             const project = projectOf(raw)
@@ -877,6 +936,19 @@ export function parseAgentRequest(line: string): Parsed {
             return { ok: true, request: { verb: 'branches', project } }
         }
 
+        case 'port': {
+            if (!onlyKeys(raw, ['verb', 'project', 'args'])) return refuse('bad-request', 'port takes only project and args')
+            const project = projectOf(raw)
+            if (!project) return refuse('bad-request', 'project is malformed')
+            if (!isRecord(raw.args) || !onlyKeys(raw.args, ['environment', 'port'])) return refuse('bad-request', 'port takes only args.environment and args.port')
+            const { environment, port } = raw.args
+            if (!(ENVIRONMENTS as readonly unknown[]).includes(environment)) return refuse('bad-request', 'environment must be live or test')
+            if (typeof port !== 'number' || !Number.isInteger(port) || port < PORT_RANGE.from || port > PORT_RANGE.to) {
+                return refuse('bad-request', `port must be a whole number from ${PORT_RANGE.from} to ${PORT_RANGE.to}`)
+            }
+            return { ok: true, request: { verb: 'port', project, args: { environment: environment as EnvironmentName, port } } }
+        }
+
         default:
             return refuse('bad-request', 'unknown verb')
     }
@@ -902,15 +974,19 @@ export function checkStructure(
     const guardProblem = guardInvalid.get(id)
     if (guardProblem !== undefined && !removingProject) return refuse('invalid-project', `${id} is invalid: ${guardProblem}`)
 
+    // Removing the whole project needs no capability, matching api's 'remove' policy verb: gating it would
+    // leave a project that was never given provision impossible to remove. Removing one environment is
+    // still provision's.
+    const removingWhole = request.verb === 'provision' && request.args.action === 'remove' && request.args.environment === null
     const capability = VERB_CAPABILITY[request.verb]
-    if (capability && !project.capabilities.has(capability)) return refuse('capability-disabled', `${capability} is not enabled for ${id}`)
+    if (capability && !removingWhole && !project.capabilities.has(capability)) return refuse('capability-disabled', `${capability} is not enabled for ${id}`)
 
     if (request.verb === 'logs') {
         const service = request.args.service
         const entry = Object.hasOwn(project.services, service) ? project.services[service] : undefined
         if (!entry || !isComposeService(entry)) return refuse('unknown-service', `${service} is not a registered service of ${id}`)
     }
-    if ((request.verb === 'env' || request.verb === 'deploy') && !environmentOf(project, request.args.environment)) {
+    if ((request.verb === 'env' || request.verb === 'deploy' || request.verb === 'deploy-watch' || request.verb === 'port') && !environmentOf(project, request.args.environment)) {
         return refuse('unknown-environment', `${id} has no ${request.args.environment} environment`)
     }
     return { ok: true, project }

@@ -285,6 +285,42 @@ describe('set-flag', () => {
     })
 })
 
+describe('set-port', () => {
+    it('writes the environment\'s port', () => {
+        const result = applyChange(BASE, { kind: 'set-port', id: 'acme', environment: 'live', port: 5099 })
+        assert.equal(result.ok, true)
+        assert.equal(parseRegistry(result.ok ? result.text : '').projects.get('acme')?.environments.get('live')?.port, 5099)
+    })
+
+    it('refuses an environment that does not exist', () => {
+        assert.equal(applyChange(BASE, { kind: 'set-port', id: 'acme', environment: 'test', port: 5099 }).ok, false)
+    })
+
+    // BASE has only one project, so NO_DOMAIN (acme and backroom, both live) is what has a second
+    // project's port to collide with. One rule about sharing a port, parseRegistry's, not a second copy here.
+    it('refuses a port another project already has', () => {
+        const other = parseRegistry(NO_DOMAIN)
+        const taken = [...other.projects.values()].find(project => project.id !== 'acme')!.environments.get('live')!.port
+        assert.equal(applyChange(NO_DOMAIN, { kind: 'set-port', id: 'acme', environment: 'live', port: taken }).ok, false)
+    })
+
+    // A port change's undo writes the old port back over the entry the change just reshaped, so both
+    // writes have to land on a legacy entry whose port lives inside upstream
+    it('reshapes a live-only entry to environments, and takes the old port back afterwards', () => {
+        const moved = applyChange(LIVE_ONLY, { kind: 'set-port', id: 'arbysauto', environment: 'live', port: 5099 })
+        assert.ok(moved.ok, moved.ok ? '' : moved.problem)
+        assert.doesNotMatch(moved.text, /upstream:/)
+        assert.match(moved.text, /environments:/)
+        const entry = parseRegistry(moved.text).projects.get('arbysauto')!
+        assert.equal(entry.environments.get('live')?.port, 5099)
+        assert.equal(entry.environments.get('live')?.dir, '/var/www/arbysauto')
+
+        const back = applyChange(moved.text, { kind: 'set-port', id: 'arbysauto', environment: 'live', port: 5011 })
+        assert.ok(back.ok, back.ok ? '' : back.problem)
+        assert.equal(parseRegistry(back.text).projects.get('arbysauto')?.environments.get('live')?.port, 5011)
+    })
+})
+
 describe('configure', () => {
     // The body the portal's form actually sends. It sends every field on every save, one branches entry
     // per environment, and a blank branch field becomes null: a live-only entry has a synthesised live

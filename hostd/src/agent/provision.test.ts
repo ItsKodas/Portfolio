@@ -1,13 +1,14 @@
 import { describe, it } from 'node:test'
 import assert from 'node:assert/strict'
 
-import { createProject, addEnvironment, removeProject, type ProvisionDeps } from './provision.ts'
+import { createProject, addEnvironment, removeProject, notPublishedProblem, type ProvisionDeps } from './provision.ts'
 import { RegistryWriter, type RegistryWriteFs } from '../shared/registry-write.ts'
 import { parseRegistry, type ProjectEntry } from '../shared/registry.ts'
 import type { EnvFs } from './env-files.ts'
 import { lifecycleArgv, type GuessedService, type Runner, type RunResult } from './compose.ts'
 import type { ProvisionCreateArgs, ProvisionAddEnvironmentArgs } from '../shared/protocol.ts'
 import type { FetchReply, FetchRequest } from '../shared/fetch-protocol.ts'
+import type { PortVerdict } from '../shared/ports.ts'
 
 const REGISTRY_PATH = '/etc/hostd/projects.yaml'
 
@@ -105,8 +106,10 @@ type SetupOptions = {
     // Per verb, for the fetch, tip and checkout a nested test environment is made with; any verb not
     // named here answers like a successful clone.
     fetchResults?: Partial<Record<FetchRequest['verb'], FetchReply>>
-    resolveResult?: { ok: true, services: Record<string, GuessedService> } | { ok: false, problem: string }
+    resolveResult?: { ok: true, services: Record<string, GuessedService>, published: number[] } | { ok: false, problem: string }
     portResult?: { ok: true, port: number } | { ok: false, problem: string }
+    checkResult?: PortVerdict
+    setPortResult?: { ok: true, previous: string | null } | { ok: false, problem: string }
     existsPaths?: string[]
     envTree?: Record<string, string>
     runnerResult?: Partial<RunResult>
@@ -134,6 +137,7 @@ function setup(options: SetupOptions = {}) {
     const resolveCalls: Array<{ expectedName: string, dir: string, composePaths: string[], collidesWith?: string }> = []
     const ownerPaths: string[] = []
     const ownCalls: Array<{ dir: string, like: { uid: number, gid: number, mode: number } }> = []
+    const portEnvCalls: Array<{ dir: string, key: string, port: number }> = []
 
     const registryFiles = new Map<string, string>([[REGISTRY_PATH, yaml]])
     const registryFs: RegistryWriteFs = {
@@ -179,6 +183,15 @@ function setup(options: SetupOptions = {}) {
             calls.push('choosePort')
             return options.portResult ?? { ok: true, port: 5100 }
         },
+        checkPort: async () => {
+            calls.push('checkPort')
+            return options.checkResult ?? { ok: true }
+        },
+        setPortEnv: async (environment, key, port) => {
+            calls.push('setPortEnv')
+            portEnvCalls.push({ dir: environment.dir, key, port })
+            return options.setPortResult ?? { ok: true, previous: null }
+        },
         mkdir: async dir => { calls.push('mkdir'); mkdirs.push(dir); steps.push(`mkdir ${dir}`) },
         move: async (from, to) => { calls.push('move'); moves.push(`${from} ${to}`); steps.push(`move ${from} ${to}`) },
         rmdir: async dir => { calls.push('rmdir'); rmdirs.push(dir); steps.push(`rmdir ${dir}`) },
@@ -194,7 +207,7 @@ function setup(options: SetupOptions = {}) {
         resolve: async (expectedName, dir, composePaths, collidesWith) => {
             calls.push('resolve')
             resolveCalls.push({ expectedName, dir, composePaths, collidesWith })
-            return options.resolveResult ?? { ok: true, services: { web: { role: 'site' } } }
+            return options.resolveResult ?? { ok: true, services: { web: { role: 'site' } }, published: [5100] }
         },
         runner: (async (command, args) => {
             runnerCalls.push({ command, args })
@@ -203,7 +216,7 @@ function setup(options: SetupOptions = {}) {
         log: message => logs.push(message),
     }
 
-    return { deps, registry, calls, steps, mkdirs, moves, rmdirs, cloneRequests, fetchRequests, logs, registryFiles, envFs, envFsFiles, runnerCalls, resolveCalls, ownerPaths, ownCalls }
+    return { deps, registry, calls, steps, mkdirs, moves, rmdirs, cloneRequests, fetchRequests, logs, registryFiles, envFs, envFsFiles, runnerCalls, resolveCalls, ownerPaths, ownCalls, portEnvCalls }
 }
 
 const createArgs = (overrides: Partial<ProvisionCreateArgs> = {}): ProvisionCreateArgs => ({
@@ -288,7 +301,7 @@ describe('createProject', () => {
     })
 
     it('writes a database service resolve guessed, not only site services', async () => {
-        const { deps, registryFiles } = setup({ resolveResult: { ok: true, services: { web: { role: 'site' }, db: { role: 'database', engine: 'postgres' } } } })
+        const { deps, registryFiles } = setup({ resolveResult: { ok: true, services: { web: { role: 'site' }, db: { role: 'database', engine: 'postgres' } }, published: [5100] } })
         const reply = await createProject(createArgs(), deps)
         assert.equal(reply.ok, true)
         const bakery = parseRegistry(registryFiles.get(REGISTRY_PATH)!).projects.get('bakery')
@@ -298,7 +311,52 @@ describe('createProject', () => {
     it('does those in order, so nothing is registered before it exists on disk', async () => {
         const { deps, calls } = setup()
         await createProject(createArgs(), deps)
-        assert.deepEqual(calls, ['exists', 'choosePort', 'mkdir', 'mkdir', 'clone', 'mkdir', 'move', 'owner', 'own', 'resolve', 'write'])
+        assert.deepEqual(calls, ['exists', 'choosePort', 'mkdir', 'mkdir', 'clone', 'mkdir', 'move', 'setPortEnv', 'owner', 'own', 'resolve', 'write'])
+    })
+
+    it('writes the chosen port into .env under WEB_PORT before resolving', async () => {
+        const { deps, portEnvCalls, calls } = setup()
+        await createProject(createArgs(), deps)
+        assert.deepEqual(portEnvCalls, [{ dir: '/var/www/bakery/live', key: 'WEB_PORT', port: 5100 }])
+        assert.ok(calls.indexOf('setPortEnv') < calls.indexOf('resolve'))
+    })
+
+    it('uses the port it was given, checked, instead of choosing one', async () => {
+        const { deps, calls, portEnvCalls, registryFiles } = setup({ resolveResult: { ok: true, services: { web: { role: 'site' } }, published: [5012] } })
+        const reply = await createProject(createArgs({ port: 5012 }), deps)
+        assert.equal(reply.ok, true)
+        assert.ok(calls.includes('checkPort'))
+        assert.ok(!calls.includes('choosePort'))
+        assert.equal(portEnvCalls[0]?.port, 5012)
+        assert.equal(parseRegistry(registryFiles.get(REGISTRY_PATH)!).projects.get('bakery')?.environments.get('live')?.port, 5012)
+    })
+
+    it('refuses a port the check refuses, before touching the disk', async () => {
+        const { deps, calls } = setup({ checkResult: { ok: false, code: 'bad-request', problem: 'port 5004 is in use on the host' } })
+        const reply = await createProject(createArgs({ port: 5004 }), deps)
+        assert.deepEqual(reply, { ok: false, code: 'bad-request', message: 'port 5004 is in use on the host' })
+        assert.ok(!calls.includes('mkdir'))
+    })
+
+    it('refuses as unavailable when the host could not be read', async () => {
+        const { deps } = setup({ checkResult: { ok: false, code: 'unavailable', problem: 'could not read the host\'s ports: the probe timed out' } })
+        const reply = await createProject(createArgs({ port: 5012 }), deps)
+        assert.equal(reply.ok === false && reply.code, 'unavailable')
+    })
+
+    it('rolls back when no service publishes the port', async () => {
+        const { deps, rmdirs, calls } = setup({ resolveResult: { ok: true, services: { web: { role: 'site' } }, published: [3000] } })
+        const reply = await createProject(createArgs(), deps)
+        assert.deepEqual(reply, { ok: false, code: 'invalid-project', message: notPublishedProblem('WEB_PORT', 5100) })
+        assert.deepEqual(rmdirs, ['/var/www/bakery'])
+        assert.ok(!calls.includes('write'))
+    })
+
+    it('rolls back when .env cannot be written', async () => {
+        const { deps, rmdirs } = setup({ setPortResult: { ok: false, problem: 'the env file could not be written: EACCES' } })
+        const reply = await createProject(createArgs(), deps)
+        assert.deepEqual(reply, { ok: false, code: 'failed', message: 'the env file could not be written: EACCES' })
+        assert.deepEqual(rmdirs, ['/var/www/bakery'])
     })
 
     // The clone runs as root, in the fetcher, and the empty env files the step after it creates are
@@ -378,7 +436,7 @@ describe('createProject', () => {
     })
 
     it('removes the folder and writes nothing when the compose file has no site service', async () => {
-        const { deps: emptyDeps, rmdirs: emptyRmdirs, calls: emptyCalls } = setup({ resolveResult: { ok: true, services: {} } })
+        const { deps: emptyDeps, rmdirs: emptyRmdirs, calls: emptyCalls } = setup({ resolveResult: { ok: true, services: {}, published: [] } })
         const empty = await createProject(createArgs(), emptyDeps)
         assert.equal(empty.ok, false)
         assert.equal(empty.ok === false && empty.code, 'invalid-project')
@@ -410,7 +468,7 @@ describe('createProject', () => {
         assert.equal(reply.ok, false)
         assert.equal(reply.ok === false && reply.code, 'failed')
         assert.deepEqual(rmdirs, ['/var/www/bakery'])
-        assert.deepEqual(calls, ['exists', 'choosePort', 'mkdir', 'mkdir', 'clone', 'mkdir', 'move', 'owner', 'own', 'resolve', 'rmdir'])
+        assert.deepEqual(calls, ['exists', 'choosePort', 'mkdir', 'mkdir', 'clone', 'mkdir', 'move', 'setPortEnv', 'owner', 'own', 'resolve', 'rmdir'])
     })
 
     it('refuses an id that is taken, reserved or malformed, before touching the disk', async () => {
@@ -423,11 +481,11 @@ describe('createProject', () => {
         }
     })
 
-    // Must-exist, per the whole-branch review: takenPorts only ever sees registry.projects, which
-    // excludes anything already invalid, and Docker's own published ports only see running containers, so
-    // a temporarily invalid entry whose containers are stopped is invisible to both. Refusing outright
-    // while anything is invalid is the honest fix, named here rather than only in ports.ts, since that is
-    // where provisioning as a whole is refused.
+    // Must-exist, per the whole-branch review: the port check's registry side only ever sees
+    // registry.projects, which excludes anything already invalid, and the host's listening ports only show
+    // what is running, so a temporarily invalid entry whose containers are stopped is invisible to both.
+    // Refusing outright while anything is invalid is the honest fix, named here rather than only in
+    // ports.ts, since that is where provisioning as a whole is refused.
     it('refuses provisioning entirely while the registry has any invalid entry, naming it', async () => {
         const yaml = `${REGISTRY_YAML}  broken:\n    client: cl_9\n`
         const { deps, calls } = setup({ registryYaml: yaml })
@@ -555,7 +613,10 @@ describe('addEnvironment', () => {
     })
 
     it('names the test environment folder <id>-test and gives it its own port', async () => {
-        const { deps, mkdirs, cloneRequests, registryFiles } = setup({ portResult: { ok: true, port: 5200 } })
+        const { deps, mkdirs, cloneRequests, registryFiles } = setup({
+            portResult: { ok: true, port: 5200 },
+            resolveResult: { ok: true, services: { web: { role: 'site' } }, published: [5200] },
+        })
         const reply = await addEnvironment(project(), args(), deps)
         assert.equal(reply.ok, true)
         assert.deepEqual(mkdirs, ['/var/www/acme-test'])
@@ -566,6 +627,13 @@ describe('addEnvironment', () => {
         assert.equal(test?.dir, '/var/www/acme-test')
         assert.equal(test?.port, 5200)
         assert.equal(test?.domain, 'test.acme.com')
+    })
+
+    it('writes the test environment\'s own port over the one copied from live', async () => {
+        const { deps, portEnvCalls } = setup()
+        const reply = await addEnvironment(project(), args(), deps)
+        assert.equal(reply.ok, true)
+        assert.deepEqual(portEnvCalls, [{ dir: '/var/www/acme-test', key: 'WEB_PORT', port: 5100 }])
     })
 
     it('clones a new environment with the credential the project already has', async () => {
@@ -608,6 +676,22 @@ describe('addEnvironment', () => {
         assert.ok(calls.includes('own'))
         assert.ok(calls.indexOf('clone') < calls.indexOf('own'))
         assert.ok(calls.indexOf('own') < calls.indexOf('write'))
+    })
+
+    // The copy carries live's WEB_PORT across, so writing test's own port first would be overwritten by
+    // live's and test would start on live's port
+    it('writes the port into .env after the live env files are copied across', async () => {
+        const { deps, envFs, envFsFiles } = setup({ envTree: { '/var/www/acme/.env': 'WEB_PORT=5010\n' } })
+        let copiedFirst: string | undefined
+        deps.setPortEnv = async (environment, key, port) => {
+            copiedFirst = envFsFiles.get(`${environment.dir}/.env`)
+            envFsFiles.set(`${environment.dir}/.env`, `${key}=${port}\n`)
+            return { ok: true, previous: copiedFirst ?? null }
+        }
+        const reply = await addEnvironment(project(), args(), deps, envFs)
+        assert.equal(reply.ok, true)
+        assert.equal(copiedFirst, 'WEB_PORT=5010\n')
+        assert.equal(envFsFiles.get('/var/www/acme-test/.env'), 'WEB_PORT=5100\n')
     })
 
     it('removes the folder and writes nothing when the cloned tree cannot be given that ownership', async () => {
@@ -686,7 +770,7 @@ describe('addEnvironment', () => {
     })
 
     it('removes the folder and writes nothing when the compose file has no site service', async () => {
-        const { deps, rmdirs, calls } = setup({ resolveResult: { ok: true, services: {} } })
+        const { deps, rmdirs, calls } = setup({ resolveResult: { ok: true, services: {}, published: [] } })
         const reply = await addEnvironment(project(), args(), deps)
         assert.equal(reply.ok, false)
         assert.equal(reply.ok === false && reply.code, 'invalid-project')

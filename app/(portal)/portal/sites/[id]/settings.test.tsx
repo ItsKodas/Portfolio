@@ -3,15 +3,23 @@ import userEvent from '@testing-library/user-event'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 const saveSettingsAction = vi.fn()
+const deleteSiteAction = vi.fn()
 const refresh = vi.fn()
+const push = vi.fn()
 
-vi.mock('next/navigation', () => ({ useRouter: () => ({ refresh: () => refresh() }) }))
-vi.mock('./actions', () => ({ saveSettingsAction: (...args: unknown[]) => saveSettingsAction(...args) }))
+vi.mock('next/navigation', () => ({ useRouter: () => ({ refresh: () => refresh(), push: (to: string) => push(to) }) }))
+vi.mock('./actions', () => ({
+    saveSettingsAction: (...args: unknown[]) => saveSettingsAction(...args),
+    deleteSiteAction: (...args: unknown[]) => deleteSiteAction(...args),
+    setPortAction: vi.fn(),
+}))
+vi.mock('../portActions', () => ({ checkPortAction: async () => ({ ok: true, suggested: 5012, problem: null }) }))
 
 const { SiteSettingsForm } = await import('./settings')
 
 const props = {
     id: 'arbysauto',
+    name: 'Arbys Auto Glass',
     capabilities: ['lifecycle', 'logs'],
     repo: null,
     credential: null,
@@ -169,6 +177,11 @@ describe('the settings form', () => {
         render(<SiteSettingsForm {...props} />)
         expect(screen.getByText('/var/www/arbysauto')).toBeInTheDocument()
         expect(screen.queryByLabelText(/dir/i)).toBeNull()
+    })
+
+    it('shows each environment\'s port in its own control', () => {
+        render(<SiteSettingsForm {...props} />)
+        expect(screen.getByLabelText('live port')).toHaveValue('5011')
     })
 
     it('re-reads the page once the save lands, so the tabs it gates come back enabled', async () => {
@@ -336,5 +349,50 @@ describe('the account select', () => {
         render(<SiteSettingsForm {...props} credential="acme" credentials={null} credentialsError="hostd could not be reached." />)
 
         expect(screen.getByText(/could not be read/i)).toBeInTheDocument()
+    })
+})
+
+describe('deleting the site', () => {
+    it('only lets Delete through once the name is typed back exactly', async () => {
+        render(<SiteSettingsForm {...props} />)
+        await userEvent.click(screen.getByRole('button', { name: 'Delete site' }))
+
+        const dialog = screen.getByRole('dialog')
+        const confirm = within(dialog).getByRole('button', { name: 'Delete site' })
+        expect(confirm).toBeDisabled()
+
+        await userEvent.type(within(dialog).getByLabelText(/type arbys auto glass to confirm/i), 'arbys auto glass')
+        expect(confirm).toBeDisabled()
+
+        await userEvent.clear(within(dialog).getByLabelText(/to confirm/i))
+        await userEvent.type(within(dialog).getByLabelText(/to confirm/i), 'Arbys Auto Glass')
+        expect(confirm).toBeEnabled()
+        expect(deleteSiteAction).not.toHaveBeenCalled()
+    })
+
+    it('deletes, then leaves for the dashboard', async () => {
+        deleteSiteAction.mockResolvedValue({ ok: true, message: 'Deleted.' })
+        render(<SiteSettingsForm {...props} />)
+        await userEvent.click(screen.getByRole('button', { name: 'Delete site' }))
+
+        const dialog = screen.getByRole('dialog')
+        await userEvent.type(within(dialog).getByLabelText(/to confirm/i), 'Arbys Auto Glass')
+        await userEvent.click(within(dialog).getByRole('button', { name: 'Delete site' }))
+
+        expect(deleteSiteAction).toHaveBeenCalledWith('arbysauto', 'Arbys Auto Glass')
+        expect(push).toHaveBeenCalledWith('/portal')
+    })
+
+    it('stays on the page and says why when hostd refuses', async () => {
+        deleteSiteAction.mockResolvedValue({ ok: false, error: 'could not stop arbysauto before removing it' })
+        render(<SiteSettingsForm {...props} />)
+        await userEvent.click(screen.getByRole('button', { name: 'Delete site' }))
+
+        const dialog = screen.getByRole('dialog')
+        await userEvent.type(within(dialog).getByLabelText(/to confirm/i), 'Arbys Auto Glass')
+        await userEvent.click(within(dialog).getByRole('button', { name: 'Delete site' }))
+
+        expect(await within(dialog).findByText(/could not stop arbysauto/)).toBeInTheDocument()
+        expect(push).not.toHaveBeenCalled()
     })
 })

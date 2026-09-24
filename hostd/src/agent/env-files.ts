@@ -175,6 +175,20 @@ export async function readEnvFile(
     }
 }
 
+// readEnvFile, except that a file that is not there is an answer (null) rather than a failure. The port
+// writer needs the difference: it creates .env when a repo has none, and puts back exactly what was there
+// when a port change is undone.
+export async function readEnvFileIfPresent(
+    environment: EnvironmentEntry, relative: string, fs: EnvFs = nodeFs,
+): Promise<{ ok: true, text: string | null } | { ok: false, problem: string }> {
+    try {
+        await fs.stat(posix.join(environment.dir, relative))
+    } catch {
+        return { ok: true, text: null }
+    }
+    return readEnvFile(environment, relative, fs)
+}
+
 export async function writeEnvFile(
     environment: EnvironmentEntry, relative: string, text: string, fs: EnvFs = nodeFs,
 ): Promise<{ ok: true } | { ok: false, problem: string }> {

@@ -6,7 +6,7 @@ import { PROJECT_ID, SERVICE_NAME, isRecord, describeError } from '../shared/for
 import {
     LIFECYCLE_ACTIONS, MAX_TAIL, DEFAULT_TAIL, MAX_REQUEST_BYTES, MAX_COMMITS, DEFAULT_COMMITS,
     SNAPSHOT_ID, RUN_ID, CREATE_KEYS, parseConfigureArgs, parseCreateExtras,
-    type AgentReply, type AgentRequest, type LifecycleAction, type LogsArgs, type ProjectStatus, type Refusal,
+    type AgentReply, type AgentRequest, type LifecycleAction, type LogsArgs, type PortsArgs, type ProjectStatus, type Refusal,
     type RefusalCode, type ProvisionCreateArgs, type ProvisionAddEnvironmentArgs,
 } from '../shared/protocol.ts'
 import {
@@ -72,6 +72,7 @@ export type Route =
     | { verb: 'health' }
     | { verb: 'audit-all' }
     | { verb: 'credentials' }
+    | { verb: 'ports' }
     | { verb: 'status', project: string }
     | { verb: 'lifecycle', project: string, action: LifecycleAction }
     | { verb: 'logs', project: string }
@@ -85,8 +86,10 @@ export type Route =
     | { verb: 'env-list', project: string, environment: EnvironmentName }
     | { verb: 'env-file', project: string, environment: EnvironmentName, path: string }
     | { verb: 'deploy', project: string, environment: EnvironmentName }
+    | { verb: 'deploy-watch', project: string, environment: EnvironmentName }
     | { verb: 'rollback', project: string, environment: EnvironmentName }
     | { verb: 'branch', project: string, environment: EnvironmentName }
+    | { verb: 'port', project: string, environment: EnvironmentName }
     | { verb: 'deploys', project: string, environment: EnvironmentName }
     | { verb: 'commits', project: string, environment: EnvironmentName }
     | { verb: 'backups', project: string }
@@ -131,6 +134,7 @@ export function matchRoute(method: string, pathname: string): Route {
     if (parts.length === 1 && parts[0] === 'audit') return only('GET', { verb: 'audit-all' })
     if (parts.length === 1 && parts[0] === 'health') return only('GET', { verb: 'health' })
     if (parts.length === 1 && parts[0] === 'credentials') return only('GET', { verb: 'credentials' })
+    if (parts.length === 1 && parts[0] === 'ports') return only('GET', { verb: 'ports' })
     if (parts[0] !== 'projects' || parts.length < 2) return { verb: 'not-found' }
 
     const project = parts[1] ?? ''
@@ -198,9 +202,16 @@ export function matchRoute(method: string, pathname: string): Route {
         if (parts.length === 4) {
             switch (parts[3]) {
                 case 'env': return only('GET', { verb: 'env-list', project, environment })
-                case 'deploy': return only('POST', { verb: 'deploy', project, environment })
+                case 'deploy':
+                    // POST starts one, GET watches the one that is running. Same path on purpose: they
+                    // are the same subject, and a second segment would only be a different spelling of
+                    // the same thing.
+                    if (method === 'POST') return { verb: 'deploy', project, environment }
+                    if (method === 'GET') return { verb: 'deploy-watch', project, environment }
+                    return { verb: 'method-not-allowed' }
                 case 'rollback': return only('POST', { verb: 'rollback', project, environment })
                 case 'branch': return only('PUT', { verb: 'branch', project, environment })
+                case 'port': return only('PUT', { verb: 'port', project, environment })
                 case 'deploys': return only('GET', { verb: 'deploys', project, environment })
                 case 'commits': return only('GET', { verb: 'commits', project, environment })
                 case 'domains':
@@ -391,12 +402,37 @@ function parseBranchBody(value: Record<string, unknown>): { ok: true, branch: st
     return { ok: true, branch: value.branch }
 }
 
+function parsePortBody(value: Record<string, unknown>): { ok: true, port: number } | { ok: false, message: string } {
+    if (!onlyKeys(value, ['port'])) return { ok: false, message: 'changing a port takes only port' }
+    // The range and whether it is free are the agent's to say; this only refuses a shape it could not read
+    if (typeof value.port !== 'number' || !Number.isInteger(value.port)) return { ok: false, message: 'port must be a whole number' }
+    return { ok: true, port: value.port }
+}
+
 // Bounded far below the audit log's own limit: this is a page of a commit list, not an export.
 function parseCommitsLimit(params: URLSearchParams): number | null {
     const raw = params.get('limit')
     if (raw === null) return DEFAULT_COMMITS
     const limit = /^\d{1,4}$/.test(raw) ? Number(raw) : 0
     return limit >= 1 && limit <= MAX_COMMITS ? limit : null
+}
+
+// Both halves of own or neither: a port checked for "some environment" would not know which port is its own.
+function parsePortsQuery(params: URLSearchParams): { ok: true, args: PortsArgs } | { ok: false, message: string } {
+    const raw = params.get('port')
+    if (raw !== null && !/^\d{1,5}$/.test(raw)) return { ok: false, message: 'port must be a number' }
+    const project = params.get('project')
+    const environment = params.get('environment')
+    if ((project === null) !== (environment === null)) return { ok: false, message: 'project and environment go together' }
+    if (project !== null && !PROJECT_ID.test(project)) return { ok: false, message: 'project is malformed' }
+    if (environment !== null && !(ENVIRONMENTS as readonly string[]).includes(environment)) return { ok: false, message: 'environment must be live or test' }
+    return {
+        ok: true,
+        args: {
+            port: raw === null ? null : Number(raw),
+            own: project !== null && environment !== null ? { project, environment: environment as EnvironmentName } : null,
+        },
+    }
 }
 
 // Normalised here rather than merely type-checked: normaliseHostname is the one thing in hostd that
@@ -612,7 +648,7 @@ export function createHandler(deps: ApiDeps): (req: IncomingMessage, res: Server
         // mechanism of both, so it lives in exactly one place rather than two copies that could drift.
         const removeProject = async (project: string, environment: EnvironmentName | null): Promise<void> => {
             const target = environment ? `${project} remove ${environment}` : `${project} remove`
-            const entry = await authorizeProject(project, 'provision', target)
+            const entry = await authorizeProject(project, environment ? 'provision' : 'remove', target)
             if (!entry) return
 
             const body = await readJsonBody(req, MAX_REQUEST_BYTES)
@@ -1009,6 +1045,17 @@ export function createHandler(deps: ApiDeps): (req: IncomingMessage, res: Server
                 return sendJson(res, 200, reply)
             }
 
+            case 'ports': {
+                // Gated like credentials: a question about the machine, answered for the operator's forms
+                if (caller.actor.kind !== 'admin') return refuseRoute(403, 'admin-only', 'only the admin can check ports', null, 'provision')
+                const parsed = parsePortsQuery(url.searchParams)
+                if (!parsed.ok) return refuseRoute(400, 'bad-request', parsed.message, null, 'provision')
+                const reply = await callAgent({ verb: 'ports', args: parsed.args })
+                if (!reply) return
+                if (!reply.ok) return refuseRoute(AGENT_STATUS[reply.code], reply.code, reply.message, null, 'provision')
+                return sendJson(res, 200, reply)
+            }
+
             case 'audit': {
                 if (!(await decide(route.project, 'audit', null))) return
                 const limit = parseLimit(url.searchParams)
@@ -1202,6 +1249,28 @@ export function createHandler(deps: ApiDeps): (req: IncomingMessage, res: Server
                 // (the agent's own set-branch calls its refreshRegistry for exactly this reason, in
                 // agent.ts), so api's copy needs catching up here too.
                 return respondAgentAction('deploy', reply, route.project, named, true)
+            }
+
+            case 'port': {
+                // configure's policy: admin only, whatever the project's capabilities, like every other
+                // change to the registry entry itself
+                const target = `${route.environment} port`
+                const entry = await authorizeProject(route.project, 'configure', target)
+                if (!entry) return
+
+                const body = await readJsonBody(req, MAX_REQUEST_BYTES)
+                if (!body.ok) return refuseRoute(400, 'bad-request', body.message, route.project, 'configure', target)
+                const parsed = parsePortBody(body.value)
+                if (!parsed.ok) return refuseRoute(400, 'bad-request', parsed.message, route.project, 'configure', target)
+
+                const named = `${target} ${parsed.port}`
+                const reply = await callAgentAudited(
+                    { verb: 'port', project: route.project, args: { environment: route.environment, port: parsed.port } },
+                    route.project, 'configure', named,
+                )
+                if (!reply) return
+                // The registry changed, so api's copy catches up before answering, as a branch switch does
+                return respondAgentAction('configure', reply, route.project, named, true)
             }
 
             case 'deploys':
@@ -1494,6 +1563,55 @@ export function createHandler(deps: ApiDeps): (req: IncomingMessage, res: Server
                     clearInterval(keepalive)
                     res.off('close', stop)
                     logStream.close()
+                    res.end()
+                }
+                return
+            }
+
+            // Mirrors 'logs' above exactly: same SSE framing, same keepalive (more load-bearing here,
+            // since a build can sit silent for minutes pulling layers, and without it an idle proxy
+            // closes the connection mid-deploy), same drain and close wiring. The differences are the
+            // verb, the target text and the policy verb: 'deploy-read' rather than 'logs', because
+            // watching a deploy is the same kind of read as the history the owner may already make (see
+            // readDeploy above, which uses the same verb).
+            case 'deploy-watch': {
+                const target = `${route.environment} watch`
+                if (!(await decide(route.project, 'deploy-read', target))) return
+
+                let stream: Awaited<ReturnType<AgentClient['stream']>>
+                try {
+                    stream = await deps.agent.stream({ verb: 'deploy-watch', project: route.project, args: { environment: route.environment } })
+                } catch (error) {
+                    if (!(error instanceof AgentUnavailableError)) throw error
+                    await audit(who, { project: route.project, verb: 'deploy-watch', target, outcome: 'failed', reason: error.message })
+                    return sendJson(res, 503, { ok: false, code: 'agent-unavailable', message: error.message })
+                }
+                if (!stream.ok) return refuseRoute(AGENT_STATUS[stream.code], stream.code, stream.message, route.project, 'deploy-watch', target)
+                await audit(who, { project: route.project, verb: 'deploy-watch', target, outcome: 'ok' })
+
+                res.writeHead(200, {
+                    'content-type': 'text/event-stream; charset=utf-8',
+                    'cache-control': 'no-store',
+                    connection: 'keep-alive',
+                    'x-accel-buffering': 'no',
+                })
+                const deployStream = stream
+                const stop = () => deployStream.close()
+                res.on('close', stop)
+                const keepalive = setInterval(() => res.write(SSE_KEEPALIVE), deps.keepaliveMs ?? KEEPALIVE_MS)
+                try {
+                    for await (const line of deployStream.lines) {
+                        if (!res.write(sseEvent('line', line))) await waitForDrain(res)
+                        if (res.destroyed) break
+                    }
+                    res.write(sseEvent('end', {}))
+                } catch (error) {
+                    console.error(`[api] ${new Date().toISOString()} deploy watch for ${route.project} failed: ${describeError(error)}`)
+                    res.write(sseEvent('error', { message: 'the deploy watch stream failed' }))
+                } finally {
+                    clearInterval(keepalive)
+                    res.off('close', stop)
+                    deployStream.close()
                     res.end()
                 }
                 return

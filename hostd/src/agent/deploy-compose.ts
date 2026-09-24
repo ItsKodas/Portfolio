@@ -104,7 +104,9 @@ export function subcommandOf(argv: string[]): string {
 
 export async function runCompose(argv: string[], timeoutMs: number, run: Runner): Promise<ComposeResult> {
     const result = await run('docker', argv, timeoutMs)
-    // Compose writes its progress to stderr, so both streams are the output.
+    // Compose splits itself across both streams, so both are the output. A spike against compose v5.1.3
+    // found the build progress on stdout and only the closing summary on stderr, so neither stream on its
+    // own is what the command printed.
     const output = tail([result.stdout, result.stderr].filter(text => text !== '').join('\n'))
     const what = subcommandOf(argv)
     if (result.timedOut) return { ok: false, message: `${what} timed out after ${Math.round(timeoutMs / 1000)} seconds`, output }

@@ -78,6 +78,9 @@ export type Change =
     // once: the dir changes the folder compose would derive a name from, so the name it had is pinned
     // in the same write.
     | { kind: 'set-layout', id: string, environment: EnvironmentName, dir: string, composeName: string }
+    // The environment's port, which the vhost proxies to and the site's .env publishes. Whether it is
+    // free on the host is the agent's check; whether it is unique in the registry is parseRegistry's.
+    | { kind: 'set-port', id: string, environment: EnvironmentName, port: number }
     // One kind rather than three, because a write takes one Change: three would be three reads, three
     // validations, three files on disk and a half-applied save if the second failed. Absent fields are
     // left alone; a null repo or branch deletes that key.
@@ -275,6 +278,19 @@ function edit(doc: Document, change: Change): EditResult {
             if (change.enabled) doc.setIn(['projects', change.id, 'environments', change.environment, change.flag], true)
             else doc.deleteIn(['projects', change.id, 'environments', change.environment, change.flag])
             return null
+        case 'set-port': {
+            // A live-only entry keeps its port inside upstream, so it is reshaped first, as a branch
+            // save does: see toEnvironments for what that conversion carries and what it does not.
+            if (!doc.hasIn(['projects', change.id, 'environments']) && has(change.id) && change.environment === 'live') {
+                const converted = toEnvironments(doc, change.id)
+                if (converted) return converted
+            }
+            if (!doc.hasIn(['projects', change.id, 'environments', change.environment])) {
+                return { problem: `${change.id} has no ${change.environment} environment` }
+            }
+            doc.setIn(['projects', change.id, 'environments', change.environment, 'port'], change.port)
+            return null
+        }
         case 'configure': {
             if (!has(change.id)) return { problem: `${change.id} is not registered` }
 

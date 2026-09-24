@@ -15,7 +15,9 @@ import {
 import { writeEnvFile, type EnvironmentName } from '@/server/hostd/env'
 import type { Caller } from '@/server/hostd/actor'
 import { forAdmin, forClient } from '@/server/hostd/errors'
+import { setPort } from '@/server/hostd/ports'
 import { assertOwned, lifecycle } from '@/server/hostd/projects'
+import { removeProject } from '@/server/hostd/remove'
 import { callerFromSession } from '@/server/hostd/session'
 import { writeSettings, type SiteSettings } from '@/server/hostd/settings'
 import { stateWord } from './domains'
@@ -211,6 +213,24 @@ export async function setBranchAction(id: string, environment: string, branch: s
     return { ok: true, message: `Now following ${branch}. A deploy of it has started.` }
 }
 
+// Moving an environment to another port recreates its containers, so it is its own action rather than
+// part of the Settings save, which never starts or stops anything. The operator's alone, as every other
+// change to the registry entry is.
+export async function setPortAction(id: string, environment: string, port: number): Promise<SiteActionResult> {
+    const name = environmentOf(environment)
+    if (!name || typeof port !== 'number' || !Number.isInteger(port)) return { ok: false, error: 'That is not something this page can do.' }
+
+    const allowed = await allow(id, true)
+    if (!allowed.ok) return allowed
+
+    const result = await setPort(allowed.config, allowed.caller, id, name, port)
+    if (!result.ok) return refused(`port ${name} on ${id}`, allowed.isAdmin, result)
+
+    revalidatePath(`/portal/sites/${id}`)
+    // hostd's own output already names the environment and the port, and says whether it restarted
+    return { ok: true, message: `${result.value.output}.` }
+}
+
 // Domains. Every one of these is the operator's alone: hostd keeps 'domains' among its admin-only policy
 // verbs (hostd/src/api/policy.ts) and leaves only 'domains-read' to an owner, so the client-readable half
 // of this tab has no action at all and each of these applies that same rule a step earlier. Verifying is
@@ -365,4 +385,31 @@ export async function adoptAction(id: string, environment: string, confirm: stri
         ok: true,
         message: 'Done. hostd owns this site\'s configuration now, and the hand-written one is switched off.',
     }
+}
+
+// Deleting the site is the operator's alone: hostd puts removal among its admin-only policy verbs, and this
+// is the same rule applied a step earlier. hostd stops the site, unregisters it and takes its vhost off; the
+// folder, volumes and databases stay on the server.
+export async function deleteSiteAction(id: string, confirm: string): Promise<SiteActionResult> {
+    if (typeof confirm !== 'string') return { ok: false, error: 'That is not something this page can do.' }
+
+    const allowed = await allow(id, true)
+    if (!allowed.ok) return allowed
+
+    // Sent as typed, for the same reason adoptAction sends it as typed: hostd's comparison is the confirmation.
+    const result = await removeProject(allowed.config, allowed.caller, id, confirm)
+    if (!result.ok) return refused(`delete ${id}`, allowed.isAdmin, result)
+
+    // Only once hostd has let it go, so a refusal never leaves a client's link pointing at nothing. A
+    // failure here leaves a link to a site hostd no longer knows, which the client's page shows as unavailable
+    // and which can be removed from that page.
+    try {
+        await getDb().site.deleteMany({ where: { projectId: id } })
+    } catch (error) {
+        console.error(`[portal] unlinking ${id} after deleting it failed: ${String(error)}`)
+        return { ok: true, message: "Deleted, but it is still linked to its client. Remove it from the client's page." }
+    }
+
+    revalidatePath('/portal', 'layout')
+    return { ok: true, message: 'Deleted.' }
 }

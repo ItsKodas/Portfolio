@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
-import { relayLogs } from './relay'
+import { relayDeployWatch, relayLogs } from './relay'
 
 const config = { url: 'http://hostd-api:8080', token: 'a'.repeat(32) }
 const admin = { actor: 'admin', user: 'koda@horizons.gg' }
@@ -12,6 +12,7 @@ function deps(open: unknown, owns = true) {
         clientId: null as string | null,
         assertOwned: async () => owns,
         openLogStream: open as never,
+        openDeployStream: open as never,
     }
 }
 
@@ -44,5 +45,38 @@ describe('relayLogs', () => {
         const response = await relayLogs(deps(open), 'acme-bakery', new URLSearchParams({ service: 'acme-web' }))
         expect(response.status).toBe(503)
         expect(await response.text()).not.toContain('/run/hostd')
+    })
+})
+
+describe('relayDeployWatch', () => {
+    it('passes the stream through as server-sent events', async () => {
+        const body = 'event: line\ndata: {"kind":"step","text":"building"}\n\n'
+        const open = async () => ({ ok: true, response: new Response(body, { headers: { 'content-type': 'text/event-stream' } }) })
+        const response = await relayDeployWatch(deps(open), 'acme-bakery', new URLSearchParams({ environment: 'live' }))
+        expect(response.status).toBe(200)
+        expect(response.headers.get('content-type')).toContain('text/event-stream')
+        expect(response.headers.get('cache-control')).toBe('no-store')
+        expect(await response.text()).toBe(body)
+    })
+
+    // The one piece of logic here that the log relay's own tests do not already cover. An environment is
+    // part of the path hostd is asked for, so a value that is neither is refused here rather than sent on.
+    it('refuses an environment that is neither live nor test, before hostd is asked', async () => {
+        const open = async () => { throw new Error('should not be called') }
+        const response = await relayDeployWatch(deps(open), 'acme-bakery', new URLSearchParams({ environment: 'staging' }))
+        expect(response.status).toBe(400)
+    })
+
+    it('refuses without an environment, since hostd watches one at a time', async () => {
+        const open = async () => { throw new Error('should not be called') }
+        const response = await relayDeployWatch(deps(open), 'acme-bakery', new URLSearchParams())
+        expect(response.status).toBe(400)
+    })
+
+    it('refuses a site belonging to another client, before hostd is asked', async () => {
+        const open = async () => { throw new Error('should not be called') }
+        const withClient = { ...deps(open, false), clientId: 'cl_8F2K1ABC' }
+        const response = await relayDeployWatch(withClient, 'acme-bakery', new URLSearchParams({ environment: 'live' }))
+        expect(response.status).toBe(404)
     })
 })

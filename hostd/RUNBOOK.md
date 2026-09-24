@@ -65,6 +65,42 @@ value never leaves the dedi: the registry and the portal only ever hold its name
 The Account field offers exactly the names the fetcher answered with, and a name it does not hold is
 refused on save rather than at the next deploy.
 
+## A site's port
+
+hostd owns each environment's port. The portal picks it (New site form, or Settings for a site that
+exists), from 5000 to 65535, and refuses a port another environment has or anything on the dedi is
+listening on.
+
+hostd writes it into the environment's root `.env` as `WEB_PORT=<port>` (or the variable the registry
+entry's `portEnv` names). The site's compose file has to publish it, for example
+`ports: ["127.0.0.1:${WEB_PORT}:3000"]`. Create, add-environment and a port change all refuse a compose
+file that does not.
+
+To move an existing site that hard codes its port, in this order, so `WEB_PORT` is never empty while
+compose reads it:
+
+1. Add `WEB_PORT=<current port>` to the environment's `.env` from the Env tab. (Or write the compose
+   file as `${WEB_PORT:-<current port>}`, which falls back to the current port on its own.)
+2. Change the compose file to publish `${WEB_PORT}`, for example `"127.0.0.1:${WEB_PORT}:3000"`.
+3. Deploy, and check the site still answers on its current port.
+4. If the domain is still served by a hand-written vhost, adopt it from the Domains tab. A port change
+   refuses an environment whose domain hostd has no vhost file for (`<domain> is served by a
+   hand-written vhost; ...`), since Apache would go on proxying to the old port.
+5. Change the port in Settings.
+
+How the check sees host services: the agent runs a throwaway `--network host` container from its own
+image that reads `/proc/net/tcp` and, when the host has IPv6, `/proc/net/tcp6`. If that fails, provisioning and port changes are
+refused; check `docker compose logs agent` and that `docker inspect --format '{{.Image}}' hostd-agent`
+works.
+
+A quick check from the dedi that the probe sees what `ss` sees:
+
+```bash
+sudo ss -Hltn | awk '{print $4}' | sed 's/.*://' | sort -un
+```
+
+should match the listening ports the agent reads.
+
 ## Editing the registry
 
 `hostd/registry/projects.yaml` is hand-edited and read every ten seconds. Any editor will do: the
@@ -457,6 +493,14 @@ the running copy's across when the new tree has none of its own, exactly as it d
 the repo does commit the file, the checkout's copy wins: that one belongs with the commit going out, and
 the running tree's is the commit being replaced. A file that cannot be copied fails the deploy before the
 build, because compose cannot describe the site without it.
+
+**Watching one.** The Deploys tab carries an operator-only column showing what the deploy is doing: its own phase lines,
+with `docker compose` output beneath the build step. It is there whether or not a deploy is running, and
+when none is it shows what the last one printed, until the next one starts. A deploy the poller started
+is watchable exactly like one somebody pressed, and a reload mid-deploy picks up where it was, because
+what a watcher attaches to is a buffer rather than a live pipe. Nothing of it is written to disk: an
+agent restart loses the buffer, and loses the deploy with it, since a deploy is an in-process promise.
+The history stays the durable record.
 
 **What the health check actually checks.** Every registered compose service has a running container, and
 any container that declares a healthcheck reports `healthy`, within 60 seconds. It is deliberately not an
@@ -978,6 +1022,10 @@ database on a timer.
   unregisters a project that is still running, since nothing would then be able to stop it. Removing only
   the test environment does not stop anything (there is no per-environment lifecycle yet, so there is
   nothing safe for this to stop).
+- **Removing a whole project needs no capability.** `DELETE /projects/:id` is admin-only and takes the
+  project's name typed back, but works whether or not the project lists `provision`, so a site the
+  portal created can be deleted from its Settings tab. Removing only the test environment still needs
+  `provision`.
 - **Removing a project leaves its folder, volumes and databases in place.** `provision remove` stops it,
   edits the registry, and takes hostd's own vhost for each environment it removed off the host; nothing
   under `/var/www` is deleted. The vhost goes because a file left behind would go on claiming those
@@ -1410,7 +1458,7 @@ the adoption that would have produced it rather than leave one behind.
 | Agent log or health warnings show `project <id> declares storage but no service with role database; if one of its services is a database, correct its role so the storage guard can protect it` | **This is advice, not an error.** The project stays valid, and status, logs, lifecycle and env all keep working exactly as before; nothing is refused. It is only worth acting on if one of the project's services really is a database: if so, correct its role in `hostd/registry/projects.yaml` (see step 2 of Creating a site) so the storage guard can actually protect that database's data directory. A project that genuinely has no database can leave this as is. |
 | A `create` or `add-environment` refusal `"fix these invalid projects before provisioning: ..."` | The registry has at least one invalid entry. Provisioning refuses outright rather than risk handing out a port an invalid entry's own (possibly stopped) containers already hold: fix or remove the named entries first, wait ten seconds for the reload, then try again. |
 | A `create` or `add-environment` refusal `"compose resolves the project name ..., not ..."` | Same check and message as a `"valid":false` project below, but caught before anything is cloned or registered: the repo's compose file pins a `name:` that does not match the id you gave. The cloned folder was removed and nothing was registered; either add `name: <id>` to the compose file, or use the id the compose file already pins. |
-| A `create` or `add-environment` refusal `"no free port ... to ..."` | The configured port range (5000-5999) is full, by registry entry or by an already-published container port. Free one up, or extend `PORT_RANGE` in `src/shared/ports.ts`. |
+| A `create` or `add-environment` refusal `"no free port ... to ..."` | Every port from 5000 to 65535 is taken, by a registry entry or by something listening on the dedi (a published container port or any other service). In practice this means the probe misread the host: run the `ss` check under A site's port. |
 | A `create` refusal `"... is already registered"`, or an `add-environment` refusal naming a folder that `"already exists"` | The id is already taken, or its folder is already on disk under a different registration. |
 | A `create` or `add-environment` refusal `"... is already used by another project"` | The domain is already registered to a different project's environment. |
 | A `create` or `add-environment` refusal naming a Git failure | The fetcher could not clone. Check the branch exists on the remote, and that `GITHUB_TOKEN` in `.env.fetcher` can read the repo. |

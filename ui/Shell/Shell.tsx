@@ -6,6 +6,8 @@ import styles from './Shell.module.css'
 
 type Props = {
     brand: ReactNode
+    // Sits beside the brand, where bar sits at the far end: the places in the product, rather than the page's own controls
+    tabs?: ReactNode
     bar?: ReactNode
     nav: ReactNode
     rail?: ReactNode
@@ -16,7 +18,7 @@ type Props = {
     children: ReactNode
 }
 
-export function Shell({ brand, bar, nav, rail, fill, children }: Props) {
+export function Shell({ brand, tabs, bar, nav, rail, fill, children }: Props) {
     const [open, setOpen] = useState(false)
     const menuRef = useRef<HTMLButtonElement>(null)
     const navRef = useRef<HTMLElement>(null)
@@ -62,10 +64,11 @@ export function Shell({ brand, bar, nav, rail, fill, children }: Props) {
                         &#9776;
                     </button>
                     <span className={styles.brand}>{brand}</span>
+                    {tabs}
                     {bar && <span className={styles.barExtra}>{bar}</span>}
                 </header>
 
-                <div className={styles.shell}>
+                <div className={[styles.shell, !rail && styles.railless].filter(Boolean).join(' ')}>
                     <nav
                         ref={navRef}
                         className={[styles.nav, open && styles.open].filter(Boolean).join(' ')}

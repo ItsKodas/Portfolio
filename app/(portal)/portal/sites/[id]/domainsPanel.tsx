@@ -125,7 +125,7 @@ export function DomainsPanel({ id, environments, environment, domains, isAdmin, 
                         operator opens when a reload went wrong, and six lines of it in a table cell
                         would make every other row unreadable. */}
                     {domain.vhost && !domain.vhost.ok && (
-                        <details className={styles.output}>
+                        <details className={styles.outputBlock}>
                             <summary>What Apache said</summary>
                             <pre>{domain.vhost.output}</pre>
                         </details>

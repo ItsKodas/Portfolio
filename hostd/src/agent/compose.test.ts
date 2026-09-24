@@ -5,7 +5,7 @@ import { PassThrough } from 'node:stream'
 import type { spawn as nodeSpawn } from 'node:child_process'
 import {
     lifecycleArgv, configArgv, runLifecycle, resolveCompose, resolveNewProject, composeNameProblem, createSpawnRunner, tail,
-    LIFECYCLE_TIMEOUT_MS, OUTPUT_TAIL_BYTES, type Runner, type RunResult,
+    publishedPortsOf, LIFECYCLE_TIMEOUT_MS, OUTPUT_TAIL_BYTES, type Runner, type RunResult,
 } from './compose.ts'
 import { parseRegistry } from '../shared/registry.ts'
 
@@ -210,7 +210,7 @@ describe('resolveNewProject', () => {
     it('marks a service with no recognisable database image as role site', async () => {
         const { run, calls } = resolving({ web: { image: 'acme/bakery-web:latest' }, worker: {} })
         assert.deepEqual(await resolveNewProject(location, 'bakery', run), {
-            ok: true, services: { web: { role: 'site' }, worker: { role: 'site' } },
+            ok: true, services: { web: { role: 'site' }, worker: { role: 'site' } }, published: [],
         })
         assert.deepEqual(calls[0]?.args, configArgv({ ...location, composeName: 'bakery' }))
     })
@@ -228,13 +228,13 @@ describe('resolveNewProject', () => {
     ] as const) {
         it(`guesses role database (${engine}) for image ${image}`, async () => {
             const { run } = resolving({ db: { image } })
-            assert.deepEqual(await resolveNewProject(location, 'bakery', run), { ok: true, services: { db: { role: 'database', engine } } })
+            assert.deepEqual(await resolveNewProject(location, 'bakery', run), { ok: true, services: { db: { role: 'database', engine } }, published: [] })
         })
     }
 
     it('is case-insensitive and matches the repository even with no tag', async () => {
         const { run } = resolving({ db: { image: 'Postgres' } })
-        assert.deepEqual(await resolveNewProject(location, 'bakery', run), { ok: true, services: { db: { role: 'database', engine: 'postgres' } } })
+        assert.deepEqual(await resolveNewProject(location, 'bakery', run), { ok: true, services: { db: { role: 'database', engine: 'postgres' } }, published: [] })
     })
 
     // The match is a plain substring, exactly as specified (an image repository containing one of the
@@ -242,12 +242,12 @@ describe('resolveNewProject', () => {
     // the false positive the "starting point, not a guarantee" comment on guessRole is about.
     it('matches a substring of a larger repository name, false positives included', async () => {
         const { run } = resolving({ web: { image: 'acme/postgresql-admin-web:latest' } })
-        assert.deepEqual(await resolveNewProject(location, 'bakery', run), { ok: true, services: { web: { role: 'database', engine: 'postgres' } } })
+        assert.deepEqual(await resolveNewProject(location, 'bakery', run), { ok: true, services: { web: { role: 'database', engine: 'postgres' } }, published: [] })
     })
 
     it('reports no services at all rather than inventing one', async () => {
         const { run } = resolving({})
-        assert.deepEqual(await resolveNewProject(location, 'bakery', run), { ok: true, services: {} })
+        assert.deepEqual(await resolveNewProject(location, 'bakery', run), { ok: true, services: {}, published: [] })
     })
 
     it('passes a resolve failure through unchanged', async () => {
@@ -283,7 +283,7 @@ describe('resolveNewProject for a test environment', () => {
 
     it('accepts a compose name matching the test folder, whether pinned or (the ordinary case) left to the default', async () => {
         const { run } = resolving('acme-test')
-        assert.deepEqual(await resolveNewProject(location, 'acme-test', run, 'acme'), { ok: true, services: { web: { role: 'site' } } })
+        assert.deepEqual(await resolveNewProject(location, 'acme-test', run, 'acme'), { ok: true, services: { web: { role: 'site' } }, published: [] })
     })
 
     it('refuses, naming the collision, when the compose file pins the live environment\'s own name', async () => {
@@ -414,5 +414,125 @@ describe('createSpawnRunner', () => {
         const result = await createSpawnRunner(spawn)('docker', [], 20)
         assert.equal(result.timedOut, true)
         assert.equal((spawned as FakeChild | null)?.killedWith, 'SIGKILL')
+    })
+})
+
+describe('publishedPortsOf', () => {
+    it('answers every host port any service publishes, as numbers, skipping ranges and unpublished ones', () => {
+        const resolved = {
+            name: 'acme',
+            services: {
+                web: { ports: [{ target: 3000, published: '5012', host_ip: '127.0.0.1', protocol: 'tcp' }] },
+                api: { ports: [{ target: 4000, published: 5013 }, { target: 9229 }, { target: 80, published: '6000-6002' }] },
+                db: {},
+            },
+        }
+        assert.deepEqual(publishedPortsOf(resolved), [5012, 5013])
+    })
+})
+
+describe('resolveNewProject published', () => {
+    it('answers the published ports beside the guessed services', async () => {
+        const stdout = JSON.stringify({ name: 'acme', services: { web: { image: 'node:22', ports: [{ target: 3000, published: '5012' }] } } })
+        const run: Runner = async () => ({ exitCode: 0, stdout, stderr: '', timedOut: false })
+        const result = await resolveNewProject({ dir: '/var/www/acme', composePaths: ['/var/www/acme/docker-compose.yml'] }, 'acme', run)
+        assert.deepEqual(result, { ok: true, services: { web: { role: 'site' } }, published: [5012] })
+    })
+})
+
+// A child process as far as createSpawnRunner is concerned: two streams and a close event.
+function fakeChild() {
+    const child = new EventEmitter() as EventEmitter & { stdout: EventEmitter, stderr: EventEmitter, kill: () => void }
+    child.stdout = new EventEmitter()
+    child.stderr = new EventEmitter()
+    child.kill = () => {}
+    return child
+}
+
+describe('createSpawnRunner line sink', () => {
+    // Both streams, not just stderr: a spike against compose v5.1.3 found the build progress on stdout
+    // and only the closing summary on stderr. Listening to one would have shown a single line per deploy.
+    it('hands lines from stdout and stderr to the sink, in arrival order', async () => {
+        const child = fakeChild()
+        const runner = createSpawnRunner(() => child as never)
+        const lines: string[] = []
+        const done = runner('docker', ['compose', 'build'], 1000, line => lines.push(line))
+        child.stdout.emit('data', Buffer.from('#6 [2/3] RUN echo A\n'))
+        child.stderr.emit('data', Buffer.from(' Image probe Built \n'))
+        child.emit('close', 0)
+        await done
+        assert.deepEqual(lines, ['#6 [2/3] RUN echo A', ' Image probe Built '])
+    })
+
+    it('joins a line split across two chunks rather than emitting half of it', async () => {
+        const child = fakeChild()
+        const runner = createSpawnRunner(() => child as never)
+        const lines: string[] = []
+        const done = runner('docker', ['compose', 'build'], 1000, line => lines.push(line))
+        child.stdout.emit('data', Buffer.from('#7 4.30 B-D'))
+        child.stdout.emit('data', Buffer.from('ONE\n'))
+        child.emit('close', 0)
+        await done
+        assert.deepEqual(lines, ['#7 4.30 B-DONE'])
+    })
+
+    // A command whose last line has no trailing newline still said it.
+    it('emits a trailing partial line when the child closes', async () => {
+        const child = fakeChild()
+        const runner = createSpawnRunner(() => child as never)
+        const lines: string[] = []
+        const done = runner('docker', ['compose', 'build'], 1000, line => lines.push(line))
+        child.stdout.emit('data', Buffer.from('no newline at the end'))
+        child.emit('close', 0)
+        await done
+        assert.deepEqual(lines, ['no newline at the end'])
+    })
+
+    // The regression that matters. RunResult is what becomes record.output, and it must not change.
+    it('leaves RunResult exactly as it is, sink or no sink', async () => {
+        const withSink = fakeChild()
+        const a = createSpawnRunner(() => withSink as never)('docker', ['x'], 1000, () => {})
+        withSink.stdout.emit('data', Buffer.from('one\ntwo\n'))
+        withSink.emit('close', 0)
+
+        const without = fakeChild()
+        const b = createSpawnRunner(() => without as never)('docker', ['x'], 1000)
+        without.stdout.emit('data', Buffer.from('one\ntwo\n'))
+        without.emit('close', 0)
+
+        assert.deepEqual(await a, await b)
+    })
+
+    // Regression: a single lineSplitter shared between stdout and stderr let one stream's dangling
+    // partial line (no newline yet) get concatenated with the next chunk from the OTHER stream, producing
+    // a line that came from neither. stdout's "Building image" must stay separate from stderr's line.
+    it('does not merge a dangling stdout partial line with a stderr line', async () => {
+        const child = fakeChild()
+        const runner = createSpawnRunner(() => child as never)
+        const lines: string[] = []
+        const done = runner('docker', ['compose', 'build'], 1000, line => lines.push(line))
+        child.stdout.emit('data', Buffer.from('Building image'))
+        child.stderr.emit('data', Buffer.from('real progress\n'))
+        child.emit('close', 0)
+        await done
+        assert.deepEqual(lines, ['real progress', 'Building image'])
+    })
+
+    // Regression: chunk.toString('utf8') per chunk decodes a multi-byte character split across a chunk
+    // boundary into U+FFFD and loses the trailing bytes, because only the already-mangled string was
+    // buffered, never the raw bytes. Buildkit's progress output contains such glyphs. 'é' is the two bytes
+    // 0xC3 0xA9 in UTF-8; the split lands between them.
+    it('joins a multi-byte UTF-8 character split across two chunks', async () => {
+        const child = fakeChild()
+        const runner = createSpawnRunner(() => child as never)
+        const lines: string[] = []
+        const done = runner('docker', ['compose', 'build'], 1000, line => lines.push(line))
+        const bytes = Buffer.from('café ready\n', 'utf8')
+        const splitAt = bytes.indexOf(0xa9)
+        child.stdout.emit('data', bytes.subarray(0, splitAt))
+        child.stdout.emit('data', bytes.subarray(splitAt))
+        child.emit('close', 0)
+        await done
+        assert.deepEqual(lines, ['café ready'])
     })
 })

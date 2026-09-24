@@ -6,7 +6,6 @@ import { request as httpRequest, type ClientRequest, type IncomingMessage, type 
 import type { Readable } from 'node:stream'
 import { isComposeService, type ProjectEntry } from '../shared/registry.ts'
 import type { ServiceStatus } from '../shared/protocol.ts'
-import type { PortCheck } from '../shared/ports.ts'
 import { FrameDecoder } from './logframes.ts'
 
 export const DOCKER_SOCKET = '/var/run/docker.sock'
@@ -213,13 +212,12 @@ export function groupByProject(containers: ContainerSummary[]): Map<string, Cont
 // binding 127.0.0.1:<port> would collide with a same-numbered publish on any of them, since an
 // all-interfaces bind already claims the loopback address too. A stopped container reports no Ports at
 // all (Docker only shows a bind while it is actually listening), so this cannot see a port that belongs
-// to a stopped hostd environment; takenPorts (ports.ts), reading the registry itself rather than Docker,
-// is what covers that case regardless of whether the environment happens to be running. This is the only
-// view of host ports available to the agent: it runs with network_mode: none, so it has no network
-// namespace of its own to probe the loopback interface directly (see ports.ts's header). It also cannot
-// see a port some other, non-Docker process on the host has bound, or one published by a container on a
-// different Docker host reached via DOCKER_HOST, though this deployment never sets one and binds nothing
-// outside Docker.
+// to a stopped hostd environment; portProblem (shared/ports.ts), reading the registry itself rather than
+// Docker, is what covers that case regardless of whether the environment happens to be running. Nor can
+// it see a port some non-Docker process on the host has bound: host-ports.ts reads those from the host's
+// own /proc/net/tcp and adds these on top, because with the userland proxy off a published port has no
+// listener of its own there, and a container still starting has its port reserved before anything
+// listens on it.
 export function publishedHostPorts(containers: ContainerSummary[]): Set<number> {
     const ports = new Set<number>()
     for (const container of containers) {
@@ -228,18 +226,6 @@ export function publishedHostPorts(containers: ContainerSummary[]): Set<number> 
         }
     }
     return ports
-}
-
-// A PortCheck (ports.ts) built from one snapshot of every container's published ports, fetched at most
-// once per instance and cached from then on: choosePort calls this once per port in the whole range it
-// scans, and this must not turn that into one Docker API call per port considered. Call this again (a
-// fresh instance) for each choosePort invocation, so a later provisioning action sees a fresh snapshot.
-export function dockerPortCheck(docker: DockerApi): PortCheck {
-    let ports: Promise<Set<number>> | null = null
-    return async port => {
-        ports ??= docker.listAllContainers().then(publishedHostPorts)
-        return (await ports).has(port)
-    }
 }
 
 export function buildServiceStatuses(project: ProjectEntry, inspected: ReadonlyMap<string, ContainerInspect>): ServiceStatus[] {

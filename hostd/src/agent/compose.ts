@@ -2,6 +2,7 @@
 // and every spawn is shell-free, so no value from a request can ever reach a command line.
 
 import { spawn as nodeSpawn } from 'node:child_process'
+import { StringDecoder } from 'node:string_decoder'
 import { isRecord } from '../shared/formats.ts'
 import type { Engine, ProjectEntry } from '../shared/registry.ts'
 import type { LifecycleAction } from '../shared/protocol.ts'
@@ -46,7 +47,12 @@ export function configArgv(project: ComposeLocation): string[] {
 }
 
 export type RunResult = { exitCode: number | null, stdout: string, stderr: string, timedOut: boolean }
-export type Runner = (command: string, args: string[], timeoutMs: number) => Promise<RunResult>
+// onLine is how a caller watches a command as it runs rather than after it. Optional, so every existing
+// caller is untouched, and RunResult is unchanged, which is what keeps record.output byte for byte what
+// it has always been.
+export type Runner = (
+    command: string, args: string[], timeoutMs: number, onLine?: (line: string) => void,
+) => Promise<RunResult>
 
 // Keeps the most recent bytes only, so a chatty command cannot exhaust memory.
 class Capture {
@@ -89,13 +95,47 @@ export function childEnv(keys: readonly string[]): Record<string, string> {
     return env
 }
 
+// Chunks off a pipe do not respect line boundaries, or character boundaries: a line can arrive in two
+// pieces, two lines can arrive in one, and a multi-byte UTF-8 character (buildkit's progress glyphs, among
+// others) can have its bytes split across a chunk boundary. StringDecoder holds a dangling partial
+// sequence across writes instead of decoding each chunk on its own, which is what a plain
+// chunk.toString('utf8') per chunk would do, mangling the split character into U+FFFD twice over. This
+// holds the line tail until its newline turns up. The trailing \r is stripped because a command that
+// thinks it might be on a terminal still sends them.
+//
+// One instance of this belongs to exactly one stream. Sharing a single instance between stdout and stderr
+// would let one stream's dangling partial line (no newline yet) get concatenated with unrelated bytes
+// from the other stream's next chunk, producing a line that came from neither.
+function lineSplitter(emit: (line: string) => void) {
+    const decoder = new StringDecoder('utf8')
+    let rest = ''
+    return {
+        push(chunk: Buffer): void {
+            const parts = (rest + decoder.write(chunk)).split('\n')
+            rest = parts.pop() ?? ''
+            for (const part of parts) emit(part.endsWith('\r') ? part.slice(0, -1) : part)
+        },
+        flush(): void {
+            rest += decoder.end()
+            if (rest === '') return
+            const last = rest.endsWith('\r') ? rest.slice(0, -1) : rest
+            rest = ''
+            emit(last)
+        },
+    }
+}
+
 export function createSpawnRunner(spawn: typeof nodeSpawn = nodeSpawn, envKeys: readonly string[] = DOCKER_ENV_KEYS): Runner {
-    return (command, args, timeoutMs) => new Promise(resolve => {
+    return (command, args, timeoutMs, onLine) => new Promise(resolve => {
         const child = spawn(command, args, { shell: false, stdio: ['ignore', 'pipe', 'pipe'], env: childEnv(envKeys) })
         const stdout = new Capture()
         const stderr = new Capture()
-        child.stdout?.on('data', (chunk: Buffer) => stdout.add(chunk))
-        child.stderr?.on('data', (chunk: Buffer) => stderr.add(chunk))
+        // Separate instances (see lineSplitter's comment): each stream's dangling partial line stays that
+        // stream's own, even though both feed the same onLine sink.
+        const stdoutSplitter = onLine ? lineSplitter(onLine) : null
+        const stderrSplitter = onLine ? lineSplitter(onLine) : null
+        child.stdout?.on('data', (chunk: Buffer) => { stdout.add(chunk); stdoutSplitter?.push(chunk) })
+        child.stderr?.on('data', (chunk: Buffer) => { stderr.add(chunk); stderrSplitter?.push(chunk) })
 
         let timedOut = false
         let settled = false
@@ -108,6 +148,8 @@ export function createSpawnRunner(spawn: typeof nodeSpawn = nodeSpawn, envKeys: 
             if (settled) return
             settled = true
             clearTimeout(timer)
+            stdoutSplitter?.flush()
+            stderrSplitter?.flush()
             const errorText = stderr.text()
             resolve({ exitCode, stdout: stdout.text(), stderr: error ? (errorText ? `${errorText}\n${error}` : error) : errorText, timedOut })
         }
@@ -125,7 +167,9 @@ export type LifecycleResult = { ok: true, output: string } | { ok: false, messag
 
 export async function runLifecycle(project: ProjectEntry, action: LifecycleAction, run: Runner): Promise<LifecycleResult> {
     const result = await run('docker', lifecycleArgv(project, action), LIFECYCLE_TIMEOUT_MS)
-    // Compose writes its progress to stderr, so both streams are the output.
+    // Compose splits itself across both streams, so both are the output. A spike against compose v5.1.3
+    // found the build progress on stdout and only the closing summary on stderr, so neither stream on its
+    // own is what the command printed.
     const output = tail([result.stdout, result.stderr].filter(text => text !== '').join('\n'))
     if (result.timedOut) return { ok: false, message: `${action} timed out after ${LIFECYCLE_TIMEOUT_MS / 1000} seconds`, output }
     if (result.exitCode === null) return { ok: false, message: `${action} could not run`, output }
@@ -141,6 +185,9 @@ export type ResolvedService = {
     env_file?: Array<string | { path?: string }>
     build?: string | { context?: string, dockerfile?: string }
     image?: string
+    // As `docker compose config --format json` writes them: published is a string ("5012", or a range
+    // like "6000-6002") or, from some compose versions, a number. Absent when the port is not published.
+    ports?: Array<{ target?: number, published?: string | number, host_ip?: string, protocol?: string }>
 }
 export type ResolvedCompose = { name: string, services: Record<string, ResolvedService> }
 
@@ -158,6 +205,27 @@ export async function resolveCompose(
     } catch {
         return { ok: false, problem: 'docker compose config returned unreadable output' }
     }
+}
+
+// Every single host port some service publishes. A range is skipped: hostd hands out one port per
+// environment, and a range cannot be the one the portal chose.
+export function publishedPortsOf(resolved: ResolvedCompose): number[] {
+    const ports: number[] = []
+    for (const service of Object.values(resolved.services)) {
+        for (const port of service.ports ?? []) {
+            const published = typeof port.published === 'number' ? String(port.published) : port.published
+            if (published !== undefined && /^\d{1,5}$/.test(published)) ports.push(Number(published))
+        }
+    }
+    return ports
+}
+
+// What an environment already on disk publishes, for a port change: the same config call create makes.
+export async function resolvePublished(
+    location: ComposeLocation, run: Runner,
+): Promise<{ ok: true, ports: number[] } | { ok: false, problem: string }> {
+    const result = await resolveCompose(location, run)
+    return result.ok ? { ok: true, ports: publishedPortsOf(result.resolved) } : result
 }
 
 // Shared by guard.ts (the ongoing sweep, over an already-registered project) and resolveNewProject below
@@ -231,12 +299,12 @@ export async function resolveNewProject(
     expectedName: string,
     run: Runner,
     collidesWith?: string,
-): Promise<{ ok: true, services: Record<string, GuessedService> } | { ok: false, problem: string }> {
+): Promise<{ ok: true, services: Record<string, GuessedService>, published: number[] } | { ok: false, problem: string }> {
     const result = await resolveCompose({ ...location, composeName: expectedName }, run)
     if (!result.ok) return result
     const nameProblem = composeNameProblem(result.resolved.name, expectedName, collidesWith)
     if (nameProblem) return { ok: false, problem: nameProblem }
     const services: Record<string, GuessedService> = {}
     for (const [name, service] of Object.entries(result.resolved.services)) services[name] = guessRole(service)
-    return { ok: true, services }
+    return { ok: true, services, published: publishedPortsOf(result.resolved) }
 }

@@ -9,7 +9,7 @@
     background: var(--night);
     z-index: 20;
 }
-.brand { font-weight: 600; font-size: 14.5px; letter-spacing: -.01em; }
+.brand { flex: none; font-weight: 600; font-size: 14.5px; letter-spacing: -.01em; }
 .barExtra { margin-left: auto; display: flex; align-items: center; gap: 12px; }
 
 .menu { display: none; }
@@ -35,6 +35,8 @@
     flex: 1;
     min-height: 0;
 }
+/* A page with no rail gives its column to the content, rather than leaving an empty zone at the right */
+.railless { grid-template-columns: 212px minmax(0, 1fr); }
 /* A column, so a page can pin something to the foot of its list with margin-top: auto */
 .nav { border-right: 1px solid var(--rule); padding: 14px 10px 18px; display: flex; flex-direction: column; }
 .main { padding: 20px 22px 34px; min-width: 0; }

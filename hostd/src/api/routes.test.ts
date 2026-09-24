@@ -261,7 +261,9 @@ describe('matchRoute', () => {
         assert.deepEqual(matchRoute('PUT', '/projects/acme/live/branch'), { verb: 'branch', project: 'acme', environment: 'live' })
         assert.deepEqual(matchRoute('GET', '/projects/acme/live/deploys'), { verb: 'deploys', project: 'acme', environment: 'live' })
         assert.deepEqual(matchRoute('GET', '/projects/acme/live/commits'), { verb: 'commits', project: 'acme', environment: 'live' })
-        assert.deepEqual(matchRoute('GET', '/projects/acme/live/deploy'), { verb: 'method-not-allowed' })
+        // GET on the deploy path watches the one that is running rather than 405ing: see the
+        // 'watching a deploy' describe block below for the rest of that shape.
+        assert.deepEqual(matchRoute('GET', '/projects/acme/live/deploy'), { verb: 'deploy-watch', project: 'acme', environment: 'live' })
         assert.deepEqual(matchRoute('POST', '/projects/acme/live/branch'), { verb: 'method-not-allowed' })
         assert.deepEqual(matchRoute('POST', '/projects/acme/live/nonsense'), { verb: 'not-found' })
         assert.deepEqual(matchRoute('POST', '/projects/acme/live/deploy/now'), { verb: 'not-found' })
@@ -463,6 +465,41 @@ describe('GET /credentials', () => {
     // this is gated the way audit-all is.
     it('refuses a client, and never calls the agent', async () => {
         const response = await request('/credentials')
+        assert.equal(response.status, 403)
+        assert.deepEqual(agent.calls, [])
+    })
+})
+
+describe('GET /ports', () => {
+    it('routes at the top level and allows only GET', () => {
+        assert.deepEqual(matchRoute('GET', '/ports'), { verb: 'ports' })
+        assert.equal(matchRoute('POST', '/ports').verb, 'method-not-allowed')
+    })
+
+    it('asks the agent about the port and the environment it is for', async () => {
+        agent.reply = () => ({ ok: true, suggested: 5012, problem: null })
+        const response = await request('/ports?port=5010&project=acme&environment=live', { actor: 'admin' })
+        assert.equal(response.status, 200)
+        assert.deepEqual(await response.json(), { ok: true, suggested: 5012, problem: null })
+        assert.deepEqual(agent.calls, [{ verb: 'ports', args: { port: 5010, own: { project: 'acme', environment: 'live' } } }])
+    })
+
+    it('asks about no port when none is given', async () => {
+        agent.reply = () => ({ ok: true, suggested: 5012, problem: null })
+        await request('/ports', { actor: 'admin' })
+        assert.deepEqual(agent.calls, [{ verb: 'ports', args: { port: null, own: null } }])
+    })
+
+    it('refuses a malformed query without asking the agent', async () => {
+        for (const query of ['?port=abc', '?port=5012&project=acme', '?environment=live', '?project=acme&environment=prod']) {
+            const response = await request(`/ports${query}`, { actor: 'admin' })
+            assert.equal(response.status, 400)
+        }
+        assert.deepEqual(agent.calls, [])
+    })
+
+    it('refuses a client, and never calls the agent', async () => {
+        const response = await request('/ports')
         assert.equal(response.status, 403)
         assert.deepEqual(agent.calls, [])
     })
@@ -690,6 +727,13 @@ describe('POST /projects', () => {
         assert.deepEqual(agent.calls, [])
     })
 
+    it('carries a port through to the agent', async () => {
+        agent.reply = () => ({ ok: true, project: { id: 'newsite', state: 'needs-setup' }, envFiles: [] })
+        const response = await request('/projects', { method: 'POST', actor: 'admin', body: { ...CREATE_BODY, domain: null, certificate: null, port: 5012 } })
+        assert.equal(response.status, 200)
+        assert.equal((agent.calls[0] as { args: { port?: number } }).args.port, 5012)
+    })
+
     it('returns 503 when the agent refuses because provisioning is not configured', async () => {
         // This is a well-formed agent reply (a Refusal with code 'unavailable'), not a dropped
         // connection: it exercises the ordinary refusal pass-through in respondAgentAction, mapped
@@ -821,6 +865,20 @@ describe('DELETE /projects/:id', () => {
         assert.equal((await request('/projects/acme', { method: 'DELETE', actor: 'admin' })).status, 400)
         assert.equal((await request('/projects/acme', { method: 'DELETE', actor: 'admin', body: {} })).status, 400)
         assert.equal((await request('/projects/acme', { method: 'DELETE', actor: 'admin', body: { name: 1 } })).status, 400)
+        assert.deepEqual(agent.calls, [])
+    })
+
+    // quiet has no provision capability, which is every site the portal creates unless it was ticked
+    it('removes a project without the provision capability', async () => {
+        agent.reply = () => ({ ok: true, output: 'quiet was stopped and unregistered' })
+        const response = await request('/projects/quiet', { method: 'DELETE', actor: 'admin', body: { name: 'Quiet' } })
+        assert.equal(response.status, 200)
+        assert.deepEqual(agent.calls, [{ verb: 'provision', project: 'quiet', args: { action: 'remove', environment: null } }])
+    })
+
+    it('answers its owner 404 without calling the agent', async () => {
+        const response = await request('/projects/acme', { method: 'DELETE', actor: 'client:cl_1', body: { name: 'Acme' } })
+        assert.equal(response.status, 404)
         assert.deepEqual(agent.calls, [])
     })
 })
@@ -2176,5 +2234,82 @@ describe('the backup endpoints', () => {
         } finally {
             handler = original
         }
+    })
+})
+
+describe('PUT /projects/:id/:env/port', () => {
+    it('routes under the environment and allows only PUT', () => {
+        assert.deepEqual(matchRoute('PUT', '/projects/acme/live/port'), { verb: 'port', project: 'acme', environment: 'live' })
+        assert.equal(matchRoute('GET', '/projects/acme/live/port').verb, 'method-not-allowed')
+    })
+
+    it('asks the agent to change the port', async () => {
+        agent.reply = () => ({ ok: true, output: 'acme live now uses port 5012' })
+        const response = await request('/projects/acme/live/port', { method: 'PUT', actor: 'admin', body: { port: 5012 } })
+        assert.equal(response.status, 200)
+        assert.deepEqual(agent.calls, [{ verb: 'port', project: 'acme', args: { environment: 'live', port: 5012 } }])
+    })
+
+    it('refuses a body that is not one port', async () => {
+        for (const body of [{}, { port: '5012' }, { port: 5012, extra: true }]) {
+            const response = await request('/projects/acme/live/port', { method: 'PUT', actor: 'admin', body })
+            assert.equal(response.status, 400)
+        }
+        assert.deepEqual(agent.calls, [])
+    })
+
+    it('answers a client as though the project were not there', async () => {
+        const response = await request('/projects/acme/live/port', { method: 'PUT', body: { port: 5012 } })
+        assert.equal(response.status, 404)
+        assert.deepEqual(agent.calls, [])
+    })
+})
+
+describe('watching a deploy', () => {
+    it('sends GET and POST on one path to different places', async () => {
+        assert.deepEqual(matchRoute('POST', '/projects/acme/live/deploy'), { verb: 'deploy', project: 'acme', environment: 'live' })
+        assert.deepEqual(matchRoute('GET', '/projects/acme/live/deploy'), { verb: 'deploy-watch', project: 'acme', environment: 'live' })
+        assert.deepEqual(matchRoute('DELETE', '/projects/acme/live/deploy'), { verb: 'method-not-allowed' })
+    })
+
+    it('streams a running deploy as Server-Sent Events, ending with an end event', async () => {
+        const response = await request('/projects/acme/live/deploy', { method: 'GET', actor: 'admin' })
+        assert.equal(response.status, 200)
+        assert.match(response.headers.get('content-type') ?? '', /^text\/event-stream/)
+        const text = await response.text()
+        assert.ok(text.includes(`event: line\ndata: ${JSON.stringify(logLine)}\n\n`), text)
+        assert.ok(text.endsWith('event: end\ndata: {}\n\n'), text)
+        assert.deepEqual(agent.calls, [{ verb: 'deploy-watch', project: 'acme', args: { environment: 'live' } }])
+        const [entry] = await audit.read({ limit: 1 })
+        assert.deepEqual([entry?.verb, entry?.target, entry?.outcome], ['deploy-watch', 'live watch', 'ok'])
+    })
+
+    // Watching is the same kind of read as the history, which an owner may make.
+    it('lets the owning client watch their own site', async () => {
+        const response = await request('/projects/acme/live/deploy', { method: 'GET', actor: 'client:cl_1' })
+        assert.equal(response.status, 200)
+        assert.match(response.headers.get('content-type') ?? '', /^text\/event-stream/)
+    })
+
+    it('refuses a client who does not own it, before any stream opens', async () => {
+        const response = await request('/projects/acme/live/deploy', { method: 'GET', actor: 'client:cl_2' })
+        assert.ok(response.status === 403 || response.status === 404, String(response.status))
+        assert.equal((response.headers.get('content-type') ?? '').includes('event-stream'), false)
+        assert.deepEqual(agent.calls, [])
+    })
+
+    it('passes a stream refusal through as JSON', async () => {
+        agent.stream = async () => ({ ok: false, code: 'busy', message: 'acme already has a deploy watch open' })
+        const response = await request('/projects/acme/live/deploy', { method: 'GET', actor: 'admin' })
+        assert.equal(response.status, 409)
+        assert.equal((response.headers.get('content-type') ?? '').includes('event-stream'), false)
+    })
+
+    it('answers 503 when the agent cannot be reached', async () => {
+        agent.stream = async () => { throw new AgentUnavailableError('the agent closed the connection without answering') }
+        const response = await request('/projects/acme/live/deploy', { method: 'GET', actor: 'admin' })
+        assert.equal(response.status, 503)
+        assert.equal(((await response.json()) as { code: string }).code, 'agent-unavailable')
+        assert.equal((await audit.read({ limit: 1 }))[0]?.outcome, 'failed')
     })
 })

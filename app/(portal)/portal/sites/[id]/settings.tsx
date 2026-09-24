@@ -10,9 +10,11 @@ import { useState } from 'react'
 
 import { Button } from '@/ui/Button/Button'
 import { Callout } from '@/ui/Callout/Callout'
+import { Dialog } from '@/ui/Dialog/Dialog'
 import { Field } from '@/ui/Field/Field'
 import { CAPABILITIES, NOT_BUILT, SWITCHES, type SwitchKey } from '../features'
-import { saveSettingsAction, type SiteActionResult } from './actions'
+import { deleteSiteAction, saveSettingsAction, type SiteActionResult } from './actions'
+import { PortControl } from './portControl'
 import styles from './site.module.css'
 
 // A deploy checks nothing before it is asked to run, because there is nothing here to check it with: it
@@ -20,8 +22,10 @@ import styles from './site.module.css'
 const CANNOT_CHECK = 'A deploy needs a git repository already at the environment\'s dir (dir/.git). hostd '
     + 'only finds that out when it runs. This form cannot check that ahead of it.'
 
-export function SiteSettingsForm({ id, capabilities, repo, credential, environments, branches = null, branchesError = null, credentials = null, credentialsError = null }: {
+export function SiteSettingsForm({ id, name, capabilities, repo, credential, environments, branches = null, branchesError = null, credentials = null, credentialsError = null }: {
     id: string
+    // The site's name, which hostd wants typed back to delete it
+    name: string
     capabilities: string[]
     repo: string | null
     credential: string | null
@@ -192,7 +196,7 @@ export function SiteSettingsForm({ id, capabilities, repo, credential, environme
                     <div key={env.name} className={styles.envSettings}>
                         <p className={styles.envName}>{env.name}</p>
                         {env.dir && <p className={styles.mono}>{env.dir}</p>}
-                        {env.port !== undefined && <p className={styles.envMeta}>port {env.port}</p>}
+                        {env.port !== undefined && <PortControl id={id} environment={env.name} port={env.port} />}
                         {branches ? (
                             // A <select>, not the <input list> this used to be: a datalist only offers its
                             // options once the operator starts typing, so it read as a plain text field
@@ -264,7 +268,89 @@ export function SiteSettingsForm({ id, capabilities, repo, credential, environme
             )}
 
             {nothingChanged && <p className={styles.note}>Nothing changed, so nothing was saved.</p>}
+
+            <DeleteSite id={id} name={name} />
         </div>
+    )
+}
+
+function DeleteSite({ id, name }: { id: string, name: string }) {
+    const router = useRouter()
+    const [open, setOpen] = useState(false)
+    const [typed, setTyped] = useState('')
+    const [pending, setPending] = useState(false)
+    const [error, setError] = useState<string | null>(null)
+
+    function show() {
+        setTyped('')
+        setError(null)
+        setOpen(true)
+    }
+
+    async function go() {
+        setPending(true)
+        setError(null)
+        try {
+            const result = await deleteSiteAction(id, typed.trim())
+            if (result.ok) {
+                // This page is for a site that no longer exists, so there is nothing to stay and read here
+                router.push('/portal')
+                router.refresh()
+                return
+            }
+            setError(result.error)
+        } catch {
+            setError('That did not work. Try reloading the page.')
+        }
+        setPending(false)
+    }
+
+    // Typed back exactly, because hostd compares it exactly
+    const ready = typed.trim() === name && !pending
+
+    return (
+        <section className={styles.deleteSite}>
+            <h3>Delete this site</h3>
+            <p className={styles.note}>
+                Stops the site, removes it from hostd and takes its Apache configuration off, so it stops
+                being served. Its folder, volumes and databases stay on the server.
+            </p>
+            <div>
+                <Button variant="danger" onClick={show}>Delete site</Button>
+            </div>
+
+            <Dialog
+                open={open}
+                onClose={() => { if (!pending) setOpen(false) }}
+                title={`Delete ${name}`}
+                footer={
+                    <>
+                        <Button variant="quiet" disabled={pending} onClick={() => setOpen(false)}>Keep it</Button>
+                        <Button variant="danger" disabled={!ready} onClick={go}>
+                            {pending ? 'Deleting...' : 'Delete site'}
+                        </Button>
+                    </>
+                }
+            >
+                {error && (
+                    <div className={styles.said}>
+                        <Callout tone="crit" title="It was not deleted">{error}</Callout>
+                    </div>
+                )}
+                <p className={styles.note}>
+                    {`The containers are stopped first. If they cannot be stopped, nothing is deleted. `
+                        + `Anything linking it to a client goes too. The files in its folder are left alone, `
+                        + `so it can be set up again from them, or removed by hand on the server.`}
+                </p>
+                <Field
+                    label={`Type ${name} to confirm`}
+                    value={typed}
+                    spellCheck={false}
+                    autoComplete="off"
+                    onChange={event => setTyped(event.target.value)}
+                />
+            </Dialog>
+        </section>
     )
 }
 

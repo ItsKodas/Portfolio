@@ -1,14 +1,15 @@
 import { describe, it } from 'node:test'
 import assert from 'node:assert/strict'
 import { PassThrough } from 'node:stream'
-import { Agent, MAX_FOLLOWS_PER_PROJECT, type AgentDeps, type Outcome } from './agent.ts'
+import { Agent, MAX_FOLLOWS_PER_PROJECT, PORT_CHANGE_UP_TIMEOUT_MS, type AgentDeps, type Outcome } from './agent.ts'
 import { lifecycleArgv, type Runner, type RunResult } from './compose.ts'
 import type { ContainerInspect, ContainerSummary, DockerApi } from './docker.ts'
 import type { EnvFs } from './env-files.ts'
 import type { ProvisionDeps } from './provision.ts'
 import type { DeployRequest } from './deploy.ts'
+import { DeployWatch } from './deploy-watch.ts'
 import { parseRegistry, type ProjectEntry, type Registry } from '../shared/registry.ts'
-import { emptyDeploys, type DeployRecord, type EnvironmentDeploys } from '../shared/deploys.ts'
+import { emptyDeploys, MAX_WATCH_BYTES, type DeployRecord, type EnvironmentDeploys } from '../shared/deploys.ts'
 import type { Change } from '../shared/registry-write.ts'
 import type { FetchReply, FetchRequest } from '../shared/fetch-protocol.ts'
 import type { AgentRequest, BackupArgs, ConfigureArgs, DeployArgs, LogLine } from '../shared/protocol.ts'
@@ -131,8 +132,10 @@ function replyOf(outcome: Outcome) {
 const lifecycle = (project: string, action: 'start' | 'stop' | 'restart' = 'start'): AgentRequest => ({ verb: 'lifecycle', project, args: { action } })
 const logs = (follow: boolean, project = 'acme'): AgentRequest => ({ verb: 'logs', project, args: { service: 'web', tail: 10, since: null, follow } })
 
-async function collect(lines: AsyncIterable<LogLine>): Promise<LogLine[]> {
-    const out: LogLine[] = []
+// Generic because a stream Outcome now carries LogLine | DeployEvent (deploy-watch's own lines): the
+// logs tests below still only ever hand this a LogLine iterable, so the return type narrows for them.
+async function collect<T>(lines: AsyncIterable<T>): Promise<T[]> {
+    const out: T[] = []
     for await (const line of lines) out.push(line)
     return out
 }
@@ -446,6 +449,8 @@ function fakeProvisionDeps(overrides: Partial<ProvisionDeps> = {}): ProvisionDep
         writer: { write: async () => ({ ok: true }) } as unknown as ProvisionDeps['writer'],
         fetcher: { call: async () => ({ ok: true }) },
         choosePort: async () => ({ ok: true, port: 5100 }),
+        checkPort: async () => ({ ok: true }),
+        setPortEnv: async () => ({ ok: true, previous: null }),
         mkdir: async () => {},
         move: async () => {},
         rmdir: async () => {},
@@ -454,7 +459,7 @@ function fakeProvisionDeps(overrides: Partial<ProvisionDeps> = {}): ProvisionDep
         // two only have to succeed here, since what provisioning does with them is provision.test.ts's.
         owner: async () => ({ uid: 1000, gid: 1000, mode: 0o775 }),
         own: async () => {},
-        resolve: async () => ({ ok: true, services: { web: { role: 'site' } } }),
+        resolve: async () => ({ ok: true, services: { web: { role: 'site' } }, published: [5100] }),
         runner: async () => ({ exitCode: 0, stdout: '', stderr: '', timedOut: false }),
         log: () => {},
         ...overrides,
@@ -464,9 +469,10 @@ function fakeProvisionDeps(overrides: Partial<ProvisionDeps> = {}): ProvisionDep
 describe('provisioning and env', () => {
     const envWrite = (project = 'acme'): AgentRequest => ({ verb: 'env', project, args: { action: 'write', environment: 'live', path: '.env', text: 'A=1' } })
 
+    // Removing one environment; removing the whole project needs no capability (see checkStructure)
     it('refuses provision and env when the capability is off', async () => {
         const { agent } = setup({ provision: fakeProvisionDeps() })
-        const provisionReply = replyOf(await agent.handle({ verb: 'provision', project: 'quiet', args: { action: 'remove', environment: null } }))
+        const provisionReply = replyOf(await agent.handle({ verb: 'provision', project: 'quiet', args: { action: 'remove', environment: 'test' } }))
         assert.equal(provisionReply?.ok === false && provisionReply.code, 'capability-disabled')
 
         const envReply = replyOf(await agent.handle({ verb: 'env', project: 'quiet', args: { action: 'list', environment: 'live' } }))
@@ -542,6 +548,9 @@ describe('provisioning and env', () => {
             },
             // Only the first call blocks: once serialised, the second is free to run to completion.
             fetcher: { call: async () => { calls++; if (calls === 1) await blocked; return { ok: true, commit: 'abc1234' } } },
+            // Whatever choosePort has handed out so far, so each attempt's own port is published by the
+            // time resolve runs for it, regardless of which of the two ports it was given.
+            resolve: async () => ({ ok: true, services: { web: { role: 'site' } }, published: [...ports] }),
         })
         const { agent } = setup({ provision })
 
@@ -596,7 +605,7 @@ describe('provisioning and env', () => {
         })
         const writes: Array<{ path: string, text: string }> = []
         const provision = fakeProvisionDeps({
-            resolve: async () => ({ ok: true, services: { web: { role: 'site' } } }),
+            resolve: async () => ({ ok: true, services: { web: { role: 'site' } }, published: [5100] }),
         })
         const { agent } = setup({
             provision,
@@ -651,12 +660,17 @@ function fakeDeploys(options: {
     const fetched: FetchRequest[] = []
     const changes: Change[] = []
     let registry = deployRegistry
+    // The real thing, not a recorder: deploy-watch's whole job is joining replay() and subscribe(), and a
+    // fake buffer would test nothing but the fake.
+    const watch = new DeployWatch(() => Date.now())
     const deploys = {
         runner: {
             start: (project: ProjectEntry, environment: { name: string }, request: DeployRequest) => {
                 started.push({ id: project.id, environment: environment.name, request })
                 return { ok: true as const, started: { environment: environment.name as 'live', trigger: request.trigger } }
             },
+            isRunning: () => false,
+            watch,
         },
         store: {
             get: () => options.state ?? emptyDeploys(),
@@ -680,7 +694,7 @@ function fakeDeploys(options: {
             fs: { exists: async () => options.repoExists ?? true },
         },
     }
-    return { deploys: deploys as unknown as AgentDeps['deploys'], started, fetched, changes }
+    return { deploys: deploys as unknown as AgentDeps['deploys'], started, fetched, changes, watch }
 }
 
 describe('the branches verb', () => {
@@ -715,6 +729,35 @@ describe('the branches verb', () => {
         const { agent } = setup({ registry: () => deployRegistry, fetcher })
         const reply = replyOf(await agent.handle(branches('acme')))
         assert.deepEqual(reply, { ok: false, code: 'failed', message: 'repository not found' })
+    })
+})
+
+describe('ports', () => {
+    const ask = (port: number | null, own: { project: string, environment: 'live' | 'test' } | null = null): AgentRequest => ({ verb: 'ports', args: { port, own } })
+
+    it('suggests the lowest free port when asked about none', async () => {
+        const { agent } = setup({ provision: fakeProvisionDeps({ choosePort: async () => ({ ok: true, port: 5012 }) }) })
+        assert.deepEqual(replyOf(await agent.handle(ask(null))), { ok: true, suggested: 5012, problem: null })
+    })
+
+    it('says what is wrong with the port it was asked about, as an answer rather than a refusal', async () => {
+        const provision = fakeProvisionDeps({ checkPort: async () => ({ ok: false, code: 'bad-request', problem: 'port 5004 is in use on the host' }) })
+        const { agent } = setup({ provision })
+        assert.deepEqual(replyOf(await agent.handle(ask(5004))), { ok: true, suggested: 5100, problem: 'port 5004 is in use on the host' })
+    })
+
+    it('passes the environment the port is for, so its own port is not counted', async () => {
+        const seen: unknown[] = []
+        const provision = fakeProvisionDeps({ checkPort: async (port, own) => { seen.push([port, own]); return { ok: true } } })
+        const { agent } = setup({ provision })
+        await agent.handle(ask(5010, { project: 'acme', environment: 'live' }))
+        assert.deepEqual(seen, [[5010, { project: 'acme', environment: 'live' }]])
+    })
+
+    it('refuses as unavailable when the host could not be read', async () => {
+        const provision = fakeProvisionDeps({ choosePort: async () => ({ ok: false, problem: 'could not read the host\'s ports: the probe timed out' }) })
+        const { agent } = setup({ provision })
+        assert.deepEqual(replyOf(await agent.handle(ask(null))), { ok: false, code: 'unavailable', message: 'could not read the host\'s ports: the probe timed out' })
     })
 })
 
@@ -884,6 +927,81 @@ describe('the deploy verb', () => {
         const reply = replyOf(await agent.handle(deploy({ action: 'set-branch', environment: 'live', branch: 'develop' })))
         assert.equal(reply?.ok === false && reply.code, 'bad-request')
         assert.deepEqual(context.started, [])
+    })
+})
+
+describe('deploy-watch', () => {
+    const watch = (environment: string, project = 'acme'): AgentRequest => ({ verb: 'deploy-watch', project, args: { environment: environment as 'live' } })
+
+    it('replays what the deploy printed before anybody attached, then goes live', async () => {
+        const context = fakeDeploys()
+        const { agent } = setup({ registry: () => deployRegistry, deploys: context.deploys })
+        context.watch.begin('acme:live', '2026-09-23T05:00:00.000Z')
+        context.watch.step('acme:live', 'building')
+
+        const outcome = await agent.handle(watch('live'))
+        assert.equal(outcome.kind, 'stream')
+        if (outcome.kind !== 'stream') return
+
+        const reader = outcome.lines[Symbol.asyncIterator]()
+        assert.equal((await reader.next()).value?.text, 'building')
+
+        context.watch.output('acme:live', '#7 RUN npm ci')
+        assert.equal((await reader.next()).value?.text, '#7 RUN npm ci')
+        outcome.close()
+    })
+
+    it('refuses an environment the project does not have, without opening a stream', async () => {
+        const { agent } = setup({ registry: () => deployRegistry, deploys: fakeDeploys().deploys })
+        const outcome = await agent.handle(watch('test'))
+        assert.equal(outcome.kind, 'reply')
+        if (outcome.kind !== 'reply') return
+        assert.equal(outcome.reply.ok, false)
+    })
+
+    it('refuses when the deploys rail is not wired, exactly as the deploy verb does', async () => {
+        const { agent } = setup({ registry: () => deployRegistry, deploys: undefined })
+        const outcome = await agent.handle(watch('live'))
+        assert.equal(outcome.kind, 'reply')
+        if (outcome.kind !== 'reply') return
+        assert.equal(outcome.reply.ok === false && outcome.reply.code, 'unavailable')
+    })
+
+    // The ring bounds what an unattached watcher replays, but once attached the events are pushed into a
+    // queue instead, and a consumer that has stopped reading is exactly what the ring was written for: api
+    // suspends its generator at waitForDrain while a socket backs up, and a chatty build would otherwise
+    // pile the whole of its output into the agent's heap behind it.
+    it('holds a fixed amount for a watcher that has stopped reading', async () => {
+        const context = fakeDeploys()
+        const { agent } = setup({ registry: () => deployRegistry, deploys: context.deploys })
+        context.watch.begin('acme:live', '2026-09-23T05:00:00.000Z')
+
+        const outcome = await agent.handle(watch('live'))
+        assert.equal(outcome.kind, 'stream')
+        if (outcome.kind !== 'stream') return
+
+        // Nothing is read from the stream while these arrive, which is the stalled consumer.
+        const chunk = 'x'.repeat(4096)
+        for (let i = 0; i < 200; i += 1) context.watch.output('acme:live', `${i} ${chunk}`)
+
+        outcome.close()
+        const held = await collect(outcome.lines)
+        const bytes = held.reduce((total, line) => total + Buffer.byteLength(line.text), 0)
+        assert.ok(bytes <= MAX_WATCH_BYTES, `held ${bytes} bytes, cap is ${MAX_WATCH_BYTES}`)
+        // Newest kept, oldest dropped: a live column is read from the bottom.
+        assert.ok(held.at(-1)?.text.startsWith('199 '), String(held.at(-1)?.text.slice(0, 8)))
+    })
+
+    it('stops feeding a stream that has been closed', async () => {
+        const context = fakeDeploys()
+        const { agent } = setup({ registry: () => deployRegistry, deploys: context.deploys })
+        context.watch.begin('acme:live', '2026-09-23T05:00:00.000Z')
+        const outcome = await agent.handle(watch('live'))
+        assert.equal(outcome.kind, 'stream')
+        if (outcome.kind !== 'stream') return
+        outcome.close()
+        const done = await outcome.lines[Symbol.asyncIterator]().next()
+        assert.equal(done.done, true)
     })
 })
 
@@ -1519,5 +1637,144 @@ projects:
         const reply = replyOf(await agent.handle(configure({ capabilities: [] })))
         assert.equal(reply?.ok, false)
         assert.deepEqual(written, [])
+    })
+})
+
+describe('port', () => {
+    const change = (port: number, environment: 'live' | 'test' = 'live'): AgentRequest => ({ verb: 'port', project: 'acme', args: { environment, port } })
+
+    it('refuses when provisioning is not configured', async () => {
+        const { agent } = setup()
+        assert.deepEqual(replyOf(await agent.handle(change(5012))), { ok: false, code: 'unavailable', message: 'provisioning is not configured' })
+    })
+
+    it('refuses an environment the project does not have', async () => {
+        const { agent } = setup({ provision: fakeProvisionDeps() })
+        assert.equal((replyOf(await agent.handle(change(5012, 'test'))) as { code?: string }).code, 'unknown-environment')
+    })
+
+    it('refuses while another provisioning action holds the lock', async () => {
+        let release!: () => void
+        const slow = fakeProvisionDeps({ checkPort: () => new Promise(resolve => { release = () => resolve({ ok: true }) }) })
+        const { agent } = setup({ provision: slow })
+        const first = agent.handle(change(5012))
+        assert.deepEqual(replyOf(await agent.handle(change(5013))), { ok: false, code: 'busy', message: 'another provisioning action is in progress' })
+        release()
+        await first
+    })
+
+    // A deploy's swap runs up on the same compose project, so the two must never overlap
+    it('refuses while a deploy is running for that environment', async () => {
+        const deploys = { runner: { start: () => { throw new Error('not in this test') }, isRunning: (key: string) => key === 'acme:live' } }
+        const { agent } = setup({ provision: fakeProvisionDeps(), deploys: deploys as unknown as AgentDeps['deploys'] })
+        assert.deepEqual(replyOf(await agent.handle(change(5012))), { ok: false, code: 'busy', message: 'acme live has a deploy running' })
+    })
+
+    it('refuses while a lifecycle action is running for the project', async () => {
+        let release: () => void = () => {}
+        const blocked = new Promise<void>(resolve => { release = resolve })
+        const { agent } = setup({
+            provision: fakeProvisionDeps(),
+            runner: async () => {
+                await blocked
+                return { exitCode: 0, stdout: '', stderr: '', timedOut: false }
+            },
+        })
+        const running = agent.handle(lifecycle('acme', 'restart'))
+        await new Promise(resolve => setImmediate(resolve))
+        assert.deepEqual(replyOf(await agent.handle(change(5012))), { ok: false, code: 'busy', message: 'acme already has a lifecycle action running' })
+        release()
+        await running
+    })
+
+    // The change writes .env and may put back the whole file it read, so a portal save must wait for it
+    it('holds the env write slot for the environment until the change is done', async () => {
+        let release!: () => void
+        const slow = fakeProvisionDeps({ checkPort: () => new Promise(resolve => { release = () => resolve({ ok: false, code: 'bad-request', problem: 'port 5012 is in use on the host' }) }) })
+        const { agent } = setup({ provision: slow, envFs: fakeEnvFs() })
+        const first = agent.handle(change(5012))
+        const write: AgentRequest = { verb: 'env', project: 'acme', args: { action: 'write', environment: 'live', path: '.env', text: 'A=1' } }
+        assert.deepEqual(replyOf(await agent.handle(write)), { ok: false, code: 'busy', message: 'acme already has an env write running for live' })
+        release()
+        await first
+        assert.equal(replyOf(await agent.handle(write))?.ok, true)
+    })
+
+    // And the reverse: nothing that runs up or rewrites .env may start while a change is in progress
+    function heldChange(options: SetupOptions = {}) {
+        let release!: () => void
+        const slow = fakeProvisionDeps({ checkPort: () => new Promise(resolve => { release = () => resolve({ ok: false, code: 'bad-request', problem: 'port 5012 is in use on the host' }) }) })
+        const context = setup({ provision: slow, ...options })
+        return { ...context, first: context.agent.handle(change(5012)), release: () => release() }
+    }
+
+    it('refuses a lifecycle action for the project while a change is in progress', async () => {
+        const { agent, first, release, runs } = heldChange()
+        assert.deepEqual(replyOf(await agent.handle(lifecycle('acme', 'restart'))), { ok: false, code: 'busy', message: 'acme already has a lifecycle action running' })
+        release()
+        await first
+        assert.deepEqual(runs, [])
+        assert.equal(replyOf(await agent.handle(lifecycle('acme', 'restart')))?.ok, true)
+    })
+
+    it('refuses a deploy of the environment while a change is in progress', async () => {
+        const context = fakeDeploys()
+        const { agent, first, release } = heldChange({ registry: () => deployRegistry, deploys: context.deploys })
+        const deploy: AgentRequest = { verb: 'deploy', project: 'acme', args: { action: 'deploy', environment: 'live' } }
+        assert.deepEqual(replyOf(await agent.handle(deploy)), { ok: false, code: 'busy', message: 'acme live is moving to another port' })
+        assert.deepEqual(context.started, [])
+        release()
+        await first
+        assert.equal(replyOf(await agent.handle(deploy))?.ok, true)
+    })
+
+    // configure and domains both write the registry and may rewrite the vhost the change is rewriting
+    it('refuses configure for the project while a change is in progress', async () => {
+        const { agent, first, release } = heldChange()
+        const configure: AgentRequest = { verb: 'configure', project: 'acme', args: { capabilities: ['lifecycle'] } }
+        assert.deepEqual(replyOf(await agent.handle(configure)), { ok: false, code: 'busy', message: 'acme is moving an environment to another port' })
+        release()
+        await first
+        assert.equal(replyOf(await agent.handle(configure))?.ok, true)
+    })
+
+    it('refuses the domains verb for the project while a change is in progress', async () => {
+        // A vhost hostd wrote, so the change gets as far as the port check and holds there
+        const domains = { ...fakeDomains(domainsRegistry).domains, readFile: async () => '# hostd' }
+        const { agent, first, release } = heldChange({ registry: () => domainsRegistry, domains })
+        const request = { verb: 'domains' as const, project: 'acme', args: { action: 'write' as const, environment: 'live' as const, token: 'abc123' } }
+        assert.deepEqual(await agent.domains(request), { ok: false, code: 'busy', message: 'acme is moving an environment to another port' })
+        // The vhost read comes first, so the port check that holds the change starts a tick later
+        await new Promise(resolve => setImmediate(resolve))
+        release()
+        await first
+    })
+
+    // Apache would go on proxying to the old port behind a file hostd did not write
+    it('refuses a domain served by a hand-written vhost, and without a rail at all', async () => {
+        const refusal = { ok: false, code: 'bad-request', message: 'acme.com is served by a hand-written vhost; adopt it from the Domains tab first, or move the port by hand' }
+        const handWritten = setup({ registry: () => domainsRegistry, provision: fakeProvisionDeps(), domains: fakeDomains(domainsRegistry).domains, envFs: fakeEnvFs() })
+        assert.deepEqual(replyOf(await handWritten.agent.handle(change(5012))), refusal)
+        assert.deepEqual(handWritten.runs, [])
+        const noRail = setup({ registry: () => domainsRegistry, provision: fakeProvisionDeps(), envFs: fakeEnvFs() })
+        assert.deepEqual(replyOf(await noRail.agent.handle(change(5012))), refusal)
+    })
+
+    // up, an undo's up and the rail all fit inside api's 150 second call to the agent
+    it('gives the recreate a shorter timeout than a lifecycle action', async () => {
+        const timeouts: Array<{ args: string[], timeoutMs: number }> = []
+        const { agent } = setup({
+            provision: fakeProvisionDeps(),
+            envFs: fakeEnvFs({ readFile: async () => 'WEB_PORT=5010' }),
+            runner: async (_command, args, timeoutMs) => {
+                timeouts.push({ args, timeoutMs })
+                const stdout = args.includes('config') ? JSON.stringify({ name: 'acme', services: { web: { ports: [{ published: '5012', target: 3000 }] } } }) : ''
+                return { exitCode: 0, stdout, stderr: '', timedOut: false }
+            },
+        })
+        assert.equal(replyOf(await agent.handle(change(5012)))?.ok, true)
+        const up = timeouts.find(call => call.args.includes('up'))
+        assert.equal(up?.timeoutMs, PORT_CHANGE_UP_TIMEOUT_MS)
+        assert.equal(PORT_CHANGE_UP_TIMEOUT_MS, 60_000)
     })
 })

@@ -552,6 +552,10 @@ export async function runDeploy(
 
         let commit = request.commit
         if (!commit) {
+            // Said here rather than inside currentTip, which the poller calls for every environment every
+            // two minutes: a line in there would be noise about nothing happening, a hundred and fifty
+            // times an hour, and would reach no watcher anyway since a poll runs outside a deploy.
+            deps.log(`deploy ${project.id} ${environment.name}: fetching ${environment.branch}`)
             const tip = await tipIn(project, branch, build, deps)
             if (!tip.ok) return failed(tip.problem)
             commit = tip.commit
@@ -581,6 +585,7 @@ export async function runDeploy(
         // A tree left behind by an earlier deploy is removed first: git refuses to add a worktree over an
         // existing folder, and whatever is in there is nobody's current version.
         if (await deps.fs.exists(build.next)) await deps.fs.rmdir(build.next)
+        deps.log(`deploy ${project.id} ${environment.name} ${commit.slice(0, 7)}: checking out`)
         const checkedOut = await deps.fetcher.call({ verb: 'checkout', dir: build.repo, worktree: build.next, commit })
         if (!checkedOut.ok) {
             await deps.fs.rmdir(build.next).catch(() => {})
@@ -638,6 +643,7 @@ export async function runDeploy(
         let rolledBack: { reason: string, output: string | null } | null = null
         await deps.fs.setMaintenance(key)
         try {
+            deps.log(`deploy ${project.id} ${environment.name} ${commit.slice(0, 7)}: taking the old copy down`)
             const down = await runCompose(downArgv(locationIn(environment, trees.dir), name), SWAP_TIMEOUT_MS, deps.runner)
             if (!down.ok) {
                 // Nothing has moved, so the old tree is still the site and can be started again by the
@@ -646,6 +652,7 @@ export async function runDeploy(
                 return fail(`the running copy could not be stopped: ${down.message}`, down.output)
             }
 
+            deps.log(`deploy ${project.id} ${environment.name} ${commit.slice(0, 7)}: swapping in the new copy`)
             if (target) {
                 const moved = await moveIntoNested(environment, trees, target, deps)
                 if (!moved.ok) {
@@ -673,7 +680,9 @@ export async function runDeploy(
                 await deps.fs.move(trees.next, trees.dir)
             }
 
+            deps.log(`deploy ${project.id} ${environment.name} ${commit.slice(0, 7)}: starting the new copy`)
             const up = await runCompose(upArgv(locationIn(environment, live.dir), name), SWAP_TIMEOUT_MS, deps.runner)
+            if (up.ok) deps.log(`deploy ${project.id} ${environment.name} ${commit.slice(0, 7)}: waiting for it to come up healthy`)
             const healthy = up.ok
                 ? await waitForHealthy(project, name, { docker: deps.docker, now: deps.now, sleep: deps.sleep })
                 : { ok: false as const, problem: up.message }
