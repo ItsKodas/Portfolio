@@ -1,11 +1,11 @@
 'use client'
 
 // A site's environments, on its Settings tab: every one it has, adding another beside live, deleting one,
-// and putting a deleted one back within its 30 days. The operator's alone end to end: hostd puts all of it
+// putting a deleted one back within its 30 days, and copying live's data into one. The operator's alone end to end: hostd puts all of it
 // under its provision verb, the actions check again, and a client gets nothing drawn here at all.
 
 import { useRouter } from 'next/navigation'
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 
 import { LIVE, newEnvironmentProblem } from '@/server/hostd/environmentName'
 import { Button } from '@/ui/Button/Button'
@@ -14,7 +14,8 @@ import { DataTable } from '@/ui/DataTable/DataTable'
 import { Dialog } from '@/ui/Dialog/Dialog'
 import { Field } from '@/ui/Field/Field'
 import {
-    addEnvironmentAction, deleteEnvironmentAction, restoreEnvironmentAction, type SiteActionResult,
+    addEnvironmentAction, copyFromLiveAction, copyRunsAction, deleteEnvironmentAction, restoreEnvironmentAction,
+    type CopyRunsResult, type SiteActionResult,
 } from './actions'
 import { shortCommit } from './deploys'
 import { formatDay } from '../../format'
@@ -22,12 +23,17 @@ import styles from './site.module.css'
 
 const BROKE = 'That did not work. Try reloading the page.'
 const DAY_MS = 24 * 60 * 60_000
+// How often a running copy is asked about. A copy takes minutes, so this is plenty.
+const POLL_MS = 3000
 
 type Listed = { name: string, branch: string | null, domain: string | null, deployed: string | null }
 
 // The fields of hostd's deleted-environment record this reads. The whole record type lives in
 // server/hostd/environments.ts, which a browser component cannot import.
 type Deleted = { environment: string, deletedAt: string, purgeAt: string, branch: string | null, domain: string | null }
+
+// One copy run, as the action hands it back
+type CopyRun = Extract<CopyRunsResult, { ok: true }>['runs'][number]
 
 type Props = {
     id: string
@@ -102,12 +108,20 @@ export function SiteEnvironments({ id, name, isAdmin, environments, branches, de
         deployed: environment.deployed ? <span className={styles.mono}>{shortCommit(environment.deployed)}</span> : 'not deployed yet',
         act: environment.name === LIVE
             ? null
-            : <DeleteEnvironment
-                id={id}
-                siteName={name}
-                environment={environment.name}
-                onDone={result => { setSaid(result); router.refresh() }}
-            />,
+            : <div className={styles.environmentActs}>
+                <CopyFromLive
+                    id={id}
+                    environment={environment.name}
+                    domain={environment.domain}
+                    onStarted={setSaid}
+                />
+                <DeleteEnvironment
+                    id={id}
+                    siteName={name}
+                    environment={environment.name}
+                    onDone={result => { setSaid(result); router.refresh() }}
+                />
+            </div>,
     }))
 
     return (
@@ -161,6 +175,7 @@ function AddEnvironment({ id, taken, branches }: { id: string, taken: string[], 
     const [name, setName] = useState('')
     const [branch, setBranch] = useState('')
     const [hostname, setHostname] = useState('')
+    const [copyLive, setCopyLive] = useState(false)
     const [pending, setPending] = useState(false)
     const [said, setSaid] = useState<SiteActionResult | null>(null)
 
@@ -176,12 +191,15 @@ function AddEnvironment({ id, taken, branches }: { id: string, taken: string[], 
         setPending(true)
         setSaid(null)
         try {
-            const result = await addEnvironmentAction(id, wanted, branch.trim(), hostname.trim() === '' ? null : hostname.trim())
+            const result = await addEnvironmentAction(
+                id, wanted, branch.trim(), hostname.trim() === '' ? null : hostname.trim(), copyLive,
+            )
             setSaid(result)
             if (result.ok) {
                 setName('')
                 setBranch('')
                 setHostname('')
+                setCopyLive(false)
                 router.refresh()
             }
         } catch {
@@ -221,6 +239,10 @@ function AddEnvironment({ id, taken, branches }: { id: string, taken: string[], 
                     onChange={event => setHostname(event.target.value)}
                 />
             </div>
+            <label className={styles.capability}>
+                <input type="checkbox" checked={copyLive} onChange={event => setCopyLive(event.target.checked)} />
+                Start with a copy of live&apos;s data
+            </label>
             <div className={styles.save}>
                 <Button variant="primary" disabled={!ready} onClick={add}>
                     {pending ? 'Adding...' : 'Add environment'}
@@ -229,7 +251,8 @@ function AddEnvironment({ id, taken, branches }: { id: string, taken: string[], 
             </div>
             <p className={styles.note}>
                 It gets its own folder, port and database, with a copy of live&apos;s env files. It is not
-                started until its first deploy. A hostname can be added later from the Domains tab.
+                started until its first deploy. A hostname can be added later from the Domains tab. A copy
+                of live&apos;s data is real client data, and can also be made later from its row above.
             </p>
         </section>
     )
@@ -337,6 +360,154 @@ function RestoreEnvironment({ id, environment, deletedAt, expired, onDone }: {
                 {pending ? 'Restoring...' : 'Restore'}
             </Button>
             {expired && <span className={styles.note}>It is past its 30 days, so it can no longer be restored.</span>}
+        </>
+    )
+}
+
+// The newest run, whatever order hostd listed them in
+function latestOf(runs: CopyRun[]): CopyRun | null {
+    return runs.reduce<CopyRun | null>((latest, run) => (latest === null || run.startedAt > latest.startedAt ? run : latest), null)
+}
+
+// What the row says about copies: one going, or how the last one ended
+function CopyState({ latest, running, trouble }: { latest: CopyRun | null, running: boolean, trouble: string | null }) {
+    if (trouble) return <span className={styles.stateBad}>{`The copies could not be read: ${trouble}`}</span>
+    if (running) return <span className={styles.state}>Copying from live...</span>
+    if (!latest) return null
+    if (latest.outcome === 'ok') return <span className={styles.state}>{`Copied from live on ${dayOf(latest.startedAt)}.`}</span>
+    if (latest.outcome === 'failed') {
+        const where = latest.step ? ` at ${latest.step}` : ''
+        const why = latest.reason ? `: ${latest.reason.replace(/\.+$/, '')}` : ''
+        return (
+            <span className={styles.stateBad}>
+                {`The copy from live failed${where}${why}. It may be partly copied, and a new copy overwrites it.`}
+            </span>
+        )
+    }
+    return null
+}
+
+// Copying live's databases and storage over this environment's. Real client data going somewhere less
+// guarded than live, so the dialog says so and wants the environment's name typed back, and the action
+// checks that again. hostd answers at once and copies in the background, so the row asks how it is going
+// every few seconds while it runs, and stops when it ends or the row goes.
+function CopyFromLive({ id, environment, domain, onStarted }: {
+    id: string
+    environment: string
+    domain: string | null
+    onStarted: (result: SiteActionResult) => void
+}) {
+    const [open, setOpen] = useState(false)
+    const [typed, setTyped] = useState('')
+    const [pending, setPending] = useState(false)
+    const [error, setError] = useState<string | null>(null)
+    const [latest, setLatest] = useState<CopyRun | null>(null)
+    const [running, setRunning] = useState(false)
+    const [trouble, setTrouble] = useState<string | null>(null)
+    // Bumped when a copy starts, which reads the runs again and so starts the polling
+    const [check, setCheck] = useState(0)
+
+    useEffect(() => {
+        let alive = true
+        let timer: ReturnType<typeof setTimeout> | undefined
+        async function read() {
+            try {
+                const result = await copyRunsAction(id, environment)
+                if (!alive) return
+                if (!result.ok) {
+                    setTrouble(result.error)
+                    return
+                }
+                setTrouble(null)
+                setLatest(latestOf(result.runs))
+                setRunning(result.running)
+                if (result.running) timer = setTimeout(read, POLL_MS)
+            } catch {
+                if (alive) setTrouble(BROKE)
+            }
+        }
+        read()
+        return () => {
+            alive = false
+            if (timer) clearTimeout(timer)
+        }
+    }, [id, environment, check])
+
+    function show() {
+        setTyped('')
+        setError(null)
+        setOpen(true)
+    }
+
+    async function go() {
+        setPending(true)
+        setError(null)
+        try {
+            const result = await copyFromLiveAction(id, environment, typed.trim())
+            if (result.ok) {
+                setOpen(false)
+                setRunning(true)
+                setCheck(count => count + 1)
+                onStarted({ ok: true, message: result.message })
+            } else {
+                setError(result.error)
+            }
+        } catch {
+            setError(BROKE)
+        }
+        setPending(false)
+    }
+
+    // Typed back exactly, because the action compares it exactly
+    const ready = typed.trim() === environment && !pending
+
+    return (
+        <>
+            <Button
+                size="small"
+                disabled={running}
+                aria-label={`Copy data from live into ${environment}`}
+                onClick={show}
+            >
+                Copy data from live
+            </Button>
+            <CopyState latest={latest} running={running} trouble={trouble} />
+            <Dialog
+                open={open}
+                onClose={() => { if (!pending) setOpen(false) }}
+                title={`Copy live's data into ${environment}`}
+                footer={
+                    <>
+                        <Button variant="quiet" disabled={pending} onClick={() => setOpen(false)}>Cancel</Button>
+                        <Button variant="danger" disabled={!ready} onClick={go}>
+                            {pending ? 'Starting...' : 'Copy data'}
+                        </Button>
+                    </>
+                }
+            >
+                {error && (
+                    <div className={styles.said}>
+                        <Callout tone="crit" title="The copy did not start">{error}</Callout>
+                    </div>
+                )}
+                <p className={styles.note}>
+                    {`${environment}'s databases and storage are replaced with live's current data. What `
+                        + `${environment} holds now is lost. live keeps running and is not changed.`}
+                </p>
+                <p className={styles.note}>
+                    {'This is real client data. '
+                        + (domain
+                            ? `It may be reachable at ${domain}, so treat ${environment} with the same care as live.`
+                            : `It may be reachable at any hostname ${environment} is given, so treat it with the same care as live.`)}
+                </p>
+                <Field
+                    label={`Type ${environment} to confirm`}
+                    value={typed}
+                    spellCheck={false}
+                    autoComplete="off"
+                    onChange={event => setTyped(event.target.value)}
+                />
+            </Dialog>
         </>
     )
 }
