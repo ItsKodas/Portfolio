@@ -85,17 +85,40 @@ describe('DeletedStore', () => {
         assert.deepEqual(second.list('acme').map(entry => entry.deletedAt), ['2026-09-20T10:00:00.000Z'])
     })
 
-    it('says whether a name was deleted within the last 30 days', async () => {
+    it('says whether a name is still in the trash', async () => {
         const { fs } = setup()
         const store = new DeletedStore(PATH, fs)
         await store.load()
         await store.add(record('uat1', '2026-09-20T10:00:00.000Z'))
-        const now = Date.parse('2026-09-24T10:00:00.000Z')
 
-        assert.equal(store.deletedWithin('acme', 'uat1', now), true)
-        assert.equal(store.deletedWithin('acme', 'uat2', now), false)
-        assert.equal(store.deletedWithin('other', 'uat1', now), false)
-        assert.equal(store.deletedWithin('acme', 'uat1', Date.parse('2026-09-20T10:00:00.000Z') + 31 * DAY), false)
+        assert.equal(store.deletedWithin('acme', 'uat1'), true)
+        assert.equal(store.deletedWithin('acme', 'uat2'), false)
+        assert.equal(store.deletedWithin('other', 'uat1'), false)
+    })
+
+    // Past 30 days but not yet purged (an hour normally, for ever while a volume refuses to go), the old
+    // volumes still carry the compose name a new environment of that name would run under.
+    it('still blocks a name whose record is older than 30 days, until the purge drops it', async () => {
+        const { fs } = setup()
+        const store = new DeletedStore(PATH, fs)
+        await store.load()
+        await store.add(record('uat1', new Date(Date.now() - 40 * DAY).toISOString()))
+        assert.equal(store.deletedWithin('acme', 'uat1'), true)
+        await store.remove('acme', 'uat1', store.list()[0]!.deletedAt)
+        assert.equal(store.deletedWithin('acme', 'uat1'), false)
+    })
+
+    // What a restore leaves behind when prev or next could not go back: nothing restorable, only folders
+    // for the purge to remove, so the name is not blocked by it
+    it('replaces a record in place, and does not count leftovers as a deleted environment', async () => {
+        const { fs } = setup()
+        const store = new DeletedStore(PATH, fs)
+        await store.load()
+        const original = record('uat1', '2026-09-20T10:00:00.000Z')
+        await store.add(original)
+        await store.update({ ...original, leftovers: true })
+        assert.deepEqual(store.list(), [{ ...original, leftovers: true }])
+        assert.equal(store.deletedWithin('acme', 'uat1'), false)
     })
 
     // The record is what makes a trash folder restorable and purgeable: a delete that goes ahead without

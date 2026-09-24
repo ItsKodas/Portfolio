@@ -3,7 +3,7 @@
 
 import { createServer, createConnection } from 'node:net'
 import { createWriteStream } from 'node:fs'
-import { chmod, chown, constants, copyFile, cp, mkdir, readdir, readFile, rename, rm, rmdir, stat, statfs, unlink, writeFile } from 'node:fs/promises'
+import { chmod, chown, constants, copyFile, cp, mkdir, readdir, readFile, realpath, rename, rm, rmdir, stat, statfs, unlink, writeFile } from 'node:fs/promises'
 import { randomBytes } from 'node:crypto'
 import { posix } from 'node:path'
 import { RegistryStore, explainRegistryError } from '../shared/registry-store.ts'
@@ -39,7 +39,6 @@ import type { DomainsConfig, DomainsDeps } from './domains.ts'
 import { SitesEnabledReader } from './sites-enabled.ts'
 import { siblingDirProblem } from './boot-checks.ts'
 import { DeletedStore } from './deleted-store.ts'
-import { purgeDeleted } from './environment-trash.ts'
 
 const REGISTRY_FILE = process.env.HOSTD_REGISTRY_FILE ?? '/etc/hostd/registry/projects.yaml'
 const SOCKET_PATH = process.env.HOSTD_AGENT_SOCKET ?? '/run/hostd/agent.sock'
@@ -241,7 +240,7 @@ async function main(): Promise<void> {
         resolve: (expectedName, dir, composePaths, collidesWith) => resolveNewProject({ dir, composePaths }, expectedName, runner, collidesWith),
         runner,
         log,
-        deletedWithin: async (project, environment) => deletedStore.deletedWithin(project, environment, Date.now()),
+        deletedWithin: async (project, environment) => deletedStore.deletedWithin(project, environment),
     }
 
     const deployStore = new DeployStore(DEPLOY_STATE_FILE, undefined, log)
@@ -436,6 +435,7 @@ async function main(): Promise<void> {
             store: deletedStore,
             // Not recursive: the kernel refuses a folder that is not empty (ENOTEMPTY)
             removeEmptyDir: dir => rmdir(dir),
+            realpath: path => realpath(path),
         },
     })
 
@@ -466,9 +466,6 @@ async function main(): Promise<void> {
     let lastSitesEnabledRun = 0
     // Zero for the same reason: the first sweep runs at boot.
     let lastPurgeRun = 0
-    // The purge's only recursive delete, which purgeDeleted only ever points at a folder under a site's
-    // .deleted folder.
-    const purgeDeps = { registry: () => store.current(), store: deletedStore, runner, log, fs: { rmdir: (dir: string) => rm(dir, { recursive: true, force: true }) } }
     for (;;) {
         if (Date.now() - lastSitesEnabledRun >= SITES_ENABLED_EVERY_MS) {
             lastSitesEnabledRun = Date.now()
@@ -482,9 +479,9 @@ async function main(): Promise<void> {
         }
         if (Date.now() - lastPurgeRun >= PURGE_EVERY_MS) {
             lastPurgeRun = Date.now()
-            // Logged rather than thrown, like the sweep above: a purge that fails keeps its records for
-            // the next hour, and nothing else on this loop should wait on it.
-            await purgeDeleted(Date.now(), purgeDeps).catch(error => log(`the deleted environments purge failed: ${describeError(error)}`))
+            // Through the agent, under the lock a delete and a restore take. Logged rather than thrown,
+            // like the sweep above: a purge that fails keeps its records for the next hour.
+            await agent.purgeDeleted(Date.now()).catch(error => log(`the deleted environments purge failed: ${describeError(error)}`))
         }
         const current = warnings()
         // Logged when they change rather than every poll, so the log shows transitions, not noise.

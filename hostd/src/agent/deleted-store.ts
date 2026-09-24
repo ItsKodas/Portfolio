@@ -28,6 +28,10 @@ export type DeletedRecord = {
     // The registry node exactly as it was, as plain data, so a restore can write it back
     node: Record<string, unknown>
     actor: string
+    // Set when a restore brought the environment back but had to leave prev or next in the trash: nothing
+    // here is restorable any more, and the compose name belongs to the restored environment again, so the
+    // purge removes the folder and nothing else.
+    leftovers?: boolean
 }
 
 export type DeletedStoreFs = {
@@ -52,6 +56,7 @@ function isDeletedRecord(value: unknown): value is DeletedRecord {
         && typeof value.deletedAt === 'string' && Number.isFinite(Date.parse(value.deletedAt))
         && typeof value.trash === 'string' && typeof value.composeName === 'string'
         && isRecord(value.node) && typeof value.actor === 'string'
+        && (value.leftovers === undefined || typeof value.leftovers === 'boolean')
 }
 
 const sameRecord = (entry: DeletedRecord, project: string, environment: string, deletedAt: string): boolean =>
@@ -111,15 +116,22 @@ export class DeletedStore {
         return this.records.filter(entry => project === undefined || entry.project === project)
     }
 
-    // Whether this name was deleted from this project less than 30 days ago, so a new environment may not
-    // take it while the old one can still be restored.
-    deletedWithin(project: string, environment: string, now: number): boolean {
-        return this.records.some(entry => entry.project === project && entry.environment === environment
-            && now - Date.parse(entry.deletedAt) < DELETED_KEEP_MS)
+    // Whether this name is still in the project's trash, whatever the age of its record: restorable for 30
+    // days, and after that waiting for the purge, which can take an hour or, while a volume refuses to go,
+    // longer. Until the purge drops the record the old volumes still carry the compose name a new
+    // environment of this name would run under, so the name stays taken. Leftovers of a restore hold no
+    // environment and do not count.
+    deletedWithin(project: string, environment: string): boolean {
+        return this.records.some(entry => entry.project === project && entry.environment === environment && !entry.leftovers)
     }
 
     add(record: DeletedRecord): Promise<void> {
         return this.change(records => [...records, record])
+    }
+
+    // Replaces the record with the same project, environment and deletedAt
+    update(record: DeletedRecord): Promise<void> {
+        return this.change(records => records.map(entry => (sameRecord(entry, record.project, record.environment, record.deletedAt) ? record : entry)))
     }
 
     remove(project: string, environment: string, deletedAt: string): Promise<void> {

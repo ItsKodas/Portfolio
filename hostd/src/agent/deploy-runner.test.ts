@@ -259,3 +259,17 @@ describe('DeployRunner watch', () => {
         assert.ok(last.includes('disk full'), last)
     })
 })
+
+describe('a blocked environment', () => {
+    it('refuses to start a deploy, by poll or by hand, while its key is blocked', async () => {
+        const { runner, runs, finish } = setup()
+        const unblock = runner.block('acme:live')
+        const busy = { ok: false, code: 'busy', message: 'acme live is being deleted or restored' }
+        assert.deepEqual(runner.start(project, environment, { trigger: 'poll', actor: 'hostd', commit: 'abc1234' }), busy)
+        assert.deepEqual(runner.start(project, environment, { trigger: 'manual', actor: 'admin' }), busy)
+        assert.deepEqual(runs, [])
+        unblock()
+        assert.equal(runner.start(project, environment, { trigger: 'manual', actor: 'admin' }).ok, true)
+        await finish()
+    })
+})

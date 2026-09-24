@@ -27,7 +27,7 @@ import { buildServiceStatuses, groupByProject, pickPerService, type ContainerIns
 import { createLogDecoder } from './logframes.ts'
 import { listEnvFiles, readEnvFile, writeEnvFile, type EnvFs } from './env-files.ts'
 import { createProject, addEnvironment, removeProject, type ProvisionDeps } from './provision.ts'
-import { deleteEnvironment, deletedEnvironments, restoreEnvironment, type TrashDeps, type TrashVhosts } from './environment-trash.ts'
+import { deleteEnvironment, deletedEnvironments, purgeDeleted, restoreEnvironment, type TrashDeps, type TrashVhosts } from './environment-trash.ts'
 import type { DeletedStore } from './deleted-store.ts'
 import { changePort } from './port-change.ts'
 import { restorePortEnv, writePortEnv } from './port-env.ts'
@@ -75,8 +75,10 @@ export type AgentDeps = {
     // the classes themselves, so the tests can hand this a recorder.
     deploys?: {
         // isRunning too, so a port change can refuse while a deploy's swap owns the same compose project
-        runner: Pick<DeployRunner, 'start' | 'isRunning' | 'watch'>
-        store: Pick<DeployStore, 'get' | 'resume'>
+        // block too, so a delete or restore can stop the poller starting a deploy it never asks the agent
+        // about. Optional, like forget, only so the tests' recorders need not carry them.
+        runner: Pick<DeployRunner, 'start' | 'isRunning' | 'watch'> & Partial<Pick<DeployRunner, 'block'>>
+        store: Pick<DeployStore, 'get' | 'resume'> & Partial<Pick<DeployStore, 'forget'>>
         deps: DeployDeps
     }
     // Absent until the production entrypoint wires the backup directory, the store and the runner: the
@@ -107,8 +109,9 @@ export type AgentDeps = {
     // have. Absent until the production entrypoint wires the record: deleting, restoring and listing
     // deleted environments then refuse unavailable instead of crashing.
     trash?: {
-        store: Pick<DeletedStore, 'list' | 'add' | 'remove'>
+        store: Pick<DeletedStore, 'list' | 'add' | 'update' | 'remove'>
         removeEmptyDir(dir: string): Promise<void>
+        realpath(path: string): Promise<string>
     }
 }
 
@@ -856,12 +859,45 @@ export class Agent {
         if (this.trashing.has(key)) return refuse('busy', `${project.id} ${name} is already being deleted or restored`)
         this.trashing.add(key)
         this.envBusy.add(key)
+        // The runner's own block as well: the poller starts deploys straight through it
+        const unblock = this.deps.deploys?.runner.block?.(deployKey(project.id, name))
         try {
             if (args.action === 'restore-environment') return await restoreEnvironment(project, name, args.deletedAt, args.token ?? null, deps)
             return await deleteEnvironment(project, name, args.actor ?? 'admin', deps)
         } finally {
+            unblock?.()
             this.trashing.delete(key)
             this.envBusy.delete(key)
+        }
+    }
+
+    // The hourly sweep of the trash, under the lock a delete and a restore take, so it can never delete
+    // the folders or the volumes of an environment a restore is bringing back. Answers null when it did
+    // not run: nothing is wired up, or another provisioning action holds the lock, in which case the next
+    // sweep tries again.
+    async purgeDeleted(now: number): Promise<{ purged: string[], kept: string[] } | null> {
+        const provision = this.deps.provision
+        const trash = this.deps.trash
+        if (!provision || !trash) return null
+        if (this.provisioningBusy) {
+            provision.log('purge: another provisioning action is in progress; trying again on the next sweep')
+            return null
+        }
+        this.provisioningBusy = true
+        try {
+            const store = this.deps.deploys?.store
+            return await purgeDeleted(now, {
+                registry: provision.registry,
+                refreshRegistry: provision.refreshRegistry,
+                store: trash.store,
+                runner: this.deps.runner,
+                log: provision.log,
+                fs: { rmdir: provision.rmdir, realpath: trash.realpath },
+                busy: record => this.trashing.has(`${record.project}:${record.environment}`),
+                ...(store?.forget ? { forgetDeploys: (key: string) => store.forget!(key) } : {}),
+            })
+        } finally {
+            this.provisioningBusy = false
         }
     }
 
@@ -876,7 +912,7 @@ export class Agent {
             store: trash.store,
             fs: {
                 exists: provision.exists, mkdir: provision.mkdir, move: provision.move, rmdir: provision.rmdir,
-                removeEmptyDir: trash.removeEmptyDir, owner: provision.owner, own: provision.own,
+                removeEmptyDir: trash.removeEmptyDir, owner: provision.owner, own: provision.own, realpath: trash.realpath,
             },
             runner: this.deps.runner,
             vhosts: this.trashVhosts(),

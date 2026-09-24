@@ -1776,7 +1776,7 @@ describe('deleting and restoring an environment', () => {
 `
     const VHOST = '/etc/apache2/hostd/acme-test.conf'
 
-    function trashSetup(options: { deploying?: string } = {}) {
+    function trashSetup(options: { deploying?: string, gate?: { armed: boolean, wait: Promise<void> } } = {}) {
         const files = new Map([['/etc/hostd/projects.yaml', YAML]])
         const writeFs: RegistryWriteFs = {
             readFile: async path => files.get(path)!,
@@ -1792,14 +1792,26 @@ describe('deleting and restoring an environment', () => {
         const context = fakeDomains(current())
         context.domains.readFile = async path => (path === VHOST && paths.has('vhost') ? 'the test vhost' : null)
         paths.add('vhost')
-        const deploys = options.deploying === undefined ? undefined
-            : { runner: { start: () => { throw new Error('not in this test') }, isRunning: (key: string) => key === options.deploying } }
+        const blocks: string[] = []
+        const deploys = {
+            runner: {
+                start: () => { throw new Error('not in this test') },
+                isRunning: (key: string) => key === options.deploying,
+                block: (key: string) => {
+                    blocks.push(key)
+                    return () => { blocks.push(`released ${key}`) }
+                },
+            },
+        }
+        const removed: string[] = []
         const base = baseSetup({
             registry: current,
             domains: context.domains,
-            ...(deploys ? { deploys: deploys as unknown as AgentDeps['deploys'] } : {}),
+            deploys: deploys as unknown as AgentDeps['deploys'],
             provision: fakeProvisionDeps({
                 registry: current,
+                refreshRegistry: async () => { if (options.gate?.armed) await options.gate.wait },
+                rmdir: async dir => { removed.push(dir) },
                 writer: new RegistryWriter('/etc/hostd/projects.yaml', writeFs),
                 exists: async path => paths.has(path),
                 move: async (from, to) => { paths.delete(from); paths.add(to) },
@@ -1809,15 +1821,20 @@ describe('deleting and restoring an environment', () => {
                 store: {
                     list: project => records.filter(entry => project === undefined || entry.project === project),
                     add: async record => { records.push(record) },
+                    update: async record => {
+                        const at = records.findIndex(entry => entry.project === record.project && entry.environment === record.environment && entry.deletedAt === record.deletedAt)
+                        if (at !== -1) records[at] = record
+                    },
                     remove: async (project, environment, deletedAt) => {
                         const at = records.findIndex(entry => entry.project === project && entry.environment === environment && entry.deletedAt === deletedAt)
                         if (at !== -1) records.splice(at, 1)
                     },
                 },
                 removeEmptyDir: async dir => { paths.delete(dir) },
+                realpath: async path => path,
             },
         })
-        return { ...base, sent: context.sent, records, current, paths }
+        return { ...base, sent: context.sent, records, current, paths, blocks, removed }
     }
 
     it('deletes one environment into the trash, taking its vhost off the web, when asked to remove it', async () => {
@@ -1857,6 +1874,38 @@ describe('deleting and restoring an environment', () => {
         const reply = replyOf(await agent.handle({ verb: 'provision', project: 'acme', args: { action: 'delete-environment', environment: 'test' } }))
         assert.deepEqual(reply, { ok: false, code: 'busy', message: 'acme test has a deploy running' })
         assert.equal(records.length, 0)
+    })
+
+    // The poller starts deploys through the runner, not through the agent, so the runner is what refuses
+    it('blocks every deploy of the environment for as long as it is being deleted', async () => {
+        const { agent, blocks } = trashSetup()
+        const reply = replyOf(await agent.handle({ verb: 'provision', project: 'acme', args: { action: 'delete-environment', environment: 'test' } }))
+        assert.equal(reply?.ok, true)
+        assert.deepEqual(blocks, ['acme:test', 'released acme:test'])
+    })
+
+    // The sweep and a restore at the 30 day boundary must never interleave: the sweep would delete the
+    // trash and the volumes of an environment that is coming back
+    it('does not purge while a restore is in progress, and purges once it is not', async () => {
+        let release = () => {}
+        const gate = { armed: false, wait: new Promise<void>(resolve => { release = resolve }) }
+        const { agent, records, removed } = trashSetup({ gate })
+        replyOf(await agent.handle({ verb: 'provision', project: 'acme', args: { action: 'delete-environment', environment: 'test' } }))
+        assert.equal(records.length, 1)
+        const later = Date.parse(records[0]!.deletedAt) + 31 * 24 * 60 * 60_000
+
+        gate.armed = true
+        const restoring = agent.handle({ verb: 'provision', project: 'acme', args: { action: 'restore-environment', environment: 'test', deletedAt: records[0]!.deletedAt } })
+        await new Promise(resolve => setImmediate(resolve))
+        assert.equal(await agent.purgeDeleted(later), null)
+        assert.deepEqual(removed, [])
+        assert.equal(records.length, 1)
+        release()
+        gate.armed = false
+        await restoring
+
+        const purged = await agent.purgeDeleted(later)
+        assert.ok(purged)
     })
 
     it('refuses unavailable when nothing wired the record up', async () => {

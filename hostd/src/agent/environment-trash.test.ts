@@ -59,6 +59,7 @@ type Options = {
     takenPorts?: number[]
     hostUnreadable?: boolean
     volumes?: string[]
+    realpath?: (path: string) => string
 }
 
 function setup(options: Options = {}) {
@@ -98,6 +99,11 @@ function setup(options: Options = {}) {
                 calls.push(`record add ${record.environment}`)
                 records.push(record)
             },
+            update: async record => {
+                calls.push(`record update ${record.environment}`)
+                const at = records.findIndex(entry => entry.project === record.project && entry.environment === record.environment && entry.deletedAt === record.deletedAt)
+                if (at !== -1) records[at] = record
+            },
             remove: async (project, environment, deletedAt) => {
                 calls.push(`record remove ${environment}`)
                 const at = records.findIndex(entry => entry.project === project && entry.environment === environment && entry.deletedAt === deletedAt)
@@ -130,6 +136,7 @@ function setup(options: Options = {}) {
             },
             owner: async () => ({ uid: 1000, gid: 1000, mode: 0o775 }),
             own: async dir => { calls.push(`own ${dir}`) },
+            realpath: async path => (options.realpath ? options.realpath(path) : path),
         },
         runner: async (command, args) => {
             runs.push([command, ...args])
@@ -438,6 +445,17 @@ describe('restoreEnvironment', () => {
         assert.ok(!calls.some(call => call.startsWith('vhost write')))
     })
 
+    // What stayed behind is still the purge's to remove, so the record is slimmed to just that rather than
+    // dropped, which would leave the folder behind for ever
+    it('keeps a record of what it had to leave in the trash, for the purge', async () => {
+        const paths = TRASHED.filter(path => path !== '/var/www/acme/prev').concat(['/var/www/acme/next', `${TRASH}/next`])
+        const { deps, records, project } = setup({ yaml: WITHOUT_UAT1, paths, records: [deletedRecord()] })
+        const reply = await restoreEnvironment(project(), 'uat1', deletedRecord().deletedAt, 'abc123', deps)
+        assert.equal(reply.ok, true)
+        assert.equal(reply.ok && 'warnings' in reply && reply.warnings.length, 1)
+        assert.deepEqual(records, [{ ...deletedRecord(), leftovers: true }])
+    })
+
     it('reports a start that failed after the environment was back, rather than undoing it', async () => {
         const { deps, records, registry, project } = setup({ yaml: WITHOUT_UAT1, paths: TRASHED, records: [deletedRecord()], failRun: argv => argv.includes(' up ') })
         const reply = await restoreEnvironment(project(), 'uat1', deletedRecord().deletedAt, 'abc123', deps)
@@ -483,6 +501,73 @@ describe('purgeDeleted', () => {
         assert.equal(records.length, 1)
     })
 
+    it('purges leftovers of a restore without touching the volumes the restored environment uses', async () => {
+        const leftovers = deletedRecord({ deletedAt: new Date(NOW - DELETED_KEEP_MS - 1000).toISOString(), leftovers: true })
+        const { deps, runs, removed, records } = setup({ records: [leftovers], volumes: ['acme-uat1_db'] })
+        const result = await purgeDeleted(NOW, deps)
+        assert.deepEqual(result.purged, ['acme uat1'])
+        assert.deepEqual(removed, [TRASH])
+        assert.deepEqual(runs, [])
+        assert.equal(records.length, 0)
+    })
+
+    // A restore that finished between the listing and this record, or one still running, must win
+    it('re-reads the registry and the record just before deleting anything', async () => {
+        const old = deletedRecord({ deletedAt: new Date(NOW - DELETED_KEEP_MS - 1000).toISOString() })
+        const { deps, removed, runs, records } = setup({ yaml: WITHOUT_UAT1, records: [old], volumes: ['acme-uat1_db'] })
+        let refreshed = 0
+        deps.refreshRegistry = async () => {
+            refreshed += 1
+            records.splice(0, records.length)
+        }
+        const result = await purgeDeleted(NOW, deps)
+        assert.ok(refreshed >= 1)
+        assert.deepEqual(result.purged, [])
+        assert.deepEqual(removed, [])
+        assert.deepEqual(runs, [])
+    })
+
+    it('skips a record the caller says is busy', async () => {
+        const old = deletedRecord({ deletedAt: new Date(NOW - DELETED_KEEP_MS - 1000).toISOString() })
+        const { deps, removed, runs, records } = setup({ yaml: WITHOUT_UAT1, records: [old], volumes: ['acme-uat1_db'] })
+        const result = await purgeDeleted(NOW, { ...deps, busy: record => record.environment === 'uat1' })
+        assert.deepEqual(result.kept, ['acme uat1'])
+        assert.deepEqual(removed, [])
+        assert.deepEqual(runs, [])
+        assert.equal(records.length, 1)
+    })
+
+    // An invalid project drops out of registry.projects, and with it the protection for its compose names
+    it('removes no volumes, and no trash, while any project in the registry is invalid', async () => {
+        const old = deletedRecord({ deletedAt: new Date(NOW - DELETED_KEEP_MS - 1000).toISOString() })
+        const yaml = `${WITHOUT_UAT1}  broken:\n    client: cl_9\n`
+        const { deps, removed, runs, records, registry } = setup({ yaml, records: [old], volumes: ['acme-uat1_db'] })
+        assert.equal(registry().invalid.has('broken'), true)
+        const result = await purgeDeleted(NOW, deps)
+        assert.deepEqual(result.kept, ['acme uat1'])
+        assert.deepEqual(removed, [])
+        assert.deepEqual(runs, [])
+        assert.equal(records.length, 1)
+    })
+
+    it('skips a trash folder whose real path is not the recorded one', async () => {
+        const old = deletedRecord({ deletedAt: new Date(NOW - DELETED_KEEP_MS - 1000).toISOString() })
+        const { deps, removed, runs, records } = setup({ yaml: WITHOUT_UAT1, records: [old], realpath: path => path.replace('/var/www/acme', '/srv/elsewhere') })
+        const result = await purgeDeleted(NOW, deps)
+        assert.deepEqual(result.kept, ['acme uat1'])
+        assert.deepEqual(removed, [])
+        assert.deepEqual(runs, [])
+        assert.equal(records.length, 1)
+    })
+
+    it('forgets the environment\'s deploy history once it is purged', async () => {
+        const old = deletedRecord({ deletedAt: new Date(NOW - DELETED_KEEP_MS - 1000).toISOString() })
+        const { deps } = setup({ yaml: WITHOUT_UAT1, records: [old] })
+        const forgotten: string[] = []
+        await purgeDeleted(NOW, { ...deps, forgetDeploys: async key => { forgotten.push(key) } })
+        assert.deepEqual(forgotten, ['acme:uat1'])
+    })
+
     it('never deletes a path outside a site\'s .deleted folder', async () => {
         const stray = deletedRecord({ deletedAt: new Date(NOW - DELETED_KEEP_MS - 1000).toISOString(), trash: '/var/www/acme/uat1' })
         const dotted = deletedRecord({ deletedAt: new Date(NOW - DELETED_KEEP_MS - 1000).toISOString(), trash: '/var/www/acme/.deleted/../live' })
@@ -496,7 +581,7 @@ describe('purgeDeleted', () => {
 
 describe('deletedEnvironments', () => {
     it('lists a project\'s deleted environments with when each is purged', () => {
-        const { deps } = setup({ records: [deletedRecord(), deletedRecord({ project: 'other' })] })
+        const { deps } = setup({ records: [deletedRecord(), deletedRecord({ project: 'other' }), deletedRecord({ deletedAt: new Date(NOW).toISOString(), leftovers: true })] })
         assert.deepEqual(deletedEnvironments('acme', deps), [{
             environment: 'uat1', deletedAt: deletedRecord().deletedAt,
             purgeAt: new Date(NOW - DAY + DELETED_KEEP_MS).toISOString(),

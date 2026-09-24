@@ -13,6 +13,7 @@
 import { posix } from 'node:path'
 
 import { COMPOSE_NAME, describeError } from '../shared/formats.ts'
+import { deployKey } from '../shared/deploys.ts'
 import { hostnamesOf, type EnvironmentEntry, type EnvironmentName, type ProjectEntry, type Registry } from '../shared/registry.ts'
 import { isFlatDir, isNestedDir, siteOf } from '../shared/layout.ts'
 import type { PortVerdict } from '../shared/ports.ts'
@@ -48,7 +49,7 @@ export type TrashDeps = {
         write(change: Change): Promise<{ ok: true } | { ok: false, problem: string, conflict?: true }>
         environmentNode(id: string, environment: EnvironmentName): Promise<Record<string, unknown> | null>
     }
-    store: Pick<DeletedStore, 'list' | 'add' | 'remove'>
+    store: Pick<DeletedStore, 'list' | 'add' | 'update' | 'remove'>
     fs: {
         exists(path: string): Promise<boolean>
         // Never recursive
@@ -61,6 +62,8 @@ export type TrashDeps = {
         removeEmptyDir(dir: string): Promise<void>
         owner(path: string): Promise<{ uid: number, gid: number, mode: number }>
         own(dir: string, like: { uid: number, gid: number, mode: number }): Promise<void>
+        // The purge compares it with the recorded path before its recursive delete
+        realpath(path: string): Promise<string>
     }
     // The docker CLI: compose down and up, and the volume listing and removal a purge runs
     runner: Runner
@@ -320,14 +323,20 @@ export async function restoreEnvironment(
         const up = await runCompose(upArgv(locationIn(restored, restored.dir), restored.composeName), SWAP_TIMEOUT_MS, deps.runner)
         if (!up.ok) warnings.push(`it could not be started (up ${up.message}); deploy it to start it`)
     }
-    try {
-        await deps.store.remove(project.id, name, deletedAt)
-    } catch (error) {
-        warnings.push(`its record could not be dropped: ${describeError(error)}`)
-    }
     if (leftInTrash.length > 0) {
-        warnings.push(`${leftInTrash.join(' and ')} stayed in the trash, because the folder it came from is taken or missing`)
+        // Slimmed rather than dropped, so the purge still removes what stayed behind
+        try {
+            await deps.store.update({ ...record, leftovers: true })
+        } catch (error) {
+            warnings.push(`its record could not be updated: ${describeError(error)}`)
+        }
+        warnings.push(`${leftInTrash.join(' and ')} stayed in the trash, because the folder it came from is taken or missing; the purge removes it with the rest`)
     } else {
+        try {
+            await deps.store.remove(project.id, name, deletedAt)
+        } catch (error) {
+            warnings.push(`its record could not be dropped: ${describeError(error)}`)
+        }
         try {
             await deps.fs.removeEmptyDir(record.trash)
         } catch (error) {
@@ -338,23 +347,51 @@ export async function restoreEnvironment(
     return { ok: true, port, portChanged: port !== recordedPort, droppedHostnames, warnings, vhost }
 }
 
+export type PurgeDeps = Pick<TrashDeps, 'registry' | 'refreshRegistry' | 'store' | 'runner' | 'log'> & {
+    fs: Pick<TrashDeps['fs'], 'rmdir' | 'realpath'>
+    // Whether a delete or restore of this environment is running, which the purge never races
+    busy?: (record: DeletedRecord) => boolean
+    // Drops the environment's deploy history, so a new environment of that name starts clean
+    forgetDeploys?: (key: string) => Promise<void>
+}
+
 // Every record older than 30 days: its trash folder, then the volumes of the compose project it ran
 // under. A record is only dropped once both are gone; anything that fails leaves it for the next sweep.
-export async function purgeDeleted(
-    now: number, deps: Pick<TrashDeps, 'registry' | 'store' | 'runner' | 'log'> & { fs: Pick<TrashDeps['fs'], 'rmdir'> },
-): Promise<{ purged: string[], kept: string[] }> {
+// The caller runs this under the same lock a delete and a restore take, and each record is re-read, with
+// the registry reloaded, just before anything of it is deleted.
+export async function purgeDeleted(now: number, deps: PurgeDeps): Promise<{ purged: string[], kept: string[] }> {
     const purged: string[] = []
     const kept: string[] = []
-    const registry = deps.registry()
-    const inUse = new Set<string>()
-    for (const project of registry.projects.values()) for (const environment of project.environments.values()) inUse.add(environment.composeName)
 
-    for (const record of deps.store.list()) {
-        if (now - Date.parse(record.deletedAt) <= DELETED_KEEP_MS) continue
-        const id = `${record.project} ${record.environment}`
+    for (const listed of deps.store.list()) {
+        if (now - Date.parse(listed.deletedAt) <= DELETED_KEEP_MS) continue
+        const id = `${listed.project} ${listed.environment}`
         const keep = (why: string) => {
             deps.log(`purge ${id}: kept for the next sweep: ${why}`)
             kept.push(id)
+        }
+        if (deps.busy?.(listed)) {
+            keep('it is being deleted or restored')
+            continue
+        }
+        try {
+            await deps.refreshRegistry()
+        } catch (error) {
+            keep(`the registry could not be reloaded: ${describeError(error)}`)
+            continue
+        }
+        const record = deps.store.list(listed.project)
+            .find(entry => entry.environment === listed.environment && entry.deletedAt === listed.deletedAt)
+        if (!record) {
+            deps.log(`purge ${id}: its record is gone, so there is nothing to purge`)
+            continue
+        }
+        const registry = deps.registry()
+        // An invalid project is missing from registry.projects, and so are the compose names its
+        // environments run under: nothing can be proven not to be in use until every project is valid.
+        if (registry.invalid.size > 0) {
+            keep(`the registry has invalid projects (${[...registry.invalid.keys()].sort().join(', ')}), whose compose names cannot be known`)
+            continue
         }
         if (!TRASH_DIR.test(record.trash) || posix.normalize(record.trash) !== record.trash) {
             keep(`${record.trash} is not a folder under a site's .deleted folder, so it is not deleted`)
@@ -364,8 +401,29 @@ export async function purgeDeleted(
             keep(`${record.composeName} is not a compose project name`)
             continue
         }
-        if (inUse.has(record.composeName) || registry.invalid.has(record.project)) {
-            keep(`the compose name ${record.composeName} belongs to a registered environment, or ${record.project} is invalid`)
+        const inUse = [...registry.projects.values()]
+            .some(project => [...project.environments.values()].some(environment => environment.composeName === record.composeName))
+        // Leftovers of a restore share the compose name of the environment that came back, and remove no
+        // volumes, so only a real deleted environment is checked
+        if (!record.leftovers && inUse) {
+            keep(`the compose name ${record.composeName} belongs to a registered environment`)
+            continue
+        }
+
+        // A symlink anywhere along the recorded path would point the recursive delete somewhere else
+        let real: string
+        try {
+            real = await deps.fs.realpath(record.trash)
+        } catch (error) {
+            // Already gone is fine: the delete below is then a no-op
+            if ((error as NodeJS.ErrnoException).code !== 'ENOENT') {
+                keep(`${record.trash} could not be resolved: ${describeError(error)}`)
+                continue
+            }
+            real = record.trash
+        }
+        if (real !== record.trash) {
+            keep(`${record.trash} resolves to ${real}, so it is not deleted`)
             continue
         }
 
@@ -376,21 +434,24 @@ export async function purgeDeleted(
             continue
         }
 
-        const listed = await deps.runner('docker', ['volume', 'ls', '--filter', `label=com.docker.compose.project=${record.composeName}`, '-q'], VOLUME_TIMEOUT_MS)
-        if (listed.timedOut || listed.exitCode !== 0) {
-            keep(`the volumes of ${record.composeName} could not be listed: ${listed.stderr.trim()}`)
-            continue
-        }
-        const volumes = listed.stdout.split('\n').map(line => line.trim()).filter(line => line !== '')
-        const failed: string[] = []
-        for (const volume of volumes) {
-            // A volume still in use is refused by Docker and retried on the next sweep
-            const removed = await deps.runner('docker', ['volume', 'rm', volume], VOLUME_TIMEOUT_MS)
-            if (removed.timedOut || removed.exitCode !== 0) failed.push(volume)
-        }
-        if (failed.length > 0) {
-            keep(`could not remove the volumes ${failed.join(', ')}`)
-            continue
+        const volumes: string[] = []
+        if (!record.leftovers) {
+            const listedVolumes = await deps.runner('docker', ['volume', 'ls', '--filter', `label=com.docker.compose.project=${record.composeName}`, '-q'], VOLUME_TIMEOUT_MS)
+            if (listedVolumes.timedOut || listedVolumes.exitCode !== 0) {
+                keep(`the volumes of ${record.composeName} could not be listed: ${listedVolumes.stderr.trim()}`)
+                continue
+            }
+            volumes.push(...listedVolumes.stdout.split('\n').map(line => line.trim()).filter(line => line !== ''))
+            const failed: string[] = []
+            for (const volume of volumes) {
+                // A volume still in use is refused by Docker and retried on the next sweep
+                const removed = await deps.runner('docker', ['volume', 'rm', volume], VOLUME_TIMEOUT_MS)
+                if (removed.timedOut || removed.exitCode !== 0) failed.push(volume)
+            }
+            if (failed.length > 0) {
+                keep(`could not remove the volumes ${failed.join(', ')}`)
+                continue
+            }
         }
 
         try {
@@ -398,6 +459,13 @@ export async function purgeDeleted(
         } catch (error) {
             keep(`the record could not be dropped: ${describeError(error)}`)
             continue
+        }
+        if (!record.leftovers && deps.forgetDeploys) {
+            try {
+                await deps.forgetDeploys(deployKey(record.project, record.environment))
+            } catch (error) {
+                deps.log(`purge ${id}: its deploy history could not be dropped: ${describeError(error)}`)
+            }
         }
         deps.log(`purge ${id}: removed ${record.trash}${volumes.length ? ` and the volumes ${volumes.join(', ')}` : ''}`)
         purged.push(id)
@@ -407,7 +475,7 @@ export async function purgeDeleted(
 
 // What the portal lists for one project: each deleted environment, and when the sweep will purge it
 export function deletedEnvironments(project: string, deps: Pick<TrashDeps, 'store'>): DeletedEnvironment[] {
-    return deps.store.list(project).map(record => ({
+    return deps.store.list(project).filter(record => !record.leftovers).map(record => ({
         environment: record.environment,
         deletedAt: record.deletedAt,
         purgeAt: purgeAtOf(record.deletedAt),
