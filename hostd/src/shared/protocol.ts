@@ -139,6 +139,37 @@ export type BackupStartedReply = { ok: true, started: { run: string, tag: Backup
 export type BackupListReply = { ok: true, snapshots: Snapshot[], runs: BackupRecord[], running: boolean }
 export type BackupRunReply = { ok: true, run: BackupRecord | null, running: boolean }
 
+// Copying live's databases and storage into another environment of the same site. Admin only, by api's
+// policy (provision). start answers at once with the run id; the run itself goes on in the background and
+// its record is what get-run and list read. actor is a label for the record, exactly like a delete's.
+export type CopyOutcome = 'ok' | 'failed' | 'running'
+export type CopyRecord = {
+    project: string
+    environment: EnvironmentName
+    run: string
+    actor: string
+    startedAt: string
+    durationMs: number
+    outcome: CopyOutcome
+    // The step that failed (dump, prepare, load:<service>, sqlite:<service>, storage:<path>,
+    // restore-state or clean), or null
+    step: string | null
+    reason: string | null
+    // The database services and storage paths the copy covers
+    services: string[]
+    storage: string[]
+}
+export type CopyStartArgs = { action: 'start', environment: EnvironmentName, actor?: string }
+export type CopyListArgs = { action: 'list', environment: EnvironmentName }
+export type CopyGetRunArgs = { action: 'get-run', environment: EnvironmentName, run: string }
+export type CopyArgs = CopyStartArgs | CopyListArgs | CopyGetRunArgs
+export type CopyRequest = { verb: 'copy', project: string, args: CopyArgs }
+
+export type CopyStartedReply = { ok: true, run: string }
+export type CopyListReply = { ok: true, runs: CopyRecord[], running: boolean }
+// record rather than run, so it can never be mistaken for a started reply's run id
+export type CopyRunReply = { ok: true, record: CopyRecord | null, running: boolean }
+
 // The registry's own ceiling on maxDomains. A list longer than this cannot be valid for any project, so
 // it is refused here before the registry is even read; the real per-project cap is checked in the agent,
 // which is what knows which project this is.
