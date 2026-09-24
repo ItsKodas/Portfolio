@@ -70,8 +70,9 @@ Gaps that matter for an extra environment:
 ## Names
 
 - One rule, `ENV_NAME = /^[a-z][a-z0-9]{0,15}$/`, in `hostd/src/shared/formats.ts`.
-- Reserved, never valid as an environment name: `git`, `next`, `prev`. They are folders of the nested
-  layout.
+- Reserved, never valid as an environment name: `git`, `next`, `prev` (folders of the nested layout),
+  and `environments`, `backups` (route segments under `/projects/:id/` that the api matches before an
+  environment).
 - `live` is valid (it is the one required environment) but can never be added, deleted or restored.
 - `test` becomes an ordinary name. Existing test environments keep working unchanged.
 - No hyphen, on purpose. hostd joins `<id>-<env>` into maintenance flag names, vhost file names
