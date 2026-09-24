@@ -34,7 +34,8 @@ export type DeletedEnvironment = {
 }
 
 export type RestoredEnvironment = {
-    port: number
+    // null when hostd did not say, which is never read as a port number
+    port: number | null
     // Whether its old port was taken meanwhile, so it came back on another
     portChanged: boolean
     // Hostnames another site or environment claimed meanwhile, which it came back without
@@ -162,7 +163,7 @@ export async function restoreEnvironment(
     return {
         ok: true,
         value: {
-            port: result.value.port ?? 0,
+            port: typeof result.value.port === 'number' ? result.value.port : null,
             portChanged: result.value.portChanged === true,
             droppedHostnames: result.value.droppedHostnames ?? [],
         },

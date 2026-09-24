@@ -94,7 +94,9 @@ export function SiteSettingsForm({ id, name, capabilities, repo, credential, env
         // field back, including one the operator had never touched this session.
         const changedBranches: Record<string, string | null> = {}
         for (const env of environments) {
-            const nextBranch = blankToNull(branchValues[env.name])
+            // An environment missing from local state arrived after this form was drawn (an add or a
+            // restore refreshes the page and keeps this state), so it is untouched, not cleared.
+            const nextBranch = blankToNull(branchValues[env.name] ?? env.branch ?? '')
             if (nextBranch !== (env.branch ?? null)) changedBranches[env.name] = nextBranch
         }
         const payload: {
@@ -114,7 +116,7 @@ export function SiteSettingsForm({ id, name, capabilities, repo, credential, env
         for (const { key } of SWITCHES) {
             const changed: Record<string, boolean> = {}
             for (const env of environments) {
-                const next = switchValues[key][env.name] ?? false
+                const next = switchValues[key][env.name] ?? env[key] ?? false
                 if (next !== (env[key] ?? false)) changed[env.name] = next
             }
             if (Object.keys(changed).length > 0) payload[key] = changed
@@ -186,7 +188,7 @@ export function SiteSettingsForm({ id, name, capabilities, repo, credential, env
             {credentialsError && <p className={styles.note}>{`The host's credential names could not be read: ${credentialsError}`}</p>}
 
             {environments.map(env => {
-                const branchValue = branchValues[env.name] ?? ''
+                const branchValue = branchValues[env.name] ?? env.branch ?? ''
                 // The saved value can be a branch the repository does not have, exactly as `main` was on
                 // the live incident this change is for: an operator typed it into what looked like a text
                 // box, and nothing checked it against the repository before it went into the registry. A
@@ -237,7 +239,7 @@ export function SiteSettingsForm({ id, name, capabilities, repo, credential, env
                                 <label className={styles.capability}>
                                     <input
                                         type="checkbox"
-                                        checked={switchValues[key][env.name] ?? false}
+                                        checked={switchValues[key][env.name] ?? env[key] ?? false}
                                         onChange={event => {
                                             const enabled = event.target.checked
                                             setSwitchValues(prev => ({ ...prev, [key]: { ...prev[key], [env.name]: enabled } }))

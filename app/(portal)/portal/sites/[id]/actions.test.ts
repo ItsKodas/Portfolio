@@ -460,6 +460,14 @@ describe('restoreEnvironmentAction', () => {
         })
     })
 
+    it('says the port changed without naming one hostd did not send', async () => {
+        callerFromSession.mockResolvedValue(ADMIN)
+        restoreEnvironment.mockResolvedValue({ ok: true, value: { port: null, portChanged: true, droppedHostnames: [] } })
+
+        expect(await restoreEnvironmentAction('acme', 'uat1', '2026-09-20T10:00:00.000Z'))
+            .toEqual({ ok: true, message: 'uat1 is back and starting. Its old port was taken, so it is on another port now.' })
+    })
+
     it('never restores live, and wants to know which deletion', async () => {
         expect(await restoreEnvironmentAction('acme', 'live', '2026-09-20T10:00:00.000Z')).toEqual(CANNOT)
         expect(await restoreEnvironmentAction('acme', 'uat1', 5 as never)).toEqual(CANNOT)

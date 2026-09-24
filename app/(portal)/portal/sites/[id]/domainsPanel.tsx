@@ -154,9 +154,12 @@ export function DomainsPanel({ id, environments, environment, domains, isAdmin, 
                 <>
                     {/* Both, always, and never one instead of the other: they are the two halves of one
                         job. hostd makes the first hostname an environment gets its primary, so the add
-                        form is open with or without one, and can add to any of the site's environments. */}
+                        form is open with or without one, and can add to any of the site's environments.
+                        Keyed on the environment: the dropdown switches it by navigating to this same route,
+                        which rerenders rather than remounts, and the add form's own choice has to start
+                        over from the environment now being viewed. */}
                     <PrimaryDomain id={id} environment={environment} current={primary} />
-                    <AddDomain id={id} environments={environments} environment={environment} />
+                    <AddDomain key={environment} id={id} environments={environments} environment={environment} />
 
                     <section className={styles.block}>
                         <h2>Addresses</h2>

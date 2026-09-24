@@ -223,9 +223,10 @@ export default async function SitePage({ params, searchParams }: Props) {
 
     // Which environment the Deploys, Domains and Environment tabs are about. All three are per
     // environment: a deploy runs against one, a hostname belongs to one, and so does an env file. Checked
-    // against the ones this project actually has, so ?env=test on a project that has only live lands on live rather than asking hostd about an
-    // environment that is not there. Falls back to live when the listing could not be read at all: the
-    // panel then asks and reports hostd's own refusal, which is better than not asking.
+    // against the ones this project actually has, so ?env=test on a project that has only live lands on
+    // live rather than asking hostd about an environment that is not there. Falls back to live when the
+    // listing could not be read at all: the panel then asks and reports hostd's own refusal, which is
+    // better than not asking.
     const names = view.environments.map(environment => environment.name)
     const askedFor = one(search.env)
     const environment = names.find(name => name === askedFor) ?? names[0] ?? LIVE

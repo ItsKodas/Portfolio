@@ -113,6 +113,12 @@ describe('restoreEnvironment', () => {
             .toEqual({ ok: true, value: { port: 5014, portChanged: false, droppedHostnames: [] } })
     })
 
+    it('reads a changed port with no port given as unknown rather than as port 0', async () => {
+        const { fetchImpl } = fakeFetch({ ok: true, portChanged: true, droppedHostnames: [] })
+        expect(await restoreEnvironment(config, admin, 'acme', 'uat1', '2026-09-20T10:00:00.000Z', fetchImpl))
+            .toEqual({ ok: true, value: { port: null, portChanged: true, droppedHostnames: [] } })
+    })
+
     it('refuses live before asking', async () => {
         const { fetchImpl, calls } = fakeFetch({ ok: true })
         expect((await restoreEnvironment(config, admin, 'acme', 'live', '2026-09-20T10:00:00.000Z', fetchImpl)).ok).toBe(false)

@@ -498,7 +498,11 @@ export async function restoreEnvironmentAction(id: string, environment: string, 
     // a port another service expects, or a hostname that now points at something else.
     const { port, portChanged, droppedHostnames } = result.value
     const said = [`${name} is back and starting.`]
-    if (portChanged) said.push(`Its old port was taken, so it is on port ${port} now.`)
+    if (portChanged) {
+        said.push(port === null
+            ? 'Its old port was taken, so it is on another port now.'
+            : `Its old port was taken, so it is on port ${port} now.`)
+    }
     if (droppedHostnames.length > 0) {
         said.push(`These hostnames were taken while it was deleted, so it came back without them: ${droppedHostnames.join(', ')}.`)
     }

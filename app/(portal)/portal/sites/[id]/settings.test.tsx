@@ -126,6 +126,25 @@ describe('the settings form', () => {
         expect(payload).toEqual({ branches: { live: 'release' } })
     })
 
+    // Adding or restoring an environment refreshes the page, which hands this form a new environment
+    // while keeping its state. One this form has never seen is untouched, not blank: saving anything else
+    // must not send its branch or its switches back as cleared.
+    it('leaves an environment that arrived after it was drawn out of the payload', async () => {
+        const { rerender } = render(<SiteSettingsForm {...props} />)
+        rerender(<SiteSettingsForm
+            {...props}
+            environments={[...props.environments, { name: 'uat1', branch: 'uat', websockets: true, flexibleSsl: true }]}
+        />)
+
+        expect(screen.getByLabelText(/uat1 branch/i)).toHaveValue('uat')
+        expect(screen.getByRole('checkbox', { name: /uat1 WebSockets/ })).toBeChecked()
+
+        await userEvent.click(screen.getByRole('checkbox', { name: /deploy/ }))
+        await userEvent.click(screen.getByRole('button', { name: /save/i }))
+
+        expect(saveSettingsAction).toHaveBeenCalledWith('arbysauto', { capabilities: ['lifecycle', 'logs', 'deploy'] })
+    })
+
     // Saving what nobody touched would report success over a request that changed nothing on hostd's end.
     it('calls nothing, and says so plainly, when nothing on the form changed', async () => {
         render(<SiteSettingsForm {...props} />)

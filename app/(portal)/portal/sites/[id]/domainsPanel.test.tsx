@@ -208,6 +208,18 @@ describe('DomainsPanel, for the operator', () => {
         expect(addDomain).toHaveBeenCalledWith('acme', 'uat1', 'uat.acme.com')
     })
 
+    // The dropdown above changes the environment by navigating to the same route, which rerenders this
+    // panel rather than remounting it. The add form has to follow, or it adds to the one left behind.
+    it('follows the environment being viewed when it changes', () => {
+        const { rerender } = render(<DomainsPanel {...props} environment="live" />)
+        rerender(<DomainsPanel {...props} environment="test" />)
+        expect(screen.getByRole('combobox', { name: 'Add to environment' })).toHaveValue('test')
+
+        fireEvent.change(screen.getByLabelText(/hostname/i), { target: { value: 'test.acme.com' } })
+        fireEvent.click(screen.getByRole('button', { name: /^add$/i }))
+        expect(addDomain).toHaveBeenCalledWith('acme', 'test', 'test.acme.com')
+    })
+
     it('has no environment select in the add form for a site with one environment', () => {
         render(<DomainsPanel {...props} environments={[{ name: 'live' }]} />)
         expect(screen.queryByRole('combobox', { name: 'Add to environment' })).toBeNull()
