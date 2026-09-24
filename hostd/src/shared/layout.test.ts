@@ -45,7 +45,7 @@ describe('layout', () => {
     })
 
     it('agrees with isEnvironmentName about the environment position', () => {
-        for (const env of ['live', 'test', 'uat1', 'git', 'next', 'prev', 'uat-1', 'UAT', 'a'.repeat(16), 'a'.repeat(17)]) {
+        for (const env of ['live', 'test', 'uat1', 'git', 'next', 'prev', 'environments', 'backups', 'uat-1', 'UAT', 'a'.repeat(16), 'a'.repeat(17)]) {
             assert.equal(isNestedDir(`/var/www/acme/${env}`), isEnvironmentName(env), env)
             assert.equal(FETCH_DIR.test(`/var/www/acme/next/${env}`), isEnvironmentName(env), env)
         }

@@ -26,7 +26,11 @@ export const HOSTNAME = /^(?!-)[a-z0-9-]{1,63}(?<!-)(\.(?!-)[a-z0-9-]{1,63}(?<!-
 export const RESERVED_PROJECT_IDS = new Set(['hostd', 'mail', 'horizons'])
 // The other folders of a nested site (/var/www/<site>/{git, prev/<env>, next/<env>}), which an
 // environment of the same name would collide with.
-export const RESERVED_ENVIRONMENT_NAMES: ReadonlySet<string> = new Set(['git', 'next', 'prev'])
+export const RESERVED_ENVIRONMENT_NAMES: ReadonlySet<string> = new Set([
+    'git', 'next', 'prev',
+    // Route segments under /projects/:id/ that the api's matchRoute reads before an environment's.
+    'environments', 'backups',
+])
 
 export function isEnvironmentName(name: unknown): name is string {
     return typeof name === 'string' && ENV_NAME.test(name) && !RESERVED_ENVIRONMENT_NAMES.has(name)

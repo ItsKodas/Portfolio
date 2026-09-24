@@ -392,7 +392,7 @@ projects:
 
     it('requires a live environment, and refuses a name that is not an environment name', () => {
         assert.match(invalidEnvironmentReason('environments: { test: { dir: /var/www/acme-test, port: 5010 } }')!, /live/)
-        for (const name of ['git', 'next', 'prev', 'uat-1', 'Uat1', 'a'.repeat(17)]) {
+        for (const name of ['git', 'next', 'prev', 'backups', 'environments', 'uat-1', 'Uat1', 'a'.repeat(17)]) {
             const reason = invalidEnvironmentReason(`environments: { live: { dir: /var/www/a, port: 5010 }, ${name}: { dir: /var/www/b, port: 5011 } }`)
             assert.match(reason ?? '', new RegExp(`environments\\.${name} is not an environment name`), name)
         }

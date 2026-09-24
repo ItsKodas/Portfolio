@@ -14,14 +14,19 @@ describe('identifier patterns', () => {
     })
 
     it('refuses reserved, hyphenated, uppercase, overlong and non-string environment names', () => {
-        for (const name of ['git', 'next', 'prev', 'uat-1', 'Uat1', 'UAT', '1uat', '', 'a'.repeat(17), 'uat_1', 'uat.1', '__proto__']) {
+        for (const name of ['git', 'next', 'prev', 'environments', 'backups', 'uat-1', 'Uat1', 'UAT', '1uat', '', 'a'.repeat(17), 'uat_1', 'uat.1', '__proto__']) {
             assert.equal(isEnvironmentName(name), false, name)
         }
         for (const value of [null, undefined, 1, ['live'], { name: 'live' }]) assert.equal(isEnvironmentName(value), false)
     })
 
-    it('reserves exactly the folders of the nested layout', () => {
-        assert.deepEqual([...RESERVED_ENVIRONMENT_NAMES].sort(), ['git', 'next', 'prev'])
+    it('reserves exactly the folders of the nested layout and the project routes read before an environment', () => {
+        assert.deepEqual([...RESERVED_ENVIRONMENT_NAMES].sort(), ['backups', 'environments', 'git', 'next', 'prev'])
+    })
+
+    it('refuses environments and backups, which /projects/:id/ routes read before an environment', () => {
+        assert.equal(isEnvironmentName('environments'), false)
+        assert.equal(isEnvironmentName('backups'), false)
     })
 
     it('keeps environment variable names a separate grammar', () => {

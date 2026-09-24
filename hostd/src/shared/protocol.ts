@@ -514,7 +514,7 @@ function parseProvisionRemove(raw: Record<string, unknown>): Parsed {
     }
     return {
         ok: true,
-        request: { verb: 'provision', project, args: { action: 'remove', environment: environment as EnvironmentName | null } },
+        request: { verb: 'provision', project, args: { action: 'remove', environment } },
     }
 }
 
@@ -536,18 +536,18 @@ function parseEnvArgs(raw: unknown): EnvArgs | Refusal {
     }
     if (raw.action === 'list') {
         if (!onlyKeys(raw, ['action', 'environment'])) return refuse('bad-request', 'list takes only environment')
-        return { action: 'list', environment: environment as EnvironmentName }
+        return { action: 'list', environment }
     }
     if (raw.action === 'read') {
         if (!onlyKeys(raw, ['action', 'environment', 'path'])) return refuse('bad-request', 'read takes only environment and path')
         if (typeof raw.path !== 'string') return refuse('bad-request', 'path is malformed')
-        return { action: 'read', environment: environment as EnvironmentName, path: raw.path }
+        return { action: 'read', environment, path: raw.path }
     }
     if (raw.action === 'write') {
         if (!onlyKeys(raw, ['action', 'environment', 'path', 'text'])) return refuse('bad-request', 'write takes only environment, path and text')
         if (typeof raw.path !== 'string') return refuse('bad-request', 'path is malformed')
         if (typeof raw.text !== 'string') return refuse('bad-request', 'text is malformed')
-        return { action: 'write', environment: environment as EnvironmentName, path: raw.path, text: raw.text }
+        return { action: 'write', environment, path: raw.path, text: raw.text }
     }
     return refuse('bad-request', 'action must be list, read or write')
 }
@@ -558,7 +558,7 @@ function parseDeployArgs(raw: unknown): DeployArgs | Refusal {
     if (!isEnvironmentName(environment)) {
         return refuse('bad-request', 'environment must be an environment name')
     }
-    const name = environment as EnvironmentName
+    const name = environment
 
     if (raw.action === 'deploy' || raw.action === 'rollback' || raw.action === 'history') {
         if (!onlyKeys(raw, ['action', 'environment'])) return refuse('bad-request', `${raw.action} takes only environment`)
@@ -630,7 +630,7 @@ export function parseDomainsArgs(args: unknown): { ok: true, args: DomainsArgs }
     if (!isEnvironmentName(environment)) {
         return refuse('bad-request', 'environment must be an environment name')
     }
-    const name = environment as EnvironmentName
+    const name = environment
 
     const token = (): string | null => (typeof args.token === 'string' && DOMAIN_TOKEN.test(args.token) ? args.token : null)
 
@@ -749,7 +749,7 @@ export function parseConfigureArgs(raw: unknown): ConfigureArgs | Refusal {
             if (branch !== null && (typeof branch !== 'string' || !GIT_REF.test(branch))) {
                 return refuse('bad-request', `${name} branch must be null or a plain branch name`)
             }
-            parsed[name as EnvironmentName] = branch
+            parsed[name] = branch
         }
         branches = parsed
     }
@@ -766,7 +766,7 @@ export function parseConfigureArgs(raw: unknown): ConfigureArgs | Refusal {
             // single spelling the registry should hold whichever way the operator typed it.
             const host = normaliseHostname(domain)
             if (host === null) return refuse('bad-request', `${name} domain must be a hostname`)
-            parsed[name as EnvironmentName] = host
+            parsed[name] = host
         }
         domains = parsed
     }
@@ -781,7 +781,7 @@ export function parseConfigureArgs(raw: unknown): ConfigureArgs | Refusal {
         for (const [name, enabled] of Object.entries(value)) {
             if (!isEnvironmentName(name)) return refuse('bad-request', `${name} is not an environment name`)
             if (typeof enabled !== 'boolean') return refuse('bad-request', `${name} ${key} must be true or false`)
-            parsed[name as EnvironmentName] = enabled
+            parsed[name] = enabled
         }
         flags[key] = parsed
     }
@@ -905,7 +905,7 @@ export function parseAgentRequest(line: string): Parsed {
             if (!isEnvironmentName(environment)) {
                 return refuse('bad-request', 'environment must be an environment name')
             }
-            return { ok: true, request: { verb: 'deploy-watch', project, args: { environment: environment as EnvironmentName } } }
+            return { ok: true, request: { verb: 'deploy-watch', project, args: { environment } } }
         }
 
         case 'backup': {
@@ -952,7 +952,7 @@ export function parseAgentRequest(line: string): Parsed {
             if (typeof port !== 'number' || !Number.isInteger(port) || port < PORT_RANGE.from || port > PORT_RANGE.to) {
                 return refuse('bad-request', `port must be a whole number from ${PORT_RANGE.from} to ${PORT_RANGE.to}`)
             }
-            return { ok: true, request: { verb: 'port', project, args: { environment: environment as EnvironmentName, port } } }
+            return { ok: true, request: { verb: 'port', project, args: { environment, port } } }
         }
 
         default:
