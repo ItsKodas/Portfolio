@@ -1,7 +1,7 @@
 import { describe, it } from 'node:test'
 import assert from 'node:assert/strict'
 import { EventEmitter } from 'node:events'
-import { Duplex, PassThrough, Readable } from 'node:stream'
+import { Duplex, PassThrough, Readable, pipeline } from 'node:stream'
 import type { ClientRequest, IncomingMessage, RequestOptions } from 'node:http'
 import {
     containersPath, logsPath, checkedId, createDockerApi, pickPerService, buildServiceStatuses,
@@ -9,6 +9,7 @@ import {
     type ContainerInspect, type ContainerSummary,
 } from './docker.ts'
 import { parseRegistry } from '../shared/registry.ts'
+import { renameStream } from './copy-plans.ts'
 
 const ID = 'a'.repeat(64)
 
@@ -373,6 +374,25 @@ describe('exec with stdin', () => {
         assert.deepEqual(result, { exitCode: 2, stderr: 'FATAL:  password authentication failed for user "acme"' })
     })
 
+    it("reports the command's own failure when it exits early while stdin is still producing", async () => {
+        const setup = execStdinSetup({ exitCode: 2, frames: [], exitEarly: frame(2, 'FATAL:  password authentication failed for user "acme"') })
+        const docker = createDockerApi('/var/run/docker.sock', setup.request as any)
+        // A dump still being read and renamed when the connection closes under it, as the copy's load feeds one
+        let lines = 0
+        const source = new Readable({ read() { setTimeout(() => this.push(Buffer.from(`INSERT INTO t VALUES (${++lines});\n`)), 1) } })
+        const stdin = pipeline(source, renameStream('postgres', 'acme', 'acme-uat1'), () => {})
+        const result = await docker.exec(ID, ['sh', '-c', 'psql'], () => {}, stdin)
+        assert.deepEqual(result, { exitCode: 2, stderr: 'FATAL:  password authentication failed for user "acme"' })
+    })
+
+    it("reports the command's own failure when a slow source is cut off", async () => {
+        const setup = execStdinSetup({ exitCode: 1, frames: [], exitEarly: frame(2, 'ERROR 1045 (28000): Access denied') })
+        const docker = createDockerApi('/var/run/docker.sock', setup.request as any)
+        const stdin = new Readable({ read() { setTimeout(() => this.push(Buffer.from('INSERT;\n')), 1) } })
+        const result = await docker.exec(ID, ['sh', '-c', 'mysql'], () => {}, stdin)
+        assert.deepEqual(result, { exitCode: 1, stderr: 'ERROR 1045 (28000): Access denied' })
+    })
+
     it('still throws the write error when the command did not fail', async () => {
         const setup = execStdinSetup({ exitCode: 0, frames: [], exitEarly: frame(1, 'ok') })
         const docker = createDockerApi('/var/run/docker.sock', setup.request as any)
@@ -409,6 +429,13 @@ describe('exec with stdin', () => {
 
     it('fails when the stdin stream fails', async () => {
         const setup = execStdinSetup({ exitCode: 0, frames: [] })
+        const docker = createDockerApi('/var/run/docker.sock', setup.request as any)
+        const broken = new Readable({ read() { this.destroy(new Error('disk read failed')) } })
+        await assert.rejects(() => docker.exec(ID, ['sh', '-c', 'psql'], () => {}, broken), /disk read failed/)
+    })
+
+    it('throws the source failure when the source failed first, even though the command then failed too', async () => {
+        const setup = execStdinSetup({ exitCode: 2, frames: [frame(2, 'psql: unexpected end of input')] })
         const docker = createDockerApi('/var/run/docker.sock', setup.request as any)
         const broken = new Readable({ read() { this.destroy(new Error('disk read failed')) } })
         await assert.rejects(() => docker.exec(ID, ['sh', '-c', 'psql'], () => {}, broken), /disk read failed/)

@@ -213,10 +213,18 @@ export function createDockerApi(socketPath = DOCKER_SOCKET, request: RequestFn =
                 // input, and its output keeps arriving on the read side until it exits.
                 //
                 // A command that exits before reading everything (psql with a bad password, say) closes the
-                // connection under the writer. The write then fails, pipeline destroys the socket, and the
-                // read loop throws too. Neither error is the story: the command's exit code and the stderr
-                // read so far are. So the result is returned whenever the command itself failed, and an
-                // error is thrown only when stdin's own source failed or the command did not fail.
+                // connection under the writer. The write then fails, and pipeline destroys every stream with
+                // that same EPIPE, stdin's source included, so stdin.errored cannot say whose fault it was.
+                // Which side failed first can: listeners on both, attached before the pipeline starts, keep
+                // the first failure. Only a source that failed first is thrown as it is (the dump could not be
+                // read). Otherwise the command's exit code and the stderr read so far are the story, so the
+                // result is returned whenever the command itself failed, and the error is thrown only when it
+                // did not.
+                let first: { side: 'stdin' | 'socket', error: unknown } | null = stdin.errored ? { side: 'stdin', error: stdin.errored } : null
+                const onStdinError = (error: unknown) => { first ??= { side: 'stdin', error } }
+                const onSocketError = (error: unknown) => { first ??= { side: 'socket', error } }
+                stdin.on('error', onStdinError)
+                socket.on('error', onSocketError)
                 let fedError: unknown = null
                 const feeding = pipeline(stdin, socket).catch(error => { fedError = error ?? new Error('stdin failed') })
                 let readError: unknown = null
@@ -226,9 +234,11 @@ export function createDockerApi(socketPath = DOCKER_SOCKET, request: RequestFn =
                 } catch (error) {
                     readError = error
                 }
+                // The listeners stay: a stream destroyed late must not raise an error nobody listens for
                 await feeding
-                if (stdin.errored) throw stdin.errored
-                const failure = fedError ?? readError
+                const failed = first as { side: 'stdin' | 'socket', error: unknown } | null
+                if (failed?.side === 'stdin') throw failed.error
+                const failure = failed?.error ?? fedError ?? readError
                 const result = await finish()
                 if (failure !== null && (result.exitCode === 0 || result.exitCode === null)) throw failure
                 return result
