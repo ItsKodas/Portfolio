@@ -15,6 +15,8 @@ const addDomain = vi.fn()
 const addEnvironment = vi.fn()
 const deleteEnvironment = vi.fn()
 const restoreEnvironment = vi.fn()
+const copyFromLive = vi.fn()
+const copyRuns = vi.fn()
 
 vi.mock('next/cache', () => ({ revalidatePath: () => {} }))
 vi.mock('@/server/db', () => ({ getDb: () => ({ site: { deleteMany: (...args: unknown[]) => deleteSites(...args) } }) }))
@@ -49,10 +51,12 @@ vi.mock('@/server/hostd/environments', () => ({
     addEnvironment: (...args: unknown[]) => addEnvironment(...args),
     deleteEnvironment: (...args: unknown[]) => deleteEnvironment(...args),
     restoreEnvironment: (...args: unknown[]) => restoreEnvironment(...args),
+    copyFromLive: (...args: unknown[]) => copyFromLive(...args),
+    copyRuns: (...args: unknown[]) => copyRuns(...args),
 }))
 
 const {
-    addDomainAction, addEnvironmentAction, deleteEnvironmentAction, restoreEnvironmentAction, changePrimaryDomainAction, deleteSiteAction, deployAction, saveEnvAction, saveSettingsAction,
+    addDomainAction, addEnvironmentAction, copyFromLiveAction, copyRunsAction, deleteEnvironmentAction, restoreEnvironmentAction, changePrimaryDomainAction, deleteSiteAction, deployAction, saveEnvAction, saveSettingsAction,
     setPortAction, setPrimaryDomainAction,
 } = await import('./actions')
 
@@ -355,7 +359,7 @@ describe('addEnvironmentAction', () => {
         const result = await addEnvironmentAction('acme', 'uat1', 'uat', '  UAT.acme.com ')
 
         expect(result).toEqual({ ok: true, message: 'uat1 is added. Its first deploy starts it.' })
-        expect(addEnvironment).toHaveBeenCalledWith(expect.anything(), ADMIN.caller, 'acme', { name: 'uat1', branch: 'uat', domain: 'uat.acme.com' })
+        expect(addEnvironment).toHaveBeenCalledWith(expect.anything(), ADMIN.caller, 'acme', { name: 'uat1', branch: 'uat', domain: 'uat.acme.com', copyFromLive: false })
     })
 
     it('sends a blank hostname as none', async () => {
@@ -364,7 +368,7 @@ describe('addEnvironmentAction', () => {
 
         await addEnvironmentAction('acme', 'uat1', 'uat', '  ')
 
-        expect(addEnvironment).toHaveBeenCalledWith(expect.anything(), expect.anything(), 'acme', { name: 'uat1', branch: 'uat', domain: null })
+        expect(addEnvironment).toHaveBeenCalledWith(expect.anything(), expect.anything(), 'acme', { name: 'uat1', branch: 'uat', domain: null, copyFromLive: false })
     })
 
     it('says the environment exists when only its address could not be set up', async () => {
@@ -375,6 +379,34 @@ describe('addEnvironmentAction', () => {
 
         expect(result.ok).toBe(true)
         expect(result.ok && result.message).toMatch(/uat1 is added.*Apache refused it.*Domains tab/)
+    })
+
+    it("asks for a copy of live's data when told to, and says it started", async () => {
+        callerFromSession.mockResolvedValue(ADMIN)
+        addEnvironment.mockResolvedValue({ ok: true, value: { copy: { run: 'r1' } } })
+
+        const result = await addEnvironmentAction('acme', 'uat1', 'uat', null, true)
+
+        expect(addEnvironment).toHaveBeenCalledWith(expect.anything(), ADMIN.caller, 'acme', { name: 'uat1', branch: 'uat', domain: null, copyFromLive: true })
+        expect(result).toEqual({ ok: true, message: "uat1 is added. A copy of live's data into it has started." })
+    })
+
+    it('says why the copy did not start, beside an add that worked', async () => {
+        callerFromSession.mockResolvedValue(ADMIN)
+        addEnvironment.mockResolvedValue({ ok: true, value: { copy: { refused: 'db is a generic database' } } })
+
+        const result = await addEnvironmentAction('acme', 'uat1', 'uat', null, true)
+
+        expect(result).toEqual({ ok: true, message: "uat1 is added, but the copy of live's data did not start: db is a generic database." })
+    })
+
+    it('does not ask for a copy unless told to', async () => {
+        callerFromSession.mockResolvedValue(ADMIN)
+        addEnvironment.mockResolvedValue({ ok: true, value: {} })
+
+        await addEnvironmentAction('acme', 'uat1', 'uat', null, 'yes' as never)
+
+        expect(addEnvironment).toHaveBeenCalledWith(expect.anything(), expect.anything(), 'acme', { name: 'uat1', branch: 'uat', domain: null, copyFromLive: false })
     })
 
     it('refuses live, a reserved name or a hyphen with the reason, before the session is read', async () => {
@@ -528,5 +560,94 @@ describe('restoreEnvironmentAction', () => {
 
         expect(await restoreEnvironmentAction('acme', 'uat1', '2026-09-20T10:00:00.000Z')).toEqual({ ok: false, error: 'This is not set up yet.' })
         expect(restoreEnvironment).not.toHaveBeenCalled()
+    })
+})
+
+describe('copyFromLiveAction', () => {
+    it('starts a copy into an environment the site has, once its name is typed back, and answers the run', async () => {
+        callerFromSession.mockResolvedValue(ADMIN)
+        listEnvironments.mockResolvedValue({ ok: true, value: [env('live'), env('uat1')] })
+        copyFromLive.mockResolvedValue({ ok: true, value: { run: 'r1' } })
+
+        const result = await copyFromLiveAction('acme', 'uat1', ' uat1 ')
+
+        expect(copyFromLive).toHaveBeenCalledWith(expect.anything(), ADMIN.caller, 'acme', 'uat1')
+        expect(result).toEqual({ ok: true, run: 'r1', message: "Copying live's data into uat1. It can take a few minutes." })
+    })
+
+    it('never copies into live, whatever is sent, and does not read the session', async () => {
+        expect(await copyFromLiveAction('acme', 'live', 'live')).toEqual(CANNOT)
+        expect(await copyFromLiveAction('acme', '../x', '../x')).toEqual(CANNOT)
+        expect(await copyFromLiveAction('acme', 'uat1', 5 as never)).toEqual(CANNOT)
+        expect(callerFromSession).not.toHaveBeenCalled()
+        expect(copyFromLive).not.toHaveBeenCalled()
+    })
+
+    it('refuses a name typed back wrong', async () => {
+        callerFromSession.mockResolvedValue(ADMIN)
+        listEnvironments.mockResolvedValue({ ok: true, value: [env('live'), env('uat1')] })
+
+        expect(await copyFromLiveAction('acme', 'uat1', 'UAT1')).toEqual({ ok: false, error: 'Type uat1 back exactly to confirm the copy.' })
+        expect(await copyFromLiveAction('acme', 'uat1', 'uat')).toEqual({ ok: false, error: 'Type uat1 back exactly to confirm the copy.' })
+        expect(copyFromLive).not.toHaveBeenCalled()
+    })
+
+    it('refuses an environment the site does not have', async () => {
+        callerFromSession.mockResolvedValue(ADMIN)
+
+        expect(await copyFromLiveAction('acme', 'uat1', 'uat1')).toEqual({ ok: false, error: 'This site has no uat1 environment.' })
+        expect(copyFromLive).not.toHaveBeenCalled()
+    })
+
+    it('refuses a client outright', async () => {
+        callerFromSession.mockResolvedValue(CLIENT)
+        listEnvironments.mockResolvedValue({ ok: true, value: [env('live'), env('uat1')] })
+
+        expect(await copyFromLiveAction('acme', 'uat1', 'uat1')).toEqual({ ok: false, error: 'This is not set up yet.' })
+        expect(copyFromLive).not.toHaveBeenCalled()
+    })
+
+    it("shows hostd's refusal to the operator", async () => {
+        callerFromSession.mockResolvedValue(ADMIN)
+        listEnvironments.mockResolvedValue({ ok: true, value: [env('live'), env('uat1')] })
+        copyFromLive.mockResolvedValue({ ok: false, code: 'busy', message: 'a backup of acme is running' })
+
+        const result = await copyFromLiveAction('acme', 'uat1', 'uat1')
+
+        expect(result.ok).toBe(false)
+        expect(!result.ok && result.error).toMatch(/a backup of acme is running/)
+    })
+})
+
+describe('copyRunsAction', () => {
+    const record = {
+        project: 'acme', environment: 'uat1', run: 'r1', actor: 'koda', startedAt: '2026-09-25T10:00:00.000Z',
+        durationMs: null, outcome: 'running', step: null, reason: null, services: [], storage: [],
+    }
+
+    it('reads the runs of an environment the site has', async () => {
+        callerFromSession.mockResolvedValue(ADMIN)
+        listEnvironments.mockResolvedValue({ ok: true, value: [env('live'), env('uat1')] })
+        copyRuns.mockResolvedValue({ ok: true, value: { runs: [record], running: true } })
+
+        expect(await copyRunsAction('acme', 'uat1')).toEqual({ ok: true, runs: [record], running: true })
+        expect(copyRuns).toHaveBeenCalledWith(expect.anything(), ADMIN.caller, 'acme', 'uat1')
+    })
+
+    it('refuses live and a client without asking hostd', async () => {
+        expect(await copyRunsAction('acme', 'live')).toEqual(CANNOT)
+        callerFromSession.mockResolvedValue(CLIENT)
+        listEnvironments.mockResolvedValue({ ok: true, value: [env('live'), env('uat1')] })
+        expect(await copyRunsAction('acme', 'uat1')).toEqual({ ok: false, error: 'This is not set up yet.' })
+        expect(copyRuns).not.toHaveBeenCalled()
+    })
+
+    it("says hostd's refusal to the operator", async () => {
+        callerFromSession.mockResolvedValue(ADMIN)
+        listEnvironments.mockResolvedValue({ ok: true, value: [env('live'), env('uat1')] })
+        copyRuns.mockResolvedValue({ ok: false, code: 'unavailable', message: 'hostd is not answering' })
+
+        const result = await copyRunsAction('acme', 'uat1')
+        expect(result.ok).toBe(false)
     })
 })

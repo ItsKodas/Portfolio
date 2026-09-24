@@ -13,7 +13,9 @@ import {
     addDomain, adoptSite, previewAdopt, removeDomain, verifyDomain, type AdoptPreview,
 } from '@/server/hostd/domains'
 import { isEnvironmentName, LIVE, newEnvironmentProblem, writeEnvFile, type EnvironmentName } from '@/server/hostd/env'
-import { addEnvironment, deleteEnvironment, restoreEnvironment } from '@/server/hostd/environments'
+import {
+    addEnvironment, copyFromLive, copyRuns, deleteEnvironment, restoreEnvironment, type CopyRecord,
+} from '@/server/hostd/environments'
 import type { Caller } from '@/server/hostd/actor'
 import { forAdmin, forClient } from '@/server/hostd/errors'
 import { setPort } from '@/server/hostd/ports'
@@ -28,6 +30,12 @@ export type SiteActionResult = { ok: true, message: string } | { ok: false, erro
 // The one read among these. It answers a value rather than a sentence, because the dialog it feeds shows
 // the file being replaced beside the one that would replace it, and neither is a message.
 export type AdoptPreviewResult = { ok: true, preview: AdoptPreview } | { ok: false, error: string }
+
+// A copy answers the run it started beside the sentence, so the page can watch that run
+export type CopyStartResult = { ok: true, message: string, run: string } | { ok: false, error: string }
+
+// What the Settings tab polls while a copy runs
+export type CopyRunsResult = { ok: true, runs: CopyRecord[], running: boolean } | { ok: false, error: string }
 
 const LIFECYCLE = ['start', 'stop', 'restart'] as const
 type LifecycleAction = typeof LIFECYCLE[number]
@@ -94,7 +102,7 @@ async function allowOn(id: string, environment: EnvironmentName, adminOnly: bool
 
 // hostd's message names paths, services and project ids, which is right for the operator and wrong for a
 // client. The original is logged either way, so a client's refusal is still diagnosable from this side.
-function refused(where: string, isAdmin: boolean, result: { code: string, message: string }): SiteActionResult {
+function refused(where: string, isAdmin: boolean, result: { code: string, message: string }): { ok: false, error: string } {
     console.error(`[portal] ${where} failed: ${forAdmin(result.code, result.message)}`)
     return { ok: false, error: isAdmin ? forAdmin(result.code, result.message) : forClient(result.code) }
 }
@@ -435,7 +443,7 @@ export async function deleteSiteAction(id: string, confirm: string): Promise<Sit
 // added, deleted or restored, and is refused here before the session is read.
 
 export async function addEnvironmentAction(
-    id: string, name: string, branch: string, domain: string | null,
+    id: string, name: string, branch: string, domain: string | null, copyLive: boolean = false,
 ): Promise<SiteActionResult> {
     if (typeof name !== 'string') return { ok: false, error: 'That is not something this page can do.' }
     // The form checks the same rule before it sends, so this sentence is only ever seen by a request the
@@ -451,19 +459,29 @@ export async function addEnvironmentAction(
 
     // Lowercased for the reason the domain actions do it: a pasted hostname often has capitals in it
     const hostname = domain === null || domain.trim() === '' ? null : domain.trim().toLowerCase()
-    const result = await addEnvironment(allowed.config, allowed.caller, id, { name, branch: branch.trim(), domain: hostname })
+    // Only a real true asks for a copy: this arrived from a browser like everything else here
+    const result = await addEnvironment(allowed.config, allowed.caller, id, {
+        name, branch: branch.trim(), domain: hostname, copyFromLive: copyLive === true,
+    })
     if (!result.ok) return refused(`add environment ${name} on ${id}`, allowed.isAdmin, result)
 
     revalidatePath(`/portal/sites/${id}`)
     // The environment exists either way; only its address is missing, and the Domains tab can add it
     const vhost = result.value.vhost
-    if (vhost && !vhost.ok) {
-        return {
-            ok: true,
-            message: `${name} is added, but its address was not set up: ${vhost.message}. Add it again from the Domains tab.`,
-        }
+    const said = vhost && !vhost.ok
+        ? `${name} is added, but its address was not set up: ${vhost.message}. Add it again from the Domains tab.`
+        : null
+    // The copy is beside the add too: a refused one leaves the environment there, and it can be copied into
+    // from its row once whatever hostd named is sorted.
+    const copy = result.value.copy
+    if (copy && 'run' in copy) {
+        return { ok: true, message: `${said ?? `${name} is added.`} A copy of live's data into it has started.` }
     }
-    return { ok: true, message: `${name} is added. Its first deploy starts it.` }
+    if (copy && 'refused' in copy) {
+        const why = `the copy of live's data did not start: ${copy.refused.replace(/\.+$/, '')}.`
+        return { ok: true, message: said ? `${said} Also, ${why}` : `${name} is added, but ${why}` }
+    }
+    return { ok: true, message: said ?? `${name} is added. Its first deploy starts it.` }
 }
 
 export async function deleteEnvironmentAction(id: string, environment: string, confirm: string): Promise<SiteActionResult> {
@@ -513,4 +531,39 @@ export async function restoreEnvironmentAction(id: string, environment: string, 
         said.push(`hostd reported: ${warnings.map(warning => warning.replace(/\.+$/, '')).join('; ')}.`)
     }
     return { ok: true, message: said.join(' ') }
+}
+
+// Copying live's databases and storage into another environment. The operator's alone: hostd puts it under
+// its provision verb, and this is the same rule applied a step earlier. It is real client data going
+// somewhere less guarded than live, so live is refused here before the session is read, and the
+// environment's name has to be typed back, checked here and not only in the dialog.
+export async function copyFromLiveAction(id: string, environment: string, confirm: string): Promise<CopyStartResult> {
+    const name = environmentOf(environment)
+    if (!name || name === LIVE || typeof confirm !== 'string') return { ok: false, error: 'That is not something this page can do.' }
+
+    const allowed = await allowOn(id, name, true)
+    if (!allowed.ok) return allowed
+
+    if (confirm.trim() !== name) return { ok: false, error: `Type ${name} back exactly to confirm the copy.` }
+
+    const result = await copyFromLive(allowed.config, allowed.caller, id, name)
+    if (!result.ok) return refused(`copy from live into ${name} on ${id}`, allowed.isAdmin, result)
+
+    revalidatePath(`/portal/sites/${id}`)
+    return { ok: true, run: result.value.run, message: `Copying live's data into ${name}. It can take a few minutes.` }
+}
+
+// Reading only, which the Settings tab polls while a copy runs, so it does not revalidate. Admin only all
+// the same: the records name services and folders, and hostd refuses a client them too.
+export async function copyRunsAction(id: string, environment: string): Promise<CopyRunsResult> {
+    const name = environmentOf(environment)
+    if (!name || name === LIVE) return { ok: false, error: 'That is not something this page can do.' }
+
+    const allowed = await allowOn(id, name, true)
+    if (!allowed.ok) return allowed
+
+    const result = await copyRuns(allowed.config, allowed.caller, id, name)
+    if (!result.ok) return refused(`copy runs of ${name} on ${id}`, allowed.isAdmin, result)
+
+    return { ok: true, runs: result.value.runs, running: result.value.running }
 }
