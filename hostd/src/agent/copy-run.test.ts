@@ -393,6 +393,9 @@ describe('runCopy', () => {
         assert.ok(at !== -1 && at < calls.findIndex(call => call.startsWith('cp -a')), calls.join('\n'))
         // No folder of its own to set aside
         assert.equal(calls.some(call => call.includes(`${STAGING}/old/storage`)), false)
+        // The folder the sqlite file goes in is made, and owned like the environment's tree
+        const made = calls.indexOf(`mkdir ${ENV}/data`)
+        assert.ok(made !== -1 && calls[made + 1] === `own ${ENV}/data 33`, calls.join('\n'))
     })
 })
 

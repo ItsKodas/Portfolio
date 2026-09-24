@@ -404,6 +404,22 @@ async function setAsideLeftover(context: Context, path: string, relative: string
     await deps.fs.move(path, aside)
 }
 
+// The folders above something the copy is about to put into the environment, made one level at a time
+// and each owned like the environment's tree, as a deploy's carry makes them: the agent's own umask would
+// otherwise leave them unreadable to the site.
+async function ensureParents(context: Context, relative: string): Promise<void> {
+    const { environment, deps } = context
+    const parents = posix.dirname(relative) === '.' ? [] : posix.dirname(relative).split('/')
+    let like: Like | null = null
+    for (let depth = 1; depth <= parents.length; depth++) {
+        const dir = posix.join(environment.dir, ...parents.slice(0, depth))
+        if (await deps.fs.exists(dir)) continue
+        like ??= await deps.fs.owner(environment.dir)
+        await deps.fs.mkdir(dir)
+        await deps.fs.own(dir, like)
+    }
+}
+
 // Step 5, sqlite: .backup is safe against live writing as it runs. The environment's own file, and any
 // journal beside it that belongs to that file and not the new one, go into staging.
 async function copySqlite(context: Context, service: string, file: string): Promise<void> {
@@ -413,8 +429,8 @@ async function copySqlite(context: Context, service: string, file: string): Prom
     const copy = `${target}${COPY_ASIDE}`
     if (!(await deps.fs.exists(source))) fail(`${service}: live has no ${file}`)
     await setAsideLeftover(context, copy, posix.join('sqlite', service))
+    await ensureParents(context, file)
     const parent = posix.dirname(target)
-    if (!(await deps.fs.exists(parent))) await deps.fs.mkdir(parent)
 
     const backed = await deps.runner('sqlite3', [source, `.backup ${copy}`], COPY_TIMEOUT_MS)
     if (backed.exitCode !== 0 || backed.timedOut) fail(`${service}: sqlite3 exited with code ${backed.exitCode}: ${tail(backed.stderr.trim(), 500)}`)
@@ -446,8 +462,7 @@ async function copyStorage(context: Context, path: string): Promise<void> {
         return
     }
     await setAsideLeftover(context, copy, path)
-    const parent = posix.dirname(target)
-    if (!(await deps.fs.exists(parent))) await deps.fs.mkdir(parent)
+    await ensureParents(context, path)
 
     const copied = await deps.runner('cp', ['-a', source, copy], COPY_TIMEOUT_MS)
     if (copied.exitCode !== 0 || copied.timedOut) fail(`cp exited with code ${copied.exitCode}: ${tail(copied.stderr.trim(), 500)}`)

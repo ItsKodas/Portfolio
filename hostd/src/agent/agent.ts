@@ -269,7 +269,12 @@ export class Agent {
         const unblock = this.deps.deploys?.runner.block?.(deployKey(project.id, name))
         let running = false
         try {
-            const problem = await copyRefusal(project, name, { dockerApi: this.deps.docker, fs: copies.fs })
+            let problem: string | null
+            try {
+                problem = await copyRefusal(project, name, { dockerApi: this.deps.docker, fs: copies.fs })
+            } catch (error) {
+                return refuse('failed', `whether a copy can start could not be checked: ${describeError(error)}`)
+            }
             if (problem) return refuse('bad-request', problem)
             const run = copies.newRunId()
             const copy = copies.run ?? runCopy
