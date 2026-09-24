@@ -1386,6 +1386,60 @@ describe('POST /projects/:id/:env/domains', () => {
     })
 })
 
+describe('POST /projects/:id/:env/domains, on an environment with no primary yet', () => {
+    const CONFIGURED: AgentReply = { ok: true, written: [], output: 'acme\'s registry entry was updated' }
+
+    it('makes the first hostname its primary through configure, then writes its vhost and records it as primary', async () => {
+        agent.reply = sent => sent.verb === 'configure' ? CONFIGURED
+            : sent.verb === 'domains' && sent.args.action === 'preview' ? EMPTY_PREVIEW
+            : UAT1_WRITTEN
+        const response = await through(movingHandler(nestedWithUat1(null), nestedWithUat1('uat1.acme.example')), '/projects/acme/uat1/domains', {
+            method: 'POST', actor: 'admin', body: { hostname: 'uat1.acme.example' },
+        })
+        assert.equal(response.status, 200)
+
+        const [configure, preview, adopt] = agent.calls
+        assert.deepEqual(configure, { verb: 'configure', project: 'acme', args: { domains: { uat1: 'uat1.acme.example' } } })
+        assert.ok(preview?.verb === 'domains' && preview.args.action === 'preview' && preview.args.environment === 'uat1')
+        assert.ok(adopt?.verb === 'domains' && adopt.args.action === 'adopt' && adopt.args.environment === 'uat1')
+        assert.equal(agent.calls.length, 3)
+
+        const record = domains.get(domainKey('acme', 'uat1', 'uat1.acme.example'))
+        assert.deepEqual([record?.primary, record?.state, record?.token], [true, 'pending', adopt.args.token])
+        const body = await response.json() as { ok: boolean, domains: Array<{ hostname: string, primary: boolean }>, vhost: unknown }
+        assert.equal(body.ok, true)
+        assert.deepEqual(body.domains.map(domain => [domain.hostname, domain.primary]), [['uat1.acme.example', true]])
+        assert.deepEqual(body.vhost, { ok: true })
+    })
+
+    it('adds a second hostname as an alias, the way it always has', async () => {
+        await seedDomains([{ ...newRecord('acme', 'uat1', 'uat1.acme.example', true, FIRST_SEEN), token: TOKEN_IN_PLACE, state: 'active' }])
+        agent.reply = () => UAT1_WRITTEN
+        const withPrimary = nestedWithUat1('uat1.acme.example')
+        const response = await through(movingHandler(withPrimary, withPrimary), '/projects/acme/uat1/domains', {
+            method: 'POST', actor: 'admin', body: { hostname: 'www.uat1.acme.example' },
+        })
+        assert.equal(response.status, 200)
+        assert.deepEqual(agent.calls, [{
+            verb: 'domains', project: 'acme',
+            args: { action: 'set-aliases', environment: 'uat1', aliases: ['www.uat1.acme.example'], token: TOKEN_IN_PLACE },
+        }])
+        assert.equal(domains.get(domainKey('acme', 'uat1', 'www.uat1.acme.example'))?.primary, false)
+    })
+
+    it('writes no vhost and no record when configure refuses the hostname', async () => {
+        agent.reply = () => ({ ok: false, code: 'bad-request', message: 'uat1.acme.example is already used by another project' })
+        const response = await through(movingHandler(nestedWithUat1(null), nestedWithUat1(null)), '/projects/acme/uat1/domains', {
+            method: 'POST', actor: 'admin', body: { hostname: 'uat1.acme.example' },
+        })
+        assert.equal(response.status, 400)
+        assert.deepEqual(agent.calls.map(call => call.verb), ['configure'])
+        assert.equal(domains.get(domainKey('acme', 'uat1', 'uat1.acme.example')), undefined)
+        const [entry] = await audit.read({ limit: 1 })
+        assert.deepEqual([entry?.verb, entry?.target, entry?.outcome], ['domains', 'uat1.acme.example', 'refused'])
+    })
+})
+
 describe('DELETE /projects/:id/:env/domains/:hostname', () => {
     it('refuses the primary outright, because the only way out of it is removing the environment', async () => {
         const response = await request('/projects/acme/live/domains/acme.example', { method: 'DELETE', actor: 'admin' })

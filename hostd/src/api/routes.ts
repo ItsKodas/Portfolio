@@ -1330,6 +1330,28 @@ export function createHandler(deps: ApiDeps): (req: IncomingMessage, res: Server
                     return refuseRoute(400, 'bad-request', `${entry.id} ${environment.name} already serves ${hostname}`, entry.id, 'domains', hostname)
                 }
 
+                // An environment with no address yet (one added without a domain) takes its first
+                // hostname as its primary, never as an alias of nothing. Set the way Settings sets one,
+                // through configure's domains, which records it; then its first vhost is written, as an
+                // add-environment with a domain would have, which records the hostname as the primary.
+                if (environment.domain === null) {
+                    const reply = await callAgentAudited(
+                        { verb: 'configure', project: entry.id, args: { domains: { [environment.name]: hostname } } },
+                        entry.id, 'domains', hostname,
+                    )
+                    if (!reply) return
+                    if (!reply.ok) return refuseDomains(reply, entry.id, hostname)
+                    await audit(who, { project: entry.id, verb: 'domains', target: `${hostname} primary`, outcome: 'ok' })
+                    try {
+                        await deps.refreshRegistry()
+                    } catch (error) {
+                        console.error(`[api] ${new Date().toISOString()} registry refresh after domains ${hostname} failed: ${describeError(error)}`)
+                    }
+                    const vhost = await firstVhost(entry.id, environment.name)
+                    const current = deps.registry().projects.get(entry.id)?.environments.get(environment.name) ?? environment
+                    return sendJson(res, 200, { ok: true, domains: domainsFor(entry, current), vhost })
+                }
+
                 // Task 8's set-aliases writes the registry and rewrites the vhost in this one call, so
                 // there is nothing else to do here. The whole resulting list goes over rather than the
                 // one new name, which is what makes a retry after a half-failure land in the same place
