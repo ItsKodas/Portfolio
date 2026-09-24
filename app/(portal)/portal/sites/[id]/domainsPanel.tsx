@@ -152,14 +152,11 @@ export function DomainsPanel({ id, environments, environment, domains, isAdmin, 
 
             {!trouble && (
                 <>
-                    {/* Both, always, and never one instead of the other. An alias is a name that
-                        redirects to the primary, so with no primary there is nothing for one to
-                        redirect to and hostd refuses every alias the form could send: it is switched
-                        off with the reason beside it rather than taken off the page. Hiding it is what
-                        made this tab look as though setting an address and adding a name were two
-                        different tabs' worth of work, when they are the two halves of one job. */}
+                    {/* Both, always, and never one instead of the other: they are the two halves of one
+                        job. hostd makes the first hostname an environment gets its primary, so the add
+                        form is open with or without one, and can add to any of the site's environments. */}
                     <PrimaryDomain id={id} environment={environment} current={primary} />
-                    <AddDomain id={id} environment={environment} disabled={primary === null} />
+                    <AddDomain id={id} environments={environments} environment={environment} />
 
                     <section className={styles.block}>
                         <h2>Addresses</h2>

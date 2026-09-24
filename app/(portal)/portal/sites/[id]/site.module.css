@@ -136,6 +136,9 @@
 
 .said { margin-bottom: 16px; }
 
+/* Which environment the Deploys, Domains and Environment tabs are about. Narrow: it holds a short name. */
+.envSwitcher { max-width: 220px; margin-bottom: 16px; }
+
 /* The env file list. Links rather than buttons, because which file is open is part of the URL: it
    reloads, it is shareable, and it keeps this panel a server component. */
 .files {
@@ -243,6 +246,9 @@
     margin-bottom: 4px;
 }
 .addDomain > :first-child { flex: 1 1 260px; max-width: 360px; }
+/* The environment a new hostname goes to, beside it. Declared after the rule above so it wins when it is
+   the first child: it holds a short name, not a hostname. */
+.addDomain > .addTarget { flex: 0 0 180px; }
 
 /* Nudged down so the button meets the input, not the label above it */
 .addAction { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; padding-top: 21px; }

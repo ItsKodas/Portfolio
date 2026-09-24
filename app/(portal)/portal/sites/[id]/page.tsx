@@ -219,9 +219,9 @@ export default async function SitePage({ params, searchParams }: Props) {
     const wanted = one(search.tab)
     const selected = tabs.some(tab => tab.id === wanted) ? wanted as TabId : 'overview'
 
-    // Which environment the Deploys and Domains tabs are about. Both are per environment: a deploy runs
-    // against one, and a hostname belongs to one. Checked against the ones this project actually has,
-    // so ?env=test on a project that has only live lands on live rather than asking hostd about an
+    // Which environment the Deploys, Domains and Environment tabs are about. All three are per
+    // environment: a deploy runs against one, a hostname belongs to one, and so does an env file. Checked
+    // against the ones this project actually has, so ?env=test on a project that has only live lands on live rather than asking hostd about an
     // environment that is not there. Falls back to live when the listing could not be read at all: the
     // panel then asks and reports hostd's own refusal, which is better than not asking.
     const names = view.environments.map(environment => environment.name)
@@ -356,7 +356,12 @@ export default async function SitePage({ params, searchParams }: Props) {
 
                     {selected === 'logs' && <SiteLogs id={view.id} services={view.services.map(service => service.service)} />}
 
-                    {selected === 'env' && canEnv && <EnvPanel id={view.id} file={one(search.file)} />}
+                    {selected === 'env' && canEnv && <EnvPanel
+                        id={view.id}
+                        file={one(search.file)}
+                        environments={view.environments}
+                        environment={environment}
+                    />}
 
                     {selected === 'deploys' && canDeploy && (
                         <DeployPanel

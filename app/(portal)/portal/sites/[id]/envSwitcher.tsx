@@ -1,17 +1,22 @@
-// The strip that says which environment a tab is about. It began inside deployPanel.tsx, and the Domains
-// tab needs the same one: a domain belongs to an environment, so that tab keeps the selector rather than
-// dropping it. Lifted here rather than copied, because two strips that are meant to look and behave
-// identically drift the moment one of them is edited on its own.
-//
-// Links rather than buttons, for the reason the env file list is links: which environment is open is part
-// of the URL, so it reloads, it is shareable, and the panel drawing it stays a server component.
+'use client'
 
-import type { EnvironmentName } from '@/server/hostd/env'
+// The dropdown that says which environment a tab is about. The Deploys, Domains and Environment tabs are
+// all per environment, so they share this one rather than each drawing its own: three that are meant to
+// look and behave identically drift the moment one of them is edited on its own.
+//
+// A select that navigates rather than client state, for the reason the env file list is links: which
+// environment is open is part of the URL, so it reloads, it is shareable, and the panels drawing it stay
+// server components. A dropdown rather than a row of links, because a site can have any number of them.
+
+import { useRouter } from 'next/navigation'
+
+import type { EnvironmentName } from '@/server/hostd/environmentName'
+import { Field } from '@/ui/Field/Field'
 import styles from './site.module.css'
 
 type Props = {
     id: string
-    // Which tab the links stay on. The strip is the same on both; where it sends you is not.
+    // Which tab it stays on. The dropdown is the same on every tab; where it sends you is not.
     tab: string
     // Only the name is read, so a caller with the registry's full Environment records can hand them
     // straight over and a test can hand over the one field this looks at.
@@ -20,20 +25,27 @@ type Props = {
 }
 
 export function EnvSwitcher({ id, tab, environments, chosen }: Props) {
-    // One environment is the ordinary case and a switcher over a list of one is furniture
+    const router = useRouter()
+
+    // One environment is the ordinary case and a dropdown over a list of one is furniture
     if (environments.length < 2) return null
+
     return (
-        <div className={styles.files}>
-            {environments.map(environment => (
-                <a
-                    className={styles.file}
-                    key={environment.name}
-                    href={`/portal/sites/${id}?tab=${tab}&env=${environment.name}`}
-                    aria-current={environment.name === chosen ? 'page' : undefined}
-                >
-                    {environment.name}
-                </a>
-            ))}
+        <div className={styles.envSwitcher}>
+            <Field
+                as="select"
+                label="Environment"
+                value={chosen}
+                onChange={event => router.push(
+                    `/portal/sites/${id}?tab=${tab}&env=${encodeURIComponent(event.target.value)}`,
+                    // The page stays where it is: the reader is looking at the panel under the dropdown
+                    { scroll: false },
+                )}
+            >
+                {environments.map(environment => (
+                    <option key={environment.name} value={environment.name}>{environment.name}</option>
+                ))}
+            </Field>
         </div>
     )
 }

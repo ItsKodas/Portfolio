@@ -7,11 +7,12 @@
 // place only is a check one refactor away from not existing.
 
 import { readHostd } from '@/server/hostd/config'
-import { LIVE, listEnvFiles, readEnvFile, type EnvFile } from '@/server/hostd/env'
+import { listEnvFiles, readEnvFile, type EnvFile, type EnvironmentName } from '@/server/hostd/env'
 import { forAdmin } from '@/server/hostd/errors'
 import { callerFromSession } from '@/server/hostd/session'
 import { Callout } from '@/ui/Callout/Callout'
 import { EnvForm } from './envForm'
+import { EnvSwitcher } from './envSwitcher'
 import styles from './site.module.css'
 
 function size(bytes: number): string {
@@ -19,7 +20,7 @@ function size(bytes: number): string {
     return `${(bytes / 1024).toFixed(1)} kB`
 }
 
-function Files({ id, files, chosen }: { id: string, files: EnvFile[], chosen: string | null }) {
+function Files({ id, environment, files, chosen }: { id: string, environment: string, files: EnvFile[], chosen: string | null }) {
     if (!files.length) return <p className={styles.empty}>This environment has no env files.</p>
     return (
         <div className={styles.files}>
@@ -27,7 +28,7 @@ function Files({ id, files, chosen }: { id: string, files: EnvFile[], chosen: st
                 <a
                     className={styles.file}
                     key={file.path}
-                    href={`/portal/sites/${id}?tab=env&file=${encodeURIComponent(file.path)}`}
+                    href={`/portal/sites/${id}?tab=env&env=${environment}&file=${encodeURIComponent(file.path)}`}
                     aria-current={file.path === chosen ? 'page' : undefined}
                 >
                     {file.path}
@@ -38,7 +39,16 @@ function Files({ id, files, chosen }: { id: string, files: EnvFile[], chosen: st
     )
 }
 
-export async function EnvPanel({ id, file }: { id: string, file: string | null }) {
+type Props = {
+    id: string
+    file: string | null
+    // Every environment the site has, for the dropdown, and the one this tab is showing. The page has
+    // already checked the chosen one is among them.
+    environments: { name: EnvironmentName }[]
+    environment: EnvironmentName
+}
+
+export async function EnvPanel({ id, file, environments, environment }: Props) {
     const who = await callerFromSession()
     if (!who || who.clientId !== null) return null
 
@@ -48,20 +58,27 @@ export async function EnvPanel({ id, file }: { id: string, file: string | null }
         return <Callout tone="warn" title="hostd is not configured">{problems.join('; ')}</Callout>
     }
 
-    const files = await listEnvFiles(config, who.caller, id, LIVE)
+    const files = await listEnvFiles(config, who.caller, id, environment)
     if (!files.ok) {
-        return <Callout tone="warn" title="The env files could not be listed">{forAdmin(files.code, files.message)}</Callout>
+        return (
+            <>
+                <EnvSwitcher id={id} tab="env" environments={environments} chosen={environment} />
+                <Callout tone="warn" title="The env files could not be listed">{forAdmin(files.code, files.message)}</Callout>
+            </>
+        )
     }
 
     // Only a path hostd itself just listed. A path from the address bar never reaches a request, which is
     // the first of the three checks on it: server/hostd/env.ts refuses a climbing path, and hostd resolves
     // the real path one component at a time and refuses a symlink at any position.
     const chosen = file && files.value.some(entry => entry.path === file) ? file : null
-    const text = chosen ? await readEnvFile(config, who.caller, id, LIVE, chosen) : null
+    const text = chosen ? await readEnvFile(config, who.caller, id, environment, chosen) : null
     const example = chosen ? files.value.find(entry => entry.path === chosen)?.example ?? null : null
 
     return (
         <>
+            <EnvSwitcher id={id} tab="env" environments={environments} chosen={environment} />
+
             {/* No tone, so it is not announced as a problem: it is how the thing works, not something
                 that went wrong. */}
             <Callout title="Where this file lives">
@@ -70,8 +87,8 @@ export async function EnvPanel({ id, file }: { id: string, file: string | null }
             </Callout>
 
             <section className={styles.block}>
-                <h2>{LIVE}</h2>
-                <Files id={id} files={files.value} chosen={chosen} />
+                <h2>{environment}</h2>
+                <Files id={id} environment={environment} files={files.value} chosen={chosen} />
 
                 {!chosen && <p className={styles.empty}>Choose a file to read or edit it.</p>}
 
@@ -80,7 +97,7 @@ export async function EnvPanel({ id, file }: { id: string, file: string | null }
                 )}
 
                 {chosen && text && text.ok && (
-                    <EnvForm id={id} environment={LIVE} path={chosen} text={text.value} example={example} />
+                    <EnvForm id={id} environment={environment} path={chosen} text={text.value} example={example} />
                 )}
             </section>
         </>

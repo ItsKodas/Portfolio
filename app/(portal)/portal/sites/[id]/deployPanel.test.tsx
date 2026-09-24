@@ -84,11 +84,11 @@ describe('the deploy history, for the operator', () => {
 
     it('offers a switcher only when there is more than one environment', async () => {
         const { unmount } = render(await panel())
-        expect(screen.queryByRole('link', { name: 'live' })).toBeNull()
+        expect(screen.queryByRole('combobox', { name: 'Environment' })).toBeNull()
         unmount()
 
-        render(await panel({ environments: [live, test] }))
-        expect(screen.getByRole('link', { name: 'test' })).toHaveAttribute('href', '/portal/sites/asot?tab=deploys&env=test')
+        render(await panel({ environments: [live, test], environment: 'test' }))
+        expect(screen.getByRole('combobox', { name: 'Environment' })).toHaveValue('test')
     })
 
     it('will not offer a rollback with nowhere to go back to', async () => {
