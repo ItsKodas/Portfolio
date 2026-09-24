@@ -909,6 +909,16 @@ Unchanged (see **What is deliberately not automatic**). The site's `/var/www/<si
 place, `.deleted` included, and the records of its deleted environments stay: the purge still removes
 each one's trash folder and volumes when its time comes, since its compose name is no longer registered.
 
+Removing a whole site stops only live's compose project. Its named environments are taken off the web
+(every environment's vhost is removed) but keep running, holding their ports, until each is stopped by
+hand:
+
+```bash
+docker compose -p <id>-<env> --project-directory /var/www/<site>/<env> down
+```
+
+Never add `-v`: that deletes its volumes.
+
 ## Backups
 
 Only `hostd-agent` ever touches a backup: it holds the Docker socket, restic and sqlite3, and the bind
