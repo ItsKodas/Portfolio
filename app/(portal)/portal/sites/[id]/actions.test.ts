@@ -395,7 +395,7 @@ describe('addEnvironmentAction', () => {
 
     it('shows hostd\'s refusal to the operator', async () => {
         callerFromSession.mockResolvedValue(ADMIN)
-        addEnvironment.mockResolvedValue({ ok: false, code: 'conflict', message: 'uat1 was deleted on 2026-09-20; restore it or wait for it to be purged' })
+        addEnvironment.mockResolvedValue({ ok: false, code: 'conflict', message: 'uat1 was deleted and is still kept for a restore; restore it or wait for it to be purged' })
 
         const result = await addEnvironmentAction('acme', 'uat1', 'uat', null)
 

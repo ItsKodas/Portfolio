@@ -45,6 +45,10 @@ export type TrashVhosts = {
 export type TrashDeps = {
     registry(): Registry
     refreshRegistry(): Promise<void>
+    // Why the registry store rejected the file on its last reload, or null when it did not. A reload
+    // never throws: it keeps the last good snapshot, which may no longer list an environment that now
+    // runs under a recorded compose name, so the purge trusts none of it while this answers a reason.
+    registryRejection(): string | null
     writer: {
         write(change: Change): Promise<{ ok: true } | { ok: false, problem: string, conflict?: true }>
         environmentNode(id: string, environment: EnvironmentName): Promise<Record<string, unknown> | null>
@@ -347,7 +351,7 @@ export async function restoreEnvironment(
     return { ok: true, port, portChanged: port !== recordedPort, droppedHostnames, warnings, vhost }
 }
 
-export type PurgeDeps = Pick<TrashDeps, 'registry' | 'refreshRegistry' | 'store' | 'runner' | 'log'> & {
+export type PurgeDeps = Pick<TrashDeps, 'registry' | 'refreshRegistry' | 'registryRejection' | 'store' | 'runner' | 'log'> & {
     fs: Pick<TrashDeps['fs'], 'rmdir' | 'realpath'>
     // Whether a delete or restore of this environment is running, which the purge never races
     busy?: (record: DeletedRecord) => boolean
@@ -378,6 +382,11 @@ export async function purgeDeleted(now: number, deps: PurgeDeps): Promise<{ purg
             await deps.refreshRegistry()
         } catch (error) {
             keep(`the registry could not be reloaded: ${describeError(error)}`)
+            continue
+        }
+        const rejection = deps.registryRejection()
+        if (rejection !== null) {
+            keep(`the registry file was rejected, so the last good version in use may be stale: ${rejection}`)
             continue
         }
         const record = deps.store.list(listed.project)

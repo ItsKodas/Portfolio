@@ -503,7 +503,7 @@ function parseEnvWriteBody(value: Record<string, unknown>): { ok: true, text: st
     return { ok: true, text: value.text }
 }
 
-// One project's environments as this actor may see them, live first, then test. Answered from the
+// One project's environments as this actor may see them, live first, then the others. Answered from the
 // registry rather than the agent, because the registry is what knows them and api is the only process
 // that knows who is asking.
 //
@@ -526,6 +526,8 @@ function environmentsFor(project: ProjectEntry, actor: Actor): Array<Record<stri
             : {}),
         branch: environment.branch,
         domain: environment.domain,
+        // Every hostname beside the primary, so the portal can show an environment's whole list
+        aliases: [...environment.aliases],
         certificate: environment.certificate,
         websockets: environment.websockets,
         flexibleSsl: environment.flexibleSsl,

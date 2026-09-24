@@ -436,6 +436,9 @@ async function main(): Promise<void> {
             // Not recursive: the kernel refuses a folder that is not empty (ENOTEMPTY)
             removeEmptyDir: dir => rmdir(dir),
             realpath: path => realpath(path),
+            // The store's own rejection state, the same that /health reports as a warning: while the
+            // registry file is rejected, the purge keeps every record
+            registryRejection: () => store.rejected(),
         },
     })
 

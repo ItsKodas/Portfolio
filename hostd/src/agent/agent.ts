@@ -112,6 +112,8 @@ export type AgentDeps = {
         store: Pick<DeletedStore, 'list' | 'add' | 'update' | 'remove'>
         removeEmptyDir(dir: string): Promise<void>
         realpath(path: string): Promise<string>
+        // Why the registry store rejected its last reload, or null (RegistryStore.rejected)
+        registryRejection(): string | null
     }
 }
 
@@ -889,6 +891,7 @@ export class Agent {
             return await purgeDeleted(now, {
                 registry: provision.registry,
                 refreshRegistry: provision.refreshRegistry,
+                registryRejection: trash.registryRejection,
                 store: trash.store,
                 runner: this.deps.runner,
                 log: provision.log,
@@ -908,6 +911,7 @@ export class Agent {
         return {
             registry: provision.registry,
             refreshRegistry: provision.refreshRegistry,
+            registryRejection: trash.registryRejection,
             writer: provision.writer,
             store: trash.store,
             fs: {

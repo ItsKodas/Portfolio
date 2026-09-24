@@ -60,6 +60,8 @@ type Options = {
     hostUnreadable?: boolean
     volumes?: string[]
     realpath?: (path: string) => string
+    // Why the registry store rejected its last reload, if it did
+    registryRejection?: string
 }
 
 function setup(options: Options = {}) {
@@ -80,10 +82,12 @@ function setup(options: Options = {}) {
     const envWrites: Array<{ dir: string, key: string, value: string }> = []
     let vhostText: string | null = options.vhost === undefined ? 'the vhost acme-uat1.conf' : options.vhost
     const removed: string[] = []
+    const logs: string[] = []
 
     const deps: TrashDeps = {
         registry: () => parseRegistry(files.get(REGISTRY_PATH)!),
         refreshRegistry: async () => {},
+        registryRejection: () => options.registryRejection ?? null,
         writer: {
             write: async change => {
                 const result = await writer.write(change)
@@ -187,11 +191,11 @@ function setup(options: Options = {}) {
             return { ok: true, composePaths: [...location.composePaths], service: 'web', target: 3000 }
         },
         now: () => NOW,
-        log: () => {},
+        log: message => { logs.push(message) },
     }
     const registry = () => parseRegistry(files.get(REGISTRY_PATH)!)
     const project = (): ProjectEntry => registry().projects.get('acme')!
-    return { deps, calls, runs, paths, records, envWrites, removed, registry, project, vhost: () => vhostText }
+    return { deps, calls, runs, paths, records, envWrites, removed, logs, registry, project, vhost: () => vhostText }
 }
 
 // What a delete of uat1 leaves in the record, for the restore and purge tests to start from
@@ -548,6 +552,21 @@ describe('purgeDeleted', () => {
         assert.deepEqual(removed, [])
         assert.deepEqual(runs, [])
         assert.equal(records.length, 1)
+    })
+
+    // RegistryStore.refresh() never throws: a file it rejects leaves the last good snapshot in place,
+    // which may no longer list an environment that now runs under the recorded compose name
+    it('keeps every record, and says why, while the registry store rejects the file', async () => {
+        const old = deletedRecord({ deletedAt: new Date(NOW - DELETED_KEEP_MS - 1000).toISOString() })
+        const { deps, removed, runs, records, logs } = setup({
+            yaml: WITHOUT_UAT1, records: [old], volumes: ['acme-uat1_db'], registryRejection: 'projects.yaml line 4: bad indentation',
+        })
+        const result = await purgeDeleted(NOW, deps)
+        assert.deepEqual(result, { purged: [], kept: ['acme uat1'] })
+        assert.deepEqual(removed, [])
+        assert.deepEqual(runs, [])
+        assert.equal(records.length, 1)
+        assert.ok(logs.some(line => line.includes('acme uat1') && line.includes('projects.yaml line 4: bad indentation')), logs.join(' | '))
     })
 
     it('skips a trash folder whose real path is not the recorded one', async () => {

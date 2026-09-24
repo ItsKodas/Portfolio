@@ -727,14 +727,14 @@ describe('addEnvironment', () => {
         assert.deepEqual(calls, [])
     })
 
-    it('refuses a name deleted within its 30 days, and asks only about this project and name', async () => {
+    it('refuses a name whose deleted environment the purge has not removed yet, and asks only about this project and name', async () => {
         const asked: string[] = []
         const { deps, calls } = nested()
         const reply = await addEnvironment(project(), args(), {
             ...deps,
             deletedWithin: async (id, environment) => { asked.push(`${id} ${environment}`); return true },
         })
-        assert.deepEqual(reply, { ok: false, code: 'bad-request', message: 'uat1 was deleted less than 30 days ago; restore it or wait for it to be purged' })
+        assert.deepEqual(reply, { ok: false, code: 'bad-request', message: 'uat1 was deleted and is still kept for a restore; restore it or wait for it to be purged' })
         assert.deepEqual(asked, ['acme uat1'])
         assert.deepEqual(calls, [])
     })
@@ -782,6 +782,28 @@ describe('addEnvironment', () => {
         assert.match(reply.ok === false ? reply.message : '', /broken/)
         // The folder and repository checks already ran, but choosePort never does
         assert.deepEqual(calls, ['exists', 'exists'])
+    })
+
+    // Project ids may hold a hyphen, so another project's own compose name can be exactly <id>-<name>.
+    // The registry write refuses it too, but only after a full checkout: this refuses it before any of it.
+    it('refuses a compose name another project already runs under, naming both, before any disk work', async () => {
+        const yaml = `${NESTED_LIVE_YAML}  acme-uat1:
+    client: cl_9
+    name: Acme UAT
+    repo: git@github.com:ItsKodas/acme-uat1.git
+    services: { web: { role: site } }
+    environments:
+      live: { dir: /var/www/acme-uat1/live, branch: main, port: 5099 }
+`
+        const { deps, calls, fetchRequests } = nested({ registryYaml: yaml })
+        const reply = await addEnvironment(project(yaml), args(), deps)
+        assert.deepEqual(reply, {
+            ok: false, code: 'bad-request',
+            message: 'acme uat1 would run under the compose name acme-uat1, which acme-uat1 live already uses',
+        })
+        assert.equal(calls.includes('choosePort'), false)
+        assert.equal(calls.includes('mkdir'), false)
+        assert.deepEqual(fetchRequests, [])
     })
 
     // The copy carries live's WEB_PORT across, so writing the new environment's own port first would be

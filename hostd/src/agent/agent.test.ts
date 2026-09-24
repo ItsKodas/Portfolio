@@ -1848,6 +1848,7 @@ describe('deleting and restoring an environment', () => {
                 },
                 removeEmptyDir: async dir => { paths.delete(dir) },
                 realpath: async path => path,
+                registryRejection: () => null,
             },
         })
         return { ...base, sent: context.sent, records, current, paths, blocks, removed }

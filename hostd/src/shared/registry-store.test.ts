@@ -119,6 +119,20 @@ describe('RegistryStore.refresh', () => {
         assert.deepEqual(store.warnings(), [])
     })
 
+    // What the purge of deleted environments asks before it trusts the snapshot in use
+    it('answers why the file is rejected while it is, and null again once it is fixed', async () => {
+        const { fs, state } = fakeFs({ text: good, mtimeMs: 1 })
+        const store = new RegistryStore('/p', fs)
+        await store.load()
+        assert.equal(store.rejected(), null)
+        Object.assign(state, { text: 'projects: [', mtimeMs: 2 })
+        await store.refresh()
+        assert.match(store.rejected() ?? '', /not valid YAML/)
+        Object.assign(state, { text: other, mtimeMs: 3 })
+        await store.refresh()
+        assert.equal(store.rejected(), null)
+    })
+
     // The mtime of a replaced file never moves again, so without this check the poll below would return
     // false for ever and hostd would look healthy while silently serving a stale registry.
     it('warns, loudly and every poll, once the host has replaced the file under the mount', async () => {

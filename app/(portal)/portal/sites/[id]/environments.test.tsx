@@ -123,7 +123,7 @@ describe('adding an environment', () => {
     })
 
     it('shows hostd\'s refusal and keeps what was typed', async () => {
-        addEnvironmentAction.mockResolvedValue({ ok: false, error: 'uat3 was deleted on 2026-09-20; restore it or wait for it to be purged' })
+        addEnvironmentAction.mockResolvedValue({ ok: false, error: 'uat3 was deleted and is still kept for a restore; restore it or wait for it to be purged' })
         render(<SiteEnvironments {...props} />)
         await userEvent.type(screen.getByLabelText('Name'), 'uat3')
         await userEvent.selectOptions(screen.getByLabelText('Branch'), 'develop')

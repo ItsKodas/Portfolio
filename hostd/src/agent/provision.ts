@@ -132,6 +132,19 @@ function hostnameTaken(registry: Registry, hostname: string): boolean {
     return false
 }
 
+// Which registered environment already runs under a compose name, named as "<id> <env>". Project ids may
+// hold a hyphen, so another project's own name can be exactly the <id>-<name> a new environment would
+// take (project acme-uat1 beside acme's uat1), and a flat dir's basename can be too. The registry write
+// refuses that as well, but only after a whole checkout; this is the same check before any disk work.
+function composeNameUser(registry: Registry, composeName: string): string | null {
+    for (const project of registry.projects.values()) {
+        for (const environment of project.environments.values()) {
+            if (environment.composeName === composeName) return `${project.id} ${environment.name}`
+        }
+    }
+    return null
+}
+
 // The port check's registry side only ever sees registry.projects, which excludes anything already
 // invalid, and the host's listening ports only show what is running; a temporarily invalid entry whose
 // containers are stopped is invisible to both, so a new project could take its port and collide the
@@ -536,7 +549,7 @@ export async function addEnvironment(project: ProjectEntry, args: ProvisionAddEn
     // A deleted environment's tree and volumes wait under its name for a restore; a new one taking the
     // name would take the folder and the compose project that restore puts back.
     if (deps.deletedWithin && await deps.deletedWithin(project.id, name)) {
-        return refuse('bad-request', `${name} was deleted less than 30 days ago; restore it or wait for it to be purged`)
+        return refuse('bad-request', `${name} was deleted and is still kept for a restore; restore it or wait for it to be purged`)
     }
 
     // Every environment beside live is a worktree at <site>/<name> of the one repository the site
@@ -559,6 +572,8 @@ export async function addEnvironment(project: ProjectEntry, args: ProvisionAddEn
     const invalidProblem = invalidRegistryProblem(registry)
     if (invalidProblem) return refuse('unavailable', invalidProblem)
     if (args.domain && hostnameTaken(registry, args.domain)) return refuse('bad-request', `${args.domain} is already used by another project or environment`)
+    const composeUser = composeNameUser(registry, composeName)
+    if (composeUser) return refuse('bad-request', `${project.id} ${name} would run under the compose name ${composeName}, which ${composeUser} already uses`)
 
     const port = await deps.choosePort()
     if (!port.ok) return refuse('unavailable', port.problem)
