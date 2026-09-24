@@ -75,6 +75,11 @@ function daysLeft(purgeAt: string, now: Date): string {
     return days === 1 ? '1 day left' : `${days} days left`
 }
 
+// hostd refuses a restore once the 30 days are up, and its next sweep purges the environment
+function pastPurge(purgeAt: string, now: Date): boolean {
+    return new Date(purgeAt).getTime() <= now.getTime()
+}
+
 function dayOf(iso: string): string {
     const at = new Date(iso)
     return Number.isNaN(at.getTime()) ? iso : formatDay(at)
@@ -136,6 +141,7 @@ export function SiteEnvironments({ id, name, isAdmin, environments, branches, de
                                 id={id}
                                 environment={record.environment}
                                 deletedAt={record.deletedAt}
+                                expired={pastPurge(record.purgeAt, now ?? new Date())}
                                 onDone={result => { setSaid(result); if (result.ok) router.refresh() }}
                             />,
                         }))}
@@ -304,10 +310,12 @@ function DeleteEnvironment({ id, siteName, environment, onDone }: {
     )
 }
 
-function RestoreEnvironment({ id, environment, deletedAt, onDone }: {
+function RestoreEnvironment({ id, environment, deletedAt, expired, onDone }: {
     id: string
     environment: string
     deletedAt: string
+    // Past its purge date: hostd would only refuse it
+    expired: boolean
     onDone: (result: SiteActionResult) => void
 }) {
     const [pending, setPending] = useState(false)
@@ -324,8 +332,11 @@ function RestoreEnvironment({ id, environment, deletedAt, onDone }: {
     }
 
     return (
-        <Button size="small" disabled={pending} aria-label={`Restore ${environment}`} onClick={restore}>
-            {pending ? 'Restoring...' : 'Restore'}
-        </Button>
+        <>
+            <Button size="small" disabled={pending || expired} aria-label={`Restore ${environment}`} onClick={restore}>
+                {pending ? 'Restoring...' : 'Restore'}
+            </Button>
+            {expired && <span className={styles.note}>It is past its 30 days, so it can no longer be restored.</span>}
+        </>
     )
 }

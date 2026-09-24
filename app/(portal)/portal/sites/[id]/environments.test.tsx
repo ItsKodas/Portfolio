@@ -201,6 +201,24 @@ describe('deleted environments', () => {
         expect(screen.getByText('due to be purged')).toBeInTheDocument()
     })
 
+    // hostd refuses a restore past 30 days, and the next sweep purges it, so the button would only ever
+    // produce a refusal
+    it('offers no restore once the purge date has passed, and says why', async () => {
+        const gone = [{ ...props.deleted[0], purgeAt: '2026-09-24T09:00:00.000Z' }]
+        render(<SiteEnvironments {...props} deleted={gone} />)
+        const button = screen.getByRole('button', { name: 'Restore uat2' })
+        expect(button).toBeDisabled()
+        expect(screen.getByText(/past its 30 days, so it can no longer be restored/)).toBeInTheDocument()
+        await userEvent.click(button)
+        expect(restoreEnvironmentAction).not.toHaveBeenCalled()
+    })
+
+    it('still offers a restore before the purge date', () => {
+        render(<SiteEnvironments {...props} />)
+        expect(screen.getByRole('button', { name: 'Restore uat2' })).toBeEnabled()
+        expect(screen.queryByText(/can no longer be restored/)).toBeNull()
+    })
+
     it('restores the deletion it names, and shows what hostd reported', async () => {
         restoreEnvironmentAction.mockResolvedValue({
             ok: true,
