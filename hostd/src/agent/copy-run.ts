@@ -13,11 +13,11 @@
 import { posix } from 'node:path'
 import { pipeline, type Readable, type Writable } from 'node:stream'
 
-import { describeError } from '../shared/formats.ts'
+import { describeError, isWithin } from '../shared/formats.ts'
 import { isNestedDir, siteOf } from '../shared/layout.ts'
 import { environmentOf, isComposeService, type EnvironmentEntry, type ProjectEntry, type Registry, type ServiceEntry } from '../shared/registry.ts'
 import type { CopyRecord } from '../shared/protocol.ts'
-import { composeBase, tail, type Runner } from './compose.ts'
+import { composeBase, resolveCompose, tail, type Runner } from './compose.ts'
 import { checkedId, pickPerService, type ContainerSummary, type DockerApi } from './docker.ts'
 import { dumpPlan, isProblem } from './backup-dumps.ts'
 import { writeChunk } from './backup-run.ts'
@@ -53,6 +53,8 @@ export type CopyFs = {
     // Recursive: only ever the staging folder, checked first
     rmdir(dir: string): Promise<void>
     exists(path: string): Promise<boolean>
+    // Where a path really is, every symlink along it followed
+    realpath(path: string): Promise<string>
     owner(path: string): Promise<Like>
     own(dir: string, like: Like): Promise<void>
     // One path's owner and mode, never following into a tree: what a sqlite file copied in by root needs
@@ -374,19 +376,24 @@ async function compose(context: Pick<Context, 'deps'>, base: string[], args: str
     return null
 }
 
-// Step 3: the environment's site services stopped, so nothing writes to what is being replaced, and its
-// databases running, so there is something to load into.
+// Step 3: every service of the environment that is not a registered database stopped (its site services,
+// and anything else its compose file runs: a queue worker writes to the databases too), so nothing writes to
+// what is being replaced, and its databases running, so there is something to load into. The names come
+// from the environment's own compose config, not the registry, which lists only the services it knows.
 async function prepare(context: Context): Promise<Containers> {
     const { project, environment, deps, changed } = context
-    const base = composeBase({ dir: environment.dir, composePaths: environment.composePaths, composeName: environment.composeName })
+    const location = { dir: environment.dir, composePaths: environment.composePaths, composeName: environment.composeName }
+    const resolved = await resolveCompose(location, deps.runner)
+    if (!resolved.ok) fail(`the environment's compose file could not be read: ${resolved.problem}`)
+    const base = composeBase(location)
     let containers: Containers = pickPerService(await deps.dockerApi.listProjectContainers(environment.composeName))
-    const sites = Object.entries(project.services).filter(([, entry]) => entry.role === 'site').map(([service]) => service)
     const databases = databasesOf(project).filter(([, entry]) => isComposeService(entry)).map(([service]) => service)
+    const others = Object.keys(resolved.resolved.services).filter(service => !databases.includes(service))
     changed.base = base
-    changed.wasRunning = sites.filter(service => containers.get(service)?.State === 'running')
+    changed.wasRunning = others.filter(service => containers.get(service)?.State === 'running')
 
-    if (sites.length > 0) {
-        const stopped = await compose(context, base, ['stop', ...sites])
+    if (others.length > 0) {
+        const stopped = await compose(context, base, ['stop', ...others])
         if (stopped) fail(stopped)
     }
     const stopped = databases.filter(service => containers.get(service)?.State !== 'running')
@@ -517,6 +524,32 @@ async function setAsideLeftover(context: Context, path: string, relative: string
     await deps.fs.move(path, aside)
 }
 
+// A symlink in the environment's checkout (committed to the repo, say) could lead a path the copy writes to
+// out of the environment, and into live. So before anything is set aside, made or moved, every folder that
+// already exists along the way is resolved, and each must be inside the environment's own folder and not
+// inside live's. Called again once the parents are made, on the folder the target goes in.
+async function confine(context: Context, relative: string, depths: 'all' | 'parent' = 'all'): Promise<void> {
+    const { live, environment, deps } = context
+    const root = await deps.fs.realpath(environment.dir)
+    const liveRoot = await deps.fs.realpath(live.dir)
+    const parents = posix.dirname(relative) === '.' ? [] : posix.dirname(relative).split('/')
+    for (let depth = depths === 'all' ? 0 : parents.length; depth <= parents.length; depth++) {
+        const dir = posix.join(environment.dir, ...parents.slice(0, depth))
+        if (!(await deps.fs.exists(dir))) break
+        const real = await deps.fs.realpath(dir)
+        if (!isWithin(root, real) || isWithin(liveRoot, real)) {
+            fail(`${relative} resolves outside the environment's folder (through ${dir}, to ${real}), so the copy will not touch it`)
+        }
+    }
+}
+
+// Live's own folder, still there: a copy reads from it to the end, and a folder that has gone is a failure
+// rather than nothing to copy
+async function requireLive(context: Context): Promise<void> {
+    const { live, deps } = context
+    if (!(await deps.fs.exists(live.dir))) fail(`live's folder ${live.dir} is gone, so there is nothing to copy from`)
+}
+
 // The folders above something the copy is about to put into the environment, made one level at a time
 // and each owned like the environment's tree, as a deploy's carry makes them: the agent's own umask would
 // otherwise leave them unreadable to the site.
@@ -540,9 +573,12 @@ async function copySqlite(context: Context, service: string, file: string): Prom
     const source = posix.join(live.dir, file)
     const target = posix.join(environment.dir, file)
     const copy = `${target}${COPY_ASIDE}`
+    await requireLive(context)
     if (!(await deps.fs.exists(source))) fail(`${service}: live has no ${file}`)
+    await confine(context, file)
     await setAsideLeftover(context, copy, posix.join('sqlite', service))
     await ensureParents(context, file)
+    await confine(context, file, 'parent')
     const parent = posix.dirname(target)
 
     const backed = await deps.runner('sqlite3', [source, `.backup ${copy}`], COPY_TIMEOUT_MS)
@@ -577,18 +613,23 @@ async function copySqlite(context: Context, service: string, file: string): Prom
 }
 
 // Step 5, storage: live's folder copied beside the environment's, the environment's own moved into
-// staging, and the copy moved into its place and owned like the rest of the environment's tree.
+// staging, and the copy moved into its place. The copy keeps the owners cp -a kept from live, as a deploy's
+// storage carry does: containers often write as their own user (www-data, say), which the environment's
+// tree owner is not. Only a parent folder the copy had to make is owned like the environment's tree.
 async function copyStorage(context: Context, path: string): Promise<void> {
     const { live, environment, staging, deps } = context
     const source = posix.join(live.dir, path)
     const target = posix.join(environment.dir, path)
     const copy = `${target}${COPY_ASIDE}`
+    await requireLive(context)
     if (!(await deps.fs.exists(source))) {
         deps.log(`copy ${environment.dir}: live has no ${path}, so the environment's is left as it is`)
         return
     }
+    await confine(context, path)
     await setAsideLeftover(context, copy, path)
     await ensureParents(context, path)
+    await confine(context, path, 'parent')
 
     const copied = await deps.runner('cp', ['-a', source, copy], COPY_TIMEOUT_MS)
     if (copied.exitCode !== 0 || copied.timedOut) fail(`cp exited with code ${copied.exitCode}: ${tail(copied.stderr.trim(), 500)}`)
@@ -606,7 +647,6 @@ async function copyStorage(context: Context, path: string): Promise<void> {
         if (had) await deps.fs.move(old, target).catch(() => {})
         throw error
     }
-    await deps.fs.own(target, await deps.fs.owner(environment.dir))
 }
 
 // Step 6: whatever the copy changed about which services run, put back. Answers null, or what failed.

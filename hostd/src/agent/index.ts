@@ -378,6 +378,7 @@ async function main(): Promise<void> {
         move: (from, to) => rename(from, to),
         rmdir: dir => rm(dir, { recursive: true, force: true }),
         exists,
+        realpath: path => realpath(path),
         owner: ownerOf,
         own: (dir, like) => ownTree(dir, like),
         chown: (path, uid, gid) => chown(path, uid, gid),

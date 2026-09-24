@@ -87,6 +87,10 @@ type Options = {
     dbfilename?: string
     // who -> what its size query prints
     dbSizes?: Record<string, string>
+    // The environment's compose services, as compose config lists them
+    composeServices?: string[]
+    // Symlinks: a path, and the path it resolves to
+    links?: Record<string, string>
 }
 
 function setup(options: Options = {}) {
@@ -159,6 +163,10 @@ function setup(options: Options = {}) {
             const failed = options.runFail?.(command, args)
             calls.push(line)
             if (failed) return { exitCode: 1, stdout: '', stderr: 'compose failed', timedOut: false, ...failed }
+            if (rest[0] === 'config') {
+                const services = Object.fromEntries((options.composeServices ?? ['web', 'worker', 'db', 'cache']).map(service => [service, {}]))
+                return { exitCode: 0, stdout: JSON.stringify({ name, services }), stderr: '', timedOut: false }
+            }
             for (const service of services) {
                 if (rest[0] === 'stop') states[name]![service] = 'exited'
                 if ((rest[0] === 'up' || rest[0] === 'start') && !options.neverStart?.includes(service)) states[name]![service] = 'running'
@@ -188,6 +196,10 @@ function setup(options: Options = {}) {
             for (const entry of [...files.keys()]) if (under(entry, dir)) files.delete(entry)
         },
         exists: async path => exists(path),
+        realpath: async path => {
+            for (const [link, target] of Object.entries(options.links ?? {})) if (under(path, link)) return target + path.slice(link.length)
+            return path
+        },
         owner: async () => ({ uid: 33, gid: 33, mode: 0o755 }),
         own: async (dir, like) => { calls.push(`own ${dir} ${like.uid}`) },
         chown: async (path, uid, gid) => { calls.push(`chown ${path} ${uid}:${gid}`) },
@@ -260,7 +272,8 @@ describe('runCopy', () => {
             'exec acme/db pg_dumpall -U "$POSTGRES_USER"',
             `mkdir ${STAGING}/cache private`,
             'exec acme/cache redis-cli --rdb /tmp/hostd-dump.rdb >/dev/null && cat /tmp/hostd-dump.rdb; s=$?; rm -f /tmp/hostd-dump.rdb; exit $s',
-            // 3: prepare
+            // 3: prepare, every compose service that is not a registered database stopped
+            'compose acme-uat1 config --no-env-resolution --format json',
             'list acme-uat1',
             'compose acme-uat1 stop web worker',
             'compose acme-uat1 up -d --no-build --pull never db',
@@ -288,8 +301,8 @@ describe('runCopy', () => {
             `cp -a ${LIVE}/storage/uploads ${ENV}/storage/uploads.hostd-copy`,
             `mkdir ${STAGING}/old/storage private`,
             `move ${ENV}/storage/uploads -> ${STAGING}/old/storage/uploads`,
+            // The copy keeps the owners cp -a kept: nothing of it is chowned
             `move ${ENV}/storage/uploads.hostd-copy -> ${ENV}/storage/uploads`,
-            `own ${ENV}/storage/uploads 33`,
             // 6: the environment as it was: web was running, the worker was not, db was started by the copy
             ...RESTORE,
             // 7
@@ -618,6 +631,85 @@ describe('runCopy', () => {
         // The folder the sqlite file goes in is made, and owned like the environment's tree
         const made = calls.indexOf(`mkdir ${ENV}/data`)
         assert.ok(made !== -1 && calls[made + 1] === `own ${ENV}/data 33`, calls.join('\n'))
+    })
+
+    it('stops every compose service that is not a registered database, and starts again only those that ran', async () => {
+        const { deps, calls, states } = setup({
+            composeServices: ['web', 'worker', 'db', 'cache', 'queue', 'mailpit'],
+            states: {
+                acme: { web: 'running', worker: 'running', db: 'running', cache: 'running' },
+                'acme-uat1': { web: 'running', worker: 'exited', db: 'running', cache: 'running', queue: 'running', mailpit: 'exited' },
+            },
+        })
+        const record = await runCopy(project(), 'uat1', RUN, 'koda', deps)
+        assert.equal(record.outcome, 'ok', JSON.stringify(record))
+        assert.ok(calls.includes('compose acme-uat1 stop web worker queue mailpit'), calls.join('\n'))
+        assert.ok(calls.includes('compose acme-uat1 start web queue'), calls.join('\n'))
+        assert.equal(states['acme-uat1']!.queue, 'running')
+        assert.equal(states['acme-uat1']!.mailpit, 'exited')
+        assert.equal(states['acme-uat1']!.worker, 'exited')
+    })
+
+    it('fails prepare, changing nothing, when the environment\'s compose file cannot be read', async () => {
+        const { deps, calls } = setup({ runFail: (command, args) => (command === 'docker' && args.includes('config') ? { exitCode: 1, stderr: 'no such file' } : null) })
+        const record = await runCopy(project(), 'uat1', RUN, 'koda', deps)
+        assert.equal(record.step, 'prepare')
+        assert.match(record.reason ?? '', /no such file/)
+        assert.deepEqual(calls.filter(call => /^compose acme-uat1 (stop|start|up)/.test(call)), [])
+    })
+
+    it('keeps the owners of copied storage, and owns only a parent folder the copy made', async () => {
+        const { deps, calls } = setup({
+            paths: [LIVE, ENV, `${LIVE}/data/app.db`, `${ENV}/data/app.db`, `${LIVE}/storage/uploads`],
+        })
+        const record = await runCopy(project(), 'uat1', RUN, 'koda', deps)
+        assert.equal(record.outcome, 'ok', JSON.stringify(record))
+        const made = calls.indexOf(`mkdir ${ENV}/storage`)
+        assert.ok(made !== -1 && calls[made + 1] === `own ${ENV}/storage 33`, calls.join('\n'))
+        assert.deepEqual(calls.filter(call => call.startsWith(`own ${ENV}/storage/`)), [])
+    })
+
+    it('refuses a storage folder whose path leads through a symlink into live, leaving live untouched', async () => {
+        const { deps, calls, paths } = setup({ links: { [`${ENV}/storage`]: `${LIVE}/storage` } })
+        const record = await runCopy(project(), 'uat1', RUN, 'koda', deps)
+        assert.equal(record.step, 'storage:storage/uploads')
+        assert.match(record.reason ?? '', /storage\/uploads resolves outside the environment's folder/)
+        assert.equal(calls.some(call => call.startsWith('cp ') || call.startsWith(`move ${ENV}/storage`) || call.startsWith(`mkdir ${ENV}/storage`)), false, calls.join('\n'))
+        assert.ok(paths.has(`${LIVE}/storage/uploads`))
+        assert.deepEqual(calls.slice(-3), [...RESTORE, `rmdir ${STAGING}`])
+    })
+
+    it('refuses a storage folder whose path leads through a symlink anywhere outside the environment', async () => {
+        const { deps } = setup({ links: { [`${ENV}/storage`]: '/etc' } })
+        const record = await runCopy(project(), 'uat1', RUN, 'koda', deps)
+        assert.equal(record.step, 'storage:storage/uploads')
+        assert.match(record.reason ?? '', /resolves outside the environment's folder/)
+    })
+
+    it('refuses a sqlite file whose folder is a symlink into live, leaving live untouched', async () => {
+        const { deps, calls, paths } = setup({ links: { [`${ENV}/data`]: `${LIVE}/data` } })
+        const record = await runCopy(project(), 'uat1', RUN, 'koda', deps)
+        assert.equal(record.step, 'sqlite:files')
+        assert.match(record.reason ?? '', /data\/app\.db resolves outside the environment's folder/)
+        assert.equal(calls.some(call => call.startsWith('sqlite3') || call.startsWith('chown') || call.startsWith(`move ${ENV}/data`)), false, calls.join('\n'))
+        assert.ok(paths.has(`${LIVE}/data/app.db`))
+    })
+
+    it('fails the run when live\'s folder is gone by the time storage is copied', async () => {
+        const noSqlite = YAML.replace('      files: { role: database, engine: sqlite, file: data/app.db }\n', '')
+        const { deps, calls } = setup({ paths: [ENV, `${ENV}/storage/uploads`] })
+        const record = await runCopy(project(noSqlite), 'uat1', RUN, 'koda', deps)
+        assert.equal(record.outcome, 'failed')
+        assert.equal(record.step, 'storage:storage/uploads')
+        assert.match(record.reason ?? '', /live's folder \/var\/www\/acme\/live is gone/)
+        assert.equal(calls.some(call => call.startsWith('cp ')), false)
+    })
+
+    it('fails the run when live\'s folder is gone by the time sqlite is copied', async () => {
+        const { deps } = setup({ paths: [ENV, `${ENV}/data/app.db`, `${ENV}/storage/uploads`] })
+        const record = await runCopy(project(), 'uat1', RUN, 'koda', deps)
+        assert.equal(record.step, 'sqlite:files')
+        assert.match(record.reason ?? '', /live's folder \/var\/www\/acme\/live is gone/)
     })
 })
 
