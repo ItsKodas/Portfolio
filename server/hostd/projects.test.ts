@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
-import { assertOwned, getProject, lifecycle, listProjects } from './projects'
+import { assertOwned, getProject, lifecycle, listEnvironments, listProjects } from './projects'
 
 const config = { url: 'http://hostd-api:8080', token: 'a'.repeat(32) }
 const admin = { actor: 'admin', user: 'koda@horizons.gg' }
@@ -76,6 +76,31 @@ describe('getProject', () => {
     it('refuses a project id hostd would not recognise, before asking', async () => {
         const { fetchImpl, calls } = fakeFetch({ ok: true, services: [] })
         expect(await getProject(config, admin, 'nope!', fetchImpl)).toEqual({ ok: false, code: 'not-found', message: 'no such project' })
+        expect(calls).toHaveLength(0)
+    })
+})
+
+describe('listEnvironments', () => {
+    // The actions check an environment against the site's own list, and this is where it comes from:
+    // GET /projects/:id carries the environments beside the services.
+    it('answers the environments GET /projects/:id carries, aliases and all', async () => {
+        const environments = [
+            { name: 'live', branch: 'main', domain: 'acme.com', aliases: ['www.acme.com'], certificate: null, deployed: null },
+            { name: 'uat1', branch: 'uat', domain: null, aliases: [], certificate: null, deployed: null },
+        ]
+        const { fetchImpl, calls } = fakeFetch({ ok: true, services: [], environments })
+        expect(await listEnvironments(config, admin, 'acme-bakery', fetchImpl)).toEqual({ ok: true, value: environments })
+        expect(calls[0].url).toBe('http://hostd-api:8080/projects/acme-bakery')
+    })
+
+    it('answers an empty list from a hostd that sends none', async () => {
+        const { fetchImpl } = fakeFetch({ ok: true, services: [] })
+        expect(await listEnvironments(config, admin, 'acme-bakery', fetchImpl)).toEqual({ ok: true, value: [] })
+    })
+
+    it('refuses a project id hostd would not recognise, before asking', async () => {
+        const { fetchImpl, calls } = fakeFetch({})
+        expect((await listEnvironments(config, admin, '../x', fetchImpl)).ok).toBe(false)
         expect(calls).toHaveLength(0)
     })
 })

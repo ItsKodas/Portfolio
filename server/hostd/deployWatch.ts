@@ -5,11 +5,8 @@ import 'server-only'
 
 import type { Caller } from './actor'
 import type { HostdConfig } from './config'
+import { isEnvironmentName, type EnvironmentName } from './env'
 import { fetchHostdStream, type LogStream, PROJECT_ID } from './logs'
-
-const ENVIRONMENTS = ['live', 'test'] as const
-
-export type EnvironmentName = (typeof ENVIRONMENTS)[number]
 
 export async function openDeployStream(
     config: HostdConfig,
@@ -19,7 +16,7 @@ export async function openDeployStream(
     fetchImpl: typeof fetch = fetch,
 ): Promise<LogStream> {
     if (!PROJECT_ID.test(id)) return { ok: false, code: 'not-found', message: 'no such project' }
-    if (!(ENVIRONMENTS as readonly string[]).includes(environment)) {
+    if (!isEnvironmentName(environment)) {
         return { ok: false, code: 'bad-request', message: 'no such environment' }
     }
 

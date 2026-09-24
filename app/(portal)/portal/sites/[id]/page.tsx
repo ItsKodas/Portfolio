@@ -6,7 +6,8 @@ import { listBranches } from '@/server/hostd/branches'
 import { readHostd } from '@/server/hostd/config'
 import { listCredentials } from '@/server/hostd/credentials'
 import { listDomains, type Domain } from '@/server/hostd/domains'
-import type { EnvironmentName } from '@/server/hostd/env'
+import { LIVE, type EnvironmentName } from '@/server/hostd/env'
+import { listDeletedEnvironments, type DeletedEnvironment } from '@/server/hostd/environments'
 import { forAdmin, forClient } from '@/server/hostd/errors'
 import { assertOwned, getProject, listProjects, type ServiceStatus } from '@/server/hostd/projects'
 import { callerFromSession } from '@/server/hostd/session'
@@ -17,6 +18,7 @@ import { StatusDot } from '@/ui/StatusDot/StatusDot'
 import { DeployPanel } from './deployPanel'
 import { DomainsPanel } from './domainsPanel'
 import { EnvPanel } from './env'
+import { SiteEnvironments } from './environments'
 import { Lifecycle } from './lifecycle'
 import { SiteLogs } from './logs'
 import { SiteDot, SiteStats } from './reading'
@@ -34,11 +36,9 @@ import styles from './site.module.css'
 export const metadata: Metadata = { title: 'Site' }
 export const dynamic = 'force-dynamic'
 
-// hostd now answers a project's environments on every listing (hostd/src/api/routes.ts, environmentsFor),
-// and the Deploys tab below uses them. The Overview's Environment panel still says live and only live: a
-// status read answers the project's containers, not one environment's, so there is nothing yet to put in
-// a second panel. That one waits for hostd to report services per environment.
-const LIVE = 'live'
+// The Overview's Environment panel says live and only live: a status read answers the project's
+// containers, not one environment's, so there is nothing yet to put in a second panel. That one waits for
+// hostd to report services per environment. The Deploys, Domains and Environment tabs are per environment.
 
 // What stands in for a tab with nothing behind it. A tab is shown and marked rather than left out: a
 // missing tab reads as a product that cannot do the thing, and a marked one reads as a product that will.
@@ -221,11 +221,12 @@ export default async function SitePage({ params, searchParams }: Props) {
     const wanted = one(search.tab)
     const selected = tabs.some(tab => tab.id === wanted) ? wanted as TabId : 'overview'
 
-    // Which environment the Deploys and Domains tabs are about. Both are per environment: a deploy runs
-    // against one, and a hostname belongs to one. Checked against the ones this project actually has,
-    // so ?env=test on a project that has only live lands on live rather than asking hostd about an
-    // environment that is not there. Falls back to live when the listing could not be read at all: the
-    // panel then asks and reports hostd's own refusal, which is better than not asking.
+    // Which environment the Deploys, Domains and Environment tabs are about. All three are per
+    // environment: a deploy runs against one, a hostname belongs to one, and so does an env file. Checked
+    // against the ones this project actually has, so ?env=test on a project that has only live lands on
+    // live rather than asking hostd about an environment that is not there. Falls back to live when the
+    // listing could not be read at all: the panel then asks and reports hostd's own refusal, which is
+    // better than not asking.
     const names = view.environments.map(environment => environment.name)
     const askedFor = one(search.env)
     const environment = names.find(name => name === askedFor) ?? names[0] ?? LIVE
@@ -255,6 +256,10 @@ export default async function SitePage({ params, searchParams }: Props) {
     // with, so reading either twice would only be two chances for the two reads to disagree.
     let credentials: string[] | null = null
     let credentialsError: string | null = null
+    // The environments hostd deleted in the last 30 days and can still put back, for the same tab. A
+    // failure leaves the rest of the tab working and says why where the list would be.
+    let deleted: DeletedEnvironment[] | null = null
+    let deletedError: string | null = null
     if (view.isAdmin && selected === 'settings' && view.registryEntry === 'valid') {
         const problems: string[] = []
         const hostdConfig = readHostd(process.env, problems)
@@ -262,9 +267,11 @@ export default async function SitePage({ params, searchParams }: Props) {
         if (problems.length > 0) {
             branchesError = problems.join('; ')
             credentialsError = problems.join('; ')
+            deletedError = problems.join('; ')
         } else if (!who) {
             branchesError = 'hostd could not be reached.'
             credentialsError = 'hostd could not be reached.'
+            deletedError = 'hostd could not be reached.'
         } else {
             const result = await listBranches(hostdConfig, who.caller, view.id)
             if (result.ok) branches = result.value
@@ -273,6 +280,10 @@ export default async function SitePage({ params, searchParams }: Props) {
             const held = await listCredentials(hostdConfig, who.caller)
             if (held.ok) credentials = held.value
             else credentialsError = held.message
+
+            const gone = await listDeletedEnvironments(hostdConfig, who.caller, view.id)
+            if (gone.ok) deleted = gone.value
+            else deletedError = gone.message
         }
     }
 
@@ -358,7 +369,12 @@ export default async function SitePage({ params, searchParams }: Props) {
 
                     {selected === 'logs' && <SiteLogs id={view.id} services={view.services.map(service => service.service)} />}
 
-                    {selected === 'env' && canEnv && <EnvPanel id={view.id} file={one(search.file)} />}
+                    {selected === 'env' && canEnv && <EnvPanel
+                        id={view.id}
+                        file={one(search.file)}
+                        environments={view.environments}
+                        environment={environment}
+                    />}
 
                     {selected === 'deploys' && canDeploy && (
                         <DeployPanel
@@ -403,7 +419,17 @@ export default async function SitePage({ params, searchParams }: Props) {
                                     branchesError={branchesError}
                                     credentials={credentials}
                                     credentialsError={credentialsError}
-                                />
+                                >
+                                    <SiteEnvironments
+                                        id={view.id}
+                                        name={view.name}
+                                        isAdmin={view.isAdmin}
+                                        environments={view.environments}
+                                        branches={branches}
+                                        deleted={deleted}
+                                        deletedError={deletedError}
+                                    />
+                                </SiteSettingsForm>
                             )
                             : (
                                 <Callout tone="warn" title="Settings are not available">

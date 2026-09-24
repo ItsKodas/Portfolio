@@ -7,6 +7,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { useRouter } from 'next/navigation'
 
+import type { EnvironmentName } from '@/server/hostd/environmentName'
 import { Button } from '@/ui/Button/Button'
 import styles from './site.module.css'
 
@@ -28,7 +29,7 @@ function isEvent(value: unknown): value is Event {
         && (raw.kind === 'step' || raw.kind === 'output' || raw.kind === 'end')
 }
 
-export function DeployLog({ id, environment }: { id: string, environment: 'live' | 'test' }) {
+export function DeployLog({ id, environment }: { id: string, environment: EnvironmentName }) {
     const [lines, setLines] = useState<Event[]>([])
     const [problem, setProblem] = useState<string | null>(null)
     const [dropped, setDropped] = useState(false)

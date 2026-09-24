@@ -49,6 +49,9 @@ export type Environment = {
     // Whether the origin serves the site on port 80 for a CDN in Flexible mode. Optional for the same
     // reason as websockets.
     flexibleSsl?: boolean
+    // Every hostname beside the primary, each redirecting to it. Optional because a hostd from before
+    // named environments does not send it.
+    aliases?: string[]
     dir?: string
     composePaths?: string[]
     port?: number
@@ -66,7 +69,7 @@ export type Project = {
     repo?: string | null
     // Answered for the operator alone, like repo, so it is absent for a client rather than null
     credential?: string | null
-    // Live first, then test. Absent only from an entry the registry itself could not parse, which is
+    // Live first, then the rest. Absent only from an entry the registry itself could not parse, which is
     // answered with an id and a reason and nothing else: there is no such thing as a valid project with
     // no environments.
     environments?: Environment[]
@@ -104,6 +107,20 @@ export async function getProject(
     if (!PROJECT_ID.test(id)) return { ok: false, code: 'not-found', message: 'no such project' }
     const result = await hostdRequest<{ services: ServiceStatus[] }>(config, caller, `/projects/${id}`, {}, fetchImpl)
     return result.ok ? { ok: true, value: result.value.services } : result
+}
+
+// One project's environments, and nothing else. The same request as getProject: hostd answers the
+// registry's environments beside the services, so the actions can check a name against the site's own
+// list without reading every project's containers the way the status listing does.
+export async function listEnvironments(
+    config: HostdConfig,
+    caller: Caller,
+    id: string,
+    fetchImpl: typeof fetch = fetch,
+): Promise<HostdResult<Environment[]>> {
+    if (!PROJECT_ID.test(id)) return { ok: false, code: 'not-found', message: 'no such project' }
+    const result = await hostdRequest<{ environments?: Environment[] }>(config, caller, `/projects/${id}`, {}, fetchImpl)
+    return result.ok ? { ok: true, value: result.value.environments ?? [] } : result
 }
 
 export async function lifecycle(
