@@ -182,6 +182,10 @@
 /* Name, branch and hostname on one line where there is room, each as wide as what it holds */
 .addEnvironment { display: flex; flex-wrap: wrap; align-items: flex-start; gap: 12px; }
 .addEnvironment > * { flex: 1 1 180px; max-width: 280px; }
+.addEnvironment + .capability { margin-top: 12px; }
+
+/* A row's copy and delete buttons, with what the last copy did beside them */
+.environmentActs { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
 
 /* Set apart from Save by a rule and some room: it is the one thing on the tab that cannot be undone here. */
 .deleteSite {

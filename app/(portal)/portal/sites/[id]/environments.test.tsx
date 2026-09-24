@@ -1,13 +1,15 @@
 // The Settings tab's Environments sections: the list, adding one, deleting one and putting a deleted one
 // back. All of it is the operator's alone, so a client gets none of it drawn.
 
-import { render, screen, within } from '@testing-library/react'
+import { act, fireEvent, render, screen, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 const addEnvironmentAction = vi.fn()
 const deleteEnvironmentAction = vi.fn()
 const restoreEnvironmentAction = vi.fn()
+const copyFromLiveAction = vi.fn()
+const copyRunsAction = vi.fn()
 const refresh = vi.fn()
 
 vi.mock('next/navigation', () => ({ useRouter: () => ({ refresh: () => refresh(), push: () => {} }) }))
@@ -15,6 +17,8 @@ vi.mock('./actions', () => ({
     addEnvironmentAction: (...args: unknown[]) => addEnvironmentAction(...args),
     deleteEnvironmentAction: (...args: unknown[]) => deleteEnvironmentAction(...args),
     restoreEnvironmentAction: (...args: unknown[]) => restoreEnvironmentAction(...args),
+    copyFromLiveAction: (...args: unknown[]) => copyFromLiveAction(...args),
+    copyRunsAction: (...args: unknown[]) => copyRunsAction(...args),
 }))
 
 const { SiteEnvironments } = await import('./environments')
@@ -46,6 +50,8 @@ beforeEach(() => {
     addEnvironmentAction.mockResolvedValue({ ok: true, message: 'uat3 is added. Its first deploy starts it.' })
     deleteEnvironmentAction.mockResolvedValue({ ok: true, message: 'uat1 is deleted.' })
     restoreEnvironmentAction.mockResolvedValue({ ok: true, message: 'uat2 is back and starting.' })
+    copyFromLiveAction.mockResolvedValue({ ok: true, run: 'r1', message: "Copying live's data into uat1. It can take a few minutes." })
+    copyRunsAction.mockResolvedValue({ ok: true, runs: [], running: false })
 })
 
 describe('the environments on the Settings tab', () => {
@@ -108,7 +114,7 @@ describe('adding an environment', () => {
         await userEvent.type(screen.getByLabelText(/hostname/i), 'uat3.acme.com')
         await userEvent.click(screen.getByRole('button', { name: 'Add environment' }))
 
-        expect(addEnvironmentAction).toHaveBeenCalledWith('acme', 'uat3', 'develop', 'uat3.acme.com')
+        expect(addEnvironmentAction).toHaveBeenCalledWith('acme', 'uat3', 'develop', 'uat3.acme.com', false)
         expect(await screen.findByText('uat3 is added. Its first deploy starts it.')).toBeInTheDocument()
         expect(refresh).toHaveBeenCalled()
     })
@@ -119,7 +125,7 @@ describe('adding an environment', () => {
         await userEvent.selectOptions(screen.getByLabelText('Branch'), 'develop')
         await userEvent.click(screen.getByRole('button', { name: 'Add environment' }))
 
-        expect(addEnvironmentAction).toHaveBeenCalledWith('acme', 'uat3', 'develop', null)
+        expect(addEnvironmentAction).toHaveBeenCalledWith('acme', 'uat3', 'develop', null, false)
     })
 
     it('shows hostd\'s refusal and keeps what was typed', async () => {
@@ -134,13 +140,29 @@ describe('adding an environment', () => {
         expect(refresh).not.toHaveBeenCalled()
     })
 
+    it("asks for a copy of live's data when the box is ticked, and says what came of it", async () => {
+        addEnvironmentAction.mockResolvedValue({ ok: true, message: "uat3 is added. A copy of live's data into it has started." })
+        render(<SiteEnvironments {...props} />)
+        await userEvent.type(screen.getByLabelText('Name'), 'uat3')
+        await userEvent.selectOptions(screen.getByLabelText('Branch'), 'develop')
+        const box = screen.getByRole('checkbox', { name: "Start with a copy of live's data" })
+        expect(box).not.toBeChecked()
+        await userEvent.click(box)
+        await userEvent.click(screen.getByRole('button', { name: 'Add environment' }))
+
+        expect(addEnvironmentAction).toHaveBeenCalledWith('acme', 'uat3', 'develop', null, true)
+        expect(await screen.findByText(/A copy of live's data into it has started/)).toBeInTheDocument()
+        // Unticked again for the next one, with the rest of the form
+        expect(screen.getByRole('checkbox', { name: "Start with a copy of live's data" })).not.toBeChecked()
+    })
+
     it('takes a branch by hand when the repository\'s branches could not be read', async () => {
         render(<SiteEnvironments {...props} branches={null} />)
         await userEvent.type(screen.getByLabelText('Name'), 'uat3')
         await userEvent.type(screen.getByLabelText('Branch'), 'feature')
         await userEvent.click(screen.getByRole('button', { name: 'Add environment' }))
 
-        expect(addEnvironmentAction).toHaveBeenCalledWith('acme', 'uat3', 'feature', null)
+        expect(addEnvironmentAction).toHaveBeenCalledWith('acme', 'uat3', 'feature', null, false)
     })
 })
 
@@ -252,5 +274,228 @@ describe('deleted environments', () => {
         render(<SiteEnvironments {...props} deleted={null} deletedError="hostd is not answering" />)
         expect(screen.getByText(/could not be read: hostd is not answering/)).toBeInTheDocument()
         expect(screen.queryByText(/no deleted environments/i)).toBeNull()
+    })
+})
+
+const record = (over: Record<string, unknown> = {}) => ({
+    project: 'acme',
+    environment: 'uat1',
+    run: 'r1',
+    actor: 'koda@horizons.gg',
+    startedAt: '2026-09-25T10:00:00.000Z',
+    durationMs: null,
+    outcome: 'running',
+    step: null,
+    reason: null,
+    services: ['db'],
+    storage: ['uploads'],
+    ...over,
+})
+
+describe('copying live data into an environment', () => {
+    it('offers it on every environment but live', () => {
+        render(<SiteEnvironments {...props} />)
+        const rows = within(screen.getByRole('table', { name: 'Environments' })).getAllByRole('row').slice(1)
+        expect(within(rows[0]).queryByRole('button', { name: /copy/i })).toBeNull()
+        expect(within(rows[1]).getByRole('button', { name: 'Copy data from live into uat1' })).toBeInTheDocument()
+    })
+
+    it('says what is replaced, that it is client data and where it may be reachable, and needs the name typed back', async () => {
+        render(<SiteEnvironments {...props} />)
+        await userEvent.click(screen.getByRole('button', { name: 'Copy data from live into uat1' }))
+
+        const dialog = screen.getByRole('dialog')
+        expect(within(dialog).getByText(/databases and storage are replaced with live's current data/)).toBeInTheDocument()
+        expect(within(dialog).getByText(/real client data/)).toBeInTheDocument()
+        expect(within(dialog).getByText(/reachable at uat\.acme\.com/)).toBeInTheDocument()
+
+        const confirm = within(dialog).getByRole('button', { name: 'Copy data' })
+        expect(confirm).toBeDisabled()
+        await userEvent.type(within(dialog).getByLabelText('Type uat1 to confirm'), 'uat')
+        expect(confirm).toBeDisabled()
+        await userEvent.type(within(dialog).getByLabelText('Type uat1 to confirm'), '1')
+        await userEvent.click(confirm)
+
+        expect(copyFromLiveAction).toHaveBeenCalledWith('acme', 'uat1', 'uat1')
+        expect(await screen.findByText("Copying live's data into uat1. It can take a few minutes.")).toBeInTheDocument()
+        expect(screen.queryByRole('dialog')).toBeNull()
+    })
+
+    it('says it may be reachable at a hostname later when the environment has none yet', async () => {
+        const environments = [{ ...props.environments[0], domain: null }, props.environments[1]]
+        render(<SiteEnvironments {...props} environments={environments} />)
+        await userEvent.click(screen.getByRole('button', { name: 'Copy data from live into uat1' }))
+        expect(within(screen.getByRole('dialog')).getByText(/reachable at any hostname uat1 is given/)).toBeInTheDocument()
+    })
+
+    it('stays open and says why when hostd refuses', async () => {
+        copyFromLiveAction.mockResolvedValue({ ok: false, error: 'uat1 is busy deploying' })
+        render(<SiteEnvironments {...props} />)
+        await userEvent.click(screen.getByRole('button', { name: 'Copy data from live into uat1' }))
+        const dialog = screen.getByRole('dialog')
+        await userEvent.type(within(dialog).getByLabelText('Type uat1 to confirm'), 'uat1')
+        await userEvent.click(within(dialog).getByRole('button', { name: 'Copy data' }))
+
+        expect(await within(dialog).findByText('uat1 is busy deploying')).toBeInTheDocument()
+    })
+
+    it('reads the runs of each environment but live', async () => {
+        render(<SiteEnvironments {...props} />)
+        await act(async () => {})
+        expect(copyRunsAction).toHaveBeenCalledWith('acme', 'uat1')
+        expect(copyRunsAction).not.toHaveBeenCalledWith('acme', 'live')
+    })
+
+    it('reads nothing for a client', async () => {
+        render(<SiteEnvironments {...props} isAdmin={false} />)
+        await act(async () => {})
+        expect(copyRunsAction).not.toHaveBeenCalled()
+    })
+
+    describe('while a copy runs', () => {
+        beforeEach(() => { vi.useFakeTimers() })
+        afterEach(() => { vi.useRealTimers() })
+
+        // The action is a promise, which settles in a microtask rather than on the clock
+        const settle = () => act(async () => {})
+        const wait = (ms: number) => act(async () => { vi.advanceTimersByTime(ms) })
+
+        it('polls every 3 seconds, then says it is done and stops', async () => {
+            copyRunsAction
+                .mockResolvedValueOnce({ ok: true, runs: [record()], running: true })
+                .mockResolvedValueOnce({ ok: true, runs: [record()], running: true })
+                .mockResolvedValue({ ok: true, runs: [record({ outcome: 'ok', durationMs: 90_000 })], running: false })
+            render(<SiteEnvironments {...props} />)
+            await settle()
+
+            expect(screen.getByText('Copying from live...')).toBeInTheDocument()
+            expect(screen.getByRole('button', { name: 'Copy data from live into uat1' })).toBeDisabled()
+            expect(copyRunsAction).toHaveBeenCalledTimes(1)
+
+            await wait(2999)
+            expect(copyRunsAction).toHaveBeenCalledTimes(1)
+            await wait(1)
+            expect(copyRunsAction).toHaveBeenCalledTimes(2)
+            expect(screen.getByText('Copying from live...')).toBeInTheDocument()
+
+            await wait(3000)
+            expect(copyRunsAction).toHaveBeenCalledTimes(3)
+            expect(screen.getByText(/Copied from live/)).toBeInTheDocument()
+            expect(screen.getByRole('button', { name: 'Copy data from live into uat1' })).toBeEnabled()
+
+            await wait(9000)
+            expect(copyRunsAction).toHaveBeenCalledTimes(3)
+        })
+
+        it('says which step failed and why', async () => {
+            copyRunsAction
+                .mockResolvedValueOnce({ ok: true, runs: [record()], running: true })
+                .mockResolvedValue({
+                    ok: true,
+                    runs: [record({ outcome: 'failed', step: 'load:db', reason: 'psql exited 3' })],
+                    running: false,
+                })
+            render(<SiteEnvironments {...props} />)
+            await settle()
+            expect(screen.getByText('Copying from live...')).toBeInTheDocument()
+
+            await wait(3000)
+            expect(screen.getByText(/The copy from live failed at load:db: psql exited 3/)).toBeInTheDocument()
+            await wait(9000)
+            expect(copyRunsAction).toHaveBeenCalledTimes(2)
+        })
+
+        it('starts polling once a copy is started from the dialog', async () => {
+            copyRunsAction
+                .mockResolvedValueOnce({ ok: true, runs: [], running: false })
+                .mockResolvedValue({ ok: true, runs: [record()], running: true })
+            render(<SiteEnvironments {...props} />)
+            await settle()
+            expect(copyRunsAction).toHaveBeenCalledTimes(1)
+
+            fireEvent.click(screen.getByRole('button', { name: 'Copy data from live into uat1' }))
+            fireEvent.change(screen.getByLabelText('Type uat1 to confirm'), { target: { value: 'uat1' } })
+            fireEvent.click(screen.getByRole('button', { name: 'Copy data' }))
+            await settle()
+            await settle()
+
+            expect(copyRunsAction).toHaveBeenCalledTimes(2)
+            expect(screen.getByText('Copying from live...')).toBeInTheDocument()
+            await wait(3000)
+            expect(copyRunsAction).toHaveBeenCalledTimes(3)
+        })
+
+        // The table keys its rows by position, so without a key of its own a row's copy state would
+        // stay with the position and land on the next environment once one above it is deleted
+        it("does not carry one environment's running copy onto the next row when it is deleted", async () => {
+            const three = [
+                props.environments[1],
+                { name: 'uat1', branch: 'uat', domain: null, deployed: null },
+                { name: 'uat2', branch: 'develop', domain: null, deployed: null },
+            ]
+            copyRunsAction.mockImplementation(async (_id: string, environment: string) => (environment === 'uat1'
+                ? { ok: true, runs: [record()], running: true }
+                : { ok: true, runs: [], running: false }))
+            const { rerender } = render(<SiteEnvironments {...props} environments={three} />)
+            await settle()
+            expect(screen.getByText('Copying from live...')).toBeInTheDocument()
+
+            // uat1's delete confirm is open as it goes, which must not become a confirm for uat2
+            fireEvent.click(screen.getByRole('button', { name: 'Delete uat1' }))
+            expect(screen.getByRole('dialog')).toBeInTheDocument()
+
+            rerender(<SiteEnvironments {...props} environments={[three[0], three[2]]} />)
+            // Before the next read lands, which is when a reused row would still show uat1's state
+            expect(screen.queryByText('Copying from live...')).toBeNull()
+            expect(screen.queryByRole('dialog')).toBeNull()
+            await settle()
+
+            const rows = within(screen.getByRole('table', { name: 'Environments' })).getAllByRole('row').slice(1)
+            expect(within(rows[1]).getByText('uat2')).toBeInTheDocument()
+            expect(within(rows[1]).queryByText('Copying from live...')).toBeNull()
+            expect(within(rows[1]).getByRole('button', { name: 'Copy data from live into uat2' })).toBeEnabled()
+        })
+
+        it('hands the button back when a read fails mid copy, and says why', async () => {
+            copyRunsAction
+                .mockResolvedValueOnce({ ok: true, runs: [record()], running: true })
+                .mockResolvedValue({ ok: false, error: 'hostd is not answering' })
+            render(<SiteEnvironments {...props} />)
+            await settle()
+            expect(screen.getByRole('button', { name: 'Copy data from live into uat1' })).toBeDisabled()
+
+            await wait(3000)
+            expect(screen.getByText(/The copies could not be read: hostd is not answering/)).toBeInTheDocument()
+            expect(screen.queryByText('Copying from live...')).toBeNull()
+            expect(screen.getByRole('button', { name: 'Copy data from live into uat1' })).toBeEnabled()
+        })
+
+        it('hands the button back when the read after a start fails', async () => {
+            copyRunsAction
+                .mockResolvedValueOnce({ ok: true, runs: [], running: false })
+                .mockRejectedValue(new Error('network'))
+            render(<SiteEnvironments {...props} />)
+            await settle()
+
+            fireEvent.click(screen.getByRole('button', { name: 'Copy data from live into uat1' }))
+            fireEvent.change(screen.getByLabelText('Type uat1 to confirm'), { target: { value: 'uat1' } })
+            fireEvent.click(screen.getByRole('button', { name: 'Copy data' }))
+            await settle()
+            await settle()
+
+            expect(screen.getByText(/The copies could not be read/)).toBeInTheDocument()
+            expect(screen.getByRole('button', { name: 'Copy data from live into uat1' })).toBeEnabled()
+        })
+
+        it('stops polling when it is taken off the page', async () => {
+            copyRunsAction.mockResolvedValue({ ok: true, runs: [record()], running: true })
+            const { unmount } = render(<SiteEnvironments {...props} />)
+            await settle()
+            expect(copyRunsAction).toHaveBeenCalledTimes(1)
+
+            unmount()
+            await wait(9000)
+            expect(copyRunsAction).toHaveBeenCalledTimes(1)
+        })
     })
 })
