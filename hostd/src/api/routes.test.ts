@@ -917,8 +917,8 @@ describe('POST /projects/:id/environments', () => {
 })
 
 describe('DELETE /projects/:id/environments/:env', () => {
-    it('requires the project name typed back too, and passes the environment through on a match', async () => {
-        agent.reply = () => ({ ok: true, output: 'unregistered' })
+    it('requires the project name typed back, then deletes it into the trash as the user who asked', async () => {
+        agent.reply = () => ({ ok: true, output: 'moved to the trash' })
         const wrongName = await request('/projects/acme/environments/test', { method: 'DELETE', actor: 'admin', body: { name: 'nope' } })
         assert.equal(wrongName.status, 400)
         const [refusal] = await audit.read({ limit: 1 })
@@ -926,19 +926,107 @@ describe('DELETE /projects/:id/environments/:env', () => {
 
         const response = await request('/projects/acme/environments/test', { method: 'DELETE', actor: 'admin', body: { name: 'Acme' } })
         assert.equal(response.status, 200)
-        assert.deepEqual(agent.calls, [{ verb: 'provision', project: 'acme', args: { action: 'remove', environment: 'test' } }])
+        assert.deepEqual(agent.calls, [{ verb: 'provision', project: 'acme', args: { action: 'delete-environment', environment: 'test', actor: 'user_1' } }])
     })
 
-    // registry-write.ts refuses to remove the live environment on its own (it is not this route's job
-    // to know that; the agent is what enforces it). This just confirms that refusal comes back through
-    // respondAgentAction as a failure, not silently as something else.
-    it('passes a downstream refusal to remove live on its own through as a failure', async () => {
-        agent.reply = () => ({ ok: false, code: 'failed', message: 'the live environment cannot be removed on its own' })
+    it('drops the environment\'s domain verification records once the agent has deleted it, and only then', async () => {
+        await seedDomains([
+            domainRecord(),
+            { ...newRecord('acme', 'test', 'test.acme.example', true, FIRST_SEEN), token: TOKEN_IN_PLACE },
+        ])
+        agent.reply = () => ({ ok: false, code: 'busy', message: 'acme test has a deploy running' })
+        const refused = await request('/projects/acme/environments/test', { method: 'DELETE', actor: 'admin', body: { name: 'Acme' } })
+        assert.equal(refused.status, 409)
+        assert.equal(domains.forEnvironment('acme', 'test').length, 1)
+
+        agent.reply = () => ({ ok: true, output: 'moved to the trash' })
+        const response = await request('/projects/acme/environments/test', { method: 'DELETE', actor: 'admin', body: { name: 'Acme' } })
+        assert.equal(response.status, 200)
+        assert.deepEqual(domains.forEnvironment('acme', 'test'), [])
+        assert.equal(domains.forEnvironment('acme', 'live').length, 1)
+    })
+
+    it('refuses live itself, without asking the agent', async () => {
         const response = await request('/projects/acme/environments/live', { method: 'DELETE', actor: 'admin', body: { name: 'Acme' } })
-        assert.equal(response.status, 502)
-        assert.deepEqual(await response.json(), { ok: false, code: 'failed', message: 'the live environment cannot be removed on its own' })
+        assert.equal(response.status, 400)
+        assert.equal((await response.json() as { code: string }).code, 'bad-request')
+        assert.deepEqual(agent.calls, [])
         const [entry] = await audit.read({ limit: 1 })
-        assert.deepEqual([entry?.verb, entry?.target, entry?.outcome, entry?.reason], ['provision', 'acme remove live', 'failed', 'the live environment cannot be removed on its own'])
+        assert.deepEqual([entry?.verb, entry?.target, entry?.outcome], ['provision', 'acme remove live', 'refused'])
+    })
+})
+
+describe('deleted environments', () => {
+    const deletedAt = '2026-09-23T10:00:00.000Z'
+
+    it('matches the list and the restore, and nothing else under them', () => {
+        assert.deepEqual(matchRoute('GET', '/projects/acme/deleted-environments'), { verb: 'deleted-environments', project: 'acme' })
+        assert.deepEqual(matchRoute('POST', '/projects/acme/deleted-environments'), { verb: 'method-not-allowed' })
+        assert.deepEqual(
+            matchRoute('POST', '/projects/acme/deleted-environments/uat1/restore'),
+            { verb: 'restore-environment', project: 'acme', environment: 'uat1' },
+        )
+        assert.deepEqual(matchRoute('GET', '/projects/acme/deleted-environments/uat1/restore'), { verb: 'method-not-allowed' })
+        assert.deepEqual(matchRoute('POST', '/projects/acme/deleted-environments/uat-1/restore'), { verb: 'not-found' })
+        assert.deepEqual(matchRoute('POST', '/projects/acme/deleted-environments/uat1'), { verb: 'not-found' })
+    })
+
+    it('lists a project\'s deleted environments for the admin', async () => {
+        const environments = [{ environment: 'uat1', deletedAt, purgeAt: '2026-10-23T10:00:00.000Z', branch: 'develop', domain: 'uat1.acme.example', aliases: [] }]
+        agent.reply = () => ({ ok: true, environments })
+        const response = await request('/projects/acme/deleted-environments', { actor: 'admin' })
+        assert.equal(response.status, 200)
+        assert.deepEqual(await response.json(), { ok: true, environments })
+        assert.deepEqual(agent.calls, [{ verb: 'provision', project: 'acme', args: { action: 'deleted-environments' } }])
+    })
+
+    it('restores one with a fresh token, and records its hostnames against that token', async () => {
+        agent.reply = () => ({ ok: true, port: 5013, portChanged: false, droppedHostnames: [], warnings: [], vhost: true })
+        const response = await request('/projects/acme/deleted-environments/test/restore', { method: 'POST', actor: 'admin', body: { deletedAt } })
+        assert.equal(response.status, 200)
+        assert.deepEqual(await response.json(), { ok: true, port: 5013, portChanged: false, droppedHostnames: [], warnings: [], vhost: true })
+
+        const call = agent.calls[0]
+        assert.ok(call && call.verb === 'provision' && call.args.action === 'restore-environment')
+        assert.equal(call.args.environment, 'test')
+        assert.equal(call.args.deletedAt, deletedAt)
+        const token = call.args.token ?? ''
+        assert.match(token, DOMAIN_TOKEN)
+
+        const records = domains.forEnvironment('acme', 'test')
+        assert.deepEqual(records.map(record => [record.hostname, record.state, record.token, record.primary]), [['test.acme.example', 'pending', token, true]])
+        const [entry] = await audit.read({ limit: 1 })
+        assert.deepEqual([entry?.verb, entry?.target, entry?.outcome], ['provision', 'acme restore test', 'ok'])
+    })
+
+    it('records no hostnames when the agent wrote no vhost', async () => {
+        agent.reply = () => ({ ok: true, port: 5013, portChanged: false, droppedHostnames: [], warnings: [], vhost: false })
+        const response = await request('/projects/acme/deleted-environments/test/restore', { method: 'POST', actor: 'admin', body: { deletedAt } })
+        assert.equal(response.status, 200)
+        assert.ok(domains.forEnvironment('acme', 'test').every(record => record.token === null))
+    })
+
+    it('refuses a restore body without a deletedAt', async () => {
+        const response = await request('/projects/acme/deleted-environments/test/restore', { method: 'POST', actor: 'admin', body: { when: 'now' } })
+        assert.equal(response.status, 400)
+        assert.deepEqual(agent.calls, [])
+    })
+
+    it('passes a refused restore through', async () => {
+        agent.reply = () => ({ ok: false, code: 'bad-request', message: 'acme already has a test environment again' })
+        const response = await request('/projects/acme/deleted-environments/test/restore', { method: 'POST', actor: 'admin', body: { deletedAt } })
+        assert.equal(response.status, 400)
+        assert.deepEqual(domains.forEnvironment('acme', 'test'), [])
+    })
+
+    it('refuses a client every one of them, without asking the agent', async () => {
+        const attempts = [
+            () => request('/projects/acme/environments/test', { method: 'DELETE', body: { name: 'Acme' } }),
+            () => request('/projects/acme/deleted-environments'),
+            () => request('/projects/acme/deleted-environments/test/restore', { method: 'POST', body: { deletedAt } }),
+        ]
+        for (const attempt of attempts) assert.equal((await attempt()).status, 404)
+        assert.deepEqual(agent.calls, [])
     })
 })
 

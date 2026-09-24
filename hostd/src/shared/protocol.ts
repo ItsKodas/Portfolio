@@ -296,8 +296,9 @@ export type DeletedEnvironment = {
 export type DeletedEnvironmentsReply = { ok: true, environments: DeletedEnvironment[] }
 // What a restore had to change: a port someone else took meanwhile, and hostnames someone else claimed.
 // warnings are what went wrong after the environment was already back in the registry (its vhost, its
-// start), which the operator has to put right but which do not undo the restore.
-export type RestoreEnvironmentReply = { ok: true, port: number, portChanged: boolean, droppedHostnames: string[], warnings: string[] }
+// start), which the operator has to put right but which do not undo the restore. vhost says whether hostd
+// wrote the environment's vhost with the token api sent, which is what api records its hostnames against.
+export type RestoreEnvironmentReply = { ok: true, port: number, portChanged: boolean, droppedHostnames: string[], warnings: string[], vhost: boolean }
 export type EnvListReply = { ok: true, files: EnvFileList }
 export type EnvReadReply = { ok: true, text: string }
 // A deploy is minutes of building and api's own call timeout is 150 seconds, so a deploy, a rollback and

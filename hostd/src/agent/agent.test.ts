@@ -1845,7 +1845,7 @@ describe('deleting and restoring an environment', () => {
             verb: 'provision', project: 'acme',
             args: { action: 'restore-environment', environment: 'test', deletedAt: records[0]!.deletedAt, token: 'abc123' },
         }))
-        assert.deepEqual(restored, { ok: true, port: 5011, portChanged: false, droppedHostnames: [], warnings: [] })
+        assert.deepEqual(restored, { ok: true, port: 5011, portChanged: false, droppedHostnames: [], warnings: [], vhost: true })
         assert.equal(current().projects.get('acme')!.environments.get('test')!.domain, 'test.acme.com')
         assert.equal(sent.at(-1)!.write?.path, VHOST)
         assert.match(sent.at(-1)!.write?.text ?? '', /abc123/)

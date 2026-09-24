@@ -83,6 +83,8 @@ export type Route =
     | { verb: 'settings', project: string }
     | { verb: 'branches', project: string }
     | { verb: 'remove-environment', project: string, environment: EnvironmentName }
+    | { verb: 'deleted-environments', project: string }
+    | { verb: 'restore-environment', project: string, environment: EnvironmentName }
     | { verb: 'env-list', project: string, environment: EnvironmentName }
     | { verb: 'env-file', project: string, environment: EnvironmentName, path: string }
     | { verb: 'deploy', project: string, environment: EnvironmentName }
@@ -153,6 +155,7 @@ export function matchRoute(method: string, pathname: string): Route {
         if (segment === 'logs') return only('GET', { verb: 'logs', project })
         if (segment === 'audit') return only('GET', { verb: 'audit', project })
         if (segment === 'environments') return only('POST', { verb: 'add-environment', project })
+        if (segment === 'deleted-environments') return only('GET', { verb: 'deleted-environments', project })
         if (segment === 'backups') {
             if (method === 'GET') return { verb: 'backups', project }
             if (method === 'POST') return { verb: 'backup-run', project }
@@ -170,6 +173,13 @@ export function matchRoute(method: string, pathname: string): Route {
         const environment = parts[3] ?? ''
         if (!isEnvironmentName(environment)) return { verb: 'not-found' }
         return only('DELETE', { verb: 'remove-environment', project, environment })
+    }
+
+    // One deleted environment, restored. Hyphenated, so it can never be read as an environment's name.
+    if (segment === 'deleted-environments') {
+        const environment = parts[3] ?? ''
+        if (parts.length !== 5 || parts[4] !== 'restore' || !isEnvironmentName(environment)) return { verb: 'not-found' }
+        return only('POST', { verb: 'restore-environment', project, environment })
     }
 
     if (segment === 'backups') {
@@ -394,6 +404,13 @@ function parseConfirmBody(value: Record<string, unknown>): { ok: true, name: str
     if (!onlyKeys(value, ['name'])) return { ok: false, message: 'delete takes only name' }
     if (typeof value.name !== 'string') return { ok: false, message: 'name is malformed' }
     return { ok: true, name: value.name }
+}
+
+// Which record, when the same name was deleted more than once. Its grammar is the agent's to check.
+function parseRestoreBody(value: Record<string, unknown>): { ok: true, deletedAt: string } | { ok: false, message: string } {
+    if (!onlyKeys(value, ['deletedAt'])) return { ok: false, message: 'restoring takes only deletedAt' }
+    if (typeof value.deletedAt !== 'string') return { ok: false, message: 'deletedAt is malformed' }
+    return { ok: true, deletedAt: value.deletedAt }
 }
 
 function parseBranchBody(value: Record<string, unknown>): { ok: true, branch: string } | { ok: false, message: string } {
@@ -652,6 +669,10 @@ export function createHandler(deps: ApiDeps): (req: IncomingMessage, res: Server
             const target = environment ? `${project} remove ${environment}` : `${project} remove`
             const entry = await authorizeProject(project, environment ? 'provision' : 'remove', target)
             if (!entry) return
+            // live is the site itself: it goes when the whole site does, never on its own
+            if (environment === 'live') {
+                return refuseRoute(400, 'bad-request', 'the live environment cannot be deleted; delete the whole site instead', project, 'provision', target)
+            }
 
             const body = await readJsonBody(req, MAX_REQUEST_BYTES)
             if (!body.ok) return refuseRoute(400, 'bad-request', body.message, project, 'provision', target)
@@ -661,9 +682,24 @@ export function createHandler(deps: ApiDeps): (req: IncomingMessage, res: Server
                 return refuseRoute(400, 'bad-request', 'name must match the project name to confirm deletion', project, 'provision', target)
             }
 
-            const reply = await callAgentAudited({ verb: 'provision', project, args: { action: 'remove', environment } }, project, 'provision', target)
+            if (environment === null) {
+                const reply = await callAgentAudited({ verb: 'provision', project, args: { action: 'remove', environment: null } }, project, 'provision', target)
+                if (!reply) return
+                return respondAgentAction('provision', reply, project, target, true)
+            }
+
+            // One environment goes into its site's trash, restorable for 30 days. Its verification records
+            // go once the agent says it is gone, and only then: a refused delete leaves it serving.
+            const reply = await callAgentAudited(
+                { verb: 'provision', project, args: { action: 'delete-environment', environment, actor: caller.user } },
+                project, 'provision', target,
+            )
             if (!reply) return
-            return respondAgentAction('provision', reply, project, target, true)
+            return respondAgentAction('provision', reply, project, target, true, async () => {
+                for (const record of deps.domains.forEnvironment(project, environment)) {
+                    await deps.domains.remove(domainKey(project, environment, record.hostname))
+                }
+            })
         }
 
         // Deploy, rollback and branch all start work on the operator's behalf, so all three are
@@ -1134,6 +1170,43 @@ export function createHandler(deps: ApiDeps): (req: IncomingMessage, res: Server
 
             case 'remove-environment':
                 return removeProject(route.project, route.environment)
+
+            // What sits in the site's trash. Admin only, like everything else about provisioning.
+            case 'deleted-environments': {
+                const target = `${route.project} deleted-environments`
+                if (!(await decide(route.project, 'provision', target))) return
+                const reply = await callAgent({ verb: 'provision', project: route.project, args: { action: 'deleted-environments' } })
+                if (!reply) return
+                if (!reply.ok) return refuseRoute(AGENT_STATUS[reply.code], reply.code, reply.message, route.project, 'provision', target)
+                return sendJson(res, 200, reply)
+            }
+
+            // A fresh token for the vhost the agent writes, minted here because only api mints them, and
+            // the restored hostnames recorded against it once the agent says the vhost is down: the
+            // records were dropped when the environment was deleted, so they start their countdown again.
+            case 'restore-environment': {
+                const target = `${route.project} restore ${route.environment}`
+                if (!(await decide(route.project, 'provision', target))) return
+                const body = await readJsonBody(req, MAX_REQUEST_BYTES)
+                if (!body.ok) return refuseRoute(400, 'bad-request', body.message, route.project, 'provision', target)
+                const parsed = parseRestoreBody(body.value)
+                if (!parsed.ok) return refuseRoute(400, 'bad-request', parsed.message, route.project, 'provision', target)
+
+                const token = newToken()
+                const reply = await callAgentAudited(
+                    { verb: 'provision', project: route.project, args: { action: 'restore-environment', environment: route.environment, deletedAt: parsed.deletedAt, token } },
+                    route.project, 'provision', target,
+                )
+                if (!reply) return
+                const environment = route.environment
+                return respondAgentAction('provision', reply, route.project, target, true, async () => {
+                    if (!('vhost' in reply) || !reply.vhost) return
+                    const entry = deps.registry().projects.get(route.project)?.environments.get(environment)
+                    if (!entry) return
+                    await deps.domains.reconcile(deps.registry(), new Date(now()).toISOString())
+                    await recordWritten(route.project, environment, token, hostnamesOf(entry), entry.domain)
+                })
+            }
 
             case 'settings': {
                 const target = 'settings'

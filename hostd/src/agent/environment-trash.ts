@@ -298,6 +298,7 @@ export async function restoreEnvironment(
 
     // Back in the registry from here on: what fails now is reported beside the restore, never undone.
     const warnings: string[] = []
+    let vhost = false
     try {
         await deps.refreshRegistry()
     } catch (error) {
@@ -310,7 +311,8 @@ export async function restoreEnvironment(
         if (restored.domain !== null && token !== null && deps.vhosts && current.capabilities.has('domains')) {
             try {
                 const wrote = await deps.vhosts.write(current, restored, token)
-                if (!wrote.ok) warnings.push(`its vhost could not be written: ${wrote.message}`)
+                if (wrote.ok) vhost = true
+                else warnings.push(`its vhost could not be written: ${wrote.message}`)
             } catch (error) {
                 warnings.push(`its vhost could not be written: ${describeError(error)}`)
             }
@@ -333,7 +335,7 @@ export async function restoreEnvironment(
         }
     }
     deps.log(`restore ${id}: restored on port ${port}${droppedHostnames.length ? `, without ${droppedHostnames.join(', ')}` : ''}`)
-    return { ok: true, port, portChanged: port !== recordedPort, droppedHostnames, warnings }
+    return { ok: true, port, portChanged: port !== recordedPort, droppedHostnames, warnings, vhost }
 }
 
 // Every record older than 30 days: its trash folder, then the volumes of the compose project it ran

@@ -337,7 +337,7 @@ describe('restoreEnvironment', () => {
     it('keeps the port and every hostname when they are still free, and moves everything back', async () => {
         const { deps, calls, paths, records, registry, project } = setup({ yaml: WITHOUT_UAT1, paths: TRASHED, records: [deletedRecord()] })
         const reply = await restoreEnvironment(project(), 'uat1', deletedRecord().deletedAt, 'abc123', deps)
-        assert.deepEqual(reply, { ok: true, port: 5020, portChanged: false, droppedHostnames: [], warnings: [] })
+        assert.deepEqual(reply, { ok: true, port: 5020, portChanged: false, droppedHostnames: [], warnings: [], vhost: true })
 
         assert.equal(paths.has('/var/www/acme/uat1'), true)
         assert.equal(paths.has('/var/www/acme/prev/uat1'), true)
@@ -429,6 +429,13 @@ describe('restoreEnvironment', () => {
         assert.equal(paths.has('/var/www/acme/uat1'), false)
         assert.equal(records.length, 1)
         assert.deepEqual(envWrites.at(-1), { dir: '/var/www/acme/uat1', key: 'restore', value: 'WEB_PORT=5020\n' })
+    })
+
+    it('writes no vhost without a token, and says so', async () => {
+        const { deps, calls, project } = setup({ yaml: WITHOUT_UAT1, paths: TRASHED, records: [deletedRecord()] })
+        const reply = await restoreEnvironment(project(), 'uat1', deletedRecord().deletedAt, null, deps)
+        assert.equal(reply.ok && 'vhost' in reply && reply.vhost, false)
+        assert.ok(!calls.some(call => call.startsWith('vhost write')))
     })
 
     it('reports a start that failed after the environment was back, rather than undoing it', async () => {
