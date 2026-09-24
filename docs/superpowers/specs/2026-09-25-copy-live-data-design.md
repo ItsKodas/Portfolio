@@ -66,10 +66,14 @@ A copy starts, answers at once with a run id, and runs in the background, like a
 2. **Dump live.** For each registered database, the backup dump command runs in live's container, and
    its output streams into `<site>/.copy/<run>/<service>/<file>`. sqlite is not dumped here (step 5).
    Live keeps serving.
-3. **Prepare the environment.** Record which of its services are running. Stop its site services
-   (`compose stop <site services>`). Start its database services if they are not running
+3. **Prepare the environment.** Read its service names from its own compose config and record which are
+   running. Stop every one that is not a registered database (`compose stop <those services>`): its site
+   services and anything else its compose file runs. Start its database services if they are not running
    (`compose up -d --no-build --pull never <database services>`), which also covers an environment that
-   has never been deployed. Wait until each database container is running.
+   has never been deployed. Wait until each database container is running, then until it answers a
+   readiness probe over TCP to 127.0.0.1 (the official images' first-init server listens on the unix
+   socket only; mongodb, whose first-init server takes localhost TCP too, must answer three times in a
+   row).
 4. **Load each dump** into the environment's own container, renaming live's database `<id>` to
    `<id>-<env>` and nothing else:
    - **postgres:** `psql` reads the dump from stdin. Before it, `DROP DATABASE IF EXISTS "<id>-<env>"
@@ -83,9 +87,9 @@ A copy starts, answers at once with a run id, and runs in the background, like a
      EXISTS \`<id>-<env>\`` runs.
    - **mongodb:** `mongorestore --archive --gzip --drop --nsFrom '<id>.*' --nsTo '<id>-<env>.*'` reads the
      archive from stdin, with the same credential env vars as the dump.
-   - **redis:** read the environment's redis data directory (`CONFIG GET dir` in its container), stop that
-     service, `docker cp` the rdb file to `<dir>/dump.rdb` in the environment's container, start the
-     service.
+   - **redis:** read the environment's redis data directory and data file name (`CONFIG GET dir` and
+     `CONFIG GET dbfilename` in its container), stop that service, `docker cp` the rdb file to
+     `<dir>/<dbfilename>` in the environment's container, start the service.
    - Databases whose name is not `<id>` are loaded under their own name, unchanged. That matches the
      environment's env files, which only had `<id>` rewritten.
 5. **sqlite and storage.** For each sqlite service, `sqlite3 <live>/<file> ".backup <env>/<file>.hostd-copy"`
@@ -93,7 +97,10 @@ A copy starts, answers at once with a run id, and runs in the background, like a
    `<env>/<path>.hostd-copy`, move the environment's current folder to `<site>/.copy/<run>/old/<path>`,
    move the copy into place. The copy keeps the owners `cp -a` preserved from live (a deploy's storage carry
    never changes ownership either); only folders the copy itself creates are owned like the environment's tree.
-6. **Restore the environment's state.** Start the site services that were running before step 3. Stop the
+   Before either touches a target, every existing folder on the way to it is resolved with `realpath` and
+   must be inside the environment's folder and not inside live's, so a symlink in the checkout cannot aim
+   the step at live. Live's folder having gone by then fails the step.
+6. **Restore the environment's state.** Start the services step 3 stopped that were running before it. Stop the
    database services step 3 started, so the environment ends in the state it began in.
 7. **Clean up.** Remove `<site>/.copy/<run>/` (staging dumps and old storage) whatever the outcome.
    Release the block. Record the run.
