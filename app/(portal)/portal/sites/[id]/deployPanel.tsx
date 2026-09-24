@@ -8,7 +8,8 @@
 
 import { readHostd } from '@/server/hostd/config'
 import { listDeploys, type DeployRecord } from '@/server/hostd/deploys'
-import type { EnvironmentName } from '@/server/hostd/env'
+import { LIVE, type EnvironmentName } from '@/server/hostd/env'
+import { copyRuns } from '@/server/hostd/environments'
 import { forAdmin, forClient } from '@/server/hostd/errors'
 import type { Environment } from '@/server/hostd/projects'
 import { callerFromSession } from '@/server/hostd/session'
@@ -124,6 +125,13 @@ export async function DeployPanel({ id, environments, environment, enabled }: Pr
     const target = rollbackTarget(view)
     const latest = view.deploys[0]?.startedAt ?? null
 
+    // Whether a copy of live's data into this environment is running, which holds its deploys back until
+    // it ends. Only ever the operator's to know, and never about live, which nothing is copied into. A
+    // failure to read it says nothing rather than stopping the tab: hostd refuses a deploy during a copy
+    // either way.
+    const copying = environment !== LIVE
+        && await copyRuns(config, who.caller, id, environment).then(result => result.ok && result.value.running)
+
     return (
         <>
             <EnvSwitcher id={id} tab="deploys" environments={environments} chosen={environment} />
@@ -151,6 +159,15 @@ export async function DeployPanel({ id, environments, environment, enabled }: Pr
                                 </dd>
                             </div>
                         </dl>
+
+                        {copying && (
+                            <div className={styles.said}>
+                                <Callout tone="warn" title="Copying live's data">
+                                    {`live's data is being copied into ${environment}. Deploys of ${environment} `
+                                        + 'wait until it ends. Reload the page to see when it has.'}
+                                </Callout>
+                            </div>
+                        )}
 
                         {view.paused && (
                             <div className={styles.said}>
