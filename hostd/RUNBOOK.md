@@ -879,10 +879,17 @@ record does not block it.
 
 ### Deploys while one moves
 
-While an environment is being deleted or restored, every deploy verb for it (deploy, rollback, a branch
-switch, and the 2-minute poll's own deploys) is refused `busy` with `<id> <env> is being deleted or
-restored` (the poll's own, with `<id> <env> is being deleted, restored or copied into`). The poller logs
-it and asks again on its next poll. A copy from live blocks the same way (see **While a copy runs**).
+While an environment is being deleted or restored, every deploy of it is refused `busy`, with one of two
+messages depending on the path:
+
+| Who asks | What they see |
+| --- | --- |
+| deploy, rollback or a branch switch, from the portal or the api | `<id> <env> is being deleted or restored` (the agent checks this before the deploy runner) |
+| the 2-minute poll | `<id> <env> is being deleted, restored or copied into` (the poller goes straight to the deploy runner, whose block has that one message) |
+| a branch switch whose delete or restore began while its branch was being written | `<id> <env> is being deleted, restored or copied into`, from the runner; the branch is already written, so the next deploy tracks it |
+
+The poller logs it and asks again on its next poll. A copy from live blocks the same way (see **While a
+copy runs**).
 
 ### Restoring or purging by hand
 
@@ -1065,10 +1072,12 @@ with. Live is never stopped, started or written by any of this.
 
 The environment is blocked for the whole run, from the start until step 7 has finished:
 
-- every deploy verb for it (deploy, rollback, a branch switch) is refused `busy` with `<id> <env> is being
-  copied from live`, and the poll's own deploys with `<id> <env> is being deleted, restored or copied
-  into` (the poller logs it and asks again on its next poll). The portal's Deploys tab says deploys wait
-  until the copy ends;
+- every deploy of it is refused `busy`: deploy, rollback and a branch switch with `<id> <env> is being
+  copied from live` (the agent checks this before the deploy runner); the 2-minute poll's own deploys with
+  the runner's `<id> <env> is being deleted, restored or copied into` (the poller logs it and asks again
+  on its next poll); and a branch switch whose copy began while its branch was being written also with
+  the runner's message, the branch already written. The portal's Deploys tab says deploys wait until the
+  copy ends;
 - so are a port change, a domain write for that environment, deleting or restoring it, and a copy into it;
 - a Settings save (`configure`) and removing the whole site are refused for the whole project, with `<id>
   has an environment being copied from live`, since either may rewrite that environment's vhost or entry;
