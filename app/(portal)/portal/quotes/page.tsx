@@ -10,7 +10,7 @@ import { Chip } from '@/ui/Chip/Chip'
 import { DataTable } from '@/ui/DataTable/DataTable'
 import { WarningAmber } from '@/ui/icons'
 import { STATUS_TONES, formatWhen } from '../format'
-import AdminHeader from '../adminHeader'
+import PortalHeader from '../header'
 import frame from '../frame.module.css'
 import styles from './quotes.module.css'
 
@@ -64,28 +64,30 @@ export default async function Inbox({ searchParams }: { searchParams: Promise<{ 
     }))
 
     return (
-        <div className={frame.page}>
-            <AdminHeader />
-            <div className={frame.head}>
-                <h1 className={frame.title}>Quotes</h1>
-                <p className={frame.sub}>{newCount} new</p>
-            </div>
+        <>
+            <PortalHeader admin />
+            <div className={frame.page}>
+                <div className={frame.head}>
+                    <h1 className={frame.title}>Quotes</h1>
+                    <p className={frame.sub}>{newCount} new</p>
+                </div>
 
-            <div className={styles.filters}>
-                {filters.map(filter => (
-                    <Link
-                        key={filter.label}
-                        href={filter.href}
-                        className={[styles.filter, filter.active && styles.filterOn].filter(Boolean).join(' ')}
-                        aria-current={filter.active ? 'page' : undefined}
-                    >
-                        {filter.label}
-                    </Link>
-                ))}
-            </div>
+                <div className={styles.filters}>
+                    {filters.map(filter => (
+                        <Link
+                            key={filter.label}
+                            href={filter.href}
+                            className={[styles.filter, filter.active && styles.filterOn].filter(Boolean).join(' ')}
+                            aria-current={filter.active ? 'page' : undefined}
+                        >
+                            {filter.label}
+                        </Link>
+                    ))}
+                </div>
 
-            {/* DataTable prints its own line rather than headings over nothing, so the page has no empty state of its own */}
-            <DataTable label="Quotes" columns={columns} rows={rows} empty="Nothing here." />
-        </div>
+                {/* DataTable prints its own line rather than headings over nothing, so the page has no empty state of its own */}
+                <DataTable label="Quotes" columns={columns} rows={rows} empty="Nothing here." />
+            </div>
+        </>
     )
 }

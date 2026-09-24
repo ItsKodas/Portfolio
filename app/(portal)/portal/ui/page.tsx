@@ -1,7 +1,7 @@
 import type { Metadata } from 'next'
 
 import { requireAdmin } from '@/server/auth'
-import AdminHeader from '../adminHeader'
+import PortalHeader from '../header'
 import frame from '../frame.module.css'
 import Emails from './emails'
 import Gallery from './gallery'
@@ -11,10 +11,12 @@ export const metadata: Metadata = { title: 'UI', robots: { index: false, follow:
 export default async function UiGallery() {
     await requireAdmin()
     return (
-        <div className={frame.page}>
-            <AdminHeader />
-            <Gallery />
-            <Emails />
-        </div>
+        <>
+            <PortalHeader admin />
+            <div className={frame.page}>
+                <Gallery />
+                <Emails />
+            </div>
+        </>
     )
 }

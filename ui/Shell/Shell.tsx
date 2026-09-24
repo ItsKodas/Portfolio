@@ -18,6 +18,27 @@ type Props = {
     children: ReactNode
 }
 
+type BarProps = {
+    brand: ReactNode
+    tabs?: ReactNode
+    bar?: ReactNode
+    // Ahead of the brand: Shell's menu button, which only a page with a site list has
+    children?: ReactNode
+}
+
+// The bar on its own, for the pages that have no zones under it. They draw this same element rather than
+// a lookalike, so moving between them and a Shell page leaves the bar exactly where it was.
+export function ShellBar({ brand, tabs, bar, children }: BarProps) {
+    return (
+        <header className={styles.bar}>
+            {children}
+            <span className={styles.brand}>{brand}</span>
+            {tabs}
+            {bar && <span className={styles.barExtra}>{bar}</span>}
+        </header>
+    )
+}
+
 export function Shell({ brand, tabs, bar, nav, rail, fill, children }: Props) {
     const [open, setOpen] = useState(false)
     const menuRef = useRef<HTMLButtonElement>(null)
@@ -52,7 +73,7 @@ export function Shell({ brand, tabs, bar, nav, rail, fill, children }: Props) {
     return (
         <>
             <div className={styles.frame}>
-                <header className={styles.bar}>
+                <ShellBar brand={brand} tabs={tabs} bar={bar}>
                     <button
                         ref={menuRef}
                         type="button"
@@ -63,10 +84,7 @@ export function Shell({ brand, tabs, bar, nav, rail, fill, children }: Props) {
                     >
                         &#9776;
                     </button>
-                    <span className={styles.brand}>{brand}</span>
-                    {tabs}
-                    {bar && <span className={styles.barExtra}>{bar}</span>}
-                </header>
+                </ShellBar>
 
                 <div className={[styles.shell, !rail && styles.railless].filter(Boolean).join(' ')}>
                     <nav

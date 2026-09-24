@@ -21,38 +21,40 @@ export default async function PortalAccountPage() {
     ])
 
     return (
-        <div className={[frame.page, frame.md].join(' ')}>
-            <PortalHeader name={client.name} />
-            <div className={frame.head}>
-                <h1 className={frame.title}>Account</h1>
-            </div>
-
-            <section className={frame.panel}>
-                <h2 className={frame.section}>Password</h2>
-                <ChangePasswordForm />
-            </section>
-
-            <section className={frame.panel}>
-                <h2 className={frame.section}>Where you are signed in</h2>
-                <div className={styles.sessions}>
-                    {sessions.map(session => (
-                        <div key={session.id} className={styles.session}>
-                            <div className={styles.device}>
-                                <span className={styles.deviceName}>{describeDevice(session.userAgent)}</span>
-                                {session.id === sessionId && <Chip>This device</Chip>}
-                            </div>
-                            <p className={styles.lastUsed}>Last used {formatWhen(session.lastUsedAt)}</p>
-                        </div>
-                    ))}
+        <>
+            <PortalHeader admin={false} name={client.name} />
+            <div className={[frame.page, frame.md].join(' ')}>
+                <div className={frame.head}>
+                    <h1 className={frame.title}>Account</h1>
                 </div>
-                {sessions.length > 1 && <SignOutElsewhereButton />}
-            </section>
 
-            <section className={frame.panel}>
-                <h2 className={frame.section}>Recovery codes</h2>
-                <p className={styles.count}>{unusedCodes} of {RECOVERY_CODE_COUNT} unused</p>
-                <RegenerateCodesForm />
-            </section>
-        </div>
+                <section className={frame.panel}>
+                    <h2 className={frame.section}>Password</h2>
+                    <ChangePasswordForm />
+                </section>
+
+                <section className={frame.panel}>
+                    <h2 className={frame.section}>Where you are signed in</h2>
+                    <div className={styles.sessions}>
+                        {sessions.map(session => (
+                            <div key={session.id} className={styles.session}>
+                                <div className={styles.device}>
+                                    <span className={styles.deviceName}>{describeDevice(session.userAgent)}</span>
+                                    {session.id === sessionId && <Chip>This device</Chip>}
+                                </div>
+                                <p className={styles.lastUsed}>Last used {formatWhen(session.lastUsedAt)}</p>
+                            </div>
+                        ))}
+                    </div>
+                    {sessions.length > 1 && <SignOutElsewhereButton />}
+                </section>
+
+                <section className={frame.panel}>
+                    <h2 className={frame.section}>Recovery codes</h2>
+                    <p className={styles.count}>{unusedCodes} of {RECOVERY_CODE_COUNT} unused</p>
+                    <RegenerateCodesForm />
+                </section>
+            </div>
+        </>
     )
 }

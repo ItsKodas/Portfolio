@@ -1,31 +1,12 @@
-/* The bar both headers draw, shaped like ui/Shell's own bar so the pages that have a header and the pages
-   that have a Shell read as the same product. What MUI's Box, Stack and Typography used to give them.
+/* The far end of the portal bar: who is signed in, and the way out.
 
    Every colour is a token, which is what ui/palette.test.ts asks of a stylesheet: that test walks ui/ and
    does not reach this file, so the rule is kept here by hand. */
-
-.bar {
-    display: flex;
-    align-items: center;
-    gap: 14px;
-    padding: 14px 0;
-    margin-bottom: 22px;
-    border-bottom: 1px solid var(--rule);
-}
-
-.brand {
-    font-weight: 600;
-    font-size: 14.5px;
-    letter-spacing: -.01em;
-    color: inherit;
-    text-decoration: none;
-}
 
 .nav {
     display: flex;
     align-items: center;
     gap: 16px;
-    margin-left: auto;
 }
 
 .who {

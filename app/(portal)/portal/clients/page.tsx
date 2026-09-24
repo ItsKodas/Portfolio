@@ -6,7 +6,7 @@ import { repo } from '@/server/clients/wiring'
 import { Chip } from '@/ui/Chip/Chip'
 import { DataTable } from '@/ui/DataTable/DataTable'
 import { formatWhen } from '../format'
-import AdminHeader from '../adminHeader'
+import PortalHeader from '../header'
 import frame from '../frame.module.css'
 import { STATE_TONES, clientState } from './state'
 
@@ -39,15 +39,17 @@ export default async function ClientsPage() {
     })
 
     return (
-        <div className={frame.page}>
-            <AdminHeader />
-            <div className={[frame.head, frame.headSpread].join(' ')}>
-                <h1 className={frame.title}>Clients</h1>
-                <Link href="/admin/clients/new" className={[frame.action, frame.actionPrimary].join(' ')}>New client</Link>
-            </div>
+        <>
+            <PortalHeader admin />
+            <div className={frame.page}>
+                <div className={[frame.head, frame.headSpread].join(' ')}>
+                    <h1 className={frame.title}>Clients</h1>
+                    <Link href="/admin/clients/new" className={[frame.action, frame.actionPrimary].join(' ')}>New client</Link>
+                </div>
 
-            {/* DataTable prints its own line rather than headings over nothing, so the page has no empty state of its own */}
-            <DataTable label="Clients" columns={columns} rows={rows} empty="No clients yet." />
-        </div>
+                {/* DataTable prints its own line rather than headings over nothing, so the page has no empty state of its own */}
+                <DataTable label="Clients" columns={columns} rows={rows} empty="No clients yet." />
+            </div>
+        </>
     )
 }
