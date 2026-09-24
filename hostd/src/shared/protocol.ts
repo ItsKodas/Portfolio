@@ -76,7 +76,8 @@ export type ProvisionCreateArgs = {
 }
 export type ProvisionAddEnvironmentArgs = {
     action: 'add-environment'
-    environment: 'test'
+    // Any environment name but live, which every project already has from its create
+    environment: string
     branch: string
     domain: string | null
     certificate: CertificateMode | null
@@ -487,7 +488,9 @@ function parseProvisionAddEnvironment(raw: Record<string, unknown>): Parsed {
     if (!onlyKeys(args, ['action', 'environment', 'branch', 'domain', 'certificate'])) {
         return refuse('bad-request', 'add-environment takes only environment, branch, domain and certificate')
     }
-    if (args.environment !== 'test') return refuse('bad-request', 'environment must be test')
+    const environment = args.environment
+    if (environment === 'live') return refuse('bad-request', 'live cannot be added')
+    if (!isEnvironmentName(environment)) return refuse('bad-request', 'environment must be an environment name')
     if (typeof args.branch !== 'string') return refuse('bad-request', 'branch is malformed')
     const domain = args.domain
     if (domain !== null && typeof domain !== 'string') return refuse('bad-request', 'domain is malformed')
@@ -497,7 +500,7 @@ function parseProvisionAddEnvironment(raw: Record<string, unknown>): Parsed {
         ok: true,
         request: {
             verb: 'provision', project,
-            args: { action: 'add-environment', environment: 'test', branch: args.branch, domain: domain as string | null, certificate: certificate as CertificateMode | null },
+            args: { action: 'add-environment', environment, branch: args.branch, domain: domain as string | null, certificate: certificate as CertificateMode | null },
         },
     }
 }

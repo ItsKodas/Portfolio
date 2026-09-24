@@ -899,20 +899,132 @@ describe('DELETE /projects/:id', () => {
     })
 })
 
+// acme nested, the only shape an environment can be added to, with and without a uat1 beside live
+const NESTED_ACME = `
+projects:
+  acme:
+    client: cl_1
+    name: Acme
+    repo: git@github.com:acme/site.git
+    services: { web: { role: site } }
+    capabilities: [provision, domains]
+    environments:
+      live: { dir: /var/www/acme/live, port: 5010, branch: main, domain: acme.example, certificate: letsencrypt }
+`
+const nestedWithUat1 = (domain: string | null): Registry => parseRegistry(
+    `${NESTED_ACME}      uat1: { dir: /var/www/acme/uat1, port: 5020, branch: main${domain === null ? '' : `, domain: ${domain}`} }\n`,
+)
+const UAT1_WRITTEN: AgentReply = { ok: true, written: { hostnames: ['uat1.acme.example'], path: '/etc/apache2/hostd/acme-uat1.conf' } }
+const EMPTY_PREVIEW: AgentReply = {
+    ok: true,
+    preview: { proposed: '<VirtualHost *:443>', extraNames: [], unreadable: [], adoptable: true, flexibleSsl: false, claims: [] },
+}
+
+// A handler whose registry moves the way the real one does: `from` until the refresh that follows an ok
+// write, `to` after it, exactly as RegistryStore.refresh brings api's copy level in production.
+function movingHandler(from: Registry, to: Registry) {
+    let current = from
+    return createHandler({
+        token: TOKEN,
+        registry: () => current,
+        refreshRegistry: async () => { current = to; return true },
+        agent, audit, schedules, domains, verifier, keepaliveMs: 60_000,
+    })
+}
+
+function through(h: ReturnType<typeof createHandler>, path: string, options?: Parameters<typeof request>[1]) {
+    const original = handler
+    handler = h
+    return request(path, options).finally(() => { handler = original })
+}
+
 describe('POST /projects/:id/environments', () => {
-    it('adds the test environment through the agent', async () => {
+    it('adds a named environment through the agent', async () => {
         const provisionReply: AgentReply = { ok: true, project: { id: 'acme', state: 'needs-setup' }, envFiles: [] }
         agent.reply = () => provisionReply
         const response = await request('/projects/acme/environments', {
-            method: 'POST', actor: 'admin', body: { branch: 'main', domain: null, certificate: null },
+            method: 'POST', actor: 'admin', body: { name: 'uat1', branch: 'main', domain: null },
         })
         assert.equal(response.status, 200)
+        assert.deepEqual(await response.json(), provisionReply)
         assert.deepEqual(agent.calls, [{
             verb: 'provision', project: 'acme',
-            args: { action: 'add-environment', environment: 'test', branch: 'main', domain: null, certificate: null },
+            args: { action: 'add-environment', environment: 'uat1', branch: 'main', domain: null, certificate: null },
         }])
         const [entry] = await audit.read({ limit: 1 })
         assert.deepEqual([entry?.verb, entry?.target, entry?.outcome], ['provision', 'acme add-environment', 'ok'])
+    })
+
+    it('carries a certificate through when one is given', async () => {
+        agent.reply = () => ({ ok: true, project: { id: 'acme', state: 'needs-setup' }, envFiles: [] })
+        await request('/projects/acme/environments', {
+            method: 'POST', actor: 'admin', body: { name: 'uat1', branch: 'main', domain: null, certificate: 'letsencrypt' },
+        })
+        assert.equal((agent.calls[0] as { args: { certificate: unknown } }).args.certificate, 'letsencrypt')
+    })
+
+    it('refuses live, a reserved or invalid name, a missing name and an unknown field, without calling the agent', async () => {
+        const bodies: unknown[] = [
+            { name: 'live', branch: 'main', domain: null },
+            { name: 'git', branch: 'main', domain: null },
+            { name: 'backups', branch: 'main', domain: null },
+            { name: 'uat-1', branch: 'main', domain: null },
+            { branch: 'main', domain: null },
+            { name: 'uat1', branch: 'main', domain: null, port: 5020 },
+        ]
+        for (const body of bodies) {
+            const response = await request('/projects/acme/environments', { method: 'POST', actor: 'admin', body })
+            assert.equal(response.status, 400, JSON.stringify(body))
+        }
+        assert.deepEqual(agent.calls, [])
+    })
+
+    it('writes the new environment\'s first vhost when it was given a domain, and starts its hostname verifying', async () => {
+        const added: AgentReply = { ok: true, project: { id: 'acme', state: 'needs-setup' }, envFiles: [] }
+        agent.reply = sent => sent.verb === 'provision' ? added
+            : sent.verb === 'domains' && sent.args.action === 'preview' ? EMPTY_PREVIEW
+            : UAT1_WRITTEN
+        const response = await through(movingHandler(parseRegistry(NESTED_ACME), nestedWithUat1('uat1.acme.example')), '/projects/acme/environments', {
+            method: 'POST', actor: 'admin', body: { name: 'uat1', branch: 'main', domain: 'uat1.acme.example' },
+        })
+        assert.equal(response.status, 200)
+        assert.deepEqual(await response.json(), { ...added, vhost: { ok: true } })
+
+        const [provision, preview, adopt] = agent.calls
+        assert.deepEqual(provision, {
+            verb: 'provision', project: 'acme',
+            args: { action: 'add-environment', environment: 'uat1', branch: 'main', domain: 'uat1.acme.example', certificate: null },
+        })
+        assert.ok(preview?.verb === 'domains' && preview.args.action === 'preview' && preview.args.environment === 'uat1')
+        assert.ok(adopt?.verb === 'domains' && adopt.args.action === 'adopt' && adopt.args.environment === 'uat1')
+        assert.deepEqual(adopt.args.disable, [])
+        const record = domains.forEnvironment('acme', 'uat1').find(entry => entry.hostname === 'uat1.acme.example')
+        assert.deepEqual([record?.primary, record?.state, record?.token], [true, 'pending', adopt.args.token])
+    })
+
+    it('writes no vhost for an environment added without a domain', async () => {
+        agent.reply = () => ({ ok: true, project: { id: 'acme', state: 'needs-setup' }, envFiles: [] })
+        await through(movingHandler(parseRegistry(NESTED_ACME), nestedWithUat1(null)), '/projects/acme/environments', {
+            method: 'POST', actor: 'admin', body: { name: 'uat1', branch: 'main', domain: null },
+        })
+        assert.deepEqual(agent.calls.map(call => call.verb), ['provision'])
+    })
+
+    it('writes no vhost when the agent refuses the add', async () => {
+        agent.reply = () => ({ ok: false, code: 'bad-request', message: 'acme already has a uat1 environment' })
+        const response = await request('/projects/acme/environments', {
+            method: 'POST', actor: 'admin', body: { name: 'uat1', branch: 'main', domain: 'uat1.acme.example' },
+        })
+        assert.equal(response.status, 400)
+        assert.deepEqual(agent.calls.map(call => call.verb), ['provision'])
+    })
+
+    it('refuses a client actor without calling the agent', async () => {
+        const response = await request('/projects/acme/environments', {
+            method: 'POST', actor: 'client:cl_1', body: { name: 'uat1', branch: 'main', domain: 'uat1.acme.example' },
+        })
+        assert.equal(response.status, 404)
+        assert.deepEqual(agent.calls, [])
     })
 })
 
@@ -2029,7 +2141,7 @@ describe('provisioning and env routes refuse a client actor', () => {
         const attempts = [
             () => request('/projects', { method: 'POST', body: CREATE_BODY }),
             () => request('/projects/acme', { method: 'DELETE', body: { name: 'Acme' } }),
-            () => request('/projects/acme/environments', { method: 'POST', body: { branch: 'main', domain: null, certificate: null } }),
+            () => request('/projects/acme/environments', { method: 'POST', body: { name: 'uat1', branch: 'main', domain: null } }),
             () => request('/projects/acme/environments/test', { method: 'DELETE', body: { name: 'Acme' } }),
             () => request('/projects/acme/live/env'),
             () => request('/projects/acme/live/env/.env'),

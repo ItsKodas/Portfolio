@@ -375,16 +375,21 @@ function parseCreateBody(value: Record<string, unknown>): { ok: true, args: Prov
     }
 }
 
+// The body names the environment `name`, which is what the operator typed; the agent's args call it
+// `environment`, as every other provision action does. certificate may be left out, meaning none.
 function parseAddEnvironmentBody(value: Record<string, unknown>): { ok: true, args: ProvisionAddEnvironmentArgs } | { ok: false, message: string } {
-    if (!onlyKeys(value, ['branch', 'domain', 'certificate'])) {
-        return { ok: false, message: 'add-environment takes only branch, domain and certificate' }
+    if (!onlyKeys(value, ['name', 'branch', 'domain', 'certificate'])) {
+        return { ok: false, message: 'add-environment takes only name, branch, domain and certificate' }
     }
+    const name = value.name
+    if (name === 'live') return { ok: false, message: 'live cannot be added' }
+    if (!isEnvironmentName(name)) return { ok: false, message: 'name must be an environment name' }
     if (typeof value.branch !== 'string') return { ok: false, message: 'branch is malformed' }
     const domain = value.domain
     if (domain !== null && typeof domain !== 'string') return { ok: false, message: 'domain is malformed' }
-    const certificate = value.certificate
+    const certificate = value.certificate ?? null
     if (certificate !== null && !(CERTIFICATE_MODES as readonly string[]).includes(certificate as string)) return { ok: false, message: 'certificate is malformed' }
-    return { ok: true, args: { action: 'add-environment', environment: 'test', branch: value.branch, domain: domain as string | null, certificate: certificate as CertificateMode | null } }
+    return { ok: true, args: { action: 'add-environment', environment: name, branch: value.branch, domain: domain as string | null, certificate: certificate as CertificateMode | null } }
 }
 
 // Shared by both delete routes: the whole-project one and the single-environment one. Typing the name
@@ -879,25 +884,29 @@ export function createHandler(deps: ApiDeps): (req: IncomingMessage, res: Server
             return sendJson(res, 200, { ok: true, domains: domainsFor(entry, environment) })
         }
 
-        // A new site's first vhost, written straight after the create that registered it, so the operator
-        // does not have to go and adopt a site that has nothing to adopt. The same preview and adopt the
-        // Domains tab runs, with nothing to disable: if another file already serves the hostname, that is
-        // a displacement the operator should preview and confirm themselves, so this stops and says so.
+        // An environment's first vhost, written straight after whatever gave it its first address: a new
+        // site's create (live), an add-environment with a domain, or a first hostname added from the
+        // Domains tab. The operator does not have to go and adopt a site that has nothing to adopt. The
+        // same preview and adopt the Domains tab runs, with nothing to disable: if another file already
+        // serves the hostname, that is a displacement the operator should preview and confirm
+        // themselves, so this stops and says so.
         //
-        // Never throws and never answers the request itself: the site already exists by the time this
-        // runs, so whatever goes wrong here is reported beside a create that succeeded, not instead of it.
-        const firstVhost = async (id: string): Promise<{ ok: true } | { ok: false, message: string }> => {
+        // Never throws and never answers the request itself: the environment already exists by the time
+        // this runs, so whatever goes wrong here is reported beside the change that succeeded, not instead
+        // of it.
+        const firstVhost = async (id: string, name: EnvironmentName): Promise<{ ok: true } | { ok: false, message: string }> => {
             const entry = deps.registry().projects.get(id)
-            const environment = entry?.environments.get('live')
+            const environment = entry?.environments.get(name)
             if (!entry || !environment || environment.domain === null) {
-                return { ok: false, message: `${id} was created, but its entry could not be read back to write its vhost` }
+                const what = name === 'live' ? id : `${id} ${name}`
+                return { ok: false, message: `${what} was created, but its entry could not be read back to write its vhost` }
             }
             const target = environment.domain
             try {
                 // Records for the new hostname first, so the token minted below is stored on them
                 await deps.domains.reconcile(deps.registry(), new Date(now()).toISOString())
-                const token = await tokenFor(id, 'live')
-                const preview = await deps.agent.call({ verb: 'domains', project: id, args: { action: 'preview', environment: 'live', token } })
+                const token = await tokenFor(id, name)
+                const preview = await deps.agent.call({ verb: 'domains', project: id, args: { action: 'preview', environment: name, token } })
                 if (!preview.ok) return { ok: false, message: preview.message }
                 if (!('preview' in preview)) return { ok: false, message: 'the agent did not answer the preview with one' }
                 const claims = preview.preview.claims.map(claim => claim.path)
@@ -905,16 +914,16 @@ export function createHandler(deps: ApiDeps): (req: IncomingMessage, res: Server
                     return { ok: false, message: `${target} is already served by ${claims.join(', ')}. Adopt it from the Domains tab to replace that file.` }
                 }
 
-                const reply = await deps.agent.call({ verb: 'domains', project: id, args: { action: 'adopt', environment: 'live', token, disable: [] } })
+                const reply = await deps.agent.call({ verb: 'domains', project: id, args: { action: 'adopt', environment: name, token, disable: [] } })
                 if (!reply.ok) {
-                    if (reply.code === 'failed') await recordVhost(id, 'live', { ok: false, output: reply.output ?? '' })
+                    if (reply.code === 'failed') await recordVhost(id, name, { ok: false, output: reply.output ?? '' })
                     const outcome: AuditOutcome = reply.code === 'failed' ? 'failed' : 'refused'
                     await audit(who, { project: id, verb: 'domains', target, outcome, reason: outcome === 'failed' ? reply.message : reply.code })
                     return { ok: false, message: reply.message }
                 }
                 const written = 'written' in reply && !Array.isArray(reply.written) ? reply.written.hostnames : hostnamesOf(environment)
-                await recordWritten(id, 'live', token, written, environment.domain)
-                await recordVhost(id, 'live', null)
+                await recordWritten(id, name, token, written, environment.domain)
+                await recordVhost(id, name, null)
                 await audit(who, { project: id, verb: 'domains', target, outcome: 'ok' })
                 return { ok: true }
             } catch (error) {
@@ -1107,7 +1116,7 @@ export function createHandler(deps: ApiDeps): (req: IncomingMessage, res: Server
                 } catch (error) {
                     console.error(`[api] ${new Date().toISOString()} registry refresh after provision ${target} failed: ${describeError(error)}`)
                 }
-                const vhost = await firstVhost(parsed.args.id)
+                const vhost = await firstVhost(parsed.args.id, 'live')
                 return sendJson(res, 200, { ...reply, vhost })
             }
 
@@ -1129,7 +1138,18 @@ export function createHandler(deps: ApiDeps): (req: IncomingMessage, res: Server
                     route.project, 'provision', target,
                 )
                 if (!reply) return
-                return respondAgentAction('provision', reply, route.project, target, true)
+                if (!reply.ok || parsed.args.domain === null) return respondAgentAction('provision', reply, route.project, target, true)
+
+                // As a create does for live: the ok path of respondAgentAction, then the new
+                // environment's vhost, beside the agent's reply rather than instead of it.
+                await audit(who, { project: route.project, verb: 'provision', target, outcome: 'ok' })
+                try {
+                    await deps.refreshRegistry()
+                } catch (error) {
+                    console.error(`[api] ${new Date().toISOString()} registry refresh after provision ${target} failed: ${describeError(error)}`)
+                }
+                const vhost = await firstVhost(route.project, parsed.args.environment)
+                return sendJson(res, 200, { ...reply, vhost })
             }
 
             case 'remove-environment':
