@@ -39,7 +39,7 @@ import {
     BUILD_TIMEOUT_MS, SWAP_TIMEOUT_MS, type DeployTrees,
 } from './deploy-compose.ts'
 import { waitForHealthy } from './deploy-health.ts'
-import { executeSteps, inspectLayout, resumeSteps, windowSteps } from './migrate-layout.ts'
+import { executeSteps, inspectLayout, resumeSteps, windowSteps, type Step } from './migrate-layout.ts'
 
 // The worst case is a swap that cannot complete, so a deploy refuses to start rather than risk it.
 export const MIN_FREE_BYTES = 10 * 1024 ** 3
@@ -55,6 +55,10 @@ export type DeployFs = {
     // uses, so an undo can never delete what ended up inside it (rmdir above is recursive).
     removeEmptyDir(dir: string): Promise<void>
     move(from: string, to: string): Promise<void>
+    // Whether there is anything at a path worth keeping: a folder with at least one entry, or anything
+    // that is not a folder. False when nothing is there, and for a folder that is empty. What the storage
+    // check asks before a whole tree is removed (see storageLeftIn).
+    holdsData(path: string): Promise<boolean>
     // Copies one file into the new tree. Separate from the env carry's own read and write, which go
     // through env-files.ts and are held to the env-file boundary on purpose: a compose file is not an
     // env file and must not become reachable through the capability that edits those.
@@ -313,14 +317,96 @@ async function nameDockerfiles(next: EnvironmentEntry, deps: DeployDeps): Promis
     return { ok: true }
 }
 
+// The storage folders the registry names for this project, relative to whichever tree they are in. The
+// registry resolves them against live, but every environment's compose file bind-mounts the same
+// relative path from its own tree, so every environment's deploy carries them.
+const storagePathsOf = (project: ProjectEntry): string[] => Object.values(project.storage).map(entry => entry.path)
+
+// Where the checkout's own copy of a storage folder waits, for the moment it takes to swap the two.
+const CARRY_ASIDE = '.hostd-carry'
+
+type CarriedStorage = { ok: true, carried: string[] } | { ok: false, problem: string, undone: boolean }
+
+// Storage is client data (uploads, a SQLite file's folder) that lives inside the tree and is not in the
+// repo, so a fresh checkout does not have it, and a swap that only renamed the trees would leave it in
+// the previous copy for the next deploy to delete. Docker would then create an empty root-owned folder at
+// the bind-mount path on `up`, and the site would come up healthy with none of its data. So the swap
+// moves each registered folder from the tree that just stopped into the one about to start.
+//
+// A checkout that commits a copy of its own (a folder of starter documents, say) is not overwritten: the
+// two are swapped, the running data into the new tree and the committed copy into the old one, so nothing
+// is removed and a rollback can swap them straight back. A folder the old tree does not have is left
+// alone. Moves, never copies: both trees are on one filesystem, so each is a rename, however big the
+// folder, and the window stays short.
+//
+// Run through executeSteps in 'window' mode, so a failure undoes every move already made and says whether
+// that worked. Returns the paths it carried, which are exactly what a rollback has to carry back.
+async function carryStorage(paths: string[], from: string, to: string, deps: DeployDeps): Promise<CarriedStorage> {
+    const steps: Step[] = []
+    const carried: string[] = []
+    for (const path of paths) {
+        const source = posix.join(from, path)
+        if (!(await deps.fs.exists(source))) continue
+        const target = posix.join(to, path)
+        // A nested path (data/uploads) needs its parents in the new tree, which a checkout that ignores
+        // the whole of data/ does not have. Each is owned like its counterpart in the old tree.
+        const parents = posix.dirname(path) === '.' ? [] : posix.dirname(path).split('/')
+        for (let depth = 1; depth <= parents.length; depth++) {
+            const parent = parents.slice(0, depth).join('/')
+            steps.push({ kind: 'mkdir', dir: posix.join(to, parent), like: posix.join(from, parent) })
+        }
+        if (await deps.fs.exists(target)) {
+            const aside = `${source}${CARRY_ASIDE}`
+            // Refused before anything moves, rather than guessing whose that folder is.
+            if (await deps.fs.exists(aside)) return { ok: false, problem: `${aside} is in the way`, undone: true }
+            steps.push(
+                { kind: 'move', from: target, to: aside },
+                { kind: 'move', from: source, to: target },
+                { kind: 'move', from: aside, to: source },
+            )
+        } else {
+            steps.push({ kind: 'move', from: source, to: target })
+        }
+        carried.push(path)
+    }
+    const done = await executeSteps(steps, deps.fs, 'window')
+    if (!done.ok) return { ok: false, problem: `${done.step} failed: ${done.problem}`, undone: done.undone }
+    if (carried.length > 0) deps.log(`deploy ${to}: carried ${carried.join(', ')} across from ${from}`)
+    return { ok: true, carried }
+}
+
+// Asked before a whole tree other than the running one is removed: a leftover build tree, or the previous
+// copy a swap is about to replace. After a normal deploy neither holds client data, because carryStorage
+// took it. One that does is a window that stopped part way (the agent killed between the renames and the
+// carry, or an undo that could not finish), or a tree left by a hostd from before storage was carried,
+// and removing it would delete the only copy. So when a registered storage folder in it holds something
+// and the running tree's own copy is empty or missing, the answer is a problem, never a removal: the
+// operator decides which copy is the real one (see the RUNBOOK).
+async function storageLeftIn(paths: string[], tree: string, running: string, deps: DeployDeps): Promise<string | null> {
+    for (const path of paths) {
+        const left = posix.join(tree, path)
+        if (!(await deps.fs.holdsData(left))) continue
+        const live = posix.join(running, path)
+        if (await deps.fs.holdsData(live)) continue
+        return `${left} holds storage that ${live} does not, so ${tree} is not being removed; see the RUNBOOK`
+    }
+    return null
+}
+
 // The automatic return the design is emphatic about: the new tree is parked back at <dir>.next (nested:
 // next/<env>), the previous one takes its place, and only once the previous copy is up and healthy is
 // the failed tree removed. Nothing is deleted before its replacement is in place, so an interrupted
 // rollback still leaves both copies on disk for the operator to sort out. Only ever works on `trees`, so
 // the same code rolls back a flat tree, a nested one, and one that moved into the nested layout this
 // deploy (whose previous copy is the flat tree, now at prev/live).
+//
+// `carried` is the storage the swap carried into the failed tree, and it goes back with the previous
+// copy before that starts. If it cannot, the previous copy is not started: a site serving without its
+// uploads would look healthy and quietly write new ones into a folder the next deploy has no reason to
+// keep. The failed tree is left at next, holding the data, and storageLeftIn stops the next deploy from
+// removing it.
 async function swapBack(
-    project: ProjectEntry, environment: EnvironmentEntry, trees: DeployTrees, name: string, deps: DeployDeps,
+    project: ProjectEntry, environment: EnvironmentEntry, trees: DeployTrees, name: string, carried: string[], deps: DeployDeps,
 ): Promise<{ ok: true } | { ok: false, problem: string }> {
     if (!(await deps.fs.exists(trees.prev))) return { ok: false, problem: 'there is no previous copy to go back to' }
     // A live tree that moved into the nested layout this deploy was built in the flat <site>.next, so
@@ -335,11 +421,18 @@ async function swapBack(
     await runCompose(downArgv(locationIn(environment, trees.dir), name), SWAP_TIMEOUT_MS, deps.runner)
     await deps.fs.move(trees.dir, trees.next)
     await deps.fs.move(trees.prev, trees.dir)
+    const storage = await carryStorage(carried, trees.next, trees.dir, deps)
+    if (!storage.ok) {
+        return { ok: false, problem: `its storage could not be carried back from ${trees.next}, so it was not started: ${storage.problem}` }
+    }
     const up = await runCompose(upArgv(locationIn(environment, trees.dir), name), SWAP_TIMEOUT_MS, deps.runner)
     if (!up.ok) return { ok: false, problem: up.message }
     const healthy = await waitForHealthy(project, name, { docker: deps.docker, now: deps.now, sleep: deps.sleep })
     if (!healthy.ok) return { ok: false, problem: healthy.problem }
-    await deps.fs.rmdir(trees.next).catch(() => {})
+    // Checked, not assumed: the carry above should have left nothing in it, and a removal is forever.
+    const left = await storageLeftIn(storagePathsOf(project), trees.next, trees.dir, deps).catch(error => describeError(error))
+    if (left) deps.log(`deploy ${project.id} ${environment.name}: ${left}`)
+    else await deps.fs.rmdir(trees.next).catch(() => {})
     return { ok: true }
 }
 
@@ -577,6 +670,19 @@ export async function runDeploy(
             return record(commit, subject, 'failed', reason, output)
         }
 
+        // Every tree this deploy will remove whole, checked before anything is touched rather than inside
+        // the window, where a refusal would mean starting the old copy again: the leftover build tree the
+        // checkout replaces, and the previous copy (or copies, for a move into the nested layout) the swap
+        // replaces. Live's nested previous copy is inside its own flat tree until the window, so it is not
+        // one of them (see moveIntoNested).
+        const storage = storagePathsOf(project)
+        const doomed = [build.next, trees.prev]
+        if (target && !target.prev.startsWith(`${trees.dir}/`)) doomed.push(target.prev)
+        for (const tree of doomed) {
+            const left = await storageLeftIn(storage, tree, trees.dir, deps)
+            if (left) return fail(left)
+        }
+
         // Prepare. A nested site's next/ and prev/ are made the first time an environment needs them,
         // owned like the site folder itself, because git will not make the folder a worktree lands in.
         // 'window' mode, though no window is open, because it is the mode that removes a folder it made
@@ -700,19 +806,37 @@ export async function runDeploy(
                 await deps.fs.move(trees.next, trees.dir)
             }
 
-            deps.log(`deploy ${project.id} ${environment.name} ${commit.slice(0, 7)}: starting the new copy`)
-            const up = await runCompose(upArgv(locationIn(environment, live.dir), name), SWAP_TIMEOUT_MS, deps.runner)
-            if (up.ok) deps.log(`deploy ${project.id} ${environment.name} ${commit.slice(0, 7)}: waiting for it to come up healthy`)
-            const healthy = up.ok
-                ? await waitForHealthy(project, name, { docker: deps.docker, now: deps.now, sleep: deps.sleep })
-                : { ok: false as const, problem: up.message }
+            // Whichever way the trees moved, the old one is now live.prev and the new one live.dir.
+            const carried = await carryStorage(storage, live.prev, live.dir, deps)
+            if (!carried.ok && !carried.undone) {
+                // Some folders are in each tree and nothing is running. Starting either tree would serve
+                // half the data, so neither is started; storageLeftIn keeps the next deploy from removing
+                // the tree still holding the rest.
+                return fail(`storage could not be carried into the new tree: ${carried.problem}; the undo did not finish either, so ` +
+                    `neither copy was started and the storage is split between ${live.prev} and ${live.dir}; see the RUNBOOK`)
+            }
+
+            let healthy: { ok: true } | { ok: false, problem: string }
+            let output: string | null = null
+            if (!carried.ok) {
+                // Every move was undone, so the data is back in the old tree: an ordinary rollback.
+                healthy = { ok: false, problem: `storage could not be carried into the new tree: ${carried.problem}` }
+            } else {
+                deps.log(`deploy ${project.id} ${environment.name} ${commit.slice(0, 7)}: starting the new copy`)
+                const up = await runCompose(upArgv(locationIn(environment, live.dir), name), SWAP_TIMEOUT_MS, deps.runner)
+                if (up.ok) deps.log(`deploy ${project.id} ${environment.name} ${commit.slice(0, 7)}: waiting for it to come up healthy`)
+                else output = up.output
+                healthy = up.ok
+                    ? await waitForHealthy(project, name, { docker: deps.docker, now: deps.now, sleep: deps.sleep })
+                    : { ok: false, problem: up.message }
+            }
             if (!healthy.ok) {
-                const back = await swapBack(project, environment, live, name, deps)
+                const back = await swapBack(project, environment, live, name, carried.ok ? carried.carried : [], deps)
                 deps.log(`deploy ${project.id} ${environment.name} ${commit.slice(0, 7)}: rolled back, ${healthy.problem}`)
                 const reason = back.ok
                     ? `${healthy.problem}; rolled back to the previous copy`
                     : `${healthy.problem}; the previous copy did not come back healthy either: ${back.problem}`
-                rolledBack = { reason, output: up.ok ? null : up.output }
+                rolledBack = { reason, output }
             }
         } finally {
             // Always, including on the way out through a throw: a flag left behind would serve the

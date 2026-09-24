@@ -484,7 +484,8 @@ or deploy acts on the wrong one.
 branch. A tip different from the entry's `deployed` starts a deploy: fetch, check the commit out into
 `<dir>.next`, carry the env files across from the running copy, carry any compose file the checkout does
 not have (see below), `docker compose build` there, then the
-swap (maintenance flag up, `down`, `<dir>` becomes `<dir>.prev`, `<dir>.next` becomes `<dir>`, `up -d`,
+swap (maintenance flag up, `down`, `<dir>` becomes `<dir>.prev`, `<dir>.next` becomes `<dir>`, the
+registered `storage` folders move from `<dir>.prev` into `<dir>`, `up -d`,
 flag down), then the health check, then `deployed` is written to the registry. One deploy per environment
 at a time; a commit that lands mid-deploy is picked up by the next poll.
 
@@ -495,6 +496,27 @@ the running copy's across when the new tree has none of its own, exactly as it d
 the repo does commit the file, the checkout's copy wins: that one belongs with the commit going out, and
 the running tree's is the commit being replaced. A file that cannot be copied fails the deploy before the
 build, because compose cannot describe the site without it.
+
+**Storage survives a deploy.** A folder the entry's `storage` names (uploads, a SQLite file's folder) is
+client data inside the tree that the repo does not carry, so a fresh checkout does not have it. Inside the
+swap, after the trees are renamed and before `up`, each one is moved from the previous copy into the new
+tree at the same relative path, in every environment and in either layout. It is a rename, so it takes no
+time however big the folder is. Where the checkout commits a copy of its own at that path, the two swap
+places: the running data goes into the new tree and the committed copy into the previous one, so nothing
+is overwritten. A rollback moves the same folders back before the previous copy starts. If a move fails,
+every move already made is undone and the deploy rolls back. If even the undo cannot finish, neither copy
+is started, the deploy is recorded `failed` with `the storage is split between <prev> and <dir>`, and the
+operator moves the folders by hand and starts the site. Data bind-mounted from anywhere else (a named
+volume, a path outside the tree) is never touched by a deploy and needs no entry.
+
+A deploy never removes a previous copy or a leftover build tree while one of its storage folders has
+something in it and the running tree's copy of that folder is empty or missing. That only happens after a
+swap that stopped part way, or with a previous copy left by a hostd from before storage was carried. The
+deploy is refused before it checks anything out, with `<tree>/<path> holds storage that <dir>/<path> does
+not, so <tree> is not being removed`. Compare the two folders, move whichever copy is the real one into the
+running tree (stop the site first, since its containers hold the bind mount), remove or empty the other,
+and deploy again. A storage folder added to a site that already has data in the tree needs no step of its
+own: the next deploy carries it.
 
 **Watching one.** The Deploys tab carries an operator-only column showing what the deploy is doing: its own phase lines,
 with `docker compose` output beneath the build step. It is there whether or not a deploy is running, and
