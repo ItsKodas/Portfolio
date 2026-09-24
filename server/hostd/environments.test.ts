@@ -101,7 +101,7 @@ describe('restoreEnvironment', () => {
         const reply = { ok: true, port: 5019, portChanged: true, droppedHostnames: ['uat.acme.com'] }
         const { fetchImpl, calls } = fakeFetch(reply)
         const result = await restoreEnvironment(config, admin, 'acme', 'uat1', '2026-09-20T10:00:00.000Z', fetchImpl)
-        expect(result).toEqual({ ok: true, value: { port: 5019, portChanged: true, droppedHostnames: ['uat.acme.com'] } })
+        expect(result).toEqual({ ok: true, value: { port: 5019, portChanged: true, droppedHostnames: ['uat.acme.com'], warnings: [] } })
         expect(calls[0].url).toBe('http://hostd-api:8080/projects/acme/deleted-environments/uat1/restore')
         expect(calls[0].method).toBe('POST')
         expect(JSON.parse(calls[0].body as string)).toEqual({ deletedAt: '2026-09-20T10:00:00.000Z' })
@@ -110,13 +110,21 @@ describe('restoreEnvironment', () => {
     it('reads a reply with no dropped hostnames as none', async () => {
         const { fetchImpl } = fakeFetch({ ok: true, port: 5014, portChanged: false })
         expect(await restoreEnvironment(config, admin, 'acme', 'uat1', '2026-09-20T10:00:00.000Z', fetchImpl))
-            .toEqual({ ok: true, value: { port: 5014, portChanged: false, droppedHostnames: [] } })
+            .toEqual({ ok: true, value: { port: 5014, portChanged: false, droppedHostnames: [], warnings: [] } })
     })
 
     it('reads a changed port with no port given as unknown rather than as port 0', async () => {
         const { fetchImpl } = fakeFetch({ ok: true, portChanged: true, droppedHostnames: [] })
         expect(await restoreEnvironment(config, admin, 'acme', 'uat1', '2026-09-20T10:00:00.000Z', fetchImpl))
-            .toEqual({ ok: true, value: { port: null, portChanged: true, droppedHostnames: [] } })
+            .toEqual({ ok: true, value: { port: null, portChanged: true, droppedHostnames: [], warnings: [] } })
+    })
+
+    // What went wrong after it was back in the registry: the vhost, the start, what stayed in the trash
+    it('carries the warnings hostd sent, keeping only strings', async () => {
+        const warnings = ['its vhost could not be written: apache said no', 'it could not be started (up exited 1); deploy it to start it']
+        const { fetchImpl } = fakeFetch({ ok: true, port: 5014, portChanged: false, droppedHostnames: [], warnings: [...warnings, 7] })
+        expect(await restoreEnvironment(config, admin, 'acme', 'uat1', '2026-09-20T10:00:00.000Z', fetchImpl))
+            .toEqual({ ok: true, value: { port: 5014, portChanged: false, droppedHostnames: [], warnings } })
     })
 
     it('refuses live before asking', async () => {

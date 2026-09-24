@@ -439,7 +439,7 @@ describe('deleteEnvironmentAction', () => {
 describe('restoreEnvironmentAction', () => {
     it('says it is back, and nothing more, when nothing changed on the way', async () => {
         callerFromSession.mockResolvedValue(ADMIN)
-        restoreEnvironment.mockResolvedValue({ ok: true, value: { port: 5014, portChanged: false, droppedHostnames: [] } })
+        restoreEnvironment.mockResolvedValue({ ok: true, value: { port: 5014, portChanged: false, droppedHostnames: [], warnings: [] } })
 
         const result = await restoreEnvironmentAction('acme', 'uat1', '2026-09-20T10:00:00.000Z')
 
@@ -449,7 +449,7 @@ describe('restoreEnvironmentAction', () => {
 
     it('names a new port and every hostname it came back without', async () => {
         callerFromSession.mockResolvedValue(ADMIN)
-        restoreEnvironment.mockResolvedValue({ ok: true, value: { port: 5019, portChanged: true, droppedHostnames: ['uat.acme.com', 'beta.acme.com'] } })
+        restoreEnvironment.mockResolvedValue({ ok: true, value: { port: 5019, portChanged: true, droppedHostnames: ['uat.acme.com', 'beta.acme.com'], warnings: [] } })
 
         const result = await restoreEnvironmentAction('acme', 'uat1', '2026-09-20T10:00:00.000Z')
 
@@ -462,10 +462,59 @@ describe('restoreEnvironmentAction', () => {
 
     it('says the port changed without naming one hostd did not send', async () => {
         callerFromSession.mockResolvedValue(ADMIN)
-        restoreEnvironment.mockResolvedValue({ ok: true, value: { port: null, portChanged: true, droppedHostnames: [] } })
+        restoreEnvironment.mockResolvedValue({ ok: true, value: { port: null, portChanged: true, droppedHostnames: [], warnings: [] } })
 
         expect(await restoreEnvironmentAction('acme', 'uat1', '2026-09-20T10:00:00.000Z'))
             .toEqual({ ok: true, message: 'uat1 is back and starting. Its old port was taken, so it is on another port now.' })
+    })
+
+    it('says a restore that could not start it is back but not running, and passes on why', async () => {
+        callerFromSession.mockResolvedValue(ADMIN)
+        restoreEnvironment.mockResolvedValue({
+            ok: true,
+            value: { port: 5014, portChanged: false, droppedHostnames: [], warnings: ['it could not be started (up exited 1); deploy it to start it'] },
+        })
+
+        const result = await restoreEnvironmentAction('acme', 'uat1', '2026-09-20T10:00:00.000Z')
+
+        expect(result.ok && result.message).not.toMatch(/starting/)
+        expect(result).toEqual({
+            ok: true,
+            message: 'uat1 is back, but it is not running. hostd reported: it could not be started (up exited 1); deploy it to start it.',
+        })
+    })
+
+    it('says not running when it could not even be read back', async () => {
+        callerFromSession.mockResolvedValue(ADMIN)
+        restoreEnvironment.mockResolvedValue({
+            ok: true,
+            value: { port: 5014, portChanged: false, droppedHostnames: [], warnings: ['acme uat1 was restored but could not be read back, so it was neither put on the web nor started'] },
+        })
+
+        const result = await restoreEnvironmentAction('acme', 'uat1', '2026-09-20T10:00:00.000Z')
+
+        expect(result.ok && result.message).not.toMatch(/starting/)
+        expect(result.ok && result.message).toMatch(/^uat1 is back, but it is not running\. hostd reported: acme uat1 was restored but could not be read back/)
+    })
+
+    it('still says starting when only the vhost or the trash went wrong, and passes on each warning', async () => {
+        callerFromSession.mockResolvedValue(ADMIN)
+        restoreEnvironment.mockResolvedValue({
+            ok: true,
+            value: {
+                port: 5014, portChanged: false, droppedHostnames: [],
+                warnings: [
+                    'its vhost could not be written: apache said no',
+                    'prev stayed in the trash, because the folder it came from is taken or missing; the purge removes it with the rest',
+                ],
+            },
+        })
+
+        expect(await restoreEnvironmentAction('acme', 'uat1', '2026-09-20T10:00:00.000Z')).toEqual({
+            ok: true,
+            message: 'uat1 is back and starting. hostd reported: its vhost could not be written: apache said no; '
+                + 'prev stayed in the trash, because the folder it came from is taken or missing; the purge removes it with the rest.',
+        })
     })
 
     it('never restores live, and wants to know which deletion', async () => {

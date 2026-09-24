@@ -40,6 +40,9 @@ export type RestoredEnvironment = {
     portChanged: boolean
     // Hostnames another site or environment claimed meanwhile, which it came back without
     droppedHostnames: string[]
+    // What went wrong once it was back in the registry, in hostd's words: a vhost not written, a start that
+    // failed, a folder left in the trash. Never undone, so the operator is told.
+    warnings: string[]
 }
 
 // Matches hostd's registry id rule
@@ -166,6 +169,9 @@ export async function restoreEnvironment(
             port: typeof result.value.port === 'number' ? result.value.port : null,
             portChanged: result.value.portChanged === true,
             droppedHostnames: result.value.droppedHostnames ?? [],
+            warnings: Array.isArray(result.value.warnings)
+                ? result.value.warnings.filter((warning): warning is string => typeof warning === 'string')
+                : [],
         },
     }
 }

@@ -496,8 +496,11 @@ export async function restoreEnvironmentAction(id: string, environment: string, 
     revalidatePath(`/portal/sites/${id}`)
     // What hostd had to change on the way back is said, because each one is something to fix elsewhere:
     // a port another service expects, or a hostname that now points at something else.
-    const { port, portChanged, droppedHostnames } = result.value
-    const said = [`${name} is back and starting.`]
+    const { port, portChanged, droppedHostnames, warnings } = result.value
+    // hostd's two ways of saying it did not start it: the start failed, or the environment could not be
+    // read back to start. Either way "starting" would be untrue.
+    const notStarted = warnings.some(warning => /\bstarted\b/.test(warning))
+    const said = [notStarted ? `${name} is back, but it is not running.` : `${name} is back and starting.`]
     if (portChanged) {
         said.push(port === null
             ? 'Its old port was taken, so it is on another port now.'
@@ -505,6 +508,9 @@ export async function restoreEnvironmentAction(id: string, environment: string, 
     }
     if (droppedHostnames.length > 0) {
         said.push(`These hostnames were taken while it was deleted, so it came back without them: ${droppedHostnames.join(', ')}.`)
+    }
+    if (warnings.length > 0) {
+        said.push(`hostd reported: ${warnings.map(warning => warning.replace(/\.+$/, '')).join('; ')}.`)
     }
     return { ok: true, message: said.join(' ') }
 }
