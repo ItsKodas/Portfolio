@@ -3,7 +3,7 @@
 
 import { createServer, createConnection } from 'node:net'
 import { createWriteStream } from 'node:fs'
-import { chmod, chown, constants, copyFile, cp, mkdir, readdir, readFile, rename, rm, rmdir, stat, statfs, unlink, writeFile } from 'node:fs/promises'
+import { chmod, chown, constants, copyFile, cp, lstat, mkdir, readdir, readFile, rename, rm, rmdir, stat, statfs, unlink, writeFile } from 'node:fs/promises'
 import { randomBytes } from 'node:crypto'
 import { posix } from 'node:path'
 import { RegistryStore, explainRegistryError } from '../shared/registry-store.ts'
@@ -247,6 +247,18 @@ async function main(): Promise<void> {
             // Not recursive: the kernel refuses a folder that is not empty (ENOTEMPTY).
             removeEmptyDir: dir => rmdir(dir),
             move: (from, to) => rename(from, to),
+            // lstat, so a symlink counts as something there rather than being followed. Only a missing
+            // path is an answer of false: any other error is thrown, and the deploy fails rather than
+            // taking an unreadable folder for an empty one.
+            holdsData: async path => {
+                try {
+                    const info = await lstat(path)
+                    return info.isDirectory() ? (await readdir(path)).length > 0 : true
+                } catch (error) {
+                    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return false
+                    throw error
+                }
+            },
             // COPYFILE_EXCL, so this can only ever create: a checkout's own compose file is never
             // overwritten even if the caller's existence check were somehow wrong about it.
             copyFile: (from, to) => copyFile(from, to, constants.COPYFILE_EXCL),

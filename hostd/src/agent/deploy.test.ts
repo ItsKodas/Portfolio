@@ -73,6 +73,14 @@ projects:
         branch: develop
         port: 5011
 `
+// A site that keeps uploads and documents in its own tree, bind-mounted by relative path, and a folder
+// nested one level down to exercise the parents a carry has to make.
+const REGISTRY_YAML_STORAGE = REGISTRY_YAML.replace('    capabilities: [deploy, env]', `    storage:
+      uploads: { path: uploads, mode: rw }
+      documents: { path: documents, mode: rw }
+      files: { path: data/files, mode: rw }
+    capabilities: [deploy, env]`)
+
 const REGISTRY_YAML_NESTED = REGISTRY_YAML_TEST.replace('dir: /var/www/acme-test', 'dir: /var/www/acme/test')
 
 type SetupOptions = {
@@ -177,6 +185,8 @@ function setup(options: SetupOptions = {}) {
             if ([...exists].some(path => path.startsWith(`${dir}/`))) throw new Error(`ENOTEMPTY: directory not empty, rmdir '${dir}'`)
             exists.delete(dir)
         },
+        // A folder holds something when any path the fake knows of is inside it.
+        holdsData: async path => [...exists].some(known => known.startsWith(`${path}/`)),
         copyFile: async (from, to) => { calls.push(`copy ${from} ${to}`); if (copyFails) throw new Error('read-only file system'); exists.add(to) },
         move: async (from, to) => {
             calls.push(`move ${from} ${to}`)
@@ -1037,5 +1047,155 @@ describe('nested layout', () => {
         const second = await runDeploy(project, project.environments.get('live')!, manual, t.deps)
         assert.equal(second.outcome, 'ok', second.reason ?? '')
         assert.equal(t.deps.registry().projects.get('acme')!.environments.get('live')!.dir, '/var/www/acme/live')
+    })
+})
+
+describe('storage across a deploy', () => {
+    const base = ['/var/www/acme/.git', '/var/www/acme/docker-compose.yml']
+    const siteOwner = { uid: 1000, gid: 1000, mode: 0o775 }
+    const dataOwner = { uid: 1000, gid: 1000, mode: 0o750 }
+    const owners = {
+        '/var/www/acme': siteOwner,
+        '/var/www/acme.migrating': siteOwner,
+        '/var/www/acme/live': siteOwner,
+        '/var/www/acme.prev/data': dataOwner,
+        '/var/www/acme/prev/live/data': dataOwner,
+    }
+    const withStorage = (options: SetupOptions = {}) => setup({ registryYaml: REGISTRY_YAML_STORAGE, owners, ...options })
+    // The fake checkout makes nothing on its own; this has it commit files into the new tree.
+    const committing = (context: ReturnType<typeof setup>, paths: string[]) => {
+        const call = context.deps.fetcher.call
+        context.deps.fetcher.call = async request => {
+            const reply = await call(request)
+            if (request.verb === 'checkout') for (const path of paths) context.exists.add(path)
+            return reply
+        }
+    }
+
+    it('moves each storage folder from the stopped tree into the new one before it starts', async () => {
+        const context = withStorage({ existsPaths: [...base, '/var/www/acme/uploads', '/var/www/acme/uploads/photo.jpg'] })
+        const record = await runDeploy(context.project(), context.environment(), { ...request, commit: TIP }, context.deps)
+        assert.equal(record.outcome, 'ok', record.reason ?? '')
+        assert.ok(context.exists.has('/var/www/acme/uploads/photo.jpg'))
+        assert.equal(context.exists.has('/var/www/acme.prev/uploads/photo.jpg'), false)
+        const order = context.calls.filter(call => call.startsWith('compose ') || (call.startsWith('move ') && !call.includes('.git')))
+        assert.deepEqual(order, [
+            'compose build',
+            'compose down',
+            'move /var/www/acme /var/www/acme.prev',
+            'move /var/www/acme.next /var/www/acme',
+            'move /var/www/acme.prev/uploads /var/www/acme/uploads',
+            'compose up',
+        ])
+    })
+
+    it('leaves alone a storage folder the running tree does not have', async () => {
+        const context = withStorage()
+        const record = await runDeploy(context.project(), context.environment(), { ...request, commit: TIP }, context.deps)
+        assert.equal(record.outcome, 'ok', record.reason ?? '')
+        assert.equal(context.calls.some(call => call.startsWith('move /var/www/acme.prev/')), false)
+    })
+
+    it('swaps the running data with a copy the checkout commits, rather than overwriting either', async () => {
+        const context = withStorage({ existsPaths: [...base, '/var/www/acme/documents', '/var/www/acme/documents/signed.pdf'] })
+        committing(context, ['/var/www/acme.next/documents', '/var/www/acme.next/documents/starter.pdf'])
+        const record = await runDeploy(context.project(), context.environment(), { ...request, commit: TIP }, context.deps)
+        assert.equal(record.outcome, 'ok', record.reason ?? '')
+        assert.ok(context.exists.has('/var/www/acme/documents/signed.pdf'))
+        assert.ok(context.exists.has('/var/www/acme.prev/documents/starter.pdf'))
+        assert.equal([...context.exists].some(path => path.includes('.hostd-carry')), false)
+    })
+
+    it('makes the parents of a nested storage path, owned like the old tree has them', async () => {
+        const context = withStorage({ existsPaths: [...base, '/var/www/acme/data', '/var/www/acme/data/files', '/var/www/acme/data/files/a.db'] })
+        const record = await runDeploy(context.project(), context.environment(), { ...request, commit: TIP }, context.deps)
+        assert.equal(record.outcome, 'ok', record.reason ?? '')
+        assert.ok(context.exists.has('/var/www/acme/data/files/a.db'))
+        assert.ok(context.calls.includes('mkdir /var/www/acme/data'))
+        assert.ok(context.calls.includes('own /var/www/acme/data 1000:1000 750'))
+    })
+
+    it('carries the storage back with the previous copy when the new one is unhealthy', async () => {
+        const context = withStorage({
+            existsPaths: [...base, '/var/www/acme/uploads', '/var/www/acme/uploads/photo.jpg'],
+            containerState: { state: 'running', health: 'unhealthy' },
+        })
+        const record = await runDeploy(context.project(), context.environment(), { ...request, commit: TIP }, context.deps)
+        assert.equal(record.outcome, 'rolled-back')
+        assert.ok(context.exists.has('/var/www/acme/uploads/photo.jpg'))
+        const back = context.calls.indexOf('move /var/www/acme.next/uploads /var/www/acme/uploads')
+        assert.ok(back !== -1 && back < context.calls.lastIndexOf('compose up'), context.calls.join(', '))
+        assert.ok(context.calls.includes('rmdir /var/www/acme.next'))
+    })
+
+    it('rolls back, with the data still in the old tree, when a carry fails and is undone', async () => {
+        const context = withStorage({
+            existsPaths: [...base, '/var/www/acme/uploads', '/var/www/acme/uploads/photo.jpg', '/var/www/acme/documents', '/var/www/acme/documents/signed.pdf'],
+        })
+        const move = context.deps.fs.move
+        context.deps.fs.move = async (from, to) => { if (to === '/var/www/acme/documents') throw new Error('EIO'); return move(from, to) }
+        const record = await runDeploy(context.project(), context.environment(), { ...request, commit: TIP }, context.deps)
+        assert.equal(record.outcome, 'rolled-back')
+        assert.match(record.reason ?? '', /storage could not be carried/)
+        assert.ok(context.exists.has('/var/www/acme/uploads/photo.jpg'))
+        assert.ok(context.exists.has('/var/www/acme/documents/signed.pdf'))
+        // Only the previous copy is started; the new one never was.
+        assert.equal(context.calls.filter(call => call === 'compose up').length, 1)
+        assert.equal(context.environment().deployed, 'abc1234')
+    })
+
+    it('starts neither copy when a carry fails and its undo cannot finish', async () => {
+        const context = withStorage({
+            existsPaths: [...base, '/var/www/acme/uploads', '/var/www/acme/uploads/photo.jpg', '/var/www/acme/documents', '/var/www/acme/documents/signed.pdf'],
+        })
+        const move = context.deps.fs.move
+        context.deps.fs.move = async (from, to) => {
+            if (to === '/var/www/acme/documents' || from === '/var/www/acme/uploads') throw new Error('EIO')
+            return move(from, to)
+        }
+        const record = await runDeploy(context.project(), context.environment(), { ...request, commit: TIP }, context.deps)
+        assert.equal(record.outcome, 'failed')
+        assert.match(record.reason ?? '', /split between \/var\/www\/acme\.prev and \/var\/www\/acme;/)
+        assert.equal(context.calls.includes('compose up'), false)
+        assert.equal(context.maintenance.size, 0)
+    })
+
+    it('refuses, removing nothing, when the previous copy holds storage the running tree lacks', async () => {
+        const context = withStorage({
+            existsPaths: [...base, '/var/www/acme/uploads', '/var/www/acme.prev', '/var/www/acme.prev/uploads', '/var/www/acme.prev/uploads/photo.jpg'],
+        })
+        const record = await runDeploy(context.project(), context.environment(), { ...request, commit: TIP }, context.deps)
+        assert.equal(record.outcome, 'failed')
+        assert.match(record.reason ?? '', /\/var\/www\/acme\.prev\/uploads holds storage that \/var\/www\/acme\/uploads does not/)
+        assert.equal(context.calls.some(call => call.startsWith('rmdir')), false)
+        assert.equal(context.calls.includes('fetcher checkout'), false)
+    })
+
+    it('refuses the same way for a leftover build tree holding storage', async () => {
+        const context = withStorage({ existsPaths: [...base, '/var/www/acme.next', '/var/www/acme.next/uploads', '/var/www/acme.next/uploads/photo.jpg'] })
+        const record = await runDeploy(context.project(), context.environment(), { ...request, commit: TIP }, context.deps)
+        assert.equal(record.outcome, 'failed')
+        assert.match(record.reason ?? '', /acme\.next is not being removed/)
+        assert.equal(context.calls.includes('rmdir /var/www/acme.next'), false)
+    })
+
+    it('removes a previous copy whose storage the running tree also has', async () => {
+        const context = withStorage({
+            existsPaths: [...base, '/var/www/acme/documents', '/var/www/acme/documents/signed.pdf',
+                '/var/www/acme.prev', '/var/www/acme.prev/documents', '/var/www/acme.prev/documents/starter.pdf'],
+        })
+        const record = await runDeploy(context.project(), context.environment(), { ...request, commit: TIP }, context.deps)
+        assert.equal(record.outcome, 'ok', record.reason ?? '')
+        assert.ok(context.calls.includes('rmdir /var/www/acme.prev'))
+        assert.ok(context.exists.has('/var/www/acme/documents/signed.pdf'))
+    })
+
+    it('carries storage into the nested tree when live moves into the nested layout', async () => {
+        const context = withStorage({ migrateLayout: true, existsPaths: [...base, '/var/www/acme/uploads', '/var/www/acme/uploads/photo.jpg'] })
+        const record = await runDeploy(context.project(), context.environment(), { ...request, commit: TIP }, context.deps)
+        assert.equal(record.outcome, 'ok', record.reason ?? '')
+        assert.ok(context.exists.has('/var/www/acme/live/uploads/photo.jpg'))
+        const carry = context.calls.indexOf('move /var/www/acme/prev/live/uploads /var/www/acme/live/uploads')
+        assert.ok(carry !== -1 && carry < context.calls.lastIndexOf('compose up'), context.calls.join(', '))
     })
 })
