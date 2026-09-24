@@ -89,6 +89,9 @@ export type ProvisionDeps = {
     // is no per-environment lifecycle yet (see RUNBOOK.md), so this is never asked to touch test.
     runner: Runner
     log(message: string): void
+    // Whether this name was deleted from this project less than 30 days ago (environment-trash.ts), so a
+    // new environment never takes a name that can still be restored. Absent means no check.
+    deletedWithin?: (project: string, environment: string) => Promise<boolean>
 }
 
 function fieldProblem(args: ProvisionCreateArgs): string | null {
@@ -592,30 +595,21 @@ export async function addEnvironment(project: ProjectEntry, args: ProvisionAddEn
     return { ok: true, project: { id: project.id, state: 'needs-setup' }, envFiles }
 }
 
-export async function removeProject(project: ProjectEntry, environment: EnvironmentName | null, deps: ProvisionDeps): Promise<AgentReply> {
+// Removing a whole site. One environment is deleted into the site's trash instead (environment-trash.ts).
+export async function removeProject(project: ProjectEntry, deps: ProvisionDeps): Promise<AgentReply> {
     // Removing the whole project must stop it first: otherwise the site keeps serving with nothing left
     // in the registry able to stop it, since every lifecycle verb answers unknown-project the instant it
-    // is unregistered. runLifecycle only ever reaches the live environment's own compose file (there is
-    // no per-environment lifecycle yet, see RUNBOOK.md), which is exactly what removing a whole project,
-    // as opposed to only its test environment, needs stopped. A failed stop refuses rather than
-    // unregistering anyway: an operator can retry, or stop it by hand, but a project must never go
-    // unregistered while still running.
-    if (!environment) {
-        const stopped = await runLifecycle(project, 'stop', deps.runner)
-        if (!stopped.ok) return refuse('failed', `could not stop ${project.id} before removing it: ${stopped.message}`, stopped.output)
-    }
+    // is unregistered. A failed stop refuses rather than unregistering anyway: an operator can retry, or
+    // stop it by hand, but a project must never go unregistered while still running.
+    const stopped = await runLifecycle(project, 'stop', deps.runner)
+    if (!stopped.ok) return refuse('failed', `could not stop ${project.id} before removing it: ${stopped.message}`, stopped.output)
 
-    const change: Change = environment ? { kind: 'remove-environment', id: project.id, environment } : { kind: 'remove-project', id: project.id }
-    const written = await deps.writer.write(change)
+    const written = await deps.writer.write({ kind: 'remove-project', id: project.id })
     if (!written.ok) return refuse('failed', written.problem)
 
-    const dir = (environment ? project.environments.get(environment)?.dir : undefined) ?? project.dir
-    const stoppedNote = environment ? '' : ', its containers stopped first'
-    deps.log(`provision ${project.id}: unregistered${environment ? ` (${environment})` : ''}${stoppedNote}, left ${dir} in place`)
+    deps.log(`provision ${project.id}: unregistered, its containers stopped first, left ${project.dir} in place`)
     return {
         ok: true,
-        output: environment
-            ? `${dir} was left in place, along with its volumes and databases`
-            : `${project.id} was stopped and unregistered; ${dir} was left in place, along with its volumes and databases`,
+        output: `${project.id} was stopped and unregistered; ${project.dir} was left in place, along with its volumes and databases`,
     }
 }

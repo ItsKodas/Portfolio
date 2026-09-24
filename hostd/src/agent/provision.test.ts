@@ -1099,7 +1099,7 @@ describe('removeProject', () => {
     // call would run.
     it('stops the project before unregistering it, and deletes no files', async () => {
         const { deps, rmdirs, registryFiles, runnerCalls } = setup()
-        const reply = await removeProject(project(), null, deps)
+        const reply = await removeProject(project(), deps)
         assert.equal(reply.ok, true)
         assert.ok(reply.ok && 'output' in reply && reply.output.includes('/var/www/acme'))
         assert.ok(reply.ok && 'output' in reply && reply.output.includes('stopped'))
@@ -1115,45 +1115,11 @@ describe('removeProject', () => {
     // project by hand and then remove it.
     it('refuses and leaves the registry untouched when the stop fails', async () => {
         const { deps, registryFiles, runnerCalls } = setup({ runnerResult: { exitCode: 1, stderr: 'no such image' } })
-        const reply = await removeProject(project(), null, deps)
+        const reply = await removeProject(project(), deps)
         assert.equal(reply.ok, false)
         assert.equal(reply.ok === false && reply.code, 'failed')
         assert.match(reply.ok === false ? reply.message : '', /could not stop acme/)
         assert.equal(runnerCalls.length, 1)
-        assert.equal(parseRegistry(registryFiles.get(REGISTRY_PATH)!).projects.has('acme'), true)
-    })
-
-    // Removing only the test environment must never run a stop through this path: runLifecycle's argv is
-    // always built from the project's own (live) dir and compose path, so asking it to stop here would
-    // stop live's containers while claiming to remove test, exactly the mistake there is no per-environment
-    // lifecycle yet to safely avoid (see RUNBOOK.md).
-    it('does not attempt to stop anything when only the test environment is removed', async () => {
-        const yaml = `
-projects:
-  acme:
-    client: cl_1
-    name: Acme
-    repo: git@github.com:ItsKodas/acme.git
-    services: { web: { role: site } }
-    capabilities: [provision, env]
-    environments:
-      live: { dir: /var/www/acme, branch: main, domain: acme.com, port: 5010, certificate: letsencrypt }
-      test: { dir: /var/www/acme-test, branch: develop, domain: test.acme.com, port: 5110, certificate: letsencrypt }
-`
-        const { deps, runnerCalls, registryFiles } = setup({ registryYaml: yaml })
-        const reply = await removeProject(parseRegistry(yaml).projects.get('acme')!, 'test', deps)
-        assert.equal(reply.ok, true)
-        assert.deepEqual(runnerCalls, [])
-        assert.equal(parseRegistry(registryFiles.get(REGISTRY_PATH)!).projects.get('acme')!.environments.has('test'), false)
-    })
-
-    it('refuses to remove the live environment on its own', async () => {
-        const { deps, rmdirs, registryFiles, runnerCalls } = setup()
-        const reply = await removeProject(project(), 'live', deps)
-        assert.equal(reply.ok, false)
-        assert.equal(reply.ok === false && reply.message.includes('live environment cannot be removed on its own'), true)
-        assert.deepEqual(rmdirs, [])
-        assert.deepEqual(runnerCalls, [])
         assert.equal(parseRegistry(registryFiles.get(REGISTRY_PATH)!).projects.has('acme'), true)
     })
 

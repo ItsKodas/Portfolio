@@ -7,7 +7,8 @@ import {
     type ConfigureWritten, type DeployArgs, type DomainsRequest, type DomainsWritten, type EnvArgs,
     type HealthReply, type LifecycleAction,
     type LifecycleReply, type LogLine, type LogsArgs, type PortsArgs, type PortsReply, type ProjectStatus, type ProvisionAddEnvironmentArgs,
-    type ProvisionCreateArgs, type ProvisionRemoveArgs, type Refusal, type ServiceStatus, type StatusesReply,
+    type ProvisionCreateArgs, type ProvisionDeleteEnvironmentArgs, type ProvisionRemoveArgs, type ProvisionRestoreEnvironmentArgs,
+    type ProvisionTrashArgs, type Refusal, type ServiceStatus, type StatusesReply,
 } from '../shared/protocol.ts'
 import { environmentOf, ENVIRONMENT_FLAGS, type EnvironmentFlag, type EnvironmentName, type ProjectEntry, type Registry } from '../shared/registry.ts'
 import { describeError } from '../shared/formats.ts'
@@ -26,6 +27,8 @@ import { buildServiceStatuses, groupByProject, pickPerService, type ContainerIns
 import { createLogDecoder } from './logframes.ts'
 import { listEnvFiles, readEnvFile, writeEnvFile, type EnvFs } from './env-files.ts'
 import { createProject, addEnvironment, removeProject, type ProvisionDeps } from './provision.ts'
+import { deleteEnvironment, deletedEnvironments, restoreEnvironment, type TrashDeps, type TrashVhosts } from './environment-trash.ts'
+import type { DeletedStore } from './deleted-store.ts'
 import { changePort } from './port-change.ts'
 import { restorePortEnv, writePortEnv } from './port-env.ts'
 import type { BackupRunner } from './backup-runner.ts'
@@ -100,6 +103,13 @@ export type AgentDeps = {
     // deploys' own copies of the same FetchClient (they need it for a lot more than this one call), and
     // Pick<..., 'call'> rather than the class itself, so a test can hand this a plain object.
     fetcher?: Pick<FetchClient, 'call'>
+    // The deleted environments record, and the one fs call a delete's undo needs that provision does not
+    // have. Absent until the production entrypoint wires the record: deleting, restoring and listing
+    // deleted environments then refuse unavailable instead of crashing.
+    trash?: {
+        store: Pick<DeletedStore, 'list' | 'add' | 'remove'>
+        removeEmptyDir(dir: string): Promise<void>
+    }
 }
 
 export type Outcome =
@@ -130,6 +140,9 @@ export class Agent {
     // Keyed <project>:<environment> while a port change runs, so the deploy verb refuses to run up on
     // the same compose project, or rewrite the registry entry, halfway through one.
     private readonly portChanging = new Set<string>()
+    // Keyed <project>:<environment> while it is being deleted or restored, so a deploy never runs up in a
+    // folder that is moving into or out of the trash.
+    private readonly trashing = new Set<string>()
 
     constructor(private readonly deps: AgentDeps) {}
 
@@ -394,6 +407,7 @@ export class Agent {
         // Every action from here on runs up or writes the registry, which a port change in progress on
         // this environment is doing too
         if (this.portChanging.has(key)) return refuse('busy', `${project.id} ${environment.name} is moving to another port`)
+        if (this.trashing.has(key)) return refuse('busy', `${project.id} ${environment.name} is being deleted or restored`)
 
         if (args.action === 'rollback') {
             const target = lastHealthyCommit(store.get(key), environment.deployed)
@@ -804,19 +818,92 @@ export class Agent {
         }
     }
 
-    private async provisionExisting(project: ProjectEntry, args: ProvisionAddEnvironmentArgs | ProvisionRemoveArgs): Promise<AgentReply> {
+    private async provisionExisting(project: ProjectEntry, args: ProvisionAddEnvironmentArgs | ProvisionRemoveArgs | ProvisionTrashArgs): Promise<AgentReply> {
         if (!this.deps.provision) return refuse('unavailable', 'provisioning is not configured')
+        // A read, so it takes no lock
+        if (args.action === 'deleted-environments') {
+            if (!this.deps.trash) return refuse('unavailable', 'the deleted environments record is not configured')
+            return { ok: true, environments: deletedEnvironments(project.id, this.deps.trash) }
+        }
         if (this.provisioningBusy) return refuse('busy', 'another provisioning action is in progress')
         this.provisioningBusy = true
         try {
             if (args.action === 'add-environment') return await addEnvironment(project, args, this.deps.provision, this.deps.envFs)
-            const reply = await removeProject(project, args.environment, this.deps.provision)
+            // Removing one environment is deleting it into the trash; only a whole site is still unregistered
+            if (args.action === 'delete-environment' || args.action === 'restore-environment') return await this.trash(project, args)
+            if (args.environment !== null) return await this.trash(project, { action: 'delete-environment', environment: args.environment })
+            const reply = await removeProject(project, this.deps.provision)
             if (!reply.ok) return reply
-            const note = await this.removeVhosts(project, args.environment)
+            const note = await this.removeVhosts(project, null)
             if (note === '') return reply
             return { ok: true, output: `${'output' in reply ? reply.output : ''}${note}` }
         } finally {
             this.provisioningBusy = false
+        }
+    }
+
+    // Deleting and restoring one environment, under the provisioning lock the caller already holds, and
+    // never alongside a deploy, a port change or an env write of that same environment: each of those
+    // works in the folders this moves, or rewrites the .env a restore may rewrite.
+    private async trash(project: ProjectEntry, args: ProvisionDeleteEnvironmentArgs | ProvisionRestoreEnvironmentArgs): Promise<AgentReply> {
+        const deps = this.trashDeps()
+        if (!deps) return refuse('unavailable', 'the deleted environments record is not configured')
+        const name = args.environment
+        const key = `${project.id}:${name}`
+        if (this.deps.deploys?.runner.isRunning(deployKey(project.id, name))) return refuse('busy', `${project.id} ${name} has a deploy running`)
+        if (this.portChanging.has(key)) return refuse('busy', `${project.id} ${name} is moving to another port`)
+        if (this.envBusy.has(key)) return refuse('busy', `${project.id} already has an env write running for ${name}`)
+        if (this.trashing.has(key)) return refuse('busy', `${project.id} ${name} is already being deleted or restored`)
+        this.trashing.add(key)
+        this.envBusy.add(key)
+        try {
+            if (args.action === 'restore-environment') return await restoreEnvironment(project, name, args.deletedAt, args.token ?? null, deps)
+            return await deleteEnvironment(project, name, args.actor ?? 'admin', deps)
+        } finally {
+            this.trashing.delete(key)
+            this.envBusy.delete(key)
+        }
+    }
+
+    private trashDeps(): TrashDeps | null {
+        const provision = this.deps.provision
+        const trash = this.deps.trash
+        if (!provision || !trash) return null
+        return {
+            registry: provision.registry,
+            refreshRegistry: provision.refreshRegistry,
+            writer: provision.writer,
+            store: trash.store,
+            fs: {
+                exists: provision.exists, mkdir: provision.mkdir, move: provision.move, rmdir: provision.rmdir,
+                removeEmptyDir: trash.removeEmptyDir, owner: provision.owner, own: provision.own,
+            },
+            runner: this.deps.runner,
+            vhosts: this.trashVhosts(),
+            checkPort: port => provision.checkPort(port),
+            choosePort: provision.choosePort,
+            setPortEnv: (entry, key, value) => writePortEnv(entry, key, value, this.deps.envFs),
+            restorePortEnv: (entry, previous) => restorePortEnv(entry, previous, this.deps.envFs),
+            portOverride: provision.portOverride,
+            now: Date.now,
+            log: provision.log,
+        }
+    }
+
+    // The vhost operations a delete and a restore need, through the same rail every domain verb uses
+    private trashVhosts(): TrashVhosts | null {
+        const domains = this.deps.domains
+        if (!domains) return null
+        const pathOf = (id: string, name: EnvironmentName) => vhostPath(domains.config.includeDir, id, name)
+        const done = (result: { ok: true } | Refusal) => (result.ok ? { ok: true as const } : { ok: false as const, message: result.message })
+        return {
+            read: (project, environment) => domains.readFile(pathOf(project.id, environment.name)),
+            remove: async (project, environment) => done(await removeVhost(domains, project, environment)),
+            put: async (project, environment, text) => {
+                const result = await domains.rail.send('reload', { write: { path: pathOf(project.id, environment.name), text }, remove: [], disable: [] })
+                return result.ok ? { ok: true } : { ok: false, message: result.output }
+            },
+            write: async (project, environment, token) => done(await writeVhost(domains, project, environment, token)),
         }
     }
 

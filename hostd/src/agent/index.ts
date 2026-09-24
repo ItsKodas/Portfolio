@@ -38,6 +38,8 @@ import { ApacheRail, type RailFs } from './apache-rail.ts'
 import type { DomainsConfig, DomainsDeps } from './domains.ts'
 import { SitesEnabledReader } from './sites-enabled.ts'
 import { siblingDirProblem } from './boot-checks.ts'
+import { DeletedStore } from './deleted-store.ts'
+import { purgeDeleted } from './environment-trash.ts'
 
 const REGISTRY_FILE = process.env.HOSTD_REGISTRY_FILE ?? '/etc/hostd/registry/projects.yaml'
 const SOCKET_PATH = process.env.HOSTD_AGENT_SOCKET ?? '/run/hostd/agent.sock'
@@ -50,6 +52,9 @@ const SYSTEM_DISK_PATH = process.env.HOSTD_SYSTEM_DISK_PATH ?? DEFAULT_SYSTEM_DI
 // The deploy history and the pause state. On its own volume, because it has to survive a restart: an
 // environment paused after three failed builds would otherwise start rebuilding every two minutes again.
 const DEPLOY_STATE_FILE = process.env.HOSTD_DEPLOY_STATE_FILE ?? '/var/lib/hostd/deploys.json'
+// The deleted environments record: what sits in each site's .deleted folder, restorable for 30 days. In
+// the same state directory, for the same reason: a restart must not forget what the trash holds.
+const DELETED_ENVIRONMENTS_FILE = process.env.HOSTD_DELETED_ENVIRONMENTS_FILE ?? '/var/lib/hostd/deleted-environments.json'
 // The flags Apache reads to serve the holding page. Bind-mounted from the host's own /run, which is a
 // tmpfs, so a reboot can never leave a site behind a maintenance page nobody remembers putting up.
 const MAINTENANCE_DIR = process.env.HOSTD_MAINTENANCE_DIR ?? '/run/hostd/maintenance'
@@ -92,6 +97,8 @@ const INVALID_EVERY_MS = 60_000
 // somebody put there by hand rather than something that appears on its own. A domain action re-reads the
 // directory anyway, so this clock only has to cover the stretches where nobody is doing anything.
 const SITES_ENABLED_EVERY_MS = 60_000
+// How often deleted environments past their 30 days are purged, and once at boot.
+const PURGE_EVERY_MS = 60 * 60_000
 // Roughly 75 seconds in total, as in mailops: long enough for a daemon still starting after a reboot.
 const BOOT_BACKOFF_MS = [5_000, 10_000, 20_000, 40_000]
 
@@ -200,6 +207,8 @@ async function main(): Promise<void> {
         // belongs on a mode this hands straight to chmod.
         return { uid: info.uid, gid: info.gid, mode: info.mode & 0o777 }
     }
+    const deletedStore = new DeletedStore(DELETED_ENVIRONMENTS_FILE, undefined, log)
+    await deletedStore.load()
     const provision: ProvisionDeps = {
         registry: () => store.current(),
         // provision.ts calls this itself, before it reads registry(), so the id, domain and port checks
@@ -232,6 +241,7 @@ async function main(): Promise<void> {
         resolve: (expectedName, dir, composePaths, collidesWith) => resolveNewProject({ dir, composePaths }, expectedName, runner, collidesWith),
         runner,
         log,
+        deletedWithin: async (project, environment) => deletedStore.deletedWithin(project, environment, Date.now()),
     }
 
     const deployStore = new DeployStore(DEPLOY_STATE_FILE, undefined, log)
@@ -376,6 +386,7 @@ async function main(): Promise<void> {
         // failed-scheduled-backup signal that reads it, so it has to be said out loud rather than
         // silently tolerated.
         ...backupStore.warnings(),
+        ...deletedStore.warnings(),
         ...[...store.current().invalid].map(([id, problem]) => `project ${id} is invalid: ${problem}`),
         ...guard.warnings(),
         // A file in sites-enabled that cannot be opened fails apache2ctl configtest, and hostd runs a
@@ -421,6 +432,11 @@ async function main(): Promise<void> {
         // is never gated behind fetcherProblem/'unavailable' any more than configure is behind the
         // registry writer above.
         fetcher,
+        trash: {
+            store: deletedStore,
+            // Not recursive: the kernel refuses a folder that is not empty (ENOTEMPTY)
+            removeEmptyDir: dir => rmdir(dir),
+        },
     })
 
     await rm(SOCKET_PATH, { force: true })
@@ -448,6 +464,11 @@ async function main(): Promise<void> {
     // Zero rather than now, so the first pass runs before the first warnings are composed and /health is
     // right from boot rather than a minute later.
     let lastSitesEnabledRun = 0
+    // Zero for the same reason: the first sweep runs at boot.
+    let lastPurgeRun = 0
+    // The purge's only recursive delete, which purgeDeleted only ever points at a folder under a site's
+    // .deleted folder.
+    const purgeDeps = { registry: () => store.current(), store: deletedStore, runner, log, fs: { rmdir: (dir: string) => rm(dir, { recursive: true, force: true }) } }
     for (;;) {
         if (Date.now() - lastSitesEnabledRun >= SITES_ENABLED_EVERY_MS) {
             lastSitesEnabledRun = Date.now()
@@ -458,6 +479,12 @@ async function main(): Promise<void> {
             // its own warnings before throwing, so /health carries it too, which is the whole point of
             // sweeping on a clock rather than waiting for somebody to trip over it.
             await sitesEnabled.read().catch(error => log(`could not read ${APACHE_SITES_ENABLED}: ${describeError(error)}`))
+        }
+        if (Date.now() - lastPurgeRun >= PURGE_EVERY_MS) {
+            lastPurgeRun = Date.now()
+            // Logged rather than thrown, like the sweep above: a purge that fails keeps its records for
+            // the next hour, and nothing else on this loop should wait on it.
+            await purgeDeleted(Date.now(), purgeDeps).catch(error => log(`the deleted environments purge failed: ${describeError(error)}`))
         }
         const current = warnings()
         // Logged when they change rather than every poll, so the log shows transitions, not noise.
