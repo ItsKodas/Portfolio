@@ -17,6 +17,7 @@ import Brand from './brand'
 import { gatherHome, type HomeView } from './home'
 import { NewSiteButton } from './newSite/NewSite'
 import { stateOf, summarise } from './siteState'
+import { SignOut } from './header'
 import PortalTabs from './tabs'
 import styles from './portal.module.css'
 
@@ -226,7 +227,7 @@ export default async function PortalHome() {
     )
 
     return (
-        <Shell brand={<Brand />} tabs={<PortalTabs admin={isAdmin} />} nav={nav} rail={<Rail view={view} />}>
+        <Shell brand={<Brand />} tabs={<PortalTabs admin={isAdmin} />} bar={<SignOut admin={isAdmin} />} nav={nav} rail={<Rail view={view} />}>
             <div className={styles.hello}>
                 <h1>{isAdmin ? 'Your sites' : 'Your site'}</h1>
                 <p>
