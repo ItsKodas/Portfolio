@@ -175,6 +175,14 @@
 
 .save { margin-top: 12px; display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
 
+/* The Settings tab's environments: set apart from the registry form above by a rule, the same way the
+   delete section below is set apart from it. */
+.environments { margin-top: 32px; padding-top: 4px; border-top: 1px solid var(--rule); }
+
+/* Name, branch and hostname on one line where there is room, each as wide as what it holds */
+.addEnvironment { display: flex; flex-wrap: wrap; align-items: flex-start; gap: 12px; }
+.addEnvironment > * { flex: 1 1 180px; max-width: 280px; }
+
 /* Set apart from Save by a rule and some room: it is the one thing on the tab that cannot be undone here. */
 .deleteSite {
     margin-top: 32px;

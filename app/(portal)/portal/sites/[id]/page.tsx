@@ -6,6 +6,7 @@ import { listBranches } from '@/server/hostd/branches'
 import { readHostd } from '@/server/hostd/config'
 import { listCredentials } from '@/server/hostd/credentials'
 import { listDomains, type Domain } from '@/server/hostd/domains'
+import { listDeletedEnvironments, type DeletedEnvironment } from '@/server/hostd/environments'
 import { LIVE, type EnvironmentName } from '@/server/hostd/env'
 import { forAdmin, forClient } from '@/server/hostd/errors'
 import { assertOwned, getProject, listProjects, type ServiceStatus } from '@/server/hostd/projects'
@@ -17,6 +18,7 @@ import { StatusDot } from '@/ui/StatusDot/StatusDot'
 import { DeployPanel } from './deployPanel'
 import { DomainsPanel } from './domainsPanel'
 import { EnvPanel } from './env'
+import { SiteEnvironments } from './environments'
 import { Lifecycle } from './lifecycle'
 import { SiteLogs } from './logs'
 import { SiteDot, SiteStats } from './reading'
@@ -253,6 +255,10 @@ export default async function SitePage({ params, searchParams }: Props) {
     // with, so reading either twice would only be two chances for the two reads to disagree.
     let credentials: string[] | null = null
     let credentialsError: string | null = null
+    // The environments hostd deleted in the last 30 days and can still put back, for the same tab. A
+    // failure leaves the rest of the tab working and says why where the list would be.
+    let deleted: DeletedEnvironment[] | null = null
+    let deletedError: string | null = null
     if (view.isAdmin && selected === 'settings' && view.registryEntry === 'valid') {
         const problems: string[] = []
         const hostdConfig = readHostd(process.env, problems)
@@ -260,9 +266,11 @@ export default async function SitePage({ params, searchParams }: Props) {
         if (problems.length > 0) {
             branchesError = problems.join('; ')
             credentialsError = problems.join('; ')
+            deletedError = problems.join('; ')
         } else if (!who) {
             branchesError = 'hostd could not be reached.'
             credentialsError = 'hostd could not be reached.'
+            deletedError = 'hostd could not be reached.'
         } else {
             const result = await listBranches(hostdConfig, who.caller, view.id)
             if (result.ok) branches = result.value
@@ -271,6 +279,10 @@ export default async function SitePage({ params, searchParams }: Props) {
             const held = await listCredentials(hostdConfig, who.caller)
             if (held.ok) credentials = held.value
             else credentialsError = held.message
+
+            const gone = await listDeletedEnvironments(hostdConfig, who.caller, view.id)
+            if (gone.ok) deleted = gone.value
+            else deletedError = gone.message
         }
     }
 
@@ -406,7 +418,17 @@ export default async function SitePage({ params, searchParams }: Props) {
                                     branchesError={branchesError}
                                     credentials={credentials}
                                     credentialsError={credentialsError}
-                                />
+                                >
+                                    <SiteEnvironments
+                                        id={view.id}
+                                        name={view.name}
+                                        isAdmin={view.isAdmin}
+                                        environments={view.environments}
+                                        branches={branches}
+                                        deleted={deleted}
+                                        deletedError={deletedError}
+                                    />
+                                </SiteSettingsForm>
                             )
                             : (
                                 <Callout tone="warn" title="Settings are not available">

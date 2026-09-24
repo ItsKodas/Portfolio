@@ -12,7 +12,8 @@ import { rollback, setBranch, startDeploy } from '@/server/hostd/deploys'
 import {
     addDomain, adoptSite, previewAdopt, removeDomain, verifyDomain, type AdoptPreview,
 } from '@/server/hostd/domains'
-import { isEnvironmentName, writeEnvFile, type EnvironmentName } from '@/server/hostd/env'
+import { isEnvironmentName, LIVE, newEnvironmentProblem, writeEnvFile, type EnvironmentName } from '@/server/hostd/env'
+import { addEnvironment, deleteEnvironment, restoreEnvironment } from '@/server/hostd/environments'
 import type { Caller } from '@/server/hostd/actor'
 import { forAdmin, forClient } from '@/server/hostd/errors'
 import { setPort } from '@/server/hostd/ports'
@@ -427,4 +428,79 @@ export async function deleteSiteAction(id: string, confirm: string): Promise<Sit
 
     revalidatePath('/portal', 'layout')
     return { ok: true, message: 'Deleted.' }
+}
+
+// Environments beside live. All three are the operator's alone: hostd puts them under its provision
+// policy verb, ahead of ownership, and this is the same rule applied a step earlier. live is never
+// added, deleted or restored, and is refused here before the session is read.
+
+export async function addEnvironmentAction(
+    id: string, name: string, branch: string, domain: string | null,
+): Promise<SiteActionResult> {
+    if (typeof name !== 'string') return { ok: false, error: 'That is not something this page can do.' }
+    // The form checks the same rule before it sends, so this sentence is only ever seen by a request the
+    // form did not make. hostd has the final word either way: only it knows the names already taken.
+    const problem = newEnvironmentProblem(name)
+    if (problem) return { ok: false, error: problem }
+    if (typeof branch !== 'string' || branch.trim() === '' || (domain !== null && typeof domain !== 'string')) {
+        return { ok: false, error: 'That is not something this page can do.' }
+    }
+
+    const allowed = await allow(id, true)
+    if (!allowed.ok) return allowed
+
+    // Lowercased for the reason the domain actions do it: a pasted hostname often has capitals in it
+    const hostname = domain === null || domain.trim() === '' ? null : domain.trim().toLowerCase()
+    const result = await addEnvironment(allowed.config, allowed.caller, id, { name, branch: branch.trim(), domain: hostname })
+    if (!result.ok) return refused(`add environment ${name} on ${id}`, allowed.isAdmin, result)
+
+    revalidatePath(`/portal/sites/${id}`)
+    // The environment exists either way; only its address is missing, and the Domains tab can add it
+    const vhost = result.value.vhost
+    if (vhost && !vhost.ok) {
+        return {
+            ok: true,
+            message: `${name} is added, but its address was not set up: ${vhost.message}. Add it again from the Domains tab.`,
+        }
+    }
+    return { ok: true, message: `${name} is added. Its first deploy starts it.` }
+}
+
+export async function deleteEnvironmentAction(id: string, environment: string, confirm: string): Promise<SiteActionResult> {
+    const name = environmentOf(environment)
+    if (!name || name === LIVE || typeof confirm !== 'string') return { ok: false, error: 'That is not something this page can do.' }
+
+    const allowed = await allowOn(id, name, true)
+    if (!allowed.ok) return allowed
+
+    // Sent as typed, for the reason deleteSiteAction sends it as typed: hostd's comparison is the confirmation
+    const result = await deleteEnvironment(allowed.config, allowed.caller, id, name, confirm)
+    if (!result.ok) return refused(`delete environment ${name} on ${id}`, allowed.isAdmin, result)
+
+    revalidatePath(`/portal/sites/${id}`)
+    return { ok: true, message: `${name} is deleted. It is stopped and kept for 30 days, and can be restored from here until then.` }
+}
+
+export async function restoreEnvironmentAction(id: string, environment: string, deletedAt: string): Promise<SiteActionResult> {
+    const name = environmentOf(environment)
+    if (!name || name === LIVE || typeof deletedAt !== 'string') return { ok: false, error: 'That is not something this page can do.' }
+
+    // allow rather than allowOn: a deleted environment is exactly one the site no longer has. hostd refuses
+    // a restore over a name the site has since been given.
+    const allowed = await allow(id, true)
+    if (!allowed.ok) return allowed
+
+    const result = await restoreEnvironment(allowed.config, allowed.caller, id, name, deletedAt)
+    if (!result.ok) return refused(`restore environment ${name} on ${id}`, allowed.isAdmin, result)
+
+    revalidatePath(`/portal/sites/${id}`)
+    // What hostd had to change on the way back is said, because each one is something to fix elsewhere:
+    // a port another service expects, or a hostname that now points at something else.
+    const { port, portChanged, droppedHostnames } = result.value
+    const said = [`${name} is back and starting.`]
+    if (portChanged) said.push(`Its old port was taken, so it is on port ${port} now.`)
+    if (droppedHostnames.length > 0) {
+        said.push(`These hostnames were taken while it was deleted, so it came back without them: ${droppedHostnames.join(', ')}.`)
+    }
+    return { ok: true, message: said.join(' ') }
 }
