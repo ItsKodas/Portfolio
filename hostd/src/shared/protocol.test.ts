@@ -199,11 +199,22 @@ describe('parseAgentRequest', () => {
         assert.equal(refusalOf({ verb: 'provision', args: { ...createArgs, extra: true } }), 'bad-request: create takes only id, client, name, repo, credential, branch, domain, certificate, dir, compose, capabilities, websockets, flexibleSsl, port')
     })
 
-    it('refuses provision add-environment for anything other than test, and remove for an unknown environment', () => {
-        assert.equal(
-            refusalOf({ verb: 'provision', project: 'acme', args: { action: 'add-environment', environment: 'live', branch: 'main', domain: null, certificate: null } }),
-            'bad-request: environment must be test',
-        )
+    it('parses provision add-environment for any environment name', () => {
+        for (const environment of ['uat1', 'staging', 'test']) {
+            const addArgs = { action: 'add-environment', environment, branch: 'main', domain: null, certificate: null }
+            assert.deepEqual(
+                parsed({ verb: 'provision', project: 'acme', args: addArgs }),
+                { ok: true, request: { verb: 'provision', project: 'acme', args: addArgs } },
+            )
+        }
+    })
+
+    it('refuses provision add-environment for live, a reserved name or an invalid one, and remove for an unknown environment', () => {
+        const add = (environment: unknown) => refusalOf({ verb: 'provision', project: 'acme', args: { action: 'add-environment', environment, branch: 'main', domain: null, certificate: null } })
+        assert.equal(add('live'), 'bad-request: live cannot be added')
+        for (const environment of ['git', 'next', 'prev', 'environments', 'backups', 'uat-1', 'Uat1', '1uat', '', 'a'.repeat(17), 5, null]) {
+            assert.equal(add(environment), 'bad-request: environment must be an environment name', String(environment))
+        }
         assert.equal(
             refusalOf({ verb: 'provision', project: 'acme', args: { action: 'remove', environment: 'uat-1' } }),
             'bad-request: environment must be an environment name or null',

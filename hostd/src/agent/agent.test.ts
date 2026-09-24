@@ -598,27 +598,43 @@ describe('provisioning and env', () => {
     })
 
     it('forwards envFs into add-environment, so its copy-and-rewrite step never reaches the real filesystem', async () => {
+        // A nested site, which is the only kind an environment can be added to
+        const nestedRegistry = parseRegistry(`
+projects:
+  acme:
+    client: cl_1
+    name: Acme
+    repo: git@github.com:ItsKodas/acme.git
+    services: { web: { role: site } }
+    capabilities: [provision, env]
+    environments:
+      live: { dir: /var/www/acme/live, branch: main, port: 5010 }
+`)
         const envFs = fakeEnvFs({
-            readdir: async dir => dir === '/var/www/acme'
+            readdir: async dir => dir === '/var/www/acme/live'
                 ? [{ name: '.env', isDirectory: () => false, isFile: () => true }]
                 : [],
-            readFile: async path => path === '/var/www/acme/.env' ? 'A=1' : (() => { throw new Error('ENOENT') })(),
+            readFile: async path => path === '/var/www/acme/live/.env' ? 'A=1' : (() => { throw new Error('ENOENT') })(),
             stat: async () => ({ size: 3 }),
         })
         const writes: Array<{ path: string, text: string }> = []
         const provision = fakeProvisionDeps({
+            registry: () => nestedRegistry,
+            exists: async path => path === '/var/www/acme/git/.git',
+            fetcher: { call: async () => ({ ok: true, commit: 'abc1234' }) },
             resolve: async () => ({ ok: true, services: { web: { role: 'site' } }, published: [5100] }),
         })
         const { agent } = setup({
+            registry: () => nestedRegistry,
             provision,
             envFs: { ...envFs, writeFile: async (path, text) => { writes.push({ path, text }) } },
         })
         const reply = replyOf(await agent.handle({
             verb: 'provision', project: 'acme',
-            args: { action: 'add-environment', environment: 'test', branch: 'develop', domain: null, certificate: null },
+            args: { action: 'add-environment', environment: 'uat1', branch: 'develop', domain: null, certificate: null },
         }))
         assert.equal(reply?.ok, true)
-        assert.ok(writes.some(write => write.path.startsWith('/var/www/acme-test/')))
+        assert.ok(writes.some(write => write.path.startsWith('/var/www/acme/uat1/')))
     })
 })
 
