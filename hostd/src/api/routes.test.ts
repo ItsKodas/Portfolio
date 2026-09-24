@@ -18,7 +18,7 @@ import { DomainStore, domainKey, newRecord, type DomainRecord } from './domain-s
 // as the thing it actually is (a record the verifier will pick up) rather than as a state string.
 import { nextCheckAt } from './verifier.ts'
 import { parseRegistry, type Registry } from '../shared/registry.ts'
-import { DOMAIN_TOKEN, type AgentReply, type AgentRequest, type LogLine } from '../shared/protocol.ts'
+import { DOMAIN_TOKEN, checkStructure, type AgentReply, type AgentRequest, type LogLine } from '../shared/protocol.ts'
 import type { SystemUsage } from '../shared/system.ts'
 
 const TOKEN = 'k'.repeat(64)
@@ -245,14 +245,18 @@ describe('matchRoute', () => {
         assert.deepEqual(matchRoute('POST', '/projects/acme/environments'), { verb: 'add-environment', project: 'acme' })
         assert.deepEqual(matchRoute('GET', '/projects/acme/environments'), { verb: 'method-not-allowed' })
         assert.deepEqual(matchRoute('DELETE', '/projects/acme/environments/test'), { verb: 'remove-environment', project: 'acme', environment: 'test' })
-        assert.deepEqual(matchRoute('DELETE', '/projects/acme/environments/staging'), { verb: 'not-found' })
+        assert.deepEqual(matchRoute('DELETE', '/projects/acme/environments/uat1'), { verb: 'remove-environment', project: 'acme', environment: 'uat1' })
+        for (const name of ['uat-1', 'git', 'Staging']) {
+            assert.deepEqual(matchRoute('DELETE', `/projects/acme/environments/${name}`), { verb: 'not-found' }, name)
+        }
         assert.deepEqual(matchRoute('GET', '/projects/acme/environments/test'), { verb: 'method-not-allowed' })
         assert.deepEqual(matchRoute('GET', '/projects/acme/live/env'), { verb: 'env-list', project: 'acme', environment: 'live' })
         assert.deepEqual(matchRoute('POST', '/projects/acme/live/env'), { verb: 'method-not-allowed' })
         assert.deepEqual(matchRoute('GET', '/projects/acme/test/env/db/.env'), { verb: 'env-file', project: 'acme', environment: 'test', path: 'db/.env' })
         assert.deepEqual(matchRoute('PUT', '/projects/acme/test/env/.env'), { verb: 'env-file', project: 'acme', environment: 'test', path: '.env' })
         assert.deepEqual(matchRoute('DELETE', '/projects/acme/test/env/.env'), { verb: 'method-not-allowed' })
-        assert.deepEqual(matchRoute('GET', '/projects/acme/staging/env'), { verb: 'not-found' })
+        assert.deepEqual(matchRoute('GET', '/projects/acme/staging/env'), { verb: 'env-list', project: 'acme', environment: 'staging' })
+        assert.deepEqual(matchRoute('GET', '/projects/acme/Staging/env'), { verb: 'not-found' })
     })
 
     it('matches the deploy routes under an environment, and refuses the rest', () => {
@@ -267,7 +271,11 @@ describe('matchRoute', () => {
         assert.deepEqual(matchRoute('POST', '/projects/acme/live/branch'), { verb: 'method-not-allowed' })
         assert.deepEqual(matchRoute('POST', '/projects/acme/live/nonsense'), { verb: 'not-found' })
         assert.deepEqual(matchRoute('POST', '/projects/acme/live/deploy/now'), { verb: 'not-found' })
-        assert.deepEqual(matchRoute('POST', '/projects/acme/staging/deploy'), { verb: 'not-found' })
+        assert.deepEqual(matchRoute('POST', '/projects/acme/uat1/deploy'), { verb: 'deploy', project: 'acme', environment: 'uat1' })
+        assert.deepEqual(matchRoute('GET', '/projects/acme/uat1/deploys'), { verb: 'deploys', project: 'acme', environment: 'uat1' })
+        for (const name of ['uat-1', 'next', 'prev', 'git', 'UAT1', 'a'.repeat(17)]) {
+            assert.deepEqual(matchRoute('POST', `/projects/acme/${name}/deploy`), { verb: 'not-found' }, name)
+        }
     })
 })
 
@@ -286,8 +294,9 @@ describe('domain routes', () => {
         assert.deepEqual(matchRoute('DELETE', '/projects/acme/live/adopt'), { verb: 'method-not-allowed' })
     })
 
-    it('does not match an environment that does not exist', () => {
-        assert.deepEqual(matchRoute('GET', '/projects/acme/staging/domains'), { verb: 'not-found' })
+    it('does not match a name that is not an environment name', () => {
+        assert.deepEqual(matchRoute('GET', '/projects/acme/uat-1/domains'), { verb: 'not-found' })
+        assert.deepEqual(matchRoute('GET', '/projects/acme/uat1/domains'), { verb: 'domains-list', project: 'acme', environment: 'uat1' })
     })
 
     it('refuses the wrong method and an unknown tail under one hostname', () => {
@@ -484,6 +493,13 @@ describe('GET /ports', () => {
         assert.deepEqual(agent.calls, [{ verb: 'ports', args: { port: 5010, own: { project: 'acme', environment: 'live' } } }])
     })
 
+    it('takes any environment name as the own environment', async () => {
+        agent.reply = () => ({ ok: true, suggested: 5012, problem: null })
+        const response = await request('/ports?port=5010&project=acme&environment=uat1', { actor: 'admin' })
+        assert.equal(response.status, 200)
+        assert.deepEqual(agent.calls, [{ verb: 'ports', args: { port: 5010, own: { project: 'acme', environment: 'uat1' } } }])
+    })
+
     it('asks about no port when none is given', async () => {
         agent.reply = () => ({ ok: true, suggested: 5012, problem: null })
         await request('/ports', { actor: 'admin' })
@@ -491,7 +507,7 @@ describe('GET /ports', () => {
     })
 
     it('refuses a malformed query without asking the agent', async () => {
-        for (const query of ['?port=abc', '?port=5012&project=acme', '?environment=live', '?project=acme&environment=prod']) {
+        for (const query of ['?port=abc', '?port=5012&project=acme', '?environment=live', '?project=acme&environment=uat-1', '?project=acme&environment=next']) {
             const response = await request(`/ports${query}`, { actor: 'admin' })
             assert.equal(response.status, 400)
         }
@@ -1081,6 +1097,40 @@ describe('deploy routes', () => {
         assert.deepEqual(agent.calls, [])
     })
 
+    // The route takes any environment name; whether the project has it is the agent's own structural
+    // check, which answers unknown-environment and the api turns into a 404.
+    it('reaches a named environment the project has, and answers 404 unknown-environment for one it lacks', async () => {
+        const named = parseRegistry(`
+projects:
+  acme:
+    client: cl_1
+    name: Acme
+    repo: git@github.com:acme/site.git
+    services: { web: { role: site } }
+    capabilities: [deploy]
+    environments:
+      live: { dir: /var/www/acme/live, port: 5010, branch: main }
+      uat1: { dir: /var/www/acme/uat1, port: 5012, branch: develop }
+`)
+        handler = createHandler({
+            token: TOKEN, registry: () => named, refreshRegistry: async () => false,
+            agent, audit, schedules, domains, verifier, keepaliveMs: 60_000, fetch: probe.fetch,
+        })
+        agent.reply = request => {
+            const checked = request.verb === 'deploy' ? checkStructure(named, request, new Map()) : null
+            if (checked && !checked.ok) return checked
+            return { ok: true, environment: 'uat1', branch: 'develop', deployed: null, paused: false, consecutiveFailures: 0, deploys: [] }
+        }
+
+        const found = await request('/projects/acme/uat1/deploys')
+        assert.equal(found.status, 200)
+        assert.deepEqual(agent.calls, [{ verb: 'deploy', project: 'acme', args: { action: 'history', environment: 'uat1' } }])
+
+        const missing = await request('/projects/acme/staging/deploys')
+        assert.equal(missing.status, 404)
+        assert.equal((await missing.json() as { code?: string }).code, 'unknown-environment')
+    })
+
     it('answers 503 when the agent cannot be reached, and audits the failure', async () => {
         agent.call = async () => { throw new AgentUnavailableError('the agent is not answering') }
         const response = await request('/projects/acme/live/deploy', { method: 'POST', actor: 'admin' })
@@ -1275,11 +1325,13 @@ describe('PUT /projects/:id/settings', () => {
         assert.deepEqual(agent.calls, [])
     })
 
-    it('refuses a branch keyed by something that is not a known environment, naming it', async () => {
-        const response = await request('/projects/acme/settings', { method: 'PUT', actor: 'admin', body: { branches: { staging: 'main' } } })
-        assert.equal(response.status, 400)
-        const body = await response.json() as { message: string }
-        assert.match(body.message, /staging/)
+    it('refuses a branch keyed by something that is not an environment of this project, naming it', async () => {
+        for (const body of [{ branches: { staging: 'main' } }, { branches: { 'uat-1': 'main' } }, { domains: { uat1: 'uat.acme.example' } }, { websockets: { staging: true } }]) {
+            const response = await request('/projects/acme/settings', { method: 'PUT', actor: 'admin', body })
+            assert.equal(response.status, 400, JSON.stringify(body))
+            const answer = await response.json() as { message: string }
+            assert.match(answer.message, new RegExp(Object.keys(Object.values(body)[0]!)[0]!), JSON.stringify(body))
+        }
         assert.deepEqual(agent.calls, [])
     })
 

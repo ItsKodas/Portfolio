@@ -14,11 +14,23 @@ export const CLIENT_ID = /^[A-Za-z0-9_-]{1,64}$/
 export const SERVICE_NAME = /^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,62}$/
 export const STORAGE_NAME = /^[a-z0-9][a-z0-9-]{0,30}$/
 export const USER_ID = /^[A-Za-z0-9_@.:+-]{1,128}$/
-export const ENV_NAME = /^[A-Z_][A-Z0-9_]{0,63}$/
+// An environment variable's name, as the registry's portEnv and dump keys spell one.
+export const ENV_VAR_NAME = /^[A-Z_][A-Z0-9_]{0,63}$/
+// A site environment's name: live, test, uat1, staging. No hyphen, on purpose: hostd joins <id>-<env> into
+// flag, vhost and compose names, and project ids may carry hyphens, so the last hyphen must always split
+// the two. Short and lowercase, since it is also a folder of the nested layout and part of a compose name.
+export const ENV_NAME = /^[a-z][a-z0-9]{0,15}$/
 export const HOSTNAME = /^(?!-)[a-z0-9-]{1,63}(?<!-)(\.(?!-)[a-z0-9-]{1,63}(?<!-))+$/
 
 // The operator's own stacks. A registry mistake must never be able to enrol them.
 export const RESERVED_PROJECT_IDS = new Set(['hostd', 'mail', 'horizons'])
+// The other folders of a nested site (/var/www/<site>/{git, prev/<env>, next/<env>}), which an
+// environment of the same name would collide with.
+export const RESERVED_ENVIRONMENT_NAMES: ReadonlySet<string> = new Set(['git', 'next', 'prev'])
+
+export function isEnvironmentName(name: unknown): name is string {
+    return typeof name === 'string' && ENV_NAME.test(name) && !RESERVED_ENVIRONMENT_NAMES.has(name)
+}
 
 export const MAX_SEGMENT_BYTES = 255
 export const MAX_PATH_BYTES = 4096

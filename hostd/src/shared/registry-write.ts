@@ -92,7 +92,7 @@ export type Change =
         capabilities?: Capability[]
         repo?: string | null
         credential?: string | null
-        branches?: Partial<Record<EnvironmentName, string | null>>
+        branches?: Record<EnvironmentName, string | null>
     }
     | { kind: 'remove-project', id: string }
     | { kind: 'remove-environment', id: string, environment: EnvironmentName }

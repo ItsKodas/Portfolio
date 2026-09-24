@@ -12,7 +12,6 @@ import { choosePort, portProblem } from '../shared/ports.ts'
 import { buildStatus, writeStatus } from '../shared/status.ts'
 import { readSystemUsage, systemSource, DEFAULT_SYSTEM_DISK_PATH } from '../shared/system.ts'
 import { describeError } from '../shared/formats.ts'
-import { ENVIRONMENTS } from '../shared/registry.ts'
 import { deployKey } from '../shared/deploys.ts'
 import { createDockerApi, publishedHostPorts } from './docker.ts'
 import { createSpawnRunner, resolveNewProject } from './compose.ts'
@@ -318,9 +317,10 @@ async function main(): Promise<void> {
         now: () => Date.now(),
         log,
         store: backupStore,
-        // Both environments: a deploy of either renames a directory beside the one being backed up, and the
-        // live tree is what a backup reads.
-        deployRunning: id => ENVIRONMENTS.some(environment => deployRunner.isRunning(deployKey(id, environment))),
+        // Every environment the project has: a deploy of any renames a directory beside the one being backed
+        // up, and the live tree is what a backup reads.
+        deployRunning: id => [...(store.current().projects.get(id)?.environments.keys() ?? [])]
+            .some(environment => deployRunner.isRunning(deployKey(id, environment))),
     }
     const backupRunner = new BackupRunner(backupDeps)
 

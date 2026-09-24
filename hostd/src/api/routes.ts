@@ -2,7 +2,7 @@
 // before the agent hears of it; every change, every stream opened and every refusal is audited.
 
 import type { IncomingMessage, ServerResponse } from 'node:http'
-import { PROJECT_ID, SERVICE_NAME, isRecord, describeError } from '../shared/formats.ts'
+import { PROJECT_ID, SERVICE_NAME, isEnvironmentName, isRecord, describeError } from '../shared/formats.ts'
 import {
     LIFECYCLE_ACTIONS, MAX_TAIL, DEFAULT_TAIL, MAX_REQUEST_BYTES, MAX_COMMITS, DEFAULT_COMMITS,
     SNAPSHOT_ID, RUN_ID, CREATE_KEYS, parseConfigureArgs, parseCreateExtras,
@@ -10,7 +10,7 @@ import {
     type RefusalCode, type ProvisionCreateArgs, type ProvisionAddEnvironmentArgs,
 } from '../shared/protocol.ts'
 import {
-    ENVIRONMENTS, CERTIFICATE_MODES, CREDENTIAL_NAME, hostnamesOf,
+    CERTIFICATE_MODES, CREDENTIAL_NAME, hostnamesOf,
     type CertificateMode, type EnvironmentEntry, type EnvironmentName, type ProjectEntry, type Registry,
 } from '../shared/registry.ts'
 import { envPathProblem } from '../shared/envfiles.ts'
@@ -159,8 +159,8 @@ export function matchRoute(method: string, pathname: string): Route {
             return { verb: 'method-not-allowed' }
         }
         if (segment === 'settings') return only('PUT', { verb: 'settings', project })
-        // Project level, not under an environment: repo is a project-level field and both environments
-        // draw from the one list.
+        // Project level, not under an environment: repo is a project-level field and every environment
+        // draws from the one list.
         if (segment === 'branches') return only('GET', { verb: 'branches', project })
         return { verb: 'not-found' }
     }
@@ -168,8 +168,8 @@ export function matchRoute(method: string, pathname: string): Route {
     if (segment === 'environments') {
         if (parts.length !== 4) return { verb: 'not-found' }
         const environment = parts[3] ?? ''
-        if (!(ENVIRONMENTS as readonly string[]).includes(environment)) return { verb: 'not-found' }
-        return only('DELETE', { verb: 'remove-environment', project, environment: environment as EnvironmentName })
+        if (!isEnvironmentName(environment)) return { verb: 'not-found' }
+        return only('DELETE', { verb: 'remove-environment', project, environment })
     }
 
     if (segment === 'backups') {
@@ -196,9 +196,11 @@ export function matchRoute(method: string, pathname: string): Route {
         return { verb: 'not-found' }
     }
 
-    // Everything under one environment: the deploy actions, and /env with a path inside it.
-    if ((ENVIRONMENTS as readonly string[]).includes(segment)) {
-        const environment = segment as EnvironmentName
+    // Everything under one environment: the deploy actions, and /env with a path inside it. Any
+    // environment name matches here; whether the project has it is the registry's answer, given as a 404
+    // by whichever handler looks it up.
+    if (isEnvironmentName(segment)) {
+        const environment = segment
         if (parts.length === 4) {
             switch (parts[3]) {
                 case 'env': return only('GET', { verb: 'env-list', project, environment })
@@ -425,12 +427,12 @@ function parsePortsQuery(params: URLSearchParams): { ok: true, args: PortsArgs }
     const environment = params.get('environment')
     if ((project === null) !== (environment === null)) return { ok: false, message: 'project and environment go together' }
     if (project !== null && !PROJECT_ID.test(project)) return { ok: false, message: 'project is malformed' }
-    if (environment !== null && !(ENVIRONMENTS as readonly string[]).includes(environment)) return { ok: false, message: 'environment must be live or test' }
+    if (environment !== null && !isEnvironmentName(environment)) return { ok: false, message: 'environment must be an environment name' }
     return {
         ok: true,
         args: {
             port: raw === null ? null : Number(raw),
-            own: project !== null && environment !== null ? { project, environment: environment as EnvironmentName } : null,
+            own: project !== null && environment !== null ? { project, environment } : null,
         },
     }
 }
@@ -1145,6 +1147,11 @@ export function createHandler(deps: ApiDeps): (req: IncomingMessage, res: Server
                 // in this file use, so writing a second copy of the same checks is not needed here.
                 const args = parseConfigureArgs(body.value)
                 if ('ok' in args) return refuseRoute(400, 'bad-request', args.message, route.project, 'configure', target)
+                // The parser takes any environment name, so whether this project has each one is asked
+                // here, against the entry just authorised, rather than left for the writer to fail on.
+                const named = [args.branches, args.domains, args.websockets, args.flexibleSsl].flatMap(map => Object.keys(map ?? {}))
+                const missing = named.find(name => !entry.environments.has(name))
+                if (missing !== undefined) return refuseRoute(400, 'bad-request', `${route.project} has no ${missing} environment`, route.project, 'configure', target)
 
                 const reply = await callAgentAudited({ verb: 'configure', project: route.project, args }, route.project, 'configure', target)
                 if (!reply) return

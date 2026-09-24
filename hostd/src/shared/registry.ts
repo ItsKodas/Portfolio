@@ -6,8 +6,8 @@
 import { parse } from 'yaml'
 import { posix } from 'node:path'
 import {
-    PROJECT_ID, CLIENT_ID, SERVICE_NAME, STORAGE_NAME, ENV_NAME, HOSTNAME, RESERVED_PROJECT_IDS, COMPOSE_NAME,
-    isRecord, relativePathProblem, overlaps,
+    PROJECT_ID, CLIENT_ID, SERVICE_NAME, STORAGE_NAME, ENV_VAR_NAME, HOSTNAME, RESERVED_PROJECT_IDS, COMPOSE_NAME,
+    isRecord, isEnvironmentName, relativePathProblem, overlaps,
 } from './formats.ts'
 import { normaliseHostname, isReserved, allowedEntryProblem, isOpenSubdomain, openSubdomainEntryProblem } from './hostnames.ts'
 import { isFlatDir, isNestedDir, nestedEnvOf, siteOf } from './layout.ts'
@@ -26,8 +26,10 @@ export type SqliteDatabase = { role: 'database', engine: 'sqlite', file: string 
 export type ServiceEntry = SiteService | DatabaseService | SqliteDatabase
 export type StorageEntry = { path: string, absolute: string, mode: StorageMode }
 
-export const ENVIRONMENTS = ['live', 'test'] as const
-export type EnvironmentName = typeof ENVIRONMENTS[number]
+// Any name isEnvironmentName accepts: live (which every project has), test, uat1, staging. A string rather
+// than a closed list, so a site can carry as many environments as it needs; environmentOf is how a caller
+// asks whether one project actually has a given name.
+export type EnvironmentName = string
 
 export const CERTIFICATE_MODES = ['letsencrypt', 'cloudflare-origin'] as const
 export type CertificateMode = typeof CERTIFICATE_MODES[number]
@@ -256,7 +258,7 @@ function parseService(name: string, raw: unknown, problems: string[]): ServiceEn
             for (const key of ['userEnv', 'passwordEnv'] as const) {
                 const value = raw.dump[key]
                 if (value === undefined) continue
-                if (typeof value !== 'string' || !ENV_NAME.test(value)) problems.push(`${where}.dump.${key} must be an environment variable name`)
+                if (typeof value !== 'string' || !ENV_VAR_NAME.test(value)) problems.push(`${where}.dump.${key} must be an environment variable name`)
                 else dump[key] = value
             }
         }
@@ -360,7 +362,7 @@ function parseCredential(raw: unknown, problems: string[]): string | null {
 
 function parsePortEnv(raw: unknown, problems: string[]): string {
     if (raw === undefined) return DEFAULT_PORT_ENV
-    if (typeof raw === 'string' && ENV_NAME.test(raw)) return raw
+    if (typeof raw === 'string' && ENV_VAR_NAME.test(raw)) return raw
     problems.push('portEnv must be an environment variable name')
     return DEFAULT_PORT_ENV
 }
@@ -498,22 +500,31 @@ function parseEnvironments(id: string, raw: unknown, rules: HostRules, problems:
         return environments
     }
     if (raw.live === undefined) problems.push('environments must include live')
-    for (const key of Object.keys(raw)) if (!(ENVIRONMENTS as readonly string[]).includes(key)) problems.push(`environments.${key} is not a known environment`)
 
-    for (const name of ENVIRONMENTS) {
-        if (raw[name] === undefined) continue
+    // Live first, because it is the one every project has and the one the project-level fields mirror;
+    // the rest in the order the file lists them.
+    const names = Object.keys(raw).sort((a, b) => Number(b === 'live') - Number(a === 'live'))
+    for (const name of names) {
+        if (!isEnvironmentName(name)) {
+            problems.push(`environments.${name} is not an environment name`)
+            continue
+        }
         const entry = parseEnvironment(id, name, raw[name], rules, problems)
         if (entry) environments.set(name, entry)
     }
 
-    const live = environments.get('live')
-    const test = environments.get('test')
-    if (live && test) {
-        if (live.dir === test.dir) problems.push(`environments live and test share dir ${live.dir}`)
-        if (live.port === test.port) problems.push(`environments live and test share port ${live.port}`)
-        if (live.composeName === test.composeName) problems.push(`environments live and test share compose name ${live.composeName}`)
-        if (isNestedDir(live.dir) && isNestedDir(test.dir) && siteOf(live.dir) !== siteOf(test.dir)) {
-            problems.push('environments live and test must be nested under the same site')
+    // Every pair, not only live and test: two environments of one project are two sites, so they may share
+    // neither a folder, a port nor a compose project, and a nested pair must sit under the one site.
+    const entries = [...environments.values()]
+    for (const [index, a] of entries.entries()) {
+        for (const b of entries.slice(index + 1)) {
+            const pair = `environments ${a.name} and ${b.name}`
+            if (a.dir === b.dir) problems.push(`${pair} share dir ${a.dir}`)
+            if (a.port === b.port) problems.push(`${pair} share port ${a.port}`)
+            if (a.composeName === b.composeName) problems.push(`${pair} share compose name ${a.composeName}`)
+            if (isNestedDir(a.dir) && isNestedDir(b.dir) && siteOf(a.dir) !== siteOf(b.dir)) {
+                problems.push(`${pair} must be nested under the same site`)
+            }
         }
     }
     return environments
@@ -737,7 +748,7 @@ export function parseRegistry(text: string): Registry {
                 .map(other => other.id)
             if (sharingSite.length > 0) messages.push(`site ${site} is also used by ${sharingSite.join(', ')}`)
         }
-        // A site shared by both live and test would otherwise repeat the same message twice.
+        // A site shared by several environments would otherwise repeat the same message for each.
         if (messages.length > 0) invalid.set(id, [...new Set(messages)].join('; '))
         else projects.set(id, entry)
     }
@@ -745,8 +756,8 @@ export function parseRegistry(text: string): Registry {
     return { reserved, allowed, openSubdomains, offsite: { keep: offsiteKeep }, projects, invalid }
 }
 
+// The project's own environment of that name, or null when it has none. A name the project lacks is
+// answered the same whether it is well formed or not, so callers need no separate grammar check.
 export function environmentOf(project: ProjectEntry, name: string): EnvironmentEntry | null {
-    return (ENVIRONMENTS as readonly string[]).includes(name)
-        ? project.environments.get(name as EnvironmentName) ?? null
-        : null
+    return project.environments.get(name) ?? null
 }

@@ -95,9 +95,18 @@ describe('parseFetchRequest', () => {
         assert.equal(repair.ok, true)
     })
 
+    it('accepts any environment name as a nested worktree, not only live and test', () => {
+        for (const worktree of ['/var/www/b/uat1', '/var/www/b/next/uat1', '/var/www/b/prev/staging']) {
+            const checkout = parseFetchRequest(JSON.stringify({ verb: 'checkout', dir: '/var/www/b/git', worktree, commit: 'a1b2c3d' }))
+            assert.equal(checkout.ok, true, worktree)
+        }
+    })
+
     it('refuses anything deeper or wider than a nested site', () => {
         assert.match(refusalOf({ verb: 'fetch', dir: '/var/www/b/git/.git' })!, /dir/)
-        assert.match(refusalOf({ verb: 'checkout', dir: '/var/www/b/git', worktree: '/var/www/b/uat1', commit: 'a1b2c3d' })!, /worktree/)
+        assert.match(refusalOf({ verb: 'checkout', dir: '/var/www/b/git', worktree: '/var/www/b/uat-1', commit: 'a1b2c3d' })!, /worktree/)
+        assert.match(refusalOf({ verb: 'checkout', dir: '/var/www/b/git', worktree: '/var/www/b/next/git', commit: 'a1b2c3d' })!, /worktree/)
+        assert.match(refusalOf({ verb: 'checkout', dir: '/var/www/b/git', worktree: '/var/www/b/next/Uat1', commit: 'a1b2c3d' })!, /worktree/)
         assert.match(refusalOf({ verb: 'repair', dir: '/var/www/b/git', worktree: '/var/www/b/next' })!, /worktree/)
     })
 })

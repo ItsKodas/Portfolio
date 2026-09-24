@@ -2,9 +2,9 @@
 // or by a header line followed by a stream. Parsing is strict on purpose: the agent is root, so anything
 // it does not recognise, including an extra field, is refused rather than ignored.
 
-import { CLIENT_ID, DIR_NAME, PROJECT_ID, SERVICE_NAME, isRecord, relativePathProblem } from './formats.ts'
+import { CLIENT_ID, DIR_NAME, PROJECT_ID, SERVICE_NAME, isEnvironmentName, isRecord, relativePathProblem } from './formats.ts'
 import {
-    isComposeService, environmentOf, ENVIRONMENTS, ENVIRONMENT_FLAGS, CAPABILITIES, CERTIFICATE_MODES, GIT_REF, CREDENTIAL_NAME, MAX_COMPOSE_FILES, PORT_OVERRIDE_FILE,
+    isComposeService, environmentOf, ENVIRONMENT_FLAGS, CAPABILITIES, CERTIFICATE_MODES, GIT_REF, CREDENTIAL_NAME, MAX_COMPOSE_FILES, PORT_OVERRIDE_FILE,
     type Capability, type CertificateMode, type EnvironmentFlag, type EnvironmentName, type Keep, type ProjectEntry, type Registry,
 } from './registry.ts'
 import { normaliseHostname } from './hostnames.ts'
@@ -201,18 +201,18 @@ export type ConfigureArgs = {
     // The name of one of the fetcher's tokens, never a token. null clears the key, which puts the
     // project back on the default GITHUB_TOKEN.
     credential?: string | null
-    branches?: Partial<Record<EnvironmentName, string | null>>
+    branches?: Record<EnvironmentName, string | null>
     // No null member, unlike branches: this gives an environment an address or moves it to another one,
     // and never takes one away. Moving it rewrites the vhost hostd owns (see the agent's configure), so
     // the caller is expected to have confirmed it with whoever asked for it.
-    domains?: Partial<Record<EnvironmentName, string>>
+    domains?: Record<EnvironmentName, string>
     // Whether each environment's vhost passes WebSocket upgrades through. Changing it rewrites the vhost
     // hostd owns, if it owns one yet; an environment still served by hand only has it recorded, for the
     // adoption that writes hostd's file to render.
-    websockets?: Partial<Record<EnvironmentName, boolean>>
+    websockets?: Record<EnvironmentName, boolean>
     // Whether each environment's origin serves the site on port 80 for a CDN in Flexible mode, rather than
     // redirecting it to https. Rewrites the vhost exactly as websockets does.
-    flexibleSsl?: Partial<Record<EnvironmentName, boolean>>
+    flexibleSsl?: Record<EnvironmentName, boolean>
 }
 export type ConfigureRequest = { verb: 'configure', project: string, args: ConfigureArgs }
 
@@ -509,8 +509,8 @@ function parseProvisionRemove(raw: Record<string, unknown>): Parsed {
     const args = raw.args as Record<string, unknown>
     if (!onlyKeys(args, ['action', 'environment'])) return refuse('bad-request', 'remove takes only environment')
     const environment = args.environment
-    if (environment !== null && !(ENVIRONMENTS as readonly string[]).includes(environment as string)) {
-        return refuse('bad-request', 'environment must be live, test or null')
+    if (environment !== null && !isEnvironmentName(environment)) {
+        return refuse('bad-request', 'environment must be an environment name or null')
     }
     return {
         ok: true,
@@ -531,8 +531,8 @@ function parseProvisionRequest(raw: Record<string, unknown>): Parsed {
 function parseEnvArgs(raw: unknown): EnvArgs | Refusal {
     if (!isRecord(raw)) return refuse('bad-request', 'env requires args')
     const environment = raw.environment
-    if (typeof environment !== 'string' || !(ENVIRONMENTS as readonly string[]).includes(environment)) {
-        return refuse('bad-request', 'environment must be live or test')
+    if (!isEnvironmentName(environment)) {
+        return refuse('bad-request', 'environment must be an environment name')
     }
     if (raw.action === 'list') {
         if (!onlyKeys(raw, ['action', 'environment'])) return refuse('bad-request', 'list takes only environment')
@@ -555,8 +555,8 @@ function parseEnvArgs(raw: unknown): EnvArgs | Refusal {
 function parseDeployArgs(raw: unknown): DeployArgs | Refusal {
     if (!isRecord(raw)) return refuse('bad-request', 'deploy requires args')
     const environment = raw.environment
-    if (typeof environment !== 'string' || !(ENVIRONMENTS as readonly string[]).includes(environment)) {
-        return refuse('bad-request', 'environment must be live or test')
+    if (!isEnvironmentName(environment)) {
+        return refuse('bad-request', 'environment must be an environment name')
     }
     const name = environment as EnvironmentName
 
@@ -627,8 +627,8 @@ const SITES_ENABLED = '/etc/apache2/sites-enabled/'
 export function parseDomainsArgs(args: unknown): { ok: true, args: DomainsArgs } | Refusal {
     if (!isRecord(args)) return refuse('bad-request', 'domains args must be an object')
     const environment = args.environment
-    if (typeof environment !== 'string' || !(ENVIRONMENTS as readonly string[]).includes(environment)) {
-        return refuse('bad-request', `environment must be one of ${ENVIRONMENTS.join(', ')}`)
+    if (!isEnvironmentName(environment)) {
+        return refuse('bad-request', 'environment must be an environment name')
     }
     const name = environment as EnvironmentName
 
@@ -740,12 +740,12 @@ export function parseConfigureArgs(raw: unknown): ConfigureArgs | Refusal {
         credential = raw.credential as string | null
     }
 
-    let branches: Partial<Record<EnvironmentName, string | null>> | undefined
+    let branches: Record<EnvironmentName, string | null> | undefined
     if (raw.branches !== undefined) {
         if (!isRecord(raw.branches)) return refuse('bad-request', 'branches is malformed')
-        const parsed: Partial<Record<EnvironmentName, string | null>> = {}
+        const parsed: Record<EnvironmentName, string | null> = {}
         for (const [name, branch] of Object.entries(raw.branches)) {
-            if (!(ENVIRONMENTS as readonly string[]).includes(name)) return refuse('bad-request', `${name} is not an environment`)
+            if (!isEnvironmentName(name)) return refuse('bad-request', `${name} is not an environment name`)
             if (branch !== null && (typeof branch !== 'string' || !GIT_REF.test(branch))) {
                 return refuse('bad-request', `${name} branch must be null or a plain branch name`)
             }
@@ -754,12 +754,12 @@ export function parseConfigureArgs(raw: unknown): ConfigureArgs | Refusal {
         branches = parsed
     }
 
-    let domains: Partial<Record<EnvironmentName, string>> | undefined
+    let domains: Record<EnvironmentName, string> | undefined
     if (raw.domains !== undefined) {
         if (!isRecord(raw.domains)) return refuse('bad-request', 'domains is malformed')
-        const parsed: Partial<Record<EnvironmentName, string>> = {}
+        const parsed: Record<EnvironmentName, string> = {}
         for (const [name, domain] of Object.entries(raw.domains)) {
-            if (!(ENVIRONMENTS as readonly string[]).includes(name)) return refuse('bad-request', `${name} is not an environment`)
+            if (!isEnvironmentName(name)) return refuse('bad-request', `${name} is not an environment name`)
             // Unlike branches, null is not a value here: an address can be given or moved, never taken
             // away.
             // normaliseHostname is the one place that decides what a hostname is, and it answers the
@@ -772,14 +772,14 @@ export function parseConfigureArgs(raw: unknown): ConfigureArgs | Refusal {
     }
 
     // Both render-only switches share one shape: a mapping of environment to true or false.
-    const flags: Partial<Record<EnvironmentFlag, Partial<Record<EnvironmentName, boolean>>>> = {}
+    const flags: Partial<Record<EnvironmentFlag, Record<EnvironmentName, boolean>>> = {}
     for (const key of ENVIRONMENT_FLAGS) {
         const value = raw[key]
         if (value === undefined) continue
         if (!isRecord(value)) return refuse('bad-request', `${key} is malformed`)
-        const parsed: Partial<Record<EnvironmentName, boolean>> = {}
+        const parsed: Record<EnvironmentName, boolean> = {}
         for (const [name, enabled] of Object.entries(value)) {
-            if (!(ENVIRONMENTS as readonly string[]).includes(name)) return refuse('bad-request', `${name} is not an environment`)
+            if (!isEnvironmentName(name)) return refuse('bad-request', `${name} is not an environment name`)
             if (typeof enabled !== 'boolean') return refuse('bad-request', `${name} ${key} must be true or false`)
             parsed[name as EnvironmentName] = enabled
         }
@@ -826,7 +826,7 @@ export function parseAgentRequest(line: string): Parsed {
             }
             if (own !== null && (!isRecord(own) || !onlyKeys(own, ['project', 'environment'])
                 || typeof own.project !== 'string' || !PROJECT_ID.test(own.project)
-                || !(ENVIRONMENTS as readonly unknown[]).includes(own.environment))) {
+                || !isEnvironmentName(own.environment))) {
                 return refuse('bad-request', 'own must be null or a project and one of its environments')
             }
             return { ok: true, request: { verb: 'ports', args: { port: port as number | null, own: own as OwnPort | null } } }
@@ -902,8 +902,8 @@ export function parseAgentRequest(line: string): Parsed {
             if (!isRecord(raw.args)) return refuse('bad-request', 'deploy-watch requires args')
             if (!onlyKeys(raw.args, ['environment'])) return refuse('bad-request', 'deploy-watch takes only environment')
             const environment = raw.args.environment
-            if (typeof environment !== 'string' || !(ENVIRONMENTS as readonly string[]).includes(environment)) {
-                return refuse('bad-request', 'environment must be live or test')
+            if (!isEnvironmentName(environment)) {
+                return refuse('bad-request', 'environment must be an environment name')
             }
             return { ok: true, request: { verb: 'deploy-watch', project, args: { environment: environment as EnvironmentName } } }
         }
@@ -948,7 +948,7 @@ export function parseAgentRequest(line: string): Parsed {
             if (!project) return refuse('bad-request', 'project is malformed')
             if (!isRecord(raw.args) || !onlyKeys(raw.args, ['environment', 'port'])) return refuse('bad-request', 'port takes only args.environment and args.port')
             const { environment, port } = raw.args
-            if (!(ENVIRONMENTS as readonly unknown[]).includes(environment)) return refuse('bad-request', 'environment must be live or test')
+            if (!isEnvironmentName(environment)) return refuse('bad-request', 'environment must be an environment name')
             if (typeof port !== 'number' || !Number.isInteger(port) || port < PORT_RANGE.from || port > PORT_RANGE.to) {
                 return refuse('bad-request', `port must be a whole number from ${PORT_RANGE.from} to ${PORT_RANGE.to}`)
             }
