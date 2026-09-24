@@ -157,6 +157,13 @@ export class Agent {
         return false
     }
 
+    // Whether the project, or the one named environment of it, is being deleted or restored
+    private trashingIn(id: string, environment?: string): boolean {
+        if (environment !== undefined) return this.trashing.has(`${id}:${environment}`)
+        for (const key of this.trashing) if (key.startsWith(`${id}:`)) return true
+        return false
+    }
+
     followCount(project: string): number {
         return this.follows.get(project) ?? 0
     }
@@ -317,6 +324,10 @@ export class Agent {
         // Every action writes a vhost or the registry, which a port change on the project is doing too.
         // The whole project rather than the one environment, for simplicity: a change takes seconds.
         if (this.portChangingIn(request.project)) return refuse('busy', `${request.project} is moving an environment to another port`)
+        // The whole project here too, not only the named environment: a restore decides which hostnames
+        // it may keep from what every environment has, and a primary given to another environment while
+        // it runs could take one of them.
+        if (this.trashingIn(request.project)) return refuse('busy', `${request.project} has an environment being deleted or restored`)
         const domains = this.deps.domains
         const registry = await domains.reloadRegistry()
         const checked = checkStructure(registry, request, this.deps.guardInvalid())
@@ -412,7 +423,7 @@ export class Agent {
         // Every action from here on runs up or writes the registry, which a port change in progress on
         // this environment is doing too
         if (this.portChanging.has(key)) return refuse('busy', `${project.id} ${environment.name} is moving to another port`)
-        if (this.trashing.has(key)) return refuse('busy', `${project.id} ${environment.name} is being deleted or restored`)
+        if (this.trashingIn(project.id, environment.name)) return refuse('busy', `${project.id} ${environment.name} is being deleted or restored`)
 
         if (args.action === 'rollback') {
             const target = lastHealthyCommit(store.get(key), environment.deployed)
@@ -500,6 +511,8 @@ export class Agent {
     private async configure(project: ProjectEntry, args: ConfigureArgs): Promise<AgentReply> {
         // It writes the registry entry and may rewrite the vhost a port change is rewriting too
         if (this.portChangingIn(project.id)) return refuse('busy', `${project.id} is moving an environment to another port`)
+        // And it rewrites the registry entry a delete or a restore is removing or writing back
+        if (this.trashingIn(project.id)) return refuse('busy', `${project.id} has an environment being deleted or restored`)
         // Which environments are having an address REPLACED rather than given one for the first time.
         // Read before the writes below, because they are what makes the old value unreadable, and it is
         // the old value that decides whether Apache has a file to rewrite afterwards.

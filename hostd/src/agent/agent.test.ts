@@ -1792,7 +1792,7 @@ describe('deleting and restoring an environment', () => {
 `
     const VHOST = '/etc/apache2/hostd/acme-test.conf'
 
-    function trashSetup(options: { deploying?: string, gate?: { armed: boolean, wait: Promise<void> } } = {}) {
+    function trashSetup(options: { deploying?: string, gate?: { armed: boolean, wait: Promise<void> }, moveGate?: Promise<void> } = {}) {
         const files = new Map([['/etc/hostd/projects.yaml', YAML]])
         const writeFs: RegistryWriteFs = {
             readFile: async path => files.get(path)!,
@@ -1830,7 +1830,7 @@ describe('deleting and restoring an environment', () => {
                 rmdir: async dir => { removed.push(dir) },
                 writer: new RegistryWriter('/etc/hostd/projects.yaml', writeFs),
                 exists: async path => paths.has(path),
-                move: async (from, to) => { paths.delete(from); paths.add(to) },
+                move: async (from, to) => { if (options.moveGate) await options.moveGate; paths.delete(from); paths.add(to) },
                 mkdir: async dir => { paths.add(dir) },
             }),
             trash: {
@@ -1923,6 +1923,24 @@ describe('deleting and restoring an environment', () => {
 
         const purged = await agent.purgeDeleted(later)
         assert.ok(purged)
+    })
+
+    // Both write the registry entry and may write a vhost of the environment a delete is taking off the
+    // web, or claim a hostname a restore is deciding whether to keep
+    it('refuses a domain write and a configure call for the project while an environment is being deleted', async () => {
+        let release = () => {}
+        const moveGate = new Promise<void>(resolve => { release = resolve })
+        const { agent, records } = trashSetup({ moveGate })
+        const deleting = agent.handle({ verb: 'provision', project: 'acme', args: { action: 'delete-environment', environment: 'test' } })
+        await new Promise(resolve => setImmediate(resolve))
+        const busy = { ok: false, code: 'busy', message: 'acme has an environment being deleted or restored' }
+        assert.deepEqual(await agent.domains({ verb: 'domains', project: 'acme', args: { action: 'write', environment: 'test', token: 'abc123' } }), busy)
+        assert.deepEqual(await agent.domains({ verb: 'domains', project: 'acme', args: { action: 'write', environment: 'live', token: 'abc123' } }), busy)
+        assert.deepEqual(replyOf(await agent.handle({ verb: 'configure', project: 'acme', args: { domains: { test: 'other.acme.com' } } })), busy)
+        release()
+        assert.equal(replyOf(await deleting)?.ok, true)
+        assert.equal(records.length, 1)
+        assert.equal(replyOf(await agent.handle({ verb: 'configure', project: 'acme', args: { capabilities: ['provision', 'domains'] } }))?.ok, true)
     })
 
     it('refuses unavailable when nothing wired the record up', async () => {
