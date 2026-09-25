@@ -197,14 +197,17 @@ type AddProps = {
     id: string
     taken: string[]
     branches: string[] | null
+    // Why branches is null, in hostd's words, the way Settings shows it; null when they were read
+    branchesError: string | null
     // live's primary domain as the page read it, offered as a base beside horizons.gg. null when live has
     // none. Only an offer: the action checks the base again against hostd's current value.
     primaryDomain: string | null
 }
 
 // Opened in the detail area by the list's Add environment
-export function AddEnvironment({ id, taken, branches, primaryDomain }: AddProps) {
+export function AddEnvironment({ id, taken, branches, branchesError, primaryDomain }: AddProps) {
     const router = useRouter()
+    const say = useContext(SaidContext)
     const [name, setName] = useState('')
     const [branch, setBranch] = useState('')
     const [base, setBase] = useState(HORIZONS_BASE)
@@ -230,6 +233,12 @@ export function AddEnvironment({ id, taken, branches, primaryDomain }: AddProps)
     const prefixProblem = prefix === '' || isAddressLabel(prefix)
         ? null
         : 'Use one name of lowercase letters, digits and hyphens, with no dots, not starting or ending with a hyphen.'
+    // What is shown under the prefix, one error at a time: a prefix still pre-filled from a bad name is only
+    // bad because of the name, which already says so, and an empty one is only worth a word once the
+    // operator has cleared it themselves
+    const prefixError = touched
+        ? (prefix === '' ? 'An address needs a prefix.' : prefixProblem)
+        : (problem === null ? prefixProblem : null)
     const hostname = `${prefix}.${chosenBase}`
 
     const ready = wanted !== '' && problem === null && branch.trim() !== '' && prefix !== '' && prefixProblem === null && !pending
@@ -239,7 +248,6 @@ export function AddEnvironment({ id, taken, branches, primaryDomain }: AddProps)
         setSaid(null)
         try {
             const result = await addEnvironmentAction(id, wanted, branch.trim(), hostname, copyLive)
-            setSaid(result)
             if (result.ok) {
                 setName('')
                 setBranch('')
@@ -247,7 +255,12 @@ export function AddEnvironment({ id, taken, branches, primaryDomain }: AddProps)
                 setTypedPrefix('')
                 setTouched(false)
                 setCopyLive(false)
-                router.refresh()
+                // Said above the tab rather than here: opening the new environment swaps this form for
+                // its detail, the way a delete goes back to live, and what hostd said has to outlive it
+                say(result)
+                router.push(`/portal/sites/${id}?tab=environments&env=${encodeURIComponent(wanted)}`, { scroll: false })
+            } else {
+                setSaid(result)
             }
         } catch {
             setSaid({ ok: false, error: BROKE })
@@ -278,13 +291,18 @@ export function AddEnvironment({ id, taken, branches, primaryDomain }: AddProps)
                     <Field label="Branch" value={branch} spellCheck={false} onChange={event => setBranch(event.target.value)} />
                 )}
             </div>
+            {/* Why there is a text field and not a list. Never blocks the field: hostd could not read the
+                list, not the operator did anything wrong. */}
+            {!branches && branchesError && (
+                <p className={styles.note}>{`The repository's branches could not be read: ${branchesError}`}</p>
+            )}
             <div className={`${styles.addEnvironment} ${styles.addAddress}`}>
                 <Field
                     label="Prefix"
                     value={prefix}
                     spellCheck={false}
                     autoComplete="off"
-                    error={prefixProblem ?? undefined}
+                    error={prefixError ?? undefined}
                     onChange={event => {
                         setTypedPrefix(event.target.value)
                         setTouched(true)

@@ -58,6 +58,7 @@ const props = {
     file: null,
     domains: { domains: [domain('acme.com')], trouble: null },
     branches: ['main', 'uat'],
+    branchesError: null,
     deleted: [{
         environment: 'uat2', deletedAt: '2026-09-20T10:00:00.000Z', purgeAt: '2026-10-20T10:00:00.000Z',
         branch: null, domain: null, aliases: [],
@@ -160,6 +161,11 @@ describe('the detail, for the operator', () => {
         tab({ view: { ...view, capabilities: ['domains'] } })
         expect(within(region('Env files')!).getByText(/Environment files are not switched on for this site/)).toBeInTheDocument()
         expect(screen.queryByText(/env files of/)).toBeNull()
+    })
+
+    it("tells the add form why the repository's branches are not listed", () => {
+        tab({ adding: true, branches: null, branchesError: 'hostd could not be reached.' })
+        expect(screen.getByText("The repository's branches could not be read: hostd could not be reached.")).toBeInTheDocument()
     })
 
     it('opens the add form in place of the detail when Add environment is chosen', () => {

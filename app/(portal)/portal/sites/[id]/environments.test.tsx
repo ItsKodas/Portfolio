@@ -55,7 +55,16 @@ const deletedList = (over: DeletedProps = {}) => (
     </EnvironmentsSaid>
 )
 const adding = (over: AddProps = {}) => (
-    <AddEnvironment id="acme" taken={['live', 'uat1']} branches={['main', 'uat', 'develop']} primaryDomain="acme.com" {...over} />
+    <EnvironmentsSaid>
+        <AddEnvironment
+            id="acme"
+            taken={['live', 'uat1']}
+            branches={['main', 'uat', 'develop']}
+            branchesError={null}
+            primaryDomain="acme.com"
+            {...over}
+        />
+    </EnvironmentsSaid>
 )
 
 beforeEach(() => {
@@ -136,7 +145,7 @@ describe('adding an environment', () => {
         expect(screen.getByRole('button', { name: 'Add environment' })).toBeDisabled()
     })
 
-    it('sends the name, a branch from the repository and the address, then re-reads the page', async () => {
+    it('sends the name, a branch from the repository and the address, then opens the new environment', async () => {
         render(adding())
         await userEvent.type(screen.getByLabelText('Name'), 'uat3')
         await userEvent.selectOptions(screen.getByLabelText('Branch'), 'develop')
@@ -144,7 +153,22 @@ describe('adding an environment', () => {
 
         expect(addEnvironmentAction).toHaveBeenCalledWith('acme', 'uat3', 'develop', 'uat3-acme.horizons.gg', false)
         expect(await screen.findByText('uat3 is added. Its first deploy starts it.')).toBeInTheDocument()
-        expect(refresh).toHaveBeenCalled()
+        expect(push).toHaveBeenCalledWith('/portal/sites/acme?tab=environments&env=uat3', { scroll: false })
+    })
+
+    // Opening the new environment swaps the add form for its detail, which unmounts the form. What hostd
+    // said about the add is held above it, the way a delete's is, so it is still there to read.
+    it('keeps what the add said once the form gives way to the new environment', async () => {
+        const { rerender } = render(adding())
+        await userEvent.type(screen.getByLabelText('Name'), 'uat3')
+        await userEvent.selectOptions(screen.getByLabelText('Branch'), 'develop')
+        await userEvent.click(screen.getByRole('button', { name: 'Add environment' }))
+        await screen.findByText('uat3 is added. Its first deploy starts it.')
+
+        rerender(<EnvironmentsSaid><p>uat3&apos;s detail</p></EnvironmentsSaid>)
+
+        expect(screen.queryByLabelText('Name')).toBeNull()
+        expect(screen.getByText('uat3 is added. Its first deploy starts it.')).toBeInTheDocument()
     })
 
     it('shows hostd\'s refusal and keeps what was typed', async () => {
@@ -157,6 +181,7 @@ describe('adding an environment', () => {
         expect(await screen.findByText(/restore it or wait/)).toBeInTheDocument()
         expect(screen.getByLabelText('Name')).toHaveValue('uat3')
         expect(refresh).not.toHaveBeenCalled()
+        expect(push).not.toHaveBeenCalled()
     })
 
     it("asks for a copy of live's data when the box is ticked, and says what came of it", async () => {
@@ -182,6 +207,17 @@ describe('adding an environment', () => {
         await userEvent.click(screen.getByRole('button', { name: 'Add environment' }))
 
         expect(addEnvironmentAction).toHaveBeenCalledWith('acme', 'uat3', 'feature', 'uat3-acme.horizons.gg', false)
+    })
+
+    // Settings says the same, so the operator knows why there is a text field and not a list
+    it("says why the repository's branches are not listed", () => {
+        render(adding({ branches: null, branchesError: 'the credential was refused' }))
+        expect(screen.getByText("The repository's branches could not be read: the credential was refused")).toBeInTheDocument()
+    })
+
+    it('says nothing about the branches when they were read', () => {
+        render(adding())
+        expect(screen.queryByText(/branches could not be read/)).toBeNull()
     })
 })
 
@@ -257,12 +293,33 @@ describe("a new environment's address", () => {
         expect(screen.getByRole('button', { name: 'Add environment' })).toBeDisabled()
     })
 
-    it('needs a prefix before it can send', async () => {
+    it('needs a prefix before it can send, and says so once it is cleared', async () => {
         render(adding())
         await userEvent.type(screen.getByLabelText('Name'), 'uat3')
         await userEvent.selectOptions(screen.getByLabelText('Branch'), 'develop')
+        expect(screen.queryByText('An address needs a prefix.')).toBeNull()
         await userEvent.clear(prefix())
         expect(screen.getByRole('button', { name: 'Add environment' })).toBeDisabled()
+        expect(screen.getByText('An address needs a prefix.')).toBeInTheDocument()
+    })
+
+    // Nothing typed yet is not a mistake
+    it('says nothing about an empty prefix that was never edited', () => {
+        render(adding())
+        expect(screen.queryByText('An address needs a prefix.')).toBeNull()
+    })
+
+    // A bad name makes a bad pre-filled prefix. The name is the one thing to fix, so it is the one error.
+    it('shows only the name error while the prefix is still pre-filled from a bad name', async () => {
+        render(adding())
+        await userEvent.type(screen.getByLabelText('Name'), 'Uat3')
+        expect(screen.getByText(/Use lowercase letters and digits, starting with a letter/)).toBeInTheDocument()
+        expect(screen.queryByText(/lowercase letters, digits and hyphens/)).toBeNull()
+
+        // Edited by hand, the prefix is the operator's own, and is checked as such
+        await userEvent.clear(prefix())
+        await userEvent.type(prefix(), 'Uat3')
+        expect(screen.getByText(/lowercase letters, digits and hyphens/)).toBeInTheDocument()
     })
 
     it('says the name has to point at the dedi in DNS first', () => {

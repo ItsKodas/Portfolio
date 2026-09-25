@@ -380,6 +380,7 @@ export default async function SitePage({ params, searchParams }: Props) {
                             file={one(search.file)}
                             domains={domains}
                             branches={branches}
+                            branchesError={branchesError}
                             deleted={deleted}
                             deletedError={deletedError}
                         />

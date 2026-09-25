@@ -464,6 +464,14 @@ describe('the environments tab', () => {
         expect(listDomains).not.toHaveBeenCalled()
     })
 
+    it("says in the add form why the repository's branches are not listed", async () => {
+        withEnvironments()
+        listBranches.mockResolvedValue({ ok: false, code: 'unavailable', message: 'hostd is not answering' })
+        render(await page({ tab: 'environments', add: '1' }))
+        expect(screen.getByText("The repository's branches could not be read: hostd is not answering")).toBeInTheDocument()
+        expect(screen.getByLabelText('Branch').tagName).toBe('INPUT')
+    })
+
     it('opens no add form for a client', async () => {
         withEnvironments()
         callerFromSession.mockResolvedValue(client)

@@ -40,14 +40,15 @@ type Props = {
     file: string | null
     // Read by the page for the selected environment, and only when the domains capability is on
     domains: { domains: Domain[], trouble: string | null }
-    // For the add form's branch select; null leaves a text field
+    // For the add form's branch select; null leaves a text field, and branchesError says why
     branches: string[] | null
+    branchesError: string | null
     // For the operator's Deleted environments; null when the list could not be read
     deleted: Deleted[] | null
     deletedError: string | null
 }
 
-export function EnvironmentsTab({ view, isAdmin, selected, adding, file, domains, branches, deleted, deletedError }: Props) {
+export function EnvironmentsTab({ view, isAdmin, selected, adding, file, domains, branches, branchesError, deleted, deletedError }: Props) {
     const base = `/portal/sites/${view.id}?tab=environments`
     const canDomains = view.capabilities.includes('domains')
     const canEnv = view.capabilities.includes('env')
@@ -112,6 +113,7 @@ export function EnvironmentsTab({ view, isAdmin, selected, adding, file, domains
                             id={view.id}
                             taken={view.environments.map(one => one.name)}
                             branches={branches}
+                            branchesError={branchesError}
                             primaryDomain={view.environments.find(one => one.name === LIVE)?.domain ?? null}
                         />
                         : (
