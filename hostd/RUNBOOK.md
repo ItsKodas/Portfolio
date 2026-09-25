@@ -1788,6 +1788,22 @@ sudo systemctl reload apache2
 `apache2ctl configtest` should say `Syntax OK`. An empty `/etc/apache2/hostd/` is fine: the include line
 uses `IncludeOptional`, precisely so a fresh install with nothing adopted yet is not a startup error.
 
+The include goes at the end, so everything in `sites-enabled` loads before hostd's vhosts, and Apache
+answers with the first vhost whose name matches. A hand-written vhost with a wildcard name (`ServerAlias *`
+or `*.example.com`) therefore takes any hostd hostname it matches, on the ports its block listens on. The
+agent's health sweep warns when one does. Keep such a catch-all working by moving it after hostd's include
+instead of leaving it in `sites-enabled`:
+
+```bash
+sudo a2dissite everything
+# then, in /etc/apache2/apache2.conf, on the line after IncludeOptional /etc/apache2/hostd/*.conf:
+# IncludeOptional /etc/apache2/sites-available/everything.conf
+sudo apache2ctl configtest && sudo systemctl reload apache2
+```
+
+This is how the dedi is set up since 2026-09-25, when `everything.conf` (a port 80 catch-all) was found
+answering arbysauto.com, a Flexible SSL site, with another machine's 503.
+
 Last, confirm `hostd-agent` can actually read the hand-written vhosts. It has two read-only mounts for
 this, both in `hostd/docker-compose.yml`, and it needs **both**:
 

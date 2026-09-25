@@ -8,6 +8,7 @@ import { randomBytes } from 'node:crypto'
 import { posix } from 'node:path'
 import { RegistryStore, explainRegistryError } from '../shared/registry-store.ts'
 import { RegistryWriter } from '../shared/registry-write.ts'
+import { hostnamesOf } from '../shared/registry.ts'
 import { choosePort, portProblem } from '../shared/ports.ts'
 import { buildStatus, writeStatus } from '../shared/status.ts'
 import { readSystemUsage, systemSource, DEFAULT_SYSTEM_DISK_PATH } from '../shared/system.ts'
@@ -37,7 +38,7 @@ import type { BackupFs } from './backup-run.ts'
 import { handleConnection } from './server.ts'
 import { ApacheRail, type RailFs } from './apache-rail.ts'
 import type { DomainsConfig, DomainsDeps } from './domains.ts'
-import { SitesEnabledReader } from './sites-enabled.ts'
+import { SitesEnabledReader, findShadows, shadowWarnings } from './sites-enabled.ts'
 import { siblingDirProblem } from './boot-checks.ts'
 import { DeletedStore } from './deleted-store.ts'
 import { CopyStore } from './copy-store.ts'
@@ -482,6 +483,13 @@ async function main(): Promise<void> {
         // while Apache carries on serving what it loaded earlier. Nothing else notices, which is exactly
         // why it belongs here rather than only in the reply to whoever tripped over it.
         ...sitesEnabled.warnings(),
+        // A wildcard in a hand-written vhost that answers one of hostd's hostnames before hostd's own vhost
+        // can. Apache starts happily and the site shows whatever the wildcard proxies to, so this is the
+        // only place it is ever said.
+        ...shadowWarnings(findShadows(
+            sitesEnabled.files(),
+            [...store.current().projects.values()].flatMap(project => [...project.environments.values()].flatMap(hostnamesOf)),
+        )),
         ...(fetcherProblem ? [fetcherProblem] : []),
     ]
 
