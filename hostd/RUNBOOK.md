@@ -768,8 +768,9 @@ then add environments`.
    reply's `vhost` says what is left to do from the Domains tab.
 
 A failure before the registry write removes `<site>/<name>`, which that call made, and nothing else. The
-new environment is not started, and its database starts empty (copying live's data across is not part of
-this). Deploy it once to start it (see **Deploying**), never with `docker compose up` by hand.
+new environment is not started, and its database starts empty, unless the body also had `"copyFromLive":
+true` (see **Copying live's data into an environment**). Deploy it once to start it (see **Deploying**),
+never with `docker compose up` by hand.
 
 ### Its first hostname
 
@@ -787,8 +788,8 @@ hc -X DELETE http://hostd-api:8080/projects/acme/environments/uat1 \
 ```
 
 The body is the site's name typed back, as for removing a whole site. `live` is refused. So is an
-environment with a deploy, a port change, an env write, or another delete or restore running. Under the
-provisioning lock:
+environment with a deploy, a port change, an env write, a copy from live, or another delete or restore
+running. Under the provisioning lock:
 
 1. `docker compose down --remove-orphans` under its compose name. Never `-v`: its volumes stay.
 2. Its vhost is removed, so its hostnames stop proxying to a port that is about to be free, and api drops
@@ -878,9 +879,17 @@ record does not block it.
 
 ### Deploys while one moves
 
-While an environment is being deleted or restored, every deploy verb for it (deploy, rollback, a branch
-switch, and the 2-minute poll's own deploys) is refused `busy` with `<id> <env> is being deleted or
-restored`. The poller logs it and asks again on its next poll.
+While an environment is being deleted or restored, every deploy of it is refused `busy`, with one of two
+messages depending on the path:
+
+| Who asks | What they see |
+| --- | --- |
+| deploy, rollback or a branch switch, from the portal or the api | `<id> <env> is being deleted or restored` (the agent checks this before the deploy runner) |
+| the 2-minute poll | `<id> <env> is being deleted, restored or copied into` (the poller goes straight to the deploy runner, whose block has that one message) |
+| a branch switch whose delete or restore began while its branch was being written | `<id> <env> is being deleted, restored or copied into`, from the runner; the branch is already written, so the next deploy tracks it |
+
+The poller logs it and asks again on its next poll. A copy from live blocks the same way (see **While a
+copy runs**).
 
 ### Restoring or purging by hand
 
@@ -940,6 +949,323 @@ docker compose -p <id>-<env> --project-directory /var/www/<site>/<env> down
 ```
 
 Never add `-v`: that deletes its volumes.
+
+## Copying live's data into an environment
+
+An environment other than `live` can be filled with a fresh copy of live's data: every registered database
+and every registered `storage` folder, taken from live as it runs and loaded over the environment's own.
+Start one from the environment's row on the site's Settings tab (**Copy data from live**, which wants the
+environment's name typed back), by ticking **Start with a copy of live's data** when adding it, or with a
+call:
+
+```bash
+hc -X POST http://hostd-api:8080/projects/acme/uat1/copy-from-live
+hc http://hostd-api:8080/projects/acme/uat1/copy-runs
+hc http://hostd-api:8080/projects/acme/uat1/copy-runs/<run>
+```
+
+The first answers `{"ok":true,"run":"<run>"}` straight away and copies in the background, like a backup.
+The second lists the environment's last 20 runs, newest first, and whether one is `running`. The third is
+one run's record. Adding an environment with `"copyFromLive": true` in the body starts a copy once the add
+has succeeded, and the reply carries `copy`: `{"run":"<run>"}`, or `{"refused":"<why>"}` when it would not
+start. Either way the environment was added, and it can be copied into later.
+
+All of it is admin-only and needs `provision` in the project's capabilities, as adding an environment
+does. A client gets the same 404 as for a project it does not own.
+
+**This is real client data.** A copy puts live's databases (customers, orders, password hashes, sessions,
+tokens, whatever the site keeps) and live's uploaded files into an environment that is usually less
+guarded than live, and that may well be on a public hostname. Nothing is scrubbed or anonymised. Before
+copying, be sure the environment's hostname is one you are happy to have that data behind, and that the
+client has agreed to it. Anything the environment's app does with that data, such as mail queued in a
+table or scheduled jobs, it now does from the environment too. There is no undo: the environment's own
+data is replaced, and a copy of it is not kept.
+
+### What a copy refuses
+
+Before anything changes:
+
+| Refusal | Why |
+| --- | --- |
+| `live is what a copy reads from; it is never copied into` | Only other environments are copied into. |
+| `<id> has no <env> environment` (404) | The environment is not in the registry. |
+| `<id> is on a flat site; a copy needs live and <env> in the nested layout, which each moves into on its next deploy` | Live and the environment must both be nested, in the same site folder. |
+| `<service> uses the generic engine, which cannot be copied while live runs; give it a real engine in the registry` | A `generic` database can only be read by stopping it, and a copy never stops live. See **Copying by hand**. |
+| `<service> has no running container in live, so there is nothing to copy from` | Every registered database (sqlite aside) is dumped from live's running container. Start live first. |
+| `<id> <env> has a deploy running`, `is moving to another port`, `is being deleted or restored`, `already has an env write running for <env>` | Wait for it to finish. |
+| `<id> <env> already has a copy running` | One copy per environment at a time. Poll the one running. |
+| `<id> has a backup running; a copy waits until it has finished` | A backup reads the same databases and storage. |
+| `another provisioning action is in progress` | A provisioning action (adding or removing an environment or site, a port change) may be rewriting the registry the copy reads. |
+| `<id> already has a lifecycle action running` | A start, stop or restart of the site is changing its containers. |
+
+A registry entry whose dump settings a backup would refuse (a `dump.userEnv` that is not a plain variable
+name, say) is refused with the same message here.
+
+The disk is checked by the run itself, as its first step, because adding up the size of live's storage
+can take a while and the start answers at once. A copy needs 10 GiB free on the site's filesystem beyond
+the size of live's storage folders and an estimate of the size of live's databases. When there is less,
+the run fails at step `space` with `only <n> GiB is free under /var/www/<site>; a copy needs 10 GiB plus
+the size of live's storage (<m> GiB) and an estimate of its databases (<d> GiB)`, and nothing has been
+dumped or changed.
+
+The database estimate is best effort. Each of live's database containers is asked its own size, as the
+user its dump runs as: postgres `SELECT sum(pg_database_size(datname)) FROM pg_database`, mysql and
+mariadb the sum of `data_length + index_length` over `information_schema.tables`, mongodb the `totalSize`
+of `dbStats` summed over every database, redis its `used_memory` (from `INFO memory`), and sqlite the size
+of its file. A query that fails, or answers with something that is not a byte count, counts as 0 and the
+agent log says so: `WARN copy <id>: <service>: the size of live's database could not be read, so it counts
+as nothing towards the space a copy needs: <why>`. A dump is often smaller than the database (a mongodb
+archive is gzipped) and the load then takes about the database's size again in the environment, so treat
+the 10 GiB as the headroom for that. If a copy fails at `dump` or `load` with `No space left on device`,
+the staging is still removed and live is not affected; free space and copy again.
+
+### What a copy does
+
+Each step below is the `step` a failed record names.
+
+1. **`space`.** The disk check above.
+2. **`dump`.** Staging is made at `/var/www/<site>/.copy/<run>/`, mode 0700, since it is about to hold a
+   copy of the client's databases. Each registered database is dumped from live's own running container
+   with exactly the command a backup uses (`pg_dumpall`, `mysqldump` or `mariadb-dump --all-databases
+   --single-transaction`, `mongodump --archive --gzip`, `redis-cli --rdb`), streamed into
+   `.copy/<run>/<service>/`. Live keeps serving throughout. sqlite is not dumped here (step 5).
+3. **`prepare`.** The copy reads the environment's service names from its own compose config (`docker
+   compose config`), notes which of them are running, and stops every one that is not a registered
+   database (`compose stop`): its `site` services, and anything else its compose file runs, such as a queue
+   worker or a mail catcher, so nothing writes to what is about to be replaced. Any of its database
+   services that is not running is started (`compose up -d --no-build --pull never <those services>`),
+   which also covers an environment that has never been deployed. It waits up to a minute for each to be
+   running, and then up to a minute more for each to answer its own readiness probe over TCP to
+   `127.0.0.1` (`pg_isready -h 127.0.0.1`, `mysqladmin` or `mariadb-admin -h 127.0.0.1 --protocol=tcp
+   ping`, a mongo `ping` with `--host 127.0.0.1`, `redis-cli ping`). TCP, because the official postgres,
+   mysql and mariadb images initialise a new data directory with a temporary server that listens on the
+   unix socket only, and a probe over the socket would pass on it. The mongo image's temporary server
+   listens on `127.0.0.1` too, so mongodb must answer three times in a row, about two seconds apart.
+4. **`load:<service>`**, for each database in the registry's order, into the environment's own container:
+   - **postgres:** first the environment's server is wiped: every other connection is ended with
+     `pg_terminate_backend`, and every database except `postgres`, `template0` and `template1` is
+     dropped. Then `psql -d postgres` reads the dump on stdin. Role and database `already exists` errors
+     are expected (the environment's own superuser, say); any other `ERROR:` line fails the step.
+   - **mysql / mariadb:** first every database except `mysql`, `sys`, `information_schema` and
+     `performance_schema` is dropped. Then `mysql` (or `mariadb`) reads the dump on stdin, with the same
+     credential variables the dump used.
+   - **mongodb:** `mongorestore --archive --gzip --drop` reads the archive on stdin. There is no wipe:
+     `--drop` replaces each collection the dump has, and a collection only the environment has is left
+     where it is.
+   - **redis:** the environment's redis is asked for its data directory (`CONFIG GET dir`), whether it
+     runs with `appendonly` (which is refused, see **Known limits**), and the name of its data file
+     (`CONFIG GET dbfilename`, usually `dump.rdb`; a name that is not a plain file name fails the step).
+     The service is stopped, the dump is `docker cp`'d to `<dir>/<dbfilename>`, and it is started again
+     and must answer `PONG` within a minute.
+
+   On the way in, live's database `<id>` becomes `<id>-<env>`, which is the name the environment's env
+   files have used since it was added. Only the statements that name a database are rewritten (`CREATE
+   DATABASE`, `ALTER DATABASE`, `COMMENT ON DATABASE`, `GRANT`/`REVOKE ... ON DATABASE`, `SECURITY
+   LABEL ... ON DATABASE`, `ALTER ROLE ... IN DATABASE` and `\connect` for postgres; `CREATE DATABASE`,
+   `ALTER DATABASE` and `USE` for mysql and mariadb; `--nsFrom '<id>.*' --nsTo '<id>-<env>.*'` for
+   mongodb), and only when the name is `<id>` exactly: `acme_old` or `acme-live` are other databases.
+   Data lines are never touched, even one that happens to read like one of those statements. A database
+   live has under any other name is loaded under that same name.
+
+   **The wipe removes every non-system database the environment's server has**, not only `<id>-<env>`:
+   the dump recreates every database live has, and one left from an earlier copy would otherwise fail
+   with `already exists`. Anything created by hand in the environment's database server is gone after a
+   copy.
+5. **`sqlite:<service>`** and **`storage:<path>`.** Both write only into the run's own staging, never
+   through a path in the environment's checkout, and then rename the result into place (staging is in the
+   same site folder, so on the same filesystem). For each sqlite database, `sqlite3 <live>/<file> ".backup
+   .copy/<run>/new/sqlite/<service>/<name>"` (safe while live writes), chowned (`lchown`) and moded like
+   the environment's own file, or chowned like the folder it goes in when the environment has no regular
+   file there; then whatever is at the environment's file, with any `-wal`, `-shm` or `-journal` beside
+   it, moves into `.copy/<run>/old/`, and the copy is renamed into place. For each storage folder, `cp -a`
+   copies live's to `.copy/<run>/new/storage/<path>`, whatever is at the environment's own moves into
+   `.copy/<run>/old/<path>`, and the copy is renamed into place. **Copied storage keeps live's owners**,
+   as `cp -a` preserved them: a deploy's storage carry never changes ownership either, and containers often
+   write as their own user (`www-data`, say) rather than the environment's tree owner. Only a parent folder
+   the copy had to make is owned like the environment's tree. If the environment's containers run as a
+   different user from live's, chown the copied folder by hand afterwards. A storage folder live does not
+   have is left as it is in the environment. Anything at `<env>/<path>.hostd-copy` (where an earlier
+   version of the copy wrote, or anything committed at that name) is moved into staging first and never written to.
+
+   **What is confined, and how.** On the environment's side: before anything is set aside, made or moved,
+   every folder on the way to the target that is there (a symlink counts, dangling or not) is resolved
+   (`realpath`) and must be inside the environment's folder and not inside live's. One that leads out
+   fails the step with `<path> resolves outside the environment's folder (through <dir>, to <real
+   path>), so the copy will not touch it`; one that cannot be resolved (a dangling symlink) fails it with
+   `<path> could not be resolved (through <dir>: <error>), so the copy will not touch it`. Nothing is
+   written there. The last part of the path (the file or folder itself, and `.hostd-copy`, `-wal`, `-shm`,
+   `-journal` beside it) is looked at with `lstat`, never followed: a symlink there, dangling or not, is
+   renamed into staging as the link itself, and the copy is renamed in over the empty name. `chown` is
+   `lchown`, and `chmod` only ever runs on the regular file sqlite3 just wrote in staging. On live's side:
+   the sqlite file and each storage folder are resolved (`realpath`) before they are read and must be
+   inside live's own folder, so a symlink committed in live's checkout (`storage ->
+   /var/www/<other site>/live/storage`, say) cannot make a copy read another site's files or database. One
+   that leads out fails the step with `live's <path> resolves outside live's folder (to <real path>), so
+   the copy will not read it`, and nothing is read. sqlite3 reads the file at the path it resolved to.
+
+   **Symlinks inside live's storage are carried as links.** `cp -a` copies a symlink as a symlink, not
+   what it points at, and that includes a storage folder that is itself a symlink (to somewhere inside
+   live's folder). A carried link still points wherever it pointed in live: a relative one now resolves
+   inside the environment, an absolute one to the same place as live's did (live's own folder, say). A
+   site reading through such a link sees what it points at, the same as live does. Check with `find
+   /var/www/<site>/<env>/<path> -type l -ls` if that matters.
+
+   If live's own folder has gone by the time these steps run (a deploy of live moving it, say), the step
+   fails with `live's folder <dir> is gone, so there is nothing to copy from` rather than ending ok with
+   nothing copied.
+6. **`restore-state`.** The services step 3 stopped that were running before it are started again, and
+   the database services step 3 started are stopped again. The environment ends in the state it began in:
+   running if it was, stopped if it was, whatever happened in between.
+7. **`clean`.** `.copy/<run>/` is removed, whatever the outcome: the dumps, and the environment's old
+   files and folders with them. The record is written and the environment is released.
+
+A failure stops the run at that step, and steps 6 and 7 still run. The record names the step and the
+reason, and for a failed `load`, `sqlite` or `storage` step the reason ends `The environment may be partly
+copied; a new copy will overwrite it.` Steps are not retried: start a new copy once the reason is dealt
+with. Live is never stopped, started or written by any of this.
+
+### While a copy runs
+
+The environment is blocked for the whole run, from the start until step 7 has finished:
+
+- every deploy of it is refused `busy`: deploy, rollback and a branch switch with `<id> <env> is being
+  copied from live` (the agent checks this before the deploy runner); the 2-minute poll's own deploys with
+  the runner's `<id> <env> is being deleted, restored or copied into` (the poller logs it and asks again
+  on its next poll); and a branch switch whose copy began while its branch was being written also with
+  the runner's message, the branch already written. The portal's Deploys tab says deploys wait until the
+  copy ends;
+- so are a port change, a domain write for that environment, deleting or restoring it, and a copy into it;
+- a Settings save (`configure`) and removing the whole site are refused for the whole project, with `<id>
+  has an environment being copied from live`, since either may rewrite that environment's vhost or entry;
+- a backup of the project is refused with `<id> <env> is being copied from live; a backup waits until it
+  has finished`, and a copy is refused while a backup of the project runs.
+
+Env file writes and live's own lifecycle actions are not blocked. A copy only reads live, and writes no
+env file, but leave the environment's env files alone until it has finished.
+
+### Records and staging
+
+- **Staging:** `/var/www/<site>/.copy/<run>/`, one folder per run, mode 0700, root-owned, inside the site
+  folder so every move is a rename on one filesystem. It is the only thing a copy deletes recursively, and
+  only when the path has exactly that shape. `/var/www/<site>/.copy/` itself stays, empty, between
+  copies. Anything in it while no copy runs is left over and can be removed.
+- **Records:** `/var/lib/hostd/copies.json`, in the agent's `hostd-agent-state` volume (`HOSTD_COPIES_FILE`
+  moves it), the last 20 runs of each environment, written through a temporary file and a rename. Each
+  record is `project`, `environment`, `run`, `actor` (the portal user who asked), `startedAt`,
+  `durationMs`, `outcome` (`ok`, `failed` or `running`), `step`, `reason`, `services` and `storage`. Read it
+  with `docker exec hostd-agent cat /var/lib/hostd/copies.json`.
+- **Log:** the agent logs each run as `copy <id> <env> <run>: ...`: `docker compose logs agent | grep 'copy '`.
+
+### After the agent stopped mid-copy
+
+When the agent starts, any run still marked `running` is marked `failed` with `the agent restarted during
+the copy` and no step, and its staging folder is removed; the log says `copy <id> <env> <run> was
+interrupted; removed /var/www/<site>/.copy/<run>`. If the environment has since gone from the registry,
+the log says where it staged could not be worked out instead: remove that `/var/www/<site>/.copy/<run>`
+by hand.
+
+**Nothing else is put back.** Step 6 never ran, so the environment is left as the copy had it: the
+services step 3 stopped stay stopped, and any database service the copy started stays running (a redis the load had
+stopped stays stopped). Its databases may be wiped or half loaded. Put it right by hand:
+
+1. See what is running:
+
+   ```bash
+   docker compose -p <id>-<env> --project-directory /var/www/<site>/<env> -f ... ps -a
+   ```
+
+   List every file in the environment's `compose:` key with its own `-f`, in order, as for any hand
+   compose call.
+2. Check the environment's sqlite files and storage folders are there. If the agent stopped between the
+   two renames of a storage folder or sqlite file, the environment's own had already gone into staging and
+   the copy was still in staging too, and the boot has just removed both (the environment's old copy was
+   being replaced anyway). The same is true when a copy failed at a `sqlite:` step and the agent log says
+   a file `could not be moved back`. Nothing needs moving by hand: the new copy in the next step puts
+   them in place. A `<path>.hostd-copy` in the environment (left by an earlier version of the copy, which
+   wrote beside the target) can be left alone: the next copy moves it into staging and removes it.
+3. Run a new copy from the Settings tab. It wipes and reloads everything, and its own step 6 then leaves
+   the environment as it now finds it. If the environment was running before the crash, deploy it
+   afterwards (or `compose start` the services step 3 stopped) to bring it back. If it had never been deployed,
+   stop the database services the copy left running:
+
+   ```bash
+   docker compose -p <id>-<env> --project-directory /var/www/<site>/<env> -f ... stop <database services>
+   ```
+
+   If you do not want a new copy, do the same without it: deploy it, or stop its database services, as it
+   was before.
+
+### Known limits
+
+- **`generic` databases are refused.** Copy one by hand, with the environment's copy of it stopped, and
+  either live's stopped for the moment of the copy (the only way to get a consistent copy of a database
+  hostd cannot dump) or a dump taken with the engine's own tool. For a bind mount:
+
+  ```bash
+  docker compose -p <id>-<env> --project-directory /var/www/<site>/<env> -f ... stop <service>
+  docker compose -p <id> --project-directory /var/www/<site>/live -f ... stop <service>
+  sudo rsync -a --delete <live's bind mount source>/ <the environment's bind mount source>/
+  docker compose -p <id> --project-directory /var/www/<site>/live -f ... start <service>
+  docker compose -p <id>-<env> --project-directory /var/www/<site>/<env> -f ... start <service>
+  ```
+
+  Stopping live's database takes the site down for that long; say so to the client first. Nothing is
+  renamed: if the engine keeps the database's name in its data, the environment's env files name
+  `<id>-<env>`, so rename it with the engine's own tool, or set the key back to `<id>` in the
+  environment's env file. Giving the service a real engine in the registry, when there is one, is better.
+- **redis with `appendonly yes` fails** its load step with `<service> runs redis with appendonly, so
+  replacing its rdb file would not take effect; copy it by hand`: under AOF, redis reads its append-only
+  file at start and never its rdb file. By hand, load the rdb into a throwaway redis on the environment's volumes
+  with AOF off, then have it write a fresh AOF (`CONFIG SET appendonly yes` rewrites it from the loaded
+  data), and start the environment's service on that:
+
+  ```bash
+  docker exec <id>-<service>-1 redis-cli --rdb /tmp/copy.rdb
+  docker cp <id>-<service>-1:/tmp/copy.rdb ./copy.rdb && docker exec <id>-<service>-1 rm /tmp/copy.rdb
+  docker compose -p <id>-<env> --project-directory /var/www/<site>/<env> -f ... stop <service>
+  docker cp ./copy.rdb <id>-<env>-<service>-1:<dir>/dump.rdb
+  docker run -d --name hostd-redis-copy --volumes-from <id>-<env>-<service>-1 <the same redis image> \
+    redis-server --dir <dir> --appendonly no
+  docker exec hostd-redis-copy redis-cli CONFIG SET appendonly yes
+  docker exec hostd-redis-copy redis-cli INFO persistence | grep aof_rewrite_in_progress   # until :0
+  docker stop hostd-redis-copy && docker rm hostd-redis-copy
+  docker compose -p <id>-<env> --project-directory /var/www/<site>/<env> -f ... start <service>
+  rm ./copy.rdb
+  ```
+
+  `<dir>` is what `redis-cli CONFIG GET dir` says in the environment's redis. If the site's redis command
+  sets `appendfilename`, `appenddirname` or `dbfilename`, pass the same to `redis-server` above. This has
+  not yet been tried on the dedi. `copy.rdb` is client data: remove it when done.
+- **redis with `requirepass` fails.** hostd runs `redis-cli` without a password, for backups as here, so
+  the first thing the copy asks that redis (its dump, its data directory, or its readiness probe) is
+  answered `NOAUTH`, and the step fails. Copy it by hand the way **Restoring** under **Backups** loads a
+  redis, with `REDISCLI_AUTH` set to the password inside the container for each `redis-cli`.
+- **A redis still `LOADING` after 60 seconds** fails its load step with `did not become ready in the
+  environment within 60 seconds`, though its data is in place and it finishes loading on its own. Check
+  with `redis-cli ping` (`PONG`) and `redis-cli DBSIZE` in the environment's container. The run stopped
+  there, so whatever comes after that redis (later databases in the registry, sqlite, storage) was not
+  copied, and a new copy will stop at the same place for as long as that redis takes over a minute to
+  load: copy the rest by hand, storage with `cp -a` as step 5 does.
+- **A postgres app database named `postgres` is never wiped.** The wipe keeps `postgres`, `template0` and
+  `template1`, which the server itself needs. A site whose app keeps its tables in `postgres` (rather than
+  `<id>`) has them left in place on the environment's server, so a second copy (a refresh) fails its load
+  step with `relation "<table>" already exists`. Give the app its own database, or before a refresh drop
+  its tables by hand in the environment's container (`psql -U "$POSTGRES_USER" -d postgres`, then `DROP
+  SCHEMA public CASCADE; CREATE SCHEMA public;`).
+- **postgres needs `pg_terminate_backend` rights.** The wipe ends every other connection and drops every
+  database, as the user the dump reads from `POSTGRES_USER` (or `dump.userEnv`). The official image's
+  `POSTGRES_USER` is a superuser and can. A lesser user without `pg_signal_backend` and ownership of every
+  database fails the load step with `clearing the environment's databases exited with code ...`.
+- **Not yet run on a real server:** the mysql and mariadb wipe (it builds its `DROP DATABASE` statements
+  with `CHAR(96 USING utf8mb4)` for the backquotes, and compares `CONVERT(schema_name USING utf8mb4)` so a
+  utf8mb3 `schema_name` cannot raise a collation error), the size queries of the `space` step, and feeding
+  a dump into a container on stdin, which every postgres, mysql, mariadb and mongodb load does. All are
+  covered by tests against fakes only. Try
+  the first copy of each engine on an environment whose data does not matter, and read its record.
+- **In-flight work is not waited for.** A domain write or a Settings save that had already started when
+  the copy began is not waited for; only what starts after is refused. A provisioning action or a
+  lifecycle action already running refuses the copy instead (see **What a copy refuses**). Start a copy
+  when nothing else is running on the site.
 
 ## Backups
 
@@ -1061,6 +1387,24 @@ It does **not** capture the `test` environment, the compose file or its override
 under `$BACKUPS` (`/srv/backups/hostd` unless `HOSTD_BACKUP_DIR` says otherwise). A dedi that is lost, destroyed or has
 its disk fail loses every backup on it, exactly the way it loses everything else under `/var/www`. Nothing
 built so far protects against that. Only the offsite copy, not built in this phase, will.
+
+**A symlink in live's checkout never leads a backup into another site.** Before a run reads anything, the
+folders above each `storage` directory are resolved (`realpath`) and must be inside live's folder; a
+sqlite file is resolved before `sqlite3` reads it (at the path it resolves to) and must be inside live's
+folder; and a `generic` service's bind mount under `/var/www`, or one that resolves into it, must resolve
+inside the site's own folder, checked before the service is stopped. A bind mount elsewhere on the host is
+left alone. A `storage` directory that is itself a symlink is handed to restic as it is, and restic stores
+it as a link, never what it points at. Any of these fails the whole run, never silently: the record is
+`failed` with no snapshot, and the reason is one of
+
+- `storage <path> resolves outside live's folder (through <dir>, to <real path>), so the backup will not read it`
+- `<service>: <file> resolves outside live's folder (to <real path>), so the backup will not read it`, or
+  `<service>: <file> could not be resolved: <error>` when the file is not there
+- `<service>: its bind mount <source> resolves outside the site's folder <site> (to <real path>), so the
+  backup will not read it`, or `... could not be resolved: <error>`
+
+Look at the symlink it names in live's checkout (`ls -l <dir>`). It came from the client's repository: ask
+them to replace it with a real folder or a registered `storage` path, and the next run backs up again.
 
 ### Restoring
 
@@ -1270,6 +1614,7 @@ database on a timer.
 | `a manual backup was taken less than 10 minutes ago; wait before taking another` | Wait; it clears itself ten minutes after the last manual run started. |
 | `another backup is running; only one runs on the dedi at a time` | Wait for it to finish. Only one backup runs across the whole dedi at once, on purpose, so a scheduled sweep across many projects can never saturate the disk together. |
 | `<id> already has a backup running` | The same project's own backup is still running; read its run status instead of starting another. |
+| `<id> <env> is being copied from live; a backup waits until it has finished` | A copy reads the same databases and storage. Wait for it to finish (see **Copying live's data into an environment**). |
 | `<id> is deploying; a backup waits until that has finished` | A deploy renames the directory storage lives under, so a backup started mid-swap would walk a tree that is moving. Wait for the deploy to finish (or fail) and try again. |
 
 ## What is deliberately not automatic

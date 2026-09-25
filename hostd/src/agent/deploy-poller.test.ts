@@ -184,7 +184,7 @@ describe('a poll during a delete or restore', () => {
         unblock()
         assert.ok(!started.includes('acme:live'))
         assert.ok(!deployed.includes('acme:live'))
-        assert.ok(logs.some(line => line.includes('acme:live') && line.includes('being deleted or restored')))
+        assert.ok(logs.some(line => line.includes('acme:live') && line.includes('being deleted, restored or copied into')))
     })
 })
 

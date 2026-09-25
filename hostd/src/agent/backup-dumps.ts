@@ -21,17 +21,17 @@ export type DumpPlan =
 
 export type PlanProblem = { problem: string }
 
-const named = (service: string, override: string | undefined, fallback: string): string | PlanProblem => {
+export const named = (service: string, override: string | undefined, fallback: string): string | PlanProblem => {
     if (override === undefined) return fallback
     return ENV_NAME_PATTERN.test(override) ? override : { problem: `${service}: dump.userEnv is not an environment variable name` }
 }
 
-const passwordNamed = (service: string, override: string | undefined, fallback: string): string | PlanProblem => {
+export const passwordNamed = (service: string, override: string | undefined, fallback: string): string | PlanProblem => {
     if (override === undefined) return fallback
     return ENV_NAME_PATTERN.test(override) ? override : { problem: `${service}: dump.passwordEnv is not an environment variable name` }
 }
 
-const isProblem = (value: unknown): value is PlanProblem => typeof value === 'object' && value !== null && 'problem' in value
+export const isProblem = (value: unknown): value is PlanProblem => typeof value === 'object' && value !== null && 'problem' in value
 
 export function dumpPlan(service: string, entry: ServiceEntry): DumpPlan | PlanProblem | null {
     if (entry.role !== 'database') return null

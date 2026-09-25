@@ -1,7 +1,7 @@
 import { describe, it } from 'node:test'
 import assert from 'node:assert/strict'
 import { EventEmitter } from 'node:events'
-import { PassThrough } from 'node:stream'
+import { Duplex, PassThrough, Readable, pipeline } from 'node:stream'
 import type { ClientRequest, IncomingMessage, RequestOptions } from 'node:http'
 import {
     containersPath, logsPath, checkedId, createDockerApi, pickPerService, buildServiceStatuses,
@@ -9,6 +9,7 @@ import {
     type ContainerInspect, type ContainerSummary,
 } from './docker.ts'
 import { parseRegistry } from '../shared/registry.ts'
+import { renameStream } from './copy-plans.ts'
 
 const ID = 'a'.repeat(64)
 
@@ -268,6 +269,176 @@ describe('exec', () => {
         const { request } = execSetup({ exitCode: 0, frames: [], execId: 'exec123' })
         const docker = createDockerApi('/var/run/docker.sock', request as any)
         await assert.rejects(() => docker.exec(ID, ['sh', '-c', 'true'], () => {}), /refusing malformed container id/)
+    })
+})
+
+// Stands in for Docker's hijacked exec connection: it answers the start call with 101 and a socket that
+// records what is written to it, and only sends the command's output once the write side is half-closed,
+// which is what a real `psql` fed a dump on stdin does.
+// exitEarly stands in for a command that fails before reading all its input (psql with a bad password):
+// the first write is answered with that output, and the next write fails as the closed connection would.
+function execStdinSetup(options: { exitCode: number, frames: Buffer[], head?: Buffer, startStatus?: number, exitEarly?: Buffer }) {
+    const calls: Array<{ path: string, headers: Record<string, string>, body: string }> = []
+    const written: Buffer[] = []
+    let halfClosed = false
+    const socket = new Duplex({
+        read() {},
+        write(chunk, _encoding, callback) {
+            written.push(chunk as Buffer)
+            if (options.exitEarly === undefined) return callback()
+            if (written.length === 1) {
+                socket.push(options.exitEarly)
+                return callback()
+            }
+            setImmediate(() => callback(Object.assign(new Error('write EPIPE'), { code: 'EPIPE' })))
+        },
+        final(callback) {
+            halfClosed = true
+            for (const chunk of options.frames) socket.push(chunk)
+            socket.push(null)
+            callback()
+        },
+    })
+    let socketTimeout: number | null = null
+    Object.assign(socket, { setTimeout: (ms: number) => { socketTimeout = ms; return socket } })
+    const request = (opts: any, callback: (response: any) => void) => {
+        let body = ''
+        const listeners: Record<string, (...args: any[]) => void> = {}
+        const req: any = {
+            on: (event: string, listener: (...args: any[]) => void) => { listeners[event] = listener; return req },
+            setTimeout: () => req,
+            end: (chunk?: string) => {
+                if (chunk) body += chunk
+                calls.push({ path: opts.path, headers: opts.headers ?? {}, body })
+                queueMicrotask(() => {
+                    if (opts.path === '/containers/' + ID + '/exec') {
+                        const response = new PassThrough() as any
+                        response.statusCode = 201
+                        callback(response)
+                        response.end(JSON.stringify({ Id: EXEC_ID }))
+                    } else if (opts.path === '/exec/' + EXEC_ID + '/start') {
+                        const response = new PassThrough() as any
+                        response.statusCode = options.startStatus ?? 101
+                        if (response.statusCode === 101) listeners.upgrade!(response, socket, options.head ?? Buffer.alloc(0))
+                        else {
+                            callback(response)
+                            response.end('{"message":"No such exec instance"}')
+                        }
+                    } else {
+                        const response = new PassThrough() as any
+                        response.statusCode = 200
+                        callback(response)
+                        response.end(JSON.stringify({ ExitCode: options.exitCode, Running: false }))
+                    }
+                })
+            },
+        }
+        return req
+    }
+    return { request, calls, written, halfClosed: () => halfClosed, socketTimeout: () => socketTimeout }
+}
+
+describe('exec with stdin', () => {
+    it('attaches stdin, writes the stream to the hijacked connection and half-closes it', async () => {
+        const setup = execStdinSetup({ exitCode: 0, frames: [frame(1, 'CREATE DATABASE'), frame(2, 'NOTICE: hi')] })
+        const docker = createDockerApi('/var/run/docker.sock', setup.request as any)
+        const stdout: Buffer[] = []
+        const result = await docker.exec(ID, ['sh', '-c', 'psql'], chunk => { stdout.push(chunk) }, Readable.from([Buffer.from('CREATE '), Buffer.from('TABLE t;\n')]))
+        assert.equal(Buffer.concat(setup.written).toString(), 'CREATE TABLE t;\n')
+        assert.equal(setup.halfClosed(), true)
+        assert.equal(setup.socketTimeout(), 0, 'a slow load is never cut off for taking its time')
+        assert.equal(Buffer.concat(stdout).toString(), 'CREATE DATABASE')
+        assert.deepEqual(result, { exitCode: 0, stderr: 'NOTICE: hi' })
+        assert.deepEqual(JSON.parse(setup.calls[0]!.body), {
+            AttachStdout: true, AttachStderr: true, AttachStdin: true, Tty: false, Cmd: ['sh', '-c', 'psql'],
+        })
+        const start = setup.calls[1]!
+        assert.equal(start.path, '/exec/' + EXEC_ID + '/start')
+        assert.equal(start.headers.connection, 'Upgrade')
+        assert.equal(start.headers.upgrade, 'tcp')
+        assert.deepEqual(JSON.parse(start.body), { Detach: false, Tty: false })
+    })
+
+    it('reads output that arrived with the upgrade response itself', async () => {
+        const setup = execStdinSetup({ exitCode: 3, frames: [frame(2, ' failed')], head: frame(2, 'psql:') })
+        const docker = createDockerApi('/var/run/docker.sock', setup.request as any)
+        const result = await docker.exec(ID, ['sh', '-c', 'psql'], () => {}, Readable.from([Buffer.from('x')]))
+        assert.deepEqual(result, { exitCode: 3, stderr: 'psql: failed' })
+    })
+
+    it("reports the command's own failure, not the write error, when it exits before reading everything", async () => {
+        const setup = execStdinSetup({ exitCode: 2, frames: [], exitEarly: frame(2, 'FATAL:  password authentication failed for user "acme"') })
+        const docker = createDockerApi('/var/run/docker.sock', setup.request as any)
+        const stdin = Readable.from([Buffer.from('one;\n'), Buffer.from('two;\n'), Buffer.from('three;\n')])
+        const result = await docker.exec(ID, ['sh', '-c', 'psql'], () => {}, stdin)
+        assert.deepEqual(result, { exitCode: 2, stderr: 'FATAL:  password authentication failed for user "acme"' })
+    })
+
+    it("reports the command's own failure when it exits early while stdin is still producing", async () => {
+        const setup = execStdinSetup({ exitCode: 2, frames: [], exitEarly: frame(2, 'FATAL:  password authentication failed for user "acme"') })
+        const docker = createDockerApi('/var/run/docker.sock', setup.request as any)
+        // A dump still being read and renamed when the connection closes under it, as the copy's load feeds one
+        let lines = 0
+        const source = new Readable({ read() { setTimeout(() => this.push(Buffer.from(`INSERT INTO t VALUES (${++lines});\n`)), 1) } })
+        const stdin = pipeline(source, renameStream('postgres', 'acme', 'acme-uat1'), () => {})
+        const result = await docker.exec(ID, ['sh', '-c', 'psql'], () => {}, stdin)
+        assert.deepEqual(result, { exitCode: 2, stderr: 'FATAL:  password authentication failed for user "acme"' })
+    })
+
+    it("reports the command's own failure when a slow source is cut off", async () => {
+        const setup = execStdinSetup({ exitCode: 1, frames: [], exitEarly: frame(2, 'ERROR 1045 (28000): Access denied') })
+        const docker = createDockerApi('/var/run/docker.sock', setup.request as any)
+        const stdin = new Readable({ read() { setTimeout(() => this.push(Buffer.from('INSERT;\n')), 1) } })
+        const result = await docker.exec(ID, ['sh', '-c', 'mysql'], () => {}, stdin)
+        assert.deepEqual(result, { exitCode: 1, stderr: 'ERROR 1045 (28000): Access denied' })
+    })
+
+    it('still throws the write error when the command did not fail', async () => {
+        const setup = execStdinSetup({ exitCode: 0, frames: [], exitEarly: frame(1, 'ok') })
+        const docker = createDockerApi('/var/run/docker.sock', setup.request as any)
+        const stdin = Readable.from([Buffer.from('one;\n'), Buffer.from('two;\n')])
+        await assert.rejects(() => docker.exec(ID, ['sh', '-c', 'psql'], () => {}, stdin), /EPIPE/)
+    })
+
+    it('rejects when Docker will not upgrade the start call', async () => {
+        const setup = execStdinSetup({ exitCode: 0, frames: [], startStatus: 404 })
+        const docker = createDockerApi('/var/run/docker.sock', setup.request as any)
+        await assert.rejects(() => docker.exec(ID, ['sh', '-c', 'psql'], () => {}, Readable.from([Buffer.from('x')])), /exec start answered 404/)
+    })
+
+    it('hands every stderr chunk to onStderr, uncapped, and still caps the returned stderr', async () => {
+        const noise = Array.from({ length: 120 }, (_, i) => frame(2, `psql:<stdin>:${i}: ERROR:  role "r${i}" already exists\n`))
+        const setup = execStdinSetup({ exitCode: 0, frames: [...noise, frame(2, 'psql:<stdin>:999: ERROR:  relation "x" does not exist\n')] })
+        const docker = createDockerApi('/var/run/docker.sock', setup.request as any)
+        const seen: Buffer[] = []
+        const result = await docker.exec(ID, ['sh', '-c', 'psql'], () => {}, Readable.from([Buffer.from('x')]), chunk => { seen.push(chunk) })
+        const all = Buffer.concat(seen).toString()
+        assert.ok(all.length > 5 * 1024)
+        assert.ok(all.endsWith('psql:<stdin>:999: ERROR:  relation "x" does not exist\n'))
+        assert.ok(result.stderr.length <= 4096)
+        assert.equal(result.stderr.includes('999'), false)
+    })
+
+    it('hands stderr to onStderr without stdin too', async () => {
+        const { request } = execSetup({ exitCode: 1, frames: [frame(2, 'could not connect')] })
+        const docker = createDockerApi('/var/run/docker.sock', request as any)
+        const seen: string[] = []
+        await docker.exec(ID, ['sh', '-c', 'pg_dumpall'], () => {}, undefined, chunk => { seen.push(chunk.toString()) })
+        assert.deepEqual(seen, ['could not connect'])
+    })
+
+    it('fails when the stdin stream fails', async () => {
+        const setup = execStdinSetup({ exitCode: 0, frames: [] })
+        const docker = createDockerApi('/var/run/docker.sock', setup.request as any)
+        const broken = new Readable({ read() { this.destroy(new Error('disk read failed')) } })
+        await assert.rejects(() => docker.exec(ID, ['sh', '-c', 'psql'], () => {}, broken), /disk read failed/)
+    })
+
+    it('throws the source failure when the source failed first, even though the command then failed too', async () => {
+        const setup = execStdinSetup({ exitCode: 2, frames: [frame(2, 'psql: unexpected end of input')] })
+        const docker = createDockerApi('/var/run/docker.sock', setup.request as any)
+        const broken = new Readable({ read() { this.destroy(new Error('disk read failed')) } })
+        await assert.rejects(() => docker.exec(ID, ['sh', '-c', 'psql'], () => {}, broken), /disk read failed/)
     })
 })
 

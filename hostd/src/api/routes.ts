@@ -92,6 +92,9 @@ export type Route =
     | { verb: 'rollback', project: string, environment: EnvironmentName }
     | { verb: 'branch', project: string, environment: EnvironmentName }
     | { verb: 'port', project: string, environment: EnvironmentName }
+    | { verb: 'copy-from-live', project: string, environment: EnvironmentName }
+    | { verb: 'copy-runs', project: string, environment: EnvironmentName }
+    | { verb: 'copy-run', project: string, environment: EnvironmentName, run: string }
     | { verb: 'deploys', project: string, environment: EnvironmentName }
     | { verb: 'commits', project: string, environment: EnvironmentName }
     | { verb: 'backups', project: string }
@@ -224,6 +227,8 @@ export function matchRoute(method: string, pathname: string): Route {
                 case 'rollback': return only('POST', { verb: 'rollback', project, environment })
                 case 'branch': return only('PUT', { verb: 'branch', project, environment })
                 case 'port': return only('PUT', { verb: 'port', project, environment })
+                case 'copy-from-live': return only('POST', { verb: 'copy-from-live', project, environment })
+                case 'copy-runs': return only('GET', { verb: 'copy-runs', project, environment })
                 case 'deploys': return only('GET', { verb: 'deploys', project, environment })
                 case 'commits': return only('GET', { verb: 'commits', project, environment })
                 case 'domains':
@@ -246,6 +251,11 @@ export function matchRoute(method: string, pathname: string): Route {
             if (parts.length === 5) return only('DELETE', { verb: 'domain-remove', project, environment, hostname })
             if (parts.length === 6 && parts[5] === 'verify') return only('POST', { verb: 'domain-verify', project, environment, hostname })
             return { verb: 'not-found' }
+        }
+        if (parts[3] === 'copy-runs') {
+            const run = parts[4] ?? ''
+            if (parts.length !== 5 || !RUN_ID.test(run)) return { verb: 'not-found' }
+            return only('GET', { verb: 'copy-run', project, environment, run })
         }
         if (parts[3] !== 'env') return { verb: 'not-found' }
         if (method !== 'GET' && method !== 'PUT') return { verb: 'method-not-allowed' }
@@ -387,10 +397,15 @@ function parseCreateBody(value: Record<string, unknown>): { ok: true, args: Prov
 
 // The body names the environment `name`, which is what the operator typed; the agent's args call it
 // `environment`, as every other provision action does. certificate may be left out, meaning none.
-function parseAddEnvironmentBody(value: Record<string, unknown>): { ok: true, args: ProvisionAddEnvironmentArgs } | { ok: false, message: string } {
-    if (!onlyKeys(value, ['name', 'branch', 'domain', 'certificate'])) {
-        return { ok: false, message: 'add-environment takes only name, branch, domain and certificate' }
+// copyFromLive is api's alone: once the add has succeeded, api starts a copy of live's data into it.
+function parseAddEnvironmentBody(
+    value: Record<string, unknown>,
+): { ok: true, args: ProvisionAddEnvironmentArgs, copyFromLive: boolean } | { ok: false, message: string } {
+    if (!onlyKeys(value, ['name', 'branch', 'domain', 'certificate', 'copyFromLive'])) {
+        return { ok: false, message: 'add-environment takes only name, branch, domain, certificate and copyFromLive' }
     }
+    const copyFromLive = value.copyFromLive ?? false
+    if (typeof copyFromLive !== 'boolean') return { ok: false, message: 'copyFromLive must be true or false' }
     const name = value.name
     if (name === 'live') return { ok: false, message: 'live cannot be added' }
     if (!isEnvironmentName(name)) return { ok: false, message: 'name must be an environment name' }
@@ -399,7 +414,10 @@ function parseAddEnvironmentBody(value: Record<string, unknown>): { ok: true, ar
     if (domain !== null && typeof domain !== 'string') return { ok: false, message: 'domain is malformed' }
     const certificate = value.certificate ?? null
     if (certificate !== null && !(CERTIFICATE_MODES as readonly string[]).includes(certificate as string)) return { ok: false, message: 'certificate is malformed' }
-    return { ok: true, args: { action: 'add-environment', environment: name, branch: value.branch, domain: domain as string | null, certificate: certificate as CertificateMode | null } }
+    return {
+        ok: true, copyFromLive,
+        args: { action: 'add-environment', environment: name, branch: value.branch, domain: domain as string | null, certificate: certificate as CertificateMode | null },
+    }
 }
 
 // Shared by both delete routes: the whole-project one and the single-environment one. Typing the name
@@ -725,6 +743,33 @@ export function createHandler(deps: ApiDeps): (req: IncomingMessage, res: Server
             const reply = await callAgentAudited({ verb: 'deploy', project, args }, project, 'deploy', target)
             if (!reply) return
             return respondAgentAction('deploy', reply, project, target, false)
+        }
+
+        // A copy of live's data into another environment, on the operator's behalf: admin only (the
+        // provision policy verb), and audited, refusals included. The user who asked is the record's actor.
+        // Answers what the add-environment reply carries; the start route answers the agent's reply itself.
+        const startCopy = async (project: string, environment: EnvironmentName): Promise<{ run: string } | { refused: string }> => {
+            const target = `${environment} copy-from-live`
+            let reply: AgentReply
+            try {
+                reply = await deps.agent.call({ verb: 'copy', project, args: { action: 'start', environment, actor: caller.user } })
+            } catch (error) {
+                if (!(error instanceof AgentUnavailableError)) throw error
+                await audit(who, { project, verb: 'provision', target, outcome: 'failed', reason: error.message })
+                return { refused: error.message }
+            }
+            if (!reply.ok) {
+                const outcome: AuditOutcome = reply.code === 'failed' ? 'failed' : 'refused'
+                await audit(who, { project, verb: 'provision', target, outcome, reason: outcome === 'failed' ? reply.message : reply.code })
+                return { refused: reply.message }
+            }
+            if ('run' in reply && typeof reply.run === 'string') {
+                await audit(who, { project, verb: 'provision', target, outcome: 'ok' })
+                return { run: reply.run }
+            }
+            const message = 'the agent did not say which run it started'
+            await audit(who, { project, verb: 'provision', target, outcome: 'failed', reason: message })
+            return { refused: message }
         }
 
         // The history and the commit list are plain reads, and the owner may make them: audited only
@@ -1176,18 +1221,22 @@ export function createHandler(deps: ApiDeps): (req: IncomingMessage, res: Server
                     route.project, 'provision', target,
                 )
                 if (!reply) return
-                if (!reply.ok || parsed.args.domain === null) return respondAgentAction('provision', reply, route.project, target, true)
+                if (!reply.ok || (parsed.args.domain === null && !parsed.copyFromLive)) {
+                    return respondAgentAction('provision', reply, route.project, target, true)
+                }
 
                 // As a create does for live: the ok path of respondAgentAction, then the new
-                // environment's vhost, beside the agent's reply rather than instead of it.
+                // environment's vhost and the copy of live's data, each beside the agent's reply rather
+                // than instead of it: the environment exists whatever happens to either.
                 await audit(who, { project: route.project, verb: 'provision', target, outcome: 'ok' })
                 try {
                     await deps.refreshRegistry()
                 } catch (error) {
                     console.error(`[api] ${new Date().toISOString()} registry refresh after provision ${target} failed: ${describeError(error)}`)
                 }
-                const vhost = await firstVhost(route.project, parsed.args.environment)
-                return sendJson(res, 200, { ...reply, vhost })
+                const vhost = parsed.args.domain === null ? null : await firstVhost(route.project, parsed.args.environment)
+                const copy = parsed.copyFromLive ? await startCopy(route.project, parsed.args.environment) : null
+                return sendJson(res, 200, { ...reply, ...(vhost === null ? {} : { vhost }), ...(copy === null ? {} : { copy }) })
             }
 
             case 'remove-environment':
@@ -1373,6 +1422,50 @@ export function createHandler(deps: ApiDeps): (req: IncomingMessage, res: Server
                 if (!reply) return
                 // The registry changed, so api's copy catches up before answering, as a branch switch does
                 return respondAgentAction('configure', reply, route.project, named, true)
+            }
+
+            case 'copy-from-live': {
+                const target = `${route.environment} copy-from-live`
+                const entry = await authorizeProject(route.project, 'provision', target)
+                if (!entry) return
+                // Refused here as well as by the agent, so a copy into live never even reaches it
+                if (route.environment === 'live') {
+                    return refuseRoute(400, 'bad-request', 'live is what a copy reads from; it is never copied into', route.project, 'provision', target)
+                }
+                if (!entry.environments.has(route.environment)) {
+                    return refuseRoute(404, 'unknown-environment', `${route.project} has no ${route.environment} environment`, route.project, 'provision', target)
+                }
+                const reply = await callAgentAudited(
+                    { verb: 'copy', project: route.project, args: { action: 'start', environment: route.environment, actor: caller.user } },
+                    route.project, 'provision', target,
+                )
+                if (!reply) return
+                // Answered as soon as the run has started, like a backup: the outcome lands in the record
+                // the portal polls through GET .../copy-runs/:run. Nothing in the registry changed.
+                return respondAgentAction('provision', reply, route.project, target, false)
+            }
+
+            // The runs are reads, audited only when refused, like the deploy history
+            case 'copy-runs': {
+                const target = `${route.environment} copy-runs`
+                if (!(await decide(route.project, 'provision', target))) return
+                const reply = await callAgent({ verb: 'copy', project: route.project, args: { action: 'list', environment: route.environment } })
+                if (!reply) return
+                if (!reply.ok) return refuseRoute(AGENT_STATUS[reply.code], reply.code, reply.message, route.project, 'provision', target)
+                return sendJson(res, 200, reply)
+            }
+
+            case 'copy-run': {
+                const target = `${route.environment} copy-runs ${route.run}`
+                if (!(await decide(route.project, 'provision', target))) return
+                const reply = await callAgent({ verb: 'copy', project: route.project, args: { action: 'get-run', environment: route.environment, run: route.run } })
+                if (!reply) return
+                if (!reply.ok) return refuseRoute(AGENT_STATUS[reply.code], reply.code, reply.message, route.project, 'provision', target)
+                // The record itself, which is what the portal polls
+                if (!('record' in reply) || reply.record === null) {
+                    return refuseRoute(404, 'not-found', `no copy ${route.run} of ${route.project} ${route.environment}`, route.project, 'provision', target)
+                }
+                return sendJson(res, 200, reply.record)
             }
 
             case 'deploys':

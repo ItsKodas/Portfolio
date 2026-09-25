@@ -1,9 +1,12 @@
 // A minimal Docker Engine API client over the Unix socket: ping, list, inspect, logs and exec.
 // Lifecycle otherwise goes through the compose CLI: this client never creates, starts or stops a
-// container, and exec is used only to run a fixed command inside an already-running one (a database dump).
+// container, and exec is used only to run a fixed command inside an already-running one (a database dump,
+// or a load that reads one on stdin).
 
 import { request as httpRequest, type ClientRequest, type IncomingMessage, type RequestOptions } from 'node:http'
+import type { Socket } from 'node:net'
 import type { Readable } from 'node:stream'
+import { pipeline } from 'node:stream/promises'
 import { isComposeService, type ProjectEntry } from '../shared/registry.ts'
 import type { ServiceStatus } from '../shared/protocol.ts'
 import { FrameDecoder } from './logframes.ts'
@@ -37,7 +40,13 @@ export type DockerApi = {
     logs(id: string, options: LogsOptions): Promise<Readable>
     // Runs argv in an already-running container and hands stdout to the caller chunk by chunk. stdout is
     // never buffered here: it becomes a database dump, which can be larger than this process's memory.
-    exec(id: string, argv: string[], onStdout: (chunk: Buffer) => Promise<void> | void): Promise<ExecResult>
+    // With stdin, the stream is fed to the command and then closed, which is how a load reads a dump.
+    // onStderr sees every stderr chunk, uncapped (psql reports a failed load only there, possibly after
+    // more noise than the result's capped stderr holds); the result's stderr stays capped either way.
+    exec(
+        id: string, argv: string[], onStdout: (chunk: Buffer) => Promise<void> | void,
+        stdin?: Readable, onStderr?: (chunk: Buffer) => void,
+    ): Promise<ExecResult>
 }
 
 type RequestFn = (options: RequestOptions, callback: (response: IncomingMessage) => void) => ClientRequest
@@ -113,6 +122,31 @@ export function createDockerApi(socketPath = DOCKER_SOCKET, request: RequestFn =
         })
     }
 
+    // Docker's hijacked connection: the start call asks to upgrade, Docker answers 101, and the socket then
+    // carries stdin one way and the multiplexed output the other. Only the wait for the 101 is bounded.
+    function openUpgrade(path: string, body: unknown): Promise<{ socket: Socket, head: Buffer }> {
+        const payload = Buffer.from(JSON.stringify(body))
+        return new Promise((resolve, reject) => {
+            const options: RequestOptions = {
+                socketPath, path, method: 'POST',
+                headers: { 'content-type': 'application/json', 'content-length': String(payload.length), connection: 'Upgrade', upgrade: 'tcp' },
+            }
+            // Anything but a 101 arrives as an ordinary response: Docker refused the upgrade.
+            const req = request(options, response => {
+                response.resume()
+                reject(new Error(`Docker API exec start answered ${response.statusCode}`))
+            })
+            req.on('upgrade', (_response: IncomingMessage, socket: Socket, head: Buffer) => {
+                req.setTimeout(0)
+                socket.setTimeout(0)
+                resolve({ socket, head })
+            })
+            req.on('error', reject)
+            req.setTimeout(DOCKER_TIMEOUT_MS, () => req.destroy(new Error(`Docker API timed out on ${endpoint(path)}`)))
+            req.end(payload)
+        })
+    }
+
     async function postJson<T>(path: string, body: unknown): Promise<T> {
         const response = await openPost(path, body, DOCKER_TIMEOUT_MS)
         response.setEncoding('utf8')
@@ -150,12 +184,66 @@ export function createDockerApi(socketPath = DOCKER_SOCKET, request: RequestFn =
             }
             return response
         },
-        async exec(id, argv, onStdout) {
+        async exec(id, argv, onStdout, stdin, onStderr) {
             const checked = checkedId(id)
             const created = await postJson<{ Id: string }>(`/containers/${checked}/exec`, {
-                AttachStdout: true, AttachStderr: true, AttachStdin: false, Tty: false, Cmd: argv,
+                AttachStdout: true, AttachStderr: true, AttachStdin: stdin !== undefined, Tty: false, Cmd: argv,
             })
             const execId = checkedId(created.Id)
+            const decoder = new FrameDecoder()
+            let stderr = ''
+            const read = async (chunk: Buffer) => {
+                for (const frame of decoder.push(chunk)) {
+                    if (frame.stream === 'stdout') {
+                        await onStdout(frame.data)
+                        continue
+                    }
+                    onStderr?.(frame.data)
+                    if (stderr.length < MAX_EXEC_STDERR) stderr += frame.data.toString('utf8')
+                }
+            }
+            const finish = async (): Promise<ExecResult> => {
+                const inspected = await json<{ ExitCode: number | null }>(`/exec/${execId}/json`)
+                return { exitCode: inspected.ExitCode, stderr: stderr.slice(0, MAX_EXEC_STDERR).trim() }
+            }
+
+            if (stdin !== undefined) {
+                const { socket, head } = await openUpgrade(`/exec/${execId}/start`, { Detach: false, Tty: false })
+                // pipeline ends the socket once stdin is done, which half-closes it: the command sees end of
+                // input, and its output keeps arriving on the read side until it exits.
+                //
+                // A command that exits before reading everything (psql with a bad password, say) closes the
+                // connection under the writer. The write then fails, and pipeline destroys every stream with
+                // that same EPIPE, stdin's source included, so stdin.errored cannot say whose fault it was.
+                // Which side failed first can: listeners on both, attached before the pipeline starts, keep
+                // the first failure. Only a source that failed first is thrown as it is (the dump could not be
+                // read). Otherwise the command's exit code and the stderr read so far are the story, so the
+                // result is returned whenever the command itself failed, and the error is thrown only when it
+                // did not.
+                let first: { side: 'stdin' | 'socket', error: unknown } | null = stdin.errored ? { side: 'stdin', error: stdin.errored } : null
+                const onStdinError = (error: unknown) => { first ??= { side: 'stdin', error } }
+                const onSocketError = (error: unknown) => { first ??= { side: 'socket', error } }
+                stdin.on('error', onStdinError)
+                socket.on('error', onSocketError)
+                let fedError: unknown = null
+                const feeding = pipeline(stdin, socket).catch(error => { fedError = error ?? new Error('stdin failed') })
+                let readError: unknown = null
+                try {
+                    if (head.length > 0) await read(head)
+                    for await (const chunk of socket) await read(chunk as Buffer)
+                } catch (error) {
+                    readError = error
+                }
+                // The listeners stay: a stream destroyed late must not raise an error nobody listens for
+                await feeding
+                const failed = first as { side: 'stdin' | 'socket', error: unknown } | null
+                if (failed?.side === 'stdin') throw failed.error
+                const failure = failed?.error ?? fedError ?? readError
+                const result = await finish()
+                if (failure !== null && (result.exitCode === 0 || result.exitCode === null)) throw failure
+                return result
+            }
+
             // Tty is false above, so the output is multiplexed and the frame decoder that reads logs reads
             // this too. The header wait is bounded; the body is not, because a dump of a large database is
             // legitimately slow and must not be killed for taking its time.
@@ -164,16 +252,8 @@ export function createDockerApi(socketPath = DOCKER_SOCKET, request: RequestFn =
                 stream.resume()
                 throw new Error(`Docker API exec start answered ${stream.statusCode}`)
             }
-            const decoder = new FrameDecoder()
-            let stderr = ''
-            for await (const chunk of stream) {
-                for (const frame of decoder.push(chunk as Buffer)) {
-                    if (frame.stream === 'stdout') await onStdout(frame.data)
-                    else if (stderr.length < MAX_EXEC_STDERR) stderr += frame.data.toString('utf8')
-                }
-            }
-            const inspected = await json<{ ExitCode: number | null }>(`/exec/${execId}/json`)
-            return { exitCode: inspected.ExitCode, stderr: stderr.slice(0, MAX_EXEC_STDERR).trim() }
+            for await (const chunk of stream) await read(chunk as Buffer)
+            return finish()
         },
     }
 }

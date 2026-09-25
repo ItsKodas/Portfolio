@@ -8,9 +8,11 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 const callerFromSession = vi.fn()
 const listDeploys = vi.fn()
+const copyRuns = vi.fn()
 
 vi.mock('@/server/hostd/session', () => ({ callerFromSession: () => callerFromSession() }))
 vi.mock('@/server/hostd/deploys', () => ({ listDeploys: (...args: unknown[]) => listDeploys(...args) }))
+vi.mock('@/server/hostd/environments', () => ({ copyRuns: (...args: unknown[]) => copyRuns(...args) }))
 // The three server actions are round trips this panel never makes while rendering, and importing them
 // for real would drag Prisma and next/cache into a jsdom test for nothing.
 vi.mock('./actions', () => ({
@@ -63,6 +65,7 @@ beforeEach(() => {
     process.env.HOSTD_API_TOKEN = 'a'.repeat(32)
     callerFromSession.mockResolvedValue(admin)
     listDeploys.mockResolvedValue(history())
+    copyRuns.mockResolvedValue({ ok: true, value: { runs: [], running: false } })
 })
 
 describe('the deploy history, for the operator', () => {
@@ -189,5 +192,50 @@ describe('the same tab, for the client whose site it is', () => {
 
         expect(screen.queryByText(/var\/www/)).toBeNull()
         expect(screen.getByRole('alert')).toBeInTheDocument()
+    })
+})
+
+describe('while a copy of live data into the viewed environment runs', () => {
+    const copying = { ok: true, value: { runs: [], running: true } }
+
+    it('says deploys wait until it ends', async () => {
+        copyRuns.mockResolvedValue(copying)
+
+        render(await panel({ environments: [live, test], environment: 'test' }))
+
+        expect(copyRuns).toHaveBeenCalledWith(expect.anything(), admin.caller, 'asot', 'test')
+        expect(screen.getByText(/Deploys of test wait until it ends/)).toBeInTheDocument()
+    })
+
+    it('says nothing once no copy is running', async () => {
+        render(await panel({ environments: [live, test], environment: 'test' }))
+
+        expect(copyRuns).toHaveBeenCalled()
+        expect(screen.queryByText(/wait until it ends/)).toBeNull()
+    })
+
+    it('says nothing, and still shows the tab, when the copies could not be read', async () => {
+        copyRuns.mockResolvedValue({ ok: false, code: 'unavailable', message: 'hostd is not answering' })
+
+        render(await panel({ environments: [live, test], environment: 'test' }))
+
+        expect(screen.queryByText(/wait until it ends/)).toBeNull()
+        expect(screen.getByText('Fix the booking form')).toBeInTheDocument()
+    })
+
+    it('does not ask about live, which is never copied into', async () => {
+        render(await panel())
+
+        expect(copyRuns).not.toHaveBeenCalled()
+    })
+
+    it('is never shown to a client, who is not asked about', async () => {
+        callerFromSession.mockResolvedValue(client)
+        copyRuns.mockResolvedValue(copying)
+
+        render(await panel({ environments: [live, test], environment: 'test' }))
+
+        expect(copyRuns).not.toHaveBeenCalled()
+        expect(screen.queryByText(/wait until it ends/)).toBeNull()
     })
 })

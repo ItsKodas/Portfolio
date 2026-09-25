@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest'
 
-import { addEnvironment, deleteEnvironment, listDeletedEnvironments, restoreEnvironment } from './environments'
+import {
+    addEnvironment, copyFromLive, copyRuns, deleteEnvironment, listDeletedEnvironments, restoreEnvironment,
+} from './environments'
 
 const config = { url: 'http://hostd-api:8080', token: 'a'.repeat(32) }
 const admin = { actor: 'admin', user: 'koda@horizons.gg' }
@@ -22,13 +24,26 @@ describe('addEnvironment', () => {
         expect(calls[0].url).toBe('http://hostd-api:8080/projects/acme/environments')
         expect(calls[0].method).toBe('POST')
         expect(calls[0].headers?.['content-type']).toBe('application/json')
-        expect(JSON.parse(calls[0].body as string)).toEqual({ name: 'uat1', branch: 'uat', domain: 'uat.acme.com' })
+        expect(JSON.parse(calls[0].body as string)).toEqual({ name: 'uat1', branch: 'uat', domain: 'uat.acme.com', copyFromLive: false })
     })
 
     it('sends no hostname as null', async () => {
         const { fetchImpl, calls } = fakeFetch({ ok: true })
         await addEnvironment(config, admin, 'acme', { name: 'uat1', branch: 'uat', domain: null }, fetchImpl)
-        expect(JSON.parse(calls[0].body as string)).toEqual({ name: 'uat1', branch: 'uat', domain: null })
+        expect(JSON.parse(calls[0].body as string)).toEqual({ name: 'uat1', branch: 'uat', domain: null, copyFromLive: false })
+    })
+
+    it("asks for a copy of live's data when told to, and carries back the run it started", async () => {
+        const { fetchImpl, calls } = fakeFetch({ ok: true, copy: { run: 'r1' } })
+        const result = await addEnvironment(config, admin, 'acme', { name: 'uat1', branch: 'uat', domain: null, copyFromLive: true }, fetchImpl)
+        expect(JSON.parse(calls[0].body as string)).toEqual({ name: 'uat1', branch: 'uat', domain: null, copyFromLive: true })
+        expect(result).toEqual({ ok: true, value: { copy: { run: 'r1' } } })
+    })
+
+    it('carries back why a copy after the add was refused', async () => {
+        const { fetchImpl } = fakeFetch({ ok: true, copy: { refused: 'db is a generic database' } })
+        const result = await addEnvironment(config, admin, 'acme', { name: 'uat1', branch: 'uat', domain: null, copyFromLive: true }, fetchImpl)
+        expect(result).toEqual({ ok: true, value: { copy: { refused: 'db is a generic database' } } })
     })
 
     it('carries a vhost that could not be written back beside the environment that was added', async () => {
@@ -130,6 +145,83 @@ describe('restoreEnvironment', () => {
     it('refuses live before asking', async () => {
         const { fetchImpl, calls } = fakeFetch({ ok: true })
         expect((await restoreEnvironment(config, admin, 'acme', 'live', '2026-09-20T10:00:00.000Z', fetchImpl)).ok).toBe(false)
+        expect(calls).toHaveLength(0)
+    })
+})
+
+const record = (over: Record<string, unknown> = {}) => ({
+    project: 'acme',
+    environment: 'uat1',
+    run: 'r1',
+    actor: 'koda@horizons.gg',
+    startedAt: '2026-09-25T10:00:00.000Z',
+    durationMs: 0,
+    outcome: 'running',
+    step: null,
+    reason: null,
+    services: ['db'],
+    storage: ['uploads'],
+    ...over,
+})
+
+describe('copyFromLive', () => {
+    it("posts to the environment's copy-from-live route with no body, and answers the run", async () => {
+        const { fetchImpl, calls } = fakeFetch({ ok: true, run: 'r1' })
+        expect(await copyFromLive(config, admin, 'acme', 'uat1', fetchImpl)).toEqual({ ok: true, value: { run: 'r1' } })
+        expect(calls[0].url).toBe('http://hostd-api:8080/projects/acme/uat1/copy-from-live')
+        expect(calls[0].method).toBe('POST')
+        expect(calls[0].body).toBeUndefined()
+    })
+
+    it("carries hostd's refusal through", async () => {
+        const { fetchImpl } = fakeFetch({ code: 'busy', message: 'uat1 is deploying' }, 409)
+        expect(await copyFromLive(config, admin, 'acme', 'uat1', fetchImpl)).toEqual({ ok: false, code: 'busy', message: 'uat1 is deploying' })
+    })
+
+    it('reads a reply with no run as a failure rather than a run called undefined', async () => {
+        const { fetchImpl } = fakeFetch({ ok: true })
+        expect((await copyFromLive(config, admin, 'acme', 'uat1', fetchImpl)).ok).toBe(false)
+    })
+
+    it('never copies into live, or a malformed name or project, and does not ask', async () => {
+        const { fetchImpl, calls } = fakeFetch({ ok: true, run: 'r1' })
+        for (const [id, environment] of [['acme', 'live'], ['acme', '../live'], ['acme', 'git'], ['../x', 'uat1']]) {
+            expect((await copyFromLive(config, admin, id, environment, fetchImpl)).ok, `${id} ${environment}`).toBe(false)
+        }
+        expect(calls).toHaveLength(0)
+    })
+})
+
+describe('copyRuns', () => {
+    it("reads the environment's runs and whether one is going", async () => {
+        const { fetchImpl, calls } = fakeFetch({ runs: [record()], running: true })
+        expect(await copyRuns(config, admin, 'acme', 'uat1', fetchImpl)).toEqual({ ok: true, value: { runs: [record()], running: true } })
+        expect(calls[0].url).toBe('http://hostd-api:8080/projects/acme/uat1/copy-runs')
+        expect(calls[0].method).toBeUndefined()
+    })
+
+    it('reads a reply with nothing in it as no runs and none going', async () => {
+        const { fetchImpl } = fakeFetch({})
+        expect(await copyRuns(config, admin, 'acme', 'uat1', fetchImpl)).toEqual({ ok: true, value: { runs: [], running: false } })
+    })
+
+    it('keeps only what it can read of each record', async () => {
+        const { fetchImpl } = fakeFetch({
+            runs: [record({ outcome: 'failed', step: 'load:db', reason: 'psql exited 3', services: ['db', 4], durationMs: 'x' }), 'junk'],
+            running: 'yes',
+        })
+        expect(await copyRuns(config, admin, 'acme', 'uat1', fetchImpl)).toEqual({
+            ok: true,
+            value: {
+                runs: [record({ outcome: 'failed', step: 'load:db', reason: 'psql exited 3', services: ['db'], durationMs: null })],
+                running: false,
+            },
+        })
+    })
+
+    it('refuses live before asking', async () => {
+        const { fetchImpl, calls } = fakeFetch({ runs: [], running: false })
+        expect((await copyRuns(config, admin, 'acme', 'live', fetchImpl)).ok).toBe(false)
         expect(calls).toHaveLength(0)
     })
 })

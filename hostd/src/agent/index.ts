@@ -2,8 +2,8 @@
 // the Docker socket, so it listens on nothing but a Unix socket shared with api.
 
 import { createServer, createConnection } from 'node:net'
-import { createWriteStream } from 'node:fs'
-import { chmod, chown, constants, copyFile, cp, lstat, mkdir, readdir, readFile, realpath, rename, rm, rmdir, stat, statfs, unlink, writeFile } from 'node:fs/promises'
+import { createReadStream, createWriteStream } from 'node:fs'
+import { chmod, chown, constants, copyFile, cp, lchown, lstat, mkdir, readdir, readFile, realpath, rename, rm, rmdir, stat, statfs, unlink, writeFile } from 'node:fs/promises'
 import { randomBytes } from 'node:crypto'
 import { posix } from 'node:path'
 import { RegistryStore, explainRegistryError } from '../shared/registry-store.ts'
@@ -39,6 +39,8 @@ import type { DomainsConfig, DomainsDeps } from './domains.ts'
 import { SitesEnabledReader } from './sites-enabled.ts'
 import { siblingDirProblem } from './boot-checks.ts'
 import { DeletedStore } from './deleted-store.ts'
+import { CopyStore } from './copy-store.ts'
+import { removeInterruptedStaging, type CopyFs } from './copy-run.ts'
 
 const REGISTRY_FILE = process.env.HOSTD_REGISTRY_FILE ?? '/etc/hostd/registry/projects.yaml'
 const SOCKET_PATH = process.env.HOSTD_AGENT_SOCKET ?? '/run/hostd/agent.sock'
@@ -54,6 +56,9 @@ const DEPLOY_STATE_FILE = process.env.HOSTD_DEPLOY_STATE_FILE ?? '/var/lib/hostd
 // The deleted environments record: what sits in each site's .deleted folder, restorable for 30 days. In
 // the same state directory, for the same reason: a restart must not forget what the trash holds.
 const DELETED_ENVIRONMENTS_FILE = process.env.HOSTD_DELETED_ENVIRONMENTS_FILE ?? '/var/lib/hostd/deleted-environments.json'
+// The record of copies from live into another environment, the last 20 of each. Beside the others, so a
+// restart remembers them, and can tell which copy it interrupted.
+const COPIES_FILE = process.env.HOSTD_COPIES_FILE ?? '/var/lib/hostd/copies.json'
 // The flags Apache reads to serve the holding page. Bind-mounted from the host's own /run, which is a
 // tmpfs, so a reboot can never leave a site behind a maintenance page nobody remembers putting up.
 const MAINTENANCE_DIR = process.env.HOSTD_MAINTENANCE_DIR ?? '/run/hostd/maintenance'
@@ -321,6 +326,7 @@ async function main(): Promise<void> {
         remove: async path => { await rm(path, { recursive: true, force: true }) },
         copy: async (from, to) => { await cp(from, to, { recursive: true }) },
         exists,
+        realpath: path => realpath(path),
     }
     const backupStore = new BackupStore(BACKUP_STATE_FILE, undefined, log)
     await backupStore.load()
@@ -345,6 +351,62 @@ async function main(): Promise<void> {
             .some(environment => deployRunner.isRunning(deployKey(id, environment))),
     }
     const backupRunner = new BackupRunner(backupDeps)
+
+    // Bytes under a path, without following links: what a copy of live's storage is about to take
+    const sizeOf = async (path: string): Promise<number> => {
+        let info
+        try {
+            info = await lstat(path)
+        } catch (error) {
+            if ((error as NodeJS.ErrnoException).code === 'ENOENT') return 0
+            throw error
+        }
+        if (!info.isDirectory()) return info.size
+        let total = 0
+        for (const entry of await readdir(path, { withFileTypes: true, recursive: true })) {
+            if (entry.isDirectory()) continue
+            try {
+                total += (await lstat(posix.join(entry.parentPath, entry.name))).size
+            } catch {
+                // Gone since the listing: nothing to count
+            }
+        }
+        return total
+    }
+    const copyFs: CopyFs = {
+        // 0700 for staging, which holds a copy of the client's databases inside the site folder
+        mkdir: async (dir, options) => { await mkdir(dir, { recursive: true, ...(options?.private ? { mode: 0o700 } : {}) }) },
+        move: (from, to) => rename(from, to),
+        rmdir: dir => rm(dir, { recursive: true, force: true }),
+        exists,
+        lkind: async path => {
+            try {
+                const info = await lstat(path)
+                return info.isSymbolicLink() ? 'link' : info.isDirectory() ? 'dir' : info.isFile() ? 'file' : 'other'
+            } catch (error) {
+                const code = (error as NodeJS.ErrnoException).code
+                if (code === 'ENOENT' || code === 'ENOTDIR') return 'none'
+                throw error
+            }
+        },
+        realpath: path => realpath(path),
+        owner: ownerOf,
+        own: (dir, like) => ownTree(dir, like),
+        // lchown: never through a symlink
+        chown: (path, uid, gid) => lchown(path, uid, gid),
+        chmod: (path, mode) => chmod(path, mode),
+        writeStream: backupFs.writeStream,
+        readStream: path => createReadStream(path),
+        freeBytes: async path => {
+            const info = await statfs(path)
+            return info.bavail * info.bsize
+        },
+        sizeOf,
+    }
+    const copyStore = new CopyStore(COPIES_FILE, undefined, log)
+    await copyStore.load()
+    // A copy still marked running belonged to the agent that stopped: it is failed, and its staging goes
+    await removeInterruptedStaging(await copyStore.markInterrupted(Date.now()), store.current(), copyFs, log)
 
     // The agent's end of the host rail: a file dropped for a systemd path unit on the host to pick up,
     // since this process has no network namespace of its own to reach Apache through.
@@ -399,6 +461,7 @@ async function main(): Promise<void> {
         // silently tolerated.
         ...backupStore.warnings(),
         ...deletedStore.warnings(),
+        ...copyStore.warnings(),
         ...[...store.current().invalid].map(([id, problem]) => `project ${id} is invalid: ${problem}`),
         ...guard.warnings(),
         // A file in sites-enabled that cannot be opened fails apache2ctl configtest, and hostd runs a
@@ -452,6 +515,14 @@ async function main(): Promise<void> {
             // The store's own rejection state, the same that /health reports as a warning: while the
             // registry file is rejected, the purge keeps every record
             registryRejection: () => store.rejected(),
+        },
+        copies: {
+            store: copyStore,
+            fs: copyFs,
+            // Six bytes of hex, which is what RUN_ID accepts
+            newRunId: () => randomBytes(6).toString('hex'),
+            log,
+            now: Date.now,
         },
     })
 

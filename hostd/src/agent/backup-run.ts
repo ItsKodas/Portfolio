@@ -2,13 +2,17 @@
 // happened by the time anything can react to it.
 //
 // Live only. Every path here comes from environmentOf(project, 'live') or project.storage, both of which
-// the registry derived; nothing a request carried ever becomes a path.
+// the registry derived; nothing a request carried ever becomes a path. A path under the site is resolved
+// before it is read and must stay in live's (or, for a bind mount, the site's) folder: a symlink in the
+// checkout is the client's own content and could point at another site.
 
+import { once } from 'node:events'
 import { posix } from 'node:path'
 import type { Writable } from 'node:stream'
 
 import { clampKeep, diskProblem, type BackupRecord, type BackupTag } from '../shared/backups.ts'
-import { describeError } from '../shared/formats.ts'
+import { describeError, isWithin } from '../shared/formats.ts'
+import { siteOf } from '../shared/layout.ts'
 import { environmentOf, type Keep, type ProjectEntry } from '../shared/registry.ts'
 import type { DiskUsage } from '../shared/system.ts'
 import { composeBase, resolveCompose, tail, type Runner } from './compose.ts'
@@ -26,7 +30,12 @@ export type BackupFs = {
     remove(path: string): Promise<void>
     copy(from: string, to: string): Promise<void>
     exists(path: string): Promise<boolean>
+    // Where a path really is, every symlink along it followed
+    realpath(path: string): Promise<string>
 }
+
+// Where client sites live: a bind mount under it (or resolving into it) must stay in its own site's folder
+const WWW = '/var/www'
 
 export type BackupDeps = {
     backupDir: string
@@ -37,6 +46,27 @@ export type BackupDeps = {
     disk: () => Promise<DiskUsage | null>
     now: () => number
     log(message: string): void
+}
+
+// One chunk of a dump into its file, waiting for the file to take it when it is behind. A write that fails
+// (a full disk) never drains, so the wait is on drain, error or close, whichever comes first: the dump then
+// fails rather than waiting forever with the database's dump process blocked behind it.
+export async function writeChunk(sink: Writable, chunk: Buffer): Promise<void> {
+    if (sink.errored) throw sink.errored
+    if (sink.destroyed || sink.writableEnded) throw new Error('the dump file was closed while the dump was still being written')
+    if (sink.write(chunk)) return
+    const stop = new AbortController()
+    try {
+        await Promise.race([
+            // once rejects on error
+            once(sink, 'drain', { signal: stop.signal }),
+            once(sink, 'close', { signal: stop.signal }).then(() => {
+                throw sink.errored ?? new Error('the dump file was closed while the dump was still being written')
+            }),
+        ])
+    } finally {
+        stop.abort()
+    }
 }
 
 export type BackupRequest = { tag: BackupTag, actor: string, run: string, keep: Keep | null }
@@ -63,6 +93,8 @@ export async function runBackup(project: ProjectEntry, request: BackupRequest, d
     try {
         const planned = dumpPlans(project)
         if (!planned.ok) return record('failed', null, planned.problem)
+        const outside = await storageOutside(project, live.dir, deps.fs)
+        if (outside) return record('failed', null, outside)
 
         await deps.fs.mkdir(staging)
         // restic init on an existing repository exits non-zero, which is why this asks first rather than
@@ -110,6 +142,27 @@ export async function runBackup(project: ProjectEntry, request: BackupRequest, d
     }
 }
 
+// A symlink in live's checkout (committed to the repo, say, as public -> /var/www/<other site>/live/public)
+// could lead a storage path out of live's folder, and restic would then capture another site's files into
+// this one's repository. restic reads each path it is given with lstat, so a storage folder that is itself
+// a symlink is stored as the link and nothing it points at is read: only the folders above it are resolved
+// here. One that is not there is left to restic, which reports a missing path as it always has. Null when
+// every storage folder stays inside live's folder, or why the backup will not run.
+async function storageOutside(project: ProjectEntry, dir: string, fs: BackupFs): Promise<string | null> {
+    const root = await fs.realpath(dir)
+    for (const entry of Object.values(project.storage)) {
+        const parent = posix.dirname(entry.absolute)
+        let real: string
+        try {
+            real = await fs.realpath(parent)
+        } catch {
+            continue
+        }
+        if (!isWithin(root, real)) return `storage ${entry.path} resolves outside live's folder (through ${parent}, to ${real}), so the backup will not read it`
+    }
+    return null
+}
+
 // Returns null on success, or why the dump failed.
 async function dump(
     plan: DumpPlan,
@@ -120,8 +173,17 @@ async function dump(
     deps: BackupDeps,
 ): Promise<string | null> {
     if (plan.kind === 'sqlite') {
-        // sqlite3's own .backup is safe against a concurrent writer, which copying the file is not.
-        const source = posix.join(dir, plan.source)
+        // sqlite3's own .backup is safe against a concurrent writer, which copying the file is not. The file
+        // is read at the path it resolves to, which must be inside live's folder: a symlink in live's
+        // checkout could otherwise have this site's backup read another site's database.
+        let source: string
+        try {
+            source = await deps.fs.realpath(posix.join(dir, plan.source))
+        } catch (error) {
+            return `${plan.service}: ${plan.source} could not be resolved: ${describeError(error)}`
+        }
+        const root = await deps.fs.realpath(dir)
+        if (!isWithin(root, source)) return `${plan.service}: ${plan.source} resolves outside live's folder (to ${source}), so the backup will not read it`
         const result = await deps.runner('sqlite3', [source, `.backup ${target}`], LIFECYCLE_TIMEOUT_MS)
         return result.exitCode === 0 && !result.timedOut ? null : `${plan.service}: sqlite3 exited with code ${result.exitCode}: ${tail(result.stderr.trim(), 500)}`
     }
@@ -136,6 +198,22 @@ async function dump(
             .filter(volume => volume.type === 'bind' && typeof volume.source === 'string')
             .map(volume => volume.source!)
         if (sources.length === 0) return `${plan.service}: a generic engine needs a bind-mounted data directory to copy`
+        // Checked before anything is stopped: a bind mount under /var/www, or one that resolves into it,
+        // must resolve inside this site's own folder, or a symlink in the checkout could have this site's
+        // backup read another's. A bind mount elsewhere on the host is the compose file's own business.
+        const site = await deps.fs.realpath(siteOf(dir))
+        for (const source of sources) {
+            let real: string
+            try {
+                real = await deps.fs.realpath(source)
+            } catch (error) {
+                if (isWithin(WWW, source)) return `${plan.service}: its bind mount ${source} could not be resolved: ${describeError(error)}`
+                continue
+            }
+            if ((isWithin(WWW, source) || isWithin(WWW, real)) && !isWithin(site, real)) {
+                return `${plan.service}: its bind mount ${source} resolves outside the site's folder ${siteOf(dir)} (to ${real}), so the backup will not read it`
+            }
+        }
         const base = composeBase({ dir, composePaths: project.composePaths, composeName: project.composeName })
         const stopped = await deps.runner('docker', [...base, 'stop', plan.service], LIFECYCLE_TIMEOUT_MS)
         if (stopped.exitCode !== 0) return `${plan.service}: could not be stopped to copy its data`
@@ -154,10 +232,10 @@ async function dump(
     if (!container) return `${plan.service}: no container is running to dump from`
     if (container.State !== 'running') return `${plan.service}: the container is ${container.State}, so there is nothing to dump from`
     const { sink, done } = deps.fs.writeStream(target)
+    // Handled from the start: a write that fails rejects this long before the exec below returns
+    done.catch(() => {})
     try {
-        const result = await deps.docker.exec(container.Id, plan.argv, chunk => {
-            if (!sink.write(chunk)) return new Promise<void>(resolve => sink.once('drain', () => resolve()))
-        })
+        const result = await deps.docker.exec(container.Id, plan.argv, chunk => writeChunk(sink, chunk))
         sink.end()
         await done
         if (result.exitCode !== 0) return `${plan.service}: the dump exited with code ${result.exitCode}: ${tail(result.stderr, 500)}`
