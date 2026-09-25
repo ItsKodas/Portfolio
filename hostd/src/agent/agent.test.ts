@@ -2068,7 +2068,7 @@ describe('copying from live', () => {
                 realpath: async path => path,
                 registryRejection: () => null,
             },
-            copies: { store, fs, newRunId: () => 'abcdef012345', log: () => {}, now: () => 0, run },
+            copies: { store, fs, helper: async () => { throw new Error('the fake run never calls the helper') }, newRunId: () => 'abcdef012345', log: () => {}, now: () => 0, run },
             recheck: async () => { await gated(); return null },
         })
         return { ...context, records, runs, blocks, started, backupsStarted, release }

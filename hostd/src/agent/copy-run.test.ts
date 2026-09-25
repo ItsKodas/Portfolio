@@ -8,6 +8,7 @@ import type { Runner, RunResult } from './compose.ts'
 import { parseRegistry, type ProjectEntry } from '../shared/registry.ts'
 import type { CopyRecord } from '../shared/protocol.ts'
 import { loadPlan } from './copy-plans.ts'
+import { mkdirArgv, renameArgv, FOLDER_CHANGED, type HelperMount, type IoHelper } from './io-helper.ts'
 
 const YAML = `projects:
   acme:
@@ -93,6 +94,10 @@ type Options = {
     links?: Record<string, string>
     // Dangling symlinks: a path, and the missing path it points at
     dangling?: Record<string, string>
+    // A rename in the helper that fails, and why
+    moveFail?: (from: string, to: string) => string | null
+    // The folder holding live's sqlite file was swapped between the agent's check and the helper's mount
+    swapped?: boolean
 }
 
 function setup(options: Options = {}) {
@@ -162,6 +167,8 @@ function setup(options: Options = {}) {
     }
 
     const runner: Runner = async (command, args) => {
+        // Reading live and writing the environment happen in the helper, never in the agent itself
+        if (command === 'sqlite3' || command === 'cp') throw new Error(`${command} ran in the agent, not the helper`)
         let line: string
         if (command === 'docker' && args[0] === 'compose') {
             const name = args[args.indexOf('--project-name') + 1]!
@@ -185,22 +192,74 @@ function setup(options: Options = {}) {
         calls.push(line)
         const failed = options.runFail?.(command, args)
         if (failed) return { exitCode: 1, stdout: '', stderr: 'it failed', timedOut: false, ...failed }
-        if (command === 'sqlite3') paths.add(args[1]!.replace('.backup ', ''))
-        if (command === 'cp') paths.add(args[2]!)
         return { exitCode: 0, stdout: '', stderr: '', timedOut: false }
+    }
+
+    // rename moves a symlink itself, dangling or not
+    const move = (from: string, to: string) => {
+        calls.push(`move ${from} -> ${to}`)
+        const failed = options.moveFail?.(from, to)
+        if (failed) throw new Error(failed)
+        if (!exists(from) && !links.has(from)) throw new Error(`ENOENT: ${from}`)
+        for (const entry of [...paths]) if (under(entry, from)) { paths.delete(entry); paths.add(to + entry.slice(from.length)) }
+        for (const [entry, text] of [...files]) if (under(entry, from)) { files.delete(entry); files.set(to + entry.slice(from.length), text) }
+        for (const [entry, link] of [...links]) if (under(entry, from)) { links.delete(entry); links.set(to + entry.slice(from.length), link) }
+        for (const entry of [...dirs]) if (under(entry, from)) { dirs.delete(entry); dirs.add(to + entry.slice(from.length)) }
+    }
+
+    // The helper container, working on the same files: each path it is given is read back through its
+    // mounts to the host path, so the calls read as they would on the host
+    const helperRuns: Array<{ mounts: HelperMount[], argv: string[] }> = []
+    const helper: IoHelper = async (mounts, argv) => {
+        helperRuns.push({ mounts, argv })
+        const host = (path: string) => {
+            const mount = [...mounts].sort((a, b) => b.target.length - a.target.length).find(entry => under(path, entry.target))
+            assert.ok(mount, `${path} is not in any mount of the helper`)
+            return mount.source + path.slice(mount.target.length)
+        }
+        const ok = { exitCode: 0, stdout: '', stderr: '', timedOut: false }
+        const failed = (result: Partial<RunResult> | null | undefined) => (result ? { ...ok, exitCode: 1, stderr: 'it failed', ...result } : null)
+        if (argv[0] === 'sh') {
+            // The sqlite backup: [sh, -c, script, sh, identity, database, copy]
+            const [identity, database, copy] = argv.slice(-3) as [string, string, string]
+            const db = host(`/db/${database}`)
+            if (options.swapped || identity !== `id:${host('/db')}`) return { ...ok, exitCode: FOLDER_CHANGED, stderr: 'the folder changed' }
+            const args = [db, `.backup ${host(`/stage/${copy}`)}`]
+            calls.push(`sqlite3 ${args.join(' ')}`)
+            const result = failed(options.runFail?.('sqlite3', args))
+            if (result) return result
+            paths.add(host(`/stage/${copy}`))
+            return ok
+        }
+        if (argv[0] === 'cp') {
+            const args = [argv[1]!, host(argv[2]!), host(argv[3]!)]
+            calls.push(`cp ${args.join(' ')}`)
+            const result = failed(options.runFail?.('cp', args))
+            if (result) return result
+            paths.add(args[2]!)
+            return ok
+        }
+        if (argv[2] === renameArgv('', '')[2]) {
+            try {
+                move(host(argv[3]!), host(argv[4]!))
+                return ok
+            } catch (error) {
+                return { ...ok, exitCode: 1, stderr: (error as Error).message }
+            }
+        }
+        if (argv[2] === mkdirArgv('', { uid: 0, gid: 0, mode: 0 })[2]) {
+            const dir = host(argv[3]!)
+            calls.push(`mkdir ${dir}`)
+            paths.add(dir)
+            dirs.add(dir)
+            calls.push(`own ${dir} ${argv[4]}`)
+            return ok
+        }
+        throw new Error(`the fake helper does not know ${JSON.stringify(argv)}`)
     }
 
     const fs: CopyFs = {
         mkdir: async (dir, mkdirOptions) => { calls.push(`mkdir ${dir}${mkdirOptions?.private ? ' private' : ''}`); paths.add(dir); dirs.add(dir) },
-        move: async (from, to) => {
-            calls.push(`move ${from} -> ${to}`)
-            // rename moves a symlink itself, dangling or not
-            if (!exists(from) && !links.has(from)) throw new Error(`ENOENT: ${from}`)
-            for (const entry of [...paths]) if (under(entry, from)) { paths.delete(entry); paths.add(to + entry.slice(from.length)) }
-            for (const [entry, text] of [...files]) if (under(entry, from)) { files.delete(entry); files.set(to + entry.slice(from.length), text) }
-            for (const [entry, link] of [...links]) if (under(entry, from)) { links.delete(entry); links.set(to + entry.slice(from.length), link) }
-            for (const entry of [...dirs]) if (under(entry, from)) { dirs.delete(entry); dirs.add(to + entry.slice(from.length)) }
-        },
         rmdir: async dir => {
             calls.push(`rmdir ${dir}`)
             for (const entry of [...paths]) if (under(entry, dir)) paths.delete(entry)
@@ -221,7 +280,7 @@ function setup(options: Options = {}) {
             return path
         },
         owner: async () => ({ uid: 33, gid: 33, mode: 0o755 }),
-        own: async (dir, like) => { calls.push(`own ${dir} ${like.uid}`) },
+        identity: async path => `id:${path}`,
         chown: async (path, uid, gid) => { calls.push(`chown ${path} ${uid}:${gid}`) },
         chmod: async (path, mode) => { calls.push(`chmod ${path} ${mode.toString(8)}`) },
         writeStream: path => {
@@ -245,7 +304,7 @@ function setup(options: Options = {}) {
     let clock = Date.parse('2026-09-25T10:00:00.000Z')
     const logged: string[] = []
     const deps: CopyDeps = {
-        dockerApi, runner, fs,
+        dockerApi, runner, fs, helper,
         store: {
             start: async record => { started.push(record) },
             finish: async record => { finished.push(record) },
@@ -254,7 +313,7 @@ function setup(options: Options = {}) {
         now: () => { clock += 1000; return clock },
         sleep: async () => {},
     }
-    return { deps, calls, loaded, states, files, paths, started, finished, databases, logged }
+    return { deps, calls, loaded, states, files, paths, started, finished, databases, logged, helperRuns }
 }
 
 const RESTORE = ['compose acme-uat1 start web', 'compose acme-uat1 stop db']
@@ -626,12 +685,7 @@ describe('runCopy', () => {
     })
 
     it('puts the environment\'s sqlite files back when the copy cannot be moved into place', async () => {
-        const { deps, paths, calls } = setup()
-        const move = deps.fs.move
-        deps.fs.move = async (from, to) => {
-            if (from === `${STAGING}/new/sqlite/files/app.db`) throw new Error('EIO')
-            return move(from, to)
-        }
+        const { deps, paths, calls } = setup({ moveFail: from => (from === `${STAGING}/new/sqlite/files/app.db` ? 'EIO' : null) })
         const record = await runCopy(project(), 'uat1', RUN, 'koda', deps)
         assert.equal(record.step, 'sqlite:files')
         assert.match(record.reason ?? '', /EIO/)
@@ -803,6 +857,24 @@ describe('runCopy', () => {
         assert.equal(calls.some(call => call.startsWith('sqlite3') || call.startsWith(`move ${ENV}/data`)), false, calls.join('\n'))
     })
 
+    for (const suffix of ['-wal', '-shm', '-journal']) {
+        it(`refuses to run sqlite3 when live's ${suffix} file beside the database is a symlink, which sqlite3 would open itself`, async () => {
+            const { deps, calls } = setup({ links: { [`${LIVE}/data/app.db${suffix}`]: `/var/www/other/live/data/app.db${suffix}` } })
+            const record = await runCopy(project(), 'uat1', RUN, 'koda', deps)
+            assert.equal(record.step, 'sqlite:files')
+            assert.ok(record.reason?.startsWith(`live's ${LIVE}/data/app.db${suffix} is a symlink, and sqlite3 would open it beside the database, so the copy will not read it`), record.reason ?? '')
+            assert.equal(calls.some(call => call.startsWith('sqlite3') || call.startsWith(`move ${ENV}/data`)), false, calls.join('\n'))
+        })
+    }
+
+    it('checks the side files beside where live\'s sqlite file resolves, not beside the path as named', async () => {
+        const { deps, calls } = setup({ links: { [`${LIVE}/data`]: `${LIVE}/var/data`, [`${LIVE}/var/data/app.db-wal`]: '/var/www/other/live/data/app.db-wal' } })
+        const record = await runCopy(project(), 'uat1', RUN, 'koda', deps)
+        assert.equal(record.step, 'sqlite:files')
+        assert.match(record.reason ?? '', /live's \/var\/www\/acme\/live\/var\/data\/app\.db-wal is a symlink/)
+        assert.equal(calls.some(call => call.startsWith('sqlite3')), false, calls.join('\n'))
+    })
+
     it('refuses to read live\'s storage through a symlink out of live\'s folder', async () => {
         const { deps, calls } = setup({ links: { [`${LIVE}/storage`]: '/var/www/other/live/storage' } })
         const record = await runCopy(project(), 'uat1', RUN, 'koda', deps)
@@ -824,6 +896,46 @@ describe('runCopy', () => {
         const record = await runCopy(project(), 'uat1', RUN, 'koda', deps)
         assert.equal(record.outcome, 'ok', JSON.stringify(record))
         assert.ok(calls.includes(`sqlite3 ${LIVE}/var/data/app.db .backup ${STAGING}/new/sqlite/files/app.db`), calls.join('\n'))
+    })
+})
+
+describe('runCopy and the helper container', () => {
+    it('reads live\'s sqlite file in the helper, with only its folder and the run\'s staging mounted', async () => {
+        const { deps, helperRuns } = setup()
+        const record = await runCopy(project(), 'uat1', RUN, 'koda', deps)
+        assert.equal(record.outcome, 'ok', JSON.stringify(record))
+        const sqlite = helperRuns.filter(run => run.argv[0] === 'sh')
+        assert.equal(sqlite.length, 1)
+        assert.deepEqual(sqlite[0]!.mounts, [{ source: `${LIVE}/data`, target: '/db' }, { source: `${STAGING}/new/sqlite/files`, target: '/stage' }])
+        assert.deepEqual(sqlite[0]!.argv.slice(-3), [`id:${LIVE}/data`, 'app.db', 'app.db'])
+    })
+
+    it('copies live\'s storage in the helper, with live\'s folder mounted read-only', async () => {
+        const { deps, helperRuns } = setup()
+        const record = await runCopy(project(), 'uat1', RUN, 'koda', deps)
+        assert.equal(record.outcome, 'ok', JSON.stringify(record))
+        const cp = helperRuns.filter(run => run.argv[0] === 'cp')
+        assert.deepEqual(cp.map(run => run.mounts), [[{ source: LIVE, target: LIVE, readOnly: true }, { source: `${STAGING}/new/storage/storage`, target: '/stage' }]])
+        assert.deepEqual(cp[0]!.argv, ['cp', '-a', `${LIVE}/storage/uploads`, '/stage/uploads'])
+    })
+
+    it('makes every change to the environment in the helper, with the site mounted at its own path and live masked read-only', async () => {
+        const { deps, helperRuns } = setup({ paths: [LIVE, ENV, `${LIVE}/data/app.db`, `${ENV}/data/app.db`, `${ENV}/data/app.db-wal`, `${LIVE}/storage/uploads`, `${ENV}/storage/uploads`, `${ENV}/storage/uploads.hostd-copy`] })
+        const record = await runCopy(project(), 'uat1', RUN, 'koda', deps)
+        assert.equal(record.outcome, 'ok', JSON.stringify(record))
+        const changes = helperRuns.filter(run => run.argv[0] === 'node')
+        assert.ok(changes.length >= 5, JSON.stringify(changes))
+        for (const run of changes) {
+            assert.deepEqual(run.mounts, [{ source: '/var/www/acme', target: '/var/www/acme' }, { source: LIVE, target: LIVE, readOnly: true }])
+        }
+    })
+
+    it('refuses to read live\'s sqlite file when its folder changed before the helper mounted it', async () => {
+        const { deps, calls } = setup({ swapped: true })
+        const record = await runCopy(project(), 'uat1', RUN, 'koda', deps)
+        assert.equal(record.step, 'sqlite:files')
+        assert.match(record.reason ?? '', /^files: \/var\/www\/acme\/live\/data changed before sqlite3 could read it, so the copy did not read it/)
+        assert.equal(calls.some(call => call.startsWith('sqlite3') || call.startsWith(`move ${ENV}/data`)), false, calls.join('\n'))
     })
 })
 

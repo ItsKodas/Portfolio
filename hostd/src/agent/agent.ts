@@ -36,6 +36,7 @@ import type { BackupStore } from './backup-state.ts'
 import { repoPath, type Restic } from './restic.ts'
 import { tokenFromVhost, vhostPath } from './vhost.ts'
 import { copyRefusal, runCopy, type CopyFs } from './copy-run.ts'
+import type { IoHelper } from './io-helper.ts'
 import type { CopyStore } from './copy-store.ts'
 
 export const MAX_FOLLOWS_PER_PROJECT = 4
@@ -122,6 +123,7 @@ export type AgentDeps = {
     copies?: {
         store: Pick<CopyStore, 'list' | 'get' | 'start' | 'finish'>
         fs: CopyFs
+        helper: IoHelper
         newRunId: () => string
         log(message: string): void
         now(): number
@@ -292,7 +294,7 @@ export class Agent {
             const run = copies.newRunId()
             const copy = copies.run ?? runCopy
             const done = copy(project, name, run, args.actor ?? 'admin', {
-                dockerApi: this.deps.docker, runner: this.deps.runner, fs: copies.fs, store: copies.store,
+                dockerApi: this.deps.docker, runner: this.deps.runner, fs: copies.fs, helper: copies.helper, store: copies.store,
                 log: copies.log, now: copies.now, ...(copies.sleep ? { sleep: copies.sleep } : {}),
             })
                 .then(() => {}, error => copies.log(`copy ${key} ${run} failed unexpectedly: ${describeError(error)}`))
