@@ -3,7 +3,9 @@
 // that request from, and the fetcher (which has one) is on a bridge network that cannot reach a port
 // published on the host's loopback address. So this is Docker's own view instead: every registered
 // compose service has a running container, and any container that declares a healthcheck reports
-// healthy. A repo that wants the stronger check declares one, and RUNBOOK.md says so.
+// healthy. A repo that wants the stronger check declares one, and RUNBOOK.md says so. "Registered" is
+// whatever project.services holds, and the deploy narrows that to the services the environment's own
+// compose file declares before it asks (environment-services.ts), since a branch may run fewer.
 
 import { describeError } from '../shared/formats.ts'
 import type { ProjectEntry } from '../shared/registry.ts'

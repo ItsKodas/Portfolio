@@ -39,6 +39,7 @@ import {
     BUILD_TIMEOUT_MS, SWAP_TIMEOUT_MS, type DeployTrees,
 } from './deploy-compose.ts'
 import { waitForHealthy } from './deploy-health.ts'
+import { environmentServices, missingSiteProblem } from './environment-services.ts'
 import { executeSteps, inspectLayout, resumeSteps, windowSteps, type Step } from './migrate-layout.ts'
 
 // The worst case is a swap that cannot complete, so a deploy refuses to start rather than risk it.
@@ -427,13 +428,26 @@ async function swapBack(
     }
     const up = await runCompose(upArgv(locationIn(environment, trees.dir), name), SWAP_TIMEOUT_MS, deps.runner)
     if (!up.ok) return { ok: false, problem: up.message }
-    const healthy = await waitForHealthy(project, name, { docker: deps.docker, now: deps.now, sleep: deps.sleep })
+    const healthy = await healthOf(project, environment, trees.dir, name, deps)
     if (!healthy.ok) return { ok: false, problem: healthy.problem }
     // Checked, not assumed: the carry above should have left nothing in it, and a removal is forever.
     const left = await storageLeftIn(storagePathsOf(project), trees.next, trees.dir, deps).catch(error => describeError(error))
     if (left) deps.log(`deploy ${project.id} ${environment.name}: ${left}`)
     else await deps.fs.rmdir(trees.next).catch(() => {})
     return { ok: true }
+}
+
+// The health check over the services the tree's own compose file declares, which on a branch other than
+// the one live runs may be fewer than the registry lists (environment-services.ts). Read after the swap,
+// from the tree now in place, so a rollback is checked against the copy it brought back.
+async function healthOf(
+    project: ProjectEntry, environment: EnvironmentEntry, dir: string, name: string, deps: DeployDeps,
+): Promise<{ ok: true } | { ok: false, problem: string }> {
+    const services = await environmentServices(project, { ...locationIn(environment, dir), composeName: name }, deps.runner)
+    if (!services.ok) return services
+    const noSite = missingSiteProblem(project, services.services)
+    if (noSite) return { ok: false, problem: noSite }
+    return waitForHealthy({ ...project, services: services.services }, name, { docker: deps.docker, now: deps.now, sleep: deps.sleep })
 }
 
 // A swap renames the tree git checked out, and git goes on recording the worktree under the path it
@@ -827,7 +841,7 @@ export async function runDeploy(
                 if (up.ok) deps.log(`deploy ${project.id} ${environment.name} ${commit.slice(0, 7)}: waiting for it to come up healthy`)
                 else output = up.output
                 healthy = up.ok
-                    ? await waitForHealthy(project, name, { docker: deps.docker, now: deps.now, sleep: deps.sleep })
+                    ? await healthOf(project, environment, live.dir, name, deps)
                     : { ok: false, problem: up.message }
             }
             if (!healthy.ok) {

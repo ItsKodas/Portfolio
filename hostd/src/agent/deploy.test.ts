@@ -124,6 +124,9 @@ type SetupOptions = {
     // way to the end. Defaults to a healthy container, which is the case a rollback exists for.
     afterRollback?: { state: string, health?: string }
     overrideResult?: PortOverrideResult
+    // The services `compose config` says the tree declares. Defaults to web, the one service the test
+    // registries list.
+    declared?: string[]
 }
 
 // Every dependency is a plain recorder, the same style provision.test.ts uses: a factory that hands back
@@ -262,9 +265,12 @@ function setup(options: SetupOptions = {}) {
 
     const runner: Runner = async (_command, args) => {
         composeRuns.push(args)
-        const subcommand = args.includes('build') ? 'build' : args.includes('up') ? 'up' : 'down'
+        const subcommand = args.includes('config') ? 'config' : args.includes('build') ? 'build' : args.includes('up') ? 'up' : 'down'
         calls.push(`compose ${subcommand}`)
-        return { exitCode: 0, stdout: '', stderr: '', timedOut: false, ...(options.composeResults?.[subcommand] ?? {}) }
+        const stdout = subcommand === 'config'
+            ? JSON.stringify({ name: 'acme', services: Object.fromEntries((options.declared ?? ['web']).map(service => [service, {}])) })
+            : ''
+        return { exitCode: 0, stdout, stderr: '', timedOut: false, ...(options.composeResults?.[subcommand] ?? {}) }
     }
 
     const deps: DeployDeps = {
@@ -667,6 +673,8 @@ describe('runDeploy, the swap', () => {
             'move /var/www/acme /var/www/acme.prev',
             'move /var/www/acme.next /var/www/acme',
             'compose up',
+            // The health check reading which services the new tree declares
+            'compose config',
         ])
     })
 
@@ -748,6 +756,33 @@ describe('runDeploy, the swap', () => {
     })
 })
 
+// The registry lists a site's services once, and they describe live. A branch whose compose file runs
+// fewer (spotondrones' main, which still points at an outside database) is healthy when what it does
+// declare is running, rather than failing forever on a database it never had.
+describe('runDeploy, on a branch that runs fewer services than the registry lists', () => {
+    const withMongo = REGISTRY_YAML.replace('      web: { role: site }\n', '      web: { role: site }\n      mongo: { role: database, engine: mongodb }\n')
+
+    it('checks only the services the compose file declares', async () => {
+        const context = setup({ registryYaml: withMongo, declared: ['web'] })
+        const record = await runDeploy(context.project(), context.environment(), { ...request, commit: TIP }, context.deps)
+        assert.equal(record.outcome, 'ok', record.reason ?? '')
+    })
+
+    it('still waits for a registered service the compose file declares and Docker has no container for', async () => {
+        const context = setup({ registryYaml: withMongo, declared: ['web', 'mongo'] })
+        const record = await runDeploy(context.project(), context.environment(), { ...request, commit: TIP }, context.deps)
+        assert.equal(record.outcome, 'rolled-back')
+        assert.match(record.reason ?? '', /mongo \(missing\)/)
+    })
+
+    it('rolls back when the compose file cannot be read after the swap', async () => {
+        const context = setup({ registryYaml: withMongo, composeResults: { config: { exitCode: 1, stderr: 'yaml: line 3' } } })
+        const record = await runDeploy(context.project(), context.environment(), { ...request, commit: TIP }, context.deps)
+        assert.equal(record.outcome, 'rolled-back')
+        assert.match(record.reason ?? '', /the environment's compose file could not be read/)
+    })
+})
+
 describe('runDeploy, when the new version is not healthy', () => {
     const unhealthy = { containerState: { state: 'running', health: 'unhealthy' } }
 
@@ -795,6 +830,13 @@ describe('runDeploy, when the new version is not healthy', () => {
         assert.equal(context.maintenance.size, 0)
     })
 
+    it("names a tree whose compose file declares none of the registry's site services", async () => {
+        const context = setup({ declared: [] })
+        const record = await runDeploy(context.project(), context.environment(), { ...request, commit: TIP }, context.deps)
+        assert.equal(record.outcome, 'rolled-back')
+        assert.match(record.reason ?? '', /none of the registry's site services \(web\) is in this environment's compose file/)
+    })
+
     it('takes the maintenance flag down even when the swap throws', async () => {
         const context = setup()
         context.deps.fs.move = async (from, to) => {
@@ -832,12 +874,13 @@ describe('nested layout', () => {
             'move /var/www/acme.next /var/www/acme/live',
             'move /var/www/acme.git /var/www/acme/git',
             'compose up',
+            'compose config',
         ])
         const live = t.deps.registry().projects.get('acme')!.environments.get('live')!
         assert.equal(live.dir, '/var/www/acme/live')
         assert.equal(live.composeName, 'acme')
         assert.equal(live.deployed, TIP)
-        const upArgs = t.composeRuns.at(-1)!
+        const upArgs = t.composeRuns.findLast(argv => argv.includes('up'))!
         assert.deepEqual(upArgs.slice(0, 5), ['compose', '--project-name', 'acme', '--project-directory', '/var/www/acme/live'])
     })
 
@@ -1162,6 +1205,7 @@ describe('storage across a deploy', () => {
             'move /var/www/acme.next /var/www/acme',
             'move /var/www/acme.prev/uploads /var/www/acme/uploads',
             'compose up',
+            'compose config',
         ])
     })
 

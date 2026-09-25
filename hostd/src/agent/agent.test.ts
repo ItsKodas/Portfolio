@@ -2043,9 +2043,15 @@ describe('copying from live', () => {
             freeBytes: async () => 100 * 1024 ** 3,
             sizeOf: async () => 0,
         } as unknown as CopyFs
+        // The start reads uat1's compose config to check it runs every database live has
+        const runner: Runner = async (_command, args) => ({
+            exitCode: 0, stderr: '', timedOut: false,
+            stdout: args.includes('config') ? JSON.stringify({ name: 'acme-uat1', services: { web: {}, db: {} } }) : '',
+        })
         const context = setup({
             registry: () => registry,
             docker,
+            runner,
             deploys: deploys as unknown as AgentDeps['deploys'],
             backups,
             provision: fakeProvisionDeps({
