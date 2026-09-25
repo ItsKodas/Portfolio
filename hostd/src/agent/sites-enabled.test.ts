@@ -11,6 +11,8 @@ import {
     unlistableWarning,
     unopenableWarning,
     servesHttpOnly,
+    findShadows,
+    shadowWarnings,
 } from './sites-enabled.ts'
 
 describe('parseServerNames', () => {
@@ -638,5 +640,77 @@ describe('a sweep that fails, rather than an entry with nothing behind it', () =
     it('has no em dash in either message', () => {
         assert.equal(unlistableWarning('/etc/apache2/sites-enabled', 'EACCES').includes('—'), false)
         assert.equal(unopenableWarning('/a.conf', '/etc/apache2/sites-enabled', 'EACCES').includes('—'), false)
+    })
+})
+
+// The production failure this exists to stop: everything.conf sat in sites-enabled with ServerAlias *
+// on port 80, so it loaded before hostd's include and answered arbysauto.com's port 80 (the only port a
+// Flexible SSL zone uses) with another machine's 503. Nothing anywhere said so.
+describe('findShadows', () => {
+    const catchAll = {
+        path: '/etc/apache2/sites-enabled/everything.conf',
+        text: '<VirtualHost *:80>\n    ServerName catch-all\n    ServerAlias *\n    ProxyPass / http://192.168.0.3/\n</VirtualHost>\n',
+    }
+
+    it('finds a catch-all alias taking a hostd hostname, on the port its block listens on', () => {
+        assert.deepEqual(findShadows([catchAll], ['arbysauto.com', 'www.arbysauto.com']), [
+            { path: catchAll.path, pattern: '*', ports: ['80'], hostnames: ['arbysauto.com', 'www.arbysauto.com'] },
+        ])
+    })
+
+    it('matches a subdomain wildcard only against names below it, as Apache does', () => {
+        const file = { path: '/s/wild.conf', text: '<VirtualHost *:443>\nServerName acme.com\nServerAlias *.acme.com\n</VirtualHost>' }
+        assert.deepEqual(findShadows([file], ['shop.acme.com', 'acme.com', 'other.com']).map(shadow => shadow.hostnames), [['shop.acme.com']])
+    })
+
+    it('reads ? as one character and matches without case', () => {
+        const file = { path: '/s/q.conf', text: '<VirtualHost *:80>\nServerAlias SHOP?.acme.com\n</VirtualHost>' }
+        assert.deepEqual(findShadows([file], ['shop1.acme.com', 'shop12.acme.com']).map(shadow => shadow.hostnames), [['shop1.acme.com']])
+    })
+
+    it('says nothing about a block on a port hostd never serves', () => {
+        const file = { path: '/s/cape.conf', text: '<VirtualHost *:8080>\nServerAlias *\n</VirtualHost>' }
+        assert.deepEqual(findShadows([file], ['arbysauto.com']), [])
+    })
+
+    it('treats a block with no port, or port *, as every port', () => {
+        const file = { path: '/s/any.conf', text: '<VirtualHost *>\nServerAlias *\n</VirtualHost>\n<VirtualHost *:*>\nServerAlias *.example\n</VirtualHost>' }
+        assert.deepEqual(findShadows([file], ['a.example']).map(shadow => shadow.ports), [['*'], ['*']])
+    })
+
+    it('collects every port the pattern is on across the file, once each', () => {
+        const file = { path: '/s/both.conf', text: '<VirtualHost *:80>\nServerAlias *\n</VirtualHost>\n<VirtualHost *:443>\nServerAlias *\n</VirtualHost>' }
+        assert.deepEqual(findShadows([file], ['acme.com'])[0]!.ports, ['80', '443'])
+    })
+
+    it('ignores a commented-out alias, and plain names, which findClaims already covers', () => {
+        const file = { path: '/s/c.conf', text: '<VirtualHost *:80>\n# ServerAlias *\nServerName acme.com\n</VirtualHost>' }
+        assert.deepEqual(findShadows([file], ['acme.com']), [])
+    })
+
+    it('ignores a wildcard outside any VirtualHost, which names the server rather than a vhost', () => {
+        assert.deepEqual(findShadows([{ path: '/s/f.conf', text: 'ServerAlias *' }], ['acme.com']), [])
+    })
+
+    it('words the warning around the file, the pattern, the hostnames and the fix, without an em dash', () => {
+        const [warning] = shadowWarnings(findShadows([catchAll], ['arbysauto.com']))
+        assert.match(warning ?? '', /everything\.conf/)
+        assert.match(warning ?? '', /wildcard \* on port 80/)
+        assert.match(warning ?? '', /arbysauto\.com/)
+        assert.match(warning ?? '', /port 80/)
+        assert.match(warning ?? '', /after the hostd include/)
+        assert.equal((warning ?? '').includes('—'), false)
+    })
+})
+
+describe('SitesEnabledReader.files', () => {
+    it('holds the files the last sweep read, for the health check to look at', async () => {
+        const reader = new SitesEnabledReader('/etc/apache2/sites-enabled', {
+            async readdir() { return ['a.conf'] },
+            async readFile() { return 'ServerAlias *' },
+        })
+        assert.deepEqual(reader.files(), [])
+        await reader.read()
+        assert.deepEqual(reader.files(), [{ path: '/etc/apache2/sites-enabled/a.conf', text: 'ServerAlias *' }])
     })
 })

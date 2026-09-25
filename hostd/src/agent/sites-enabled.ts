@@ -215,6 +215,99 @@ export function findClaims(files: VhostFile[], hostnames: string[], expected: st
     return claims
 }
 
+// A wildcard ServerName or ServerAlias in a hand-written vhost that takes one of hostd's hostnames.
+// Apache hands a request to the first vhost on the port whose name matches, in the order the files
+// loaded, and it does not prefer an exact name to a pattern. The runbook appends hostd's include to the
+// end of apache2.conf, after sites-enabled, so a pattern here that matches a hostd hostname answers it
+// instead of hostd's own vhost, on every port the pattern's block listens on.
+//
+// This is what took arbysauto.com down on 2026-09-25: everything.conf carried ServerAlias * on port 80
+// and proxied all of it to another machine. Only port 80 was shadowed, so every site reached over 443
+// carried on working and the one Flexible SSL site served somebody else's 503. parseServerNames drops
+// patterns on purpose (they are not hostnames), so findClaims never saw it, and nothing said so.
+export type Shadow = { path: string, pattern: string, ports: string[], hostnames: string[] }
+
+// The ports hostd writes a block for, for every hostname it serves.
+const HOSTD_PORTS = ['80', '443']
+const VHOST_CLOSE = /^\s*<\/VirtualHost>/i
+
+// A <VirtualHost> address's port. Apache reads an address with no port, and port *, as every port.
+function portOf(address: string): string {
+    const colon = address.lastIndexOf(':')
+    // A bare IPv6 address in brackets has colons of its own and no port after the bracket.
+    if (colon === -1 || address.endsWith(']')) return '*'
+    return address.slice(colon + 1) || '*'
+}
+
+// Apache's own matching for these names: * is any run of characters, dots included, ? is exactly one,
+// and case is ignored. Nothing else in the pattern is special.
+function patternMatcher(pattern: string): RegExp {
+    const body = pattern.split('').map(char => {
+        if (char === '*') return '.*'
+        if (char === '?') return '.'
+        return char.replace(/[.+^${}()|[\]\\]/g, '\\$&')
+    }).join('')
+    return new RegExp(`^${body}$`, 'i')
+}
+
+export function findShadows(files: VhostFile[], hostnames: string[]): Shadow[] {
+    const shadows: Shadow[] = []
+    for (const file of files) {
+        // Pattern to the ports its blocks listen on, in the order the file gives them.
+        const patterns = new Map<string, string[]>()
+        // Null outside a block. A name there is the server's own ServerName, not a vhost's.
+        let ports: string[] | null = null
+        for (const raw of file.text.split('\n')) {
+            if (/^\s*#/.test(raw)) continue
+            const opened = raw.match(VHOST_OPEN)
+            if (opened) {
+                ports = opened[1]!.split(/\s+/).filter(address => address !== '').map(portOf)
+                continue
+            }
+            if (VHOST_CLOSE.test(raw)) {
+                ports = null
+                continue
+            }
+            if (ports === null) continue
+            const names = raw.match(NAME_LINE)
+            if (!names) continue
+            for (const candidate of names[1]!.split(/\s+/)) {
+                if (!/[*?]/.test(candidate)) continue
+                const seen = patterns.get(candidate) ?? []
+                for (const port of ports) if (!seen.includes(port)) seen.push(port)
+                patterns.set(candidate, seen)
+            }
+        }
+        for (const [pattern, patternPorts] of patterns) {
+            const shadowing = patternPorts.filter(port => port === '*' || HOSTD_PORTS.includes(port))
+            if (shadowing.length === 0) continue
+            const matcher = patternMatcher(pattern)
+            const taken = hostnames.filter(hostname => matcher.test(hostname))
+            if (taken.length > 0) shadows.push({ path: file.path, pattern, ports: shadowing, hostnames: taken })
+        }
+    }
+    return shadows
+}
+
+// Written for whoever reads /health after a client says their site is showing someone else's error
+// page. It has to say which file, why it wins, and the fix that keeps the catch-all working.
+export function shadowWarnings(shadows: Shadow[]): string[] {
+    return shadows.map(shadow => {
+        const ports = shadow.ports.includes('*')
+            ? 'every port'
+            : `port${shadow.ports.length > 1 ? 's' : ''} ${shadow.ports.join(' and ')}`
+        const many = shadow.hostnames.length > 1
+        return `${shadow.path} names the wildcard ${shadow.pattern} on ${ports}, `
+            + `which matches ${shadow.hostnames.join(', ')}. Apache answers a request with the first vhost whose `
+            + 'name matches, in the order the files loaded, and sites-enabled loads before hostd\'s include, so '
+            + `on ${ports} ${many ? 'those hostnames are' : 'that hostname is'} served by this file and not by `
+            + 'hostd. A Flexible SSL site reaches the origin on port 80 only, so it can be down while everything '
+            + 'on 443 looks fine. To keep the wildcard for hosts nobody else claims, take the file out of '
+            + 'sites-enabled (a2dissite) and include it by path in apache2.conf on a line after the hostd '
+            + 'include; otherwise narrow the pattern so it no longer matches.'
+    })
+}
+
 // What one sweep of sites-enabled found: the files that were read, and the paths of the ones that were
 // not. The second list is never silently dropped, because a file nobody can open is the whole subject of
 // the health warning below.
@@ -273,6 +366,9 @@ export class SitesEnabledReader {
     // cleaned up by removing the entry, while a directory or file this process cannot read is a host
     // permissions fault on a service that runs as root and should not be meeting one at all.
     private failure: string | null = null
+    // What the last sweep read, for checks that run against the directory on the health clock rather
+    // than inside a domain verb. Only what was actually read: never a guess at what the rest held.
+    private lastFiles: VhostFile[] = []
 
     constructor(private readonly dir: string, private readonly fs: SitesEnabledFs) {}
 
@@ -287,6 +383,7 @@ export class SitesEnabledReader {
             // are replaced, so a sweep that fails cannot leave the previous all-clear standing.
             this.unreadable = []
             this.blind = false
+            this.lastFiles = []
             this.failure = unlistableWarning(this.dir, describeError(error))
             return { files: [], unreadable: [] }
         }
@@ -306,6 +403,7 @@ export class SitesEnabledReader {
                     // deliberately treated as serious would be the one thing /health never mentioned.
                     // What was found up to here is kept rather than discarded: those entries are real.
                     this.unreadable = unreadable
+                    this.lastFiles = files
                     // Not blind, whatever was read so far: this sweep stopped early, so "nothing in the
                     // whole directory could be read" was never established, and the failure below says
                     // more about what is wrong than a guess at a missing mount would.
@@ -321,7 +419,12 @@ export class SitesEnabledReader {
         this.unreadable = unreadable
         this.blind = readNothing({ files, unreadable })
         this.failure = null
+        this.lastFiles = files
         return { files, unreadable }
+    }
+
+    files(): VhostFile[] {
+        return this.lastFiles
     }
 
     warnings(): string[] {
