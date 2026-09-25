@@ -1113,6 +1113,21 @@ Each step below is the `step` a failed record names.
    If live's own folder has gone by the time these steps run (a deploy of live moving it, say), the step
    fails with `live's folder <dir> is gone, so there is nothing to copy from` rather than ending ok with
    nothing copied.
+
+   **The reads and writes run in a helper container.** A client container mounts its own checkout
+   read-write, so it could swap a folder there for a symlink between the checks above and the read or
+   write. So `sqlite3`, `cp -a`, every rename and every folder the copy makes in the environment run in a
+   short-lived `hostd-io-<hex>` container of the agent's own image (no network, read-only root, only the
+   `CHOWN`, `DAC_OVERRIDE`, `FOWNER` and `FSETID` capabilities). It mounts only what that one step needs:
+   sqlite3 gets the folder holding live's database and its staging folder; `cp -a` gets live's folder
+   read-only and its staging folder; renames and new folders get the site folder, with live's folder
+   read-only over its own place. Another site is not in there to reach. Before sqlite3 runs, the helper
+   checks that the folder it mounted is the one the agent resolved (device and inode). If not, the step
+   fails with `<service>: <dir> changed before sqlite3 could read it, so the copy did not read it`. And if a
+   `-wal`, `-shm` or `-journal` beside live's database is a symlink, the step fails with `live's <path> is
+   a symlink, and sqlite3 would open it beside the database, so the copy will not read it`. A helper left
+   behind by an agent restart shows in `docker ps -a --filter name=hostd-io-` and can be removed with
+   `docker rm -f`.
 6. **`restore-state`.** The services step 3 stopped that were running before it are started again, and
    the database services step 3 started are stopped again. The environment ends in the state it began in:
    running if it was, stopped if it was, whatever happened in between.
@@ -1402,6 +1417,19 @@ it as a link, never what it points at. Any of these fails the whole run, never s
   `<service>: <file> could not be resolved: <error>` when the file is not there
 - `<service>: its bind mount <source> resolves outside the site's folder <site> (to <real path>), so the
   backup will not read it`, or `... could not be resolved: <error>`
+- `<service>: <path> is a symlink, and sqlite3 would open it beside the database, so the backup will not
+  read it`, for a `-wal`, `-shm` or `-journal` file beside the database
+- `<service>: <dir> changed before sqlite3 could read it, so the backup did not read it`, or `<service>:
+  its bind mount <source> changed before it could be copied, so the backup did not read it`
+- `live's folder <dir> could not be resolved (<error>), so its storage will not be read`, for a project
+  with `storage` whose live folder is missing. A project with no `storage` does not look at the folder here.
+
+sqlite3 and a `generic` service's copy run in the same helper container a copy uses (see step 5 of a copy
+above). It mounts only the database's own folder, or the bind mount read-only at the folder it resolved
+to, plus the run's staging. A bind mount outside `/var/www` is mounted as the host path compose names,
+which the agent cannot see to check. The "changed" reasons mean the folder was swapped between the check
+and the helper starting. Run the backup again; if it keeps happening, something in the site is rewriting
+that folder.
 
 Look at the symlink it names in live's checkout (`ls -l <dir>`). It came from the client's repository: ask
 them to replace it with a real folder or a registered `storage` path, and the next run backs up again.

@@ -1,6 +1,7 @@
 # Contained file I/O for copies and backups (proposal)
 
-Status: proposal, not agreed. Follow-up 3 from PR #128.
+Status: agreed 2026-09-25 and built in hostd/src/agent/io-helper.ts. Follow-up 3 from PR #128. Where
+the build differs from the proposal below, "As built" at the end says how.
 
 ## The gap
 
@@ -69,3 +70,21 @@ Notes on the choices:
 - **restic** reads storage paths in the agent. Running it in a helper changes the paths recorded in
   every snapshot, which the file API and restores rely on. It is a separate change if wanted.
 - Dumps over `docker exec` stream into staging the agent owns, and never touch a client path.
+
+## As built
+
+- **Mounted at their own paths.** Live's folder (for `cp -a`) and the site folder with live over it (for
+  renames and new folders) are mounted at their host paths, not `/live` and `/site`. A symlink live has
+  always had inside itself, absolute or relative, then resolves as it does on the host; other sites are
+  still not in the helper. `/db`, `/src` and `/stage` stay as proposed, since those are resolved paths.
+- **One helper per rename or new folder**, not one per step, so the copy's existing rollback of partial
+  moves stays in TypeScript. A rename is node's `renameSync`, a new folder `mkdirSync` then `lchownSync`
+  and `chmodSync`, run with the image's own node.
+- **Host paths come from the agent's own mounts.** `docker inspect` reads the agent's image and bind
+  mounts once. Each mount source is translated through the deepest bind mount holding it: `/backups` is
+  the host's backup disk under another name. A path under no bind mount is refused before anything runs.
+- **A generic bind mount** in the site is mounted at the folder it resolved to and checked by device and
+  inode like the sqlite folder. One outside `/var/www` is mounted as the host path compose named, unchecked,
+  as the agent cannot see it. The copy is now `cp -a` rather than node's `cp`, so owners are kept.
+- Exit code 97 (`FOLDER_CHANGED`) from the helper means the folder it mounted is not the one the agent
+  resolved.

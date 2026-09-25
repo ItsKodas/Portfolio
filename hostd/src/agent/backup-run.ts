@@ -19,6 +19,7 @@ import { composeBase, resolveCompose, tail, type Runner } from './compose.ts'
 import { pickPerService, type DockerApi } from './docker.ts'
 import { dumpPlans, type DumpPlan } from './backup-dumps.ts'
 import { repoPath, stagingPath, type Restic } from './restic.ts'
+import { copyTreeArgv, FOLDER_CHANGED, sqliteBackupArgv, type HelperMount, type IoHelper } from './io-helper.ts'
 
 export const LIFECYCLE_TIMEOUT_MS = 120_000
 
@@ -28,12 +29,14 @@ export type BackupFs = {
     // buffered: a dump is as large as the database.
     writeStream(path: string): { sink: Writable, done: Promise<void> }
     remove(path: string): Promise<void>
-    copy(from: string, to: string): Promise<void>
     exists(path: string): Promise<boolean>
     // Where a path really is, every symlink along it followed
     realpath(path: string): Promise<string>
     // lstat: what is at the path itself, a symlink (dangling or not) never followed
     lkind(path: string): Promise<'none' | 'link' | 'dir' | 'file' | 'other'>
+    // Which folder a path is (device and inode, following a symlink), for the helper to prove it
+    // mounted the same one
+    identity(path: string): Promise<string>
 }
 
 // Where client sites live: a bind mount under it (or resolving into it) must stay in its own site's folder
@@ -45,6 +48,8 @@ export type BackupDeps = {
     docker: DockerApi
     runner: Runner
     fs: BackupFs
+    // Where a sqlite file and a generic bind mount are read, since both are under a client's checkout
+    helper: IoHelper
     disk: () => Promise<DiskUsage | null>
     now: () => number
     log(message: string): void
@@ -79,6 +84,26 @@ export async function linkedSideFile(source: string, fs: Pick<BackupFs, 'lkind'>
     for (const suffix of SQLITE_SIDE_FILES) {
         if ((await fs.lkind(`${source}${suffix}`)) === 'link') return `${source}${suffix}`
     }
+    return null
+}
+
+// sqlite3's .backup of source (a resolved path, its side files already checked) into copy, in the helper
+// with only the database's own folder and copy's folder mounted. The database's folder is read-write:
+// a reader of a WAL database writes its -shm file, and a hot journal has to be rolled back, so sqlite3
+// needs what it has always had there. Null on success, 'changed' when the folder the helper mounted is
+// not the one the agent resolved, or why sqlite3 failed.
+export async function sqliteBackup(
+    source: string, copy: string, deps: { helper: IoHelper, fs: { identity(path: string): Promise<string> } }, timeoutMs: number,
+): Promise<string | null> {
+    const folder = posix.dirname(source)
+    const identity = await deps.fs.identity(folder)
+    const result = await deps.helper(
+        [{ source: folder, target: '/db' }, { source: posix.dirname(copy), target: '/stage' }],
+        sqliteBackupArgv(identity, posix.basename(source), posix.basename(copy)),
+        timeoutMs,
+    )
+    if (result.exitCode === FOLDER_CHANGED) return 'changed'
+    if (result.exitCode !== 0 || result.timedOut) return `sqlite3 exited with code ${result.exitCode}: ${tail(result.stderr.trim(), 500)}`
     return null
 }
 
@@ -206,8 +231,9 @@ async function dump(
         if (!isWithin(root, source)) return `${plan.service}: ${plan.source} resolves outside live's folder (to ${source}), so the backup will not read it`
         const linked = await linkedSideFile(source, deps.fs)
         if (linked) return `${plan.service}: ${linked} is a symlink, and sqlite3 would open it beside the database, so the backup will not read it`
-        const result = await deps.runner('sqlite3', [source, `.backup ${target}`], LIFECYCLE_TIMEOUT_MS)
-        return result.exitCode === 0 && !result.timedOut ? null : `${plan.service}: sqlite3 exited with code ${result.exitCode}: ${tail(result.stderr.trim(), 500)}`
+        const backed = await sqliteBackup(source, target, deps, LIFECYCLE_TIMEOUT_MS)
+        if (backed === 'changed') return `${plan.service}: ${posix.dirname(source)} changed before sqlite3 could read it, so the backup did not read it`
+        return backed === null ? null : `${plan.service}: ${backed}`
     }
 
     if (plan.kind === 'generic') {
@@ -223,24 +249,39 @@ async function dump(
         // Checked before anything is stopped: a bind mount under /var/www, or one that resolves into it,
         // must resolve inside this site's own folder, or a symlink in the checkout could have this site's
         // backup read another's. A bind mount elsewhere on the host is the compose file's own business.
+        // Each is then copied in the helper, mounted read-only on its own: one in the site at the folder it
+        // resolved to, proved to be that folder, and one elsewhere at the host path compose named, which
+        // the agent cannot see to check.
         const site = await deps.fs.realpath(siteOf(dir))
+        const reads: Array<{ source: string, mount: HelperMount, identity: string | null }> = []
         for (const source of sources) {
+            const elsewhere = { source, mount: { source, target: '/src', readOnly: true, host: true }, identity: null }
             let real: string
             try {
                 real = await deps.fs.realpath(source)
             } catch (error) {
                 if (isWithin(WWW, source)) return `${plan.service}: its bind mount ${source} could not be resolved: ${describeError(error)}`
+                reads.push(elsewhere)
                 continue
             }
-            if ((isWithin(WWW, source) || isWithin(WWW, real)) && !isWithin(site, real)) {
+            if (!isWithin(WWW, source) && !isWithin(WWW, real)) {
+                reads.push(elsewhere)
+                continue
+            }
+            if (!isWithin(site, real)) {
                 return `${plan.service}: its bind mount ${source} resolves outside the site's folder ${siteOf(dir)} (to ${real}), so the backup will not read it`
             }
+            reads.push({ source, mount: { source: real, target: '/src', readOnly: true }, identity: await deps.fs.identity(real) })
         }
         const base = composeBase({ dir, composePaths: project.composePaths, composeName: project.composeName })
         const stopped = await deps.runner('docker', [...base, 'stop', plan.service], LIFECYCLE_TIMEOUT_MS)
         if (stopped.exitCode !== 0) return `${plan.service}: could not be stopped to copy its data`
         try {
-            for (const source of sources) await deps.fs.copy(source, posix.join(target, posix.basename(source)))
+            for (const read of reads) {
+                const copied = await deps.helper([read.mount, { source: target, target: '/stage' }], copyTreeArgv(read.identity, posix.basename(read.source)), LIFECYCLE_TIMEOUT_MS)
+                if (copied.exitCode === FOLDER_CHANGED) return `${plan.service}: its bind mount ${read.source} changed before it could be copied, so the backup did not read it`
+                if (copied.exitCode !== 0 || copied.timedOut) return `${plan.service}: cp exited with code ${copied.exitCode}: ${tail(copied.stderr.trim(), 500)}`
+            }
             return null
         } catch (error) {
             return `${plan.service}: ${describeError(error)}`

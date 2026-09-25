@@ -9,6 +9,11 @@
 // Everything staged goes under <site>/.copy/<run>/, which is removed whatever happens. It is the only
 // thing this file ever deletes recursively, and the path is checked against its exact shape before it is.
 // Every path comes from the registry entry, never from a request: the run id is the agent's own.
+//
+// Every read of live's checkout and every change to the environment's runs in the io helper (see
+// io-helper.ts), which mounts only what that step may touch: a client container can swap a folder in its
+// own checkout for a symlink between a check here and the use, and the helper is what keeps that symlink
+// from reaching another site. The checks here still run first, for the reason they give.
 
 import { posix } from 'node:path'
 import { pipeline, type Readable, type Writable } from 'node:stream'
@@ -20,7 +25,8 @@ import type { CopyRecord } from '../shared/protocol.ts'
 import { composeBase, resolveCompose, tail, type Runner } from './compose.ts'
 import { checkedId, pickPerService, type ContainerSummary, type DockerApi } from './docker.ts'
 import { dumpPlan, isProblem } from './backup-dumps.ts'
-import { linkedSideFile, writeChunk } from './backup-run.ts'
+import { linkedSideFile, sqliteBackup, writeChunk } from './backup-run.ts'
+import { mkdirArgv, renameArgv, type IoHelper } from './io-helper.ts'
 import { loadPlan, parseSize, postgresErrorCollector, readyPasses, readyProbe, renameStream, sizeProbe } from './copy-plans.ts'
 import { MIN_FREE_BYTES } from './deploy.ts'
 
@@ -47,10 +53,9 @@ const REDIS_FILE = /^(?!\.\.?$)[A-Za-z0-9._-]{1,255}$/
 type Like = { uid: number, gid: number, mode: number }
 
 export type CopyFs = {
-    // Recursive. private: 0700, for staging, which holds a copy of the client's data
+    // Recursive, and only ever under staging, which no client can change (the environment's own folders
+    // are made in the helper). private: 0700, for staging, which holds a copy of the client's data
     mkdir(dir: string, options?: { private?: boolean }): Promise<void>
-    // A plain rename, within one site folder
-    move(from: string, to: string): Promise<void>
     // Recursive: only ever the staging folder, checked first
     rmdir(dir: string): Promise<void>
     // stat: follows a symlink, so a dangling one is not there
@@ -60,7 +65,9 @@ export type CopyFs = {
     // Where a path really is, every symlink along it followed
     realpath(path: string): Promise<string>
     owner(path: string): Promise<Like>
-    own(dir: string, like: Like): Promise<void>
+    // Which folder a path is (device and inode, following a symlink), for the helper to prove it
+    // mounted the same one
+    identity(path: string): Promise<string>
     // One path's owner and mode, never following into a tree: what a sqlite file copied in by root needs.
     // chown never follows a symlink (lchown); chmod has no such form, so it is only ever called on a
     // regular file in the run's own staging, checked with lkind first.
@@ -78,6 +85,7 @@ export type CopyDeps = {
     dockerApi: Pick<DockerApi, 'exec' | 'listProjectContainers'>
     runner: Runner
     fs: CopyFs
+    helper: IoHelper
     store: { start(record: CopyRecord): Promise<void>, finish(record: CopyRecord): Promise<void> }
     log(message: string): void
     now(): number
@@ -528,7 +536,29 @@ async function setAsideLeftover(context: Context, path: string, relative: string
     if ((await deps.fs.lkind(path)) === 'none') return
     const aside = posix.join(staging, 'leftover', relative)
     await deps.fs.mkdir(posix.dirname(aside), { private: true })
-    await deps.fs.move(path, aside)
+    await move(context, path, aside)
+}
+
+// The environment's side of the copy, in the helper: the site folder mounted (no client container
+// mounts it, only the environments inside it), with live's folder masked read-only over its own place,
+// so a swapped-in symlink can reach neither another site nor live. Each is mounted at its own path, so
+// a symlink the site's checkout has always had, absolute or not, resolves as it does on the host as long
+// as it stays in the site. Every path given is under the site.
+async function inSite(context: Context, argv: (inside: (path: string) => string) => string[], what: string): Promise<void> {
+    const { live, environment, deps } = context
+    const site = siteOf(environment.dir)
+    const inside = (path: string): string => {
+        if (!isWithin(site, path)) fail(`${path} is not under the site's folder ${site}`)
+        return path
+    }
+    const mounts = [{ source: site, target: site }, { source: live.dir, target: live.dir, readOnly: true }]
+    const result = await deps.helper(mounts, argv(inside), COMPOSE_TIMEOUT_MS)
+    if (result.exitCode !== 0 || result.timedOut) fail(`${what}: ${result.timedOut ? 'timed out' : tail(result.stderr.trim(), 300)}`)
+}
+
+// A plain rename, within one site folder: never follows a symlink at either end
+function move(context: Context, from: string, to: string): Promise<void> {
+    return inSite(context, inside => renameArgv(inside(from), inside(to)), `${from} could not be moved to ${to}`)
 }
 
 // A symlink in the environment's checkout (committed to the repo, say) could lead a path the copy writes to
@@ -584,7 +614,8 @@ async function requireLive(context: Context): Promise<void> {
 
 // The folders above something the copy is about to put into the environment, made one level at a time
 // and each owned like the environment's tree, as a deploy's carry makes them: the agent's own umask would
-// otherwise leave them unreadable to the site.
+// otherwise leave them unreadable to the site. Made in the helper, where mkdir fails on anything already
+// there rather than going through it.
 async function ensureParents(context: Context, relative: string): Promise<void> {
     const { environment, deps } = context
     const parents = posix.dirname(relative) === '.' ? [] : posix.dirname(relative).split('/')
@@ -593,11 +624,8 @@ async function ensureParents(context: Context, relative: string): Promise<void> 
         const dir = posix.join(environment.dir, ...parents.slice(0, depth))
         // A symlink there, dangling or not, is left for confine to judge, never made or owned through
         if ((await deps.fs.lkind(dir)) !== 'none') continue
-        like ??= await deps.fs.owner(environment.dir)
-        await deps.fs.mkdir(dir)
-        // own chowns the folder itself with chown, which follows a symlink: only a real folder is owned
-        if ((await deps.fs.lkind(dir)) !== 'dir') fail(`${dir} is not a folder the copy made, so the copy will not own it`)
-        await deps.fs.own(dir, like)
+        const owned = like ??= await deps.fs.owner(environment.dir)
+        await inSite(context, inside => mkdirArgv(inside(dir), owned), `${dir} could not be made`)
     }
 }
 
@@ -624,8 +652,9 @@ async function copySqlite(context: Context, service: string, file: string): Prom
     const fresh = posix.join(staging, 'new', 'sqlite', service)
     await deps.fs.mkdir(fresh, { private: true })
     const copy = posix.join(fresh, posix.basename(target))
-    const backed = await deps.runner('sqlite3', [source, `.backup ${copy}`], COPY_TIMEOUT_MS)
-    if (backed.exitCode !== 0 || backed.timedOut) fail(`${service}: sqlite3 exited with code ${backed.exitCode}: ${tail(backed.stderr.trim(), 500)}`)
+    const backed = await sqliteBackup(source, copy, deps, COPY_TIMEOUT_MS)
+    if (backed === 'changed') fail(`${service}: ${posix.dirname(source)} changed before sqlite3 could read it, so the copy did not read it`)
+    if (backed !== null) fail(`${service}: ${backed}`)
     if ((await deps.fs.lkind(copy)) !== 'file') fail(`${service}: sqlite3 did not leave a file at ${copy}`)
     // sqlite3 runs as root, and the site's own user has to be able to write the file: owned like the file
     // it replaces (and moded like it), or like the folder it goes in when there was none. A symlink at the
@@ -646,13 +675,13 @@ async function copySqlite(context: Context, service: string, file: string): Prom
             // Whatever is there, a symlink included, is moved as itself
             if ((await deps.fs.lkind(from)) === 'none') continue
             const to = posix.join(old, `${posix.basename(target)}${suffix}`)
-            await deps.fs.move(from, to)
+            await move(context, from, to)
             moved.push({ from, to })
         }
-        await deps.fs.move(copy, target)
+        await move(context, copy, target)
     } catch (error) {
         for (const { from, to } of moved.reverse()) {
-            await deps.fs.move(to, from).catch(undo => deps.log(`copy ${environment.dir}: ${to} could not be moved back to ${from}: ${describeError(undo)}`))
+            await move(context, to, from).catch(undo => deps.log(`copy ${environment.dir}: ${to} could not be moved back to ${from}: ${describeError(undo)}`))
         }
         throw error
     }
@@ -683,7 +712,13 @@ async function copyStorage(context: Context, path: string): Promise<void> {
 
     const copy = posix.join(staging, 'new', 'storage', path)
     await deps.fs.mkdir(posix.dirname(copy), { private: true })
-    const copied = await deps.runner('cp', ['-a', source, copy], COPY_TIMEOUT_MS)
+    // In the helper, with only live's folder (read-only, at its own path, so a symlink live has always had
+    // inside itself still resolves) and this copy's own staging folder mounted
+    const copied = await deps.helper(
+        [{ source: live.dir, target: live.dir, readOnly: true }, { source: posix.dirname(copy), target: '/stage' }],
+        ['cp', '-a', source, posix.join('/stage', posix.basename(copy))],
+        COPY_TIMEOUT_MS,
+    )
     if (copied.exitCode !== 0 || copied.timedOut) fail(`cp exited with code ${copied.exitCode}: ${tail(copied.stderr.trim(), 500)}`)
 
     const old = posix.join(staging, 'old', path)
@@ -691,13 +726,13 @@ async function copyStorage(context: Context, path: string): Promise<void> {
     const had = (await deps.fs.lkind(target)) !== 'none'
     if (had) {
         await deps.fs.mkdir(posix.dirname(old), { private: true })
-        await deps.fs.move(target, old)
+        await move(context, target, old)
     }
     try {
-        await deps.fs.move(copy, target)
+        await move(context, copy, target)
     } catch (error) {
         // The environment's own folder goes back rather than leaving it with none
-        if (had) await deps.fs.move(old, target).catch(() => {})
+        if (had) await move(context, old, target).catch(() => {})
         throw error
     }
 }

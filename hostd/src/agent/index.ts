@@ -3,7 +3,7 @@
 
 import { createServer, createConnection } from 'node:net'
 import { createReadStream, createWriteStream } from 'node:fs'
-import { chmod, chown, constants, copyFile, cp, lchown, lstat, mkdir, readdir, readFile, realpath, rename, rm, rmdir, stat, statfs, unlink, writeFile } from 'node:fs/promises'
+import { chmod, chown, constants, copyFile, lchown, lstat, mkdir, readdir, readFile, realpath, rename, rm, rmdir, stat, statfs, unlink, writeFile } from 'node:fs/promises'
 import { randomBytes } from 'node:crypto'
 import { posix } from 'node:path'
 import { RegistryStore, explainRegistryError } from '../shared/registry-store.ts'
@@ -17,6 +17,7 @@ import { createDockerApi, publishedHostPorts } from './docker.ts'
 import { createSpawnRunner, resolveNewProject } from './compose.ts'
 import { buildPortOverride, portOverridePath } from './port-override.ts'
 import { createHostPortReader } from './host-ports.ts'
+import { createIoHelper } from './io-helper.ts'
 import { writePortEnv } from './port-env.ts'
 import { writeOwnedFile } from './owned-file.ts'
 import { GuardTracker } from './guard-tracker.ts'
@@ -169,11 +170,14 @@ async function main(): Promise<void> {
 
     const runner = createSpawnRunner()
     // Every port listening on the host, for choosing and checking ports. See host-ports.ts.
+    const agentContainer = process.env.HOSTD_AGENT_CONTAINER ?? 'hostd-agent'
     const listening = createHostPortReader({
         runner,
-        container: process.env.HOSTD_AGENT_CONTAINER ?? 'hostd-agent',
+        container: agentContainer,
         published: async () => publishedHostPorts(await docker.listAllContainers()),
     })
+    // Where backups and copies read and write paths a client can change. See io-helper.ts.
+    const ioHelper = createIoHelper({ runner, container: agentContainer })
     const guard = new GuardTracker(runner)
     await guard.checkAll(store.current())
 
@@ -312,6 +316,12 @@ async function main(): Promise<void> {
         log,
     })
 
+    // Which folder a path is, following a symlink: device and inode, as the helper's stat -c %d:%i prints
+    // them. bigint, so a large inode number is never rounded.
+    const identity = async (path: string): Promise<string> => {
+        const info = await stat(path, { bigint: true })
+        return `${info.dev}:${info.ino}`
+    }
     // lstat: what is at a path itself, a symlink never followed
     const lkind = async (path: string): Promise<'none' | 'link' | 'dir' | 'file' | 'other'> => {
         try {
@@ -335,10 +345,10 @@ async function main(): Promise<void> {
             return { sink, done }
         },
         remove: async path => { await rm(path, { recursive: true, force: true }) },
-        copy: async (from, to) => { await cp(from, to, { recursive: true }) },
         exists,
         realpath: path => realpath(path),
         lkind,
+        identity,
     }
     const backupStore = new BackupStore(BACKUP_STATE_FILE, undefined, log)
     await backupStore.load()
@@ -353,6 +363,7 @@ async function main(): Promise<void> {
         docker,
         runner,
         fs: backupFs,
+        helper: ioHelper,
         disk: async () => (await readSystemUsage(source, BACKUP_DIR)).disk,
         now: () => Date.now(),
         log,
@@ -388,13 +399,12 @@ async function main(): Promise<void> {
     const copyFs: CopyFs = {
         // 0700 for staging, which holds a copy of the client's databases inside the site folder
         mkdir: async (dir, options) => { await mkdir(dir, { recursive: true, ...(options?.private ? { mode: 0o700 } : {}) }) },
-        move: (from, to) => rename(from, to),
         rmdir: dir => rm(dir, { recursive: true, force: true }),
         exists,
         lkind,
         realpath: path => realpath(path),
         owner: ownerOf,
-        own: (dir, like) => ownTree(dir, like),
+        identity,
         // lchown: never through a symlink
         chown: (path, uid, gid) => lchown(path, uid, gid),
         chmod: (path, mode) => chmod(path, mode),
@@ -522,6 +532,7 @@ async function main(): Promise<void> {
         copies: {
             store: copyStore,
             fs: copyFs,
+            helper: ioHelper,
             // Six bytes of hex, which is what RUN_ID accepts
             newRunId: () => randomBytes(6).toString('hex'),
             log,
