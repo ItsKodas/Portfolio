@@ -124,13 +124,13 @@ export function EnvironmentsTab({ view, isAdmin, selected, adding, file, domains
                                     ? <EnvironmentSummary id={view.id} siteName={view.name} isAdmin={isAdmin} environment={shown} />
                                     : (
                                         <section className={styles.block} aria-labelledby="summary">
-                                            <h2 id="summary">Summary</h2>
+                                            <h3 id="summary">Summary</h3>
                                             <p className={styles.empty}>This environment could not be read.</p>
                                         </section>
                                     )}
 
                                 <section className={styles.envSection} aria-labelledby="domains">
-                                    <h2 id="domains" className={styles.envSectionHead}>Domains</h2>
+                                    <h3 id="domains" className={styles.envSectionHead}>Domains</h3>
                                     {canDomains
                                         ? <DomainsPanel
                                             id={view.id}
@@ -149,7 +149,7 @@ export function EnvironmentsTab({ view, isAdmin, selected, adding, file, domains
                                 {/* Not drawn for a client at all: hostd refuses them env outright */}
                                 {isAdmin && (
                                     <section className={styles.envSection} aria-labelledby="env-files">
-                                        <h2 id="env-files" className={styles.envSectionHead}>Env files</h2>
+                                        <h3 id="env-files" className={styles.envSectionHead}>Env files</h3>
                                         {canEnv
                                             ? <EnvPanel id={view.id} file={file} environment={selected} />
                                             : <Callout title="Not switched on for this site">

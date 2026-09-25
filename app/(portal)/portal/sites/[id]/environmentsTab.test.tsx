@@ -130,6 +130,26 @@ describe('the detail, for the operator', () => {
         expect(within(region('Env files')!).getByText('env files of uat1 at .env')).toBeInTheDocument()
     })
 
+    // The environment's name is the heading, and each section sits under it, with the Domains panel's own
+    // parts a level further down
+    it('heads each section under the environment name', () => {
+        tab({ selected: 'uat1', domains: { domains: [domain('uat1.acme.com')], trouble: null } })
+        expect(screen.getByRole('heading', { level: 2, name: 'uat1' })).toBeInTheDocument()
+        for (const name of ['Summary', 'Domains', 'Env files']) {
+            expect(screen.getByRole('heading', { level: 3, name })).toBeInTheDocument()
+        }
+        const domains = within(region('Domains')!)
+        for (const name of ['Main address', 'Add an address', 'Addresses']) {
+            expect(domains.getByRole('heading', { level: 4, name })).toBeInTheDocument()
+        }
+        expect(screen.getAllByRole('heading', { level: 2 })).toHaveLength(2)
+    })
+
+    it('heads an unreadable Summary the same way', () => {
+        tab({ selected: 'uat9' })
+        expect(screen.getByRole('heading', { level: 3, name: 'Summary' })).toBeInTheDocument()
+    })
+
     it('offers Copy and Delete on an environment other than live', () => {
         tab({ selected: 'uat1' })
         expect(screen.getByRole('button', { name: 'Copy data from live into uat1' })).toBeInTheDocument()
@@ -230,6 +250,14 @@ describe('the detail, for a client', () => {
         expect(within(region('Domains')!).getByText('Your website address')).toBeInTheDocument()
         expect(region('Env files')).toBeNull()
         expect(screen.queryByText(/env files of/)).toBeNull()
+    })
+
+    it('heads the sections under the environment name for a client too', () => {
+        tab({ ...client, selected: 'uat1', domains: { domains: [domain('uat1.acme.com')], trouble: null } })
+        expect(screen.getByRole('heading', { level: 2, name: 'uat1' })).toBeInTheDocument()
+        expect(screen.getByRole('heading', { level: 3, name: 'Summary' })).toBeInTheDocument()
+        expect(screen.getByRole('heading', { level: 3, name: 'Domains' })).toBeInTheDocument()
+        expect(screen.getByRole('heading', { level: 4, name: 'Your website address' })).toBeInTheDocument()
     })
 
     it('offers a client no action at all', () => {

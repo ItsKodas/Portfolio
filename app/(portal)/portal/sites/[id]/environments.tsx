@@ -120,7 +120,7 @@ function SummaryOf({ id, siteName, isAdmin, environment }: SummaryProps) {
 
     return (
         <section className={styles.block} aria-labelledby="summary">
-            <h2 id="summary">Summary</h2>
+            <h3 id="summary">Summary</h3>
             <KeyValue pairs={pairs} />
             {isAdmin && environment.name !== LIVE && (
                 <div className={`${styles.environmentActs} ${styles.summaryActs}`}>

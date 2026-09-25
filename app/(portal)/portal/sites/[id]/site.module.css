@@ -25,7 +25,10 @@
 .panel:focus-visible { outline: 2px solid var(--lake); outline-offset: 4px; }
 
 .block { margin-top: 22px; }
-.block h2 { font-size: 13px; margin: 0 0 10px; }
+/* An h2 on its own tab. On the Environments tab the environment's name is the h2, its sections' headings
+   are h3 and the Domains section's own parts h4, all drawn alike. Direct children only, so a heading
+   inside a dialog or a pane keeps its own look. */
+.block h2, .block > h3, .block > h4 { font-size: 13px; margin: 0 0 10px; }
 
 /* The log and what is producing it, side by side, taking whatever height the panel has left. The log is
    the thing being read, so it gets the room; the containers are a dozen words that change once a day and
@@ -136,7 +139,7 @@
 
 .said { margin-bottom: 16px; }
 
-/* Which environment the Deploys, Domains and Environment tabs are about. Narrow: it holds a short name. */
+/* Which environment the Deploys tab is about. Narrow: it holds a short name. */
 .envSwitcher { max-width: 220px; margin-bottom: 16px; }
 
 /* The env file list. Links rather than buttons, because which file is open is part of the URL: it
@@ -243,7 +246,6 @@
 /* Name, branch and hostname on one line where there is room, each as wide as what it holds */
 .addEnvironment { display: flex; flex-wrap: wrap; align-items: flex-start; gap: 12px; }
 .addEnvironment > * { flex: 1 1 180px; max-width: 280px; }
-.addEnvironment + .capability { margin-top: 12px; }
 /* The address row under the name and branch, then the full hostname and the DNS note */
 .addAddress { margin-top: 12px; }
 .addressHelp { margin-top: 6px; }
@@ -311,7 +313,7 @@
     word-break: break-word;
 }
 
-/* The Domains tab.
+/* The Environments tab's Domains section, and live's primary domain in Settings.
 
    The add box sits above the table, and its button lines up with the input rather than under it: the
    field is one short line and a button on its own row below reads as belonging to the table instead. */

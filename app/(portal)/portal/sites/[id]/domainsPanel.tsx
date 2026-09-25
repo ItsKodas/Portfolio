@@ -80,7 +80,7 @@ type Props = {
 function MainAddress({ environment, current }: { environment: EnvironmentName, current: string | null }) {
     return (
         <section className={styles.block} aria-labelledby="main-address">
-            <h2 id="main-address">Main address</h2>
+            <h4 id="main-address">Main address</h4>
             {current
                 ? <p className={styles.addressName}>{current}</p>
                 : <p className={styles.empty}>
@@ -102,7 +102,7 @@ export function DomainsPanel({ id, environment, domains, isAdmin, projectName, t
     if (!isAdmin) {
         return (
             <section className={styles.block}>
-                <h2>{ordered.length === 1 ? 'Your website address' : 'Your website addresses'}</h2>
+                <h4>{ordered.length === 1 ? 'Your website address' : 'Your website addresses'}</h4>
                 {trouble
                     ? <Callout tone="warn" title="This could not be checked just now">{trouble}</Callout>
                     : ordered.length === 0
@@ -175,7 +175,7 @@ export function DomainsPanel({ id, environment, domains, isAdmin, projectName, t
                     <AddDomain key={environment} id={id} environment={environment} />
 
                     <section className={styles.block}>
-                        <h2>Addresses</h2>
+                        <h4>Addresses</h4>
                         <DataTable
                             label={`${environment} addresses`}
                             columns={COLUMNS}

@@ -60,7 +60,7 @@ export function AddDomain({ id, environment }: { id: string, environment: string
 
     return (
         <section className={styles.block}>
-            <h2>Add an address</h2>
+            <h4>Add an address</h4>
             <div className={styles.addDomain}>
                 <Field
                     label="Hostname"
