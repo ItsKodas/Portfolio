@@ -2,10 +2,11 @@
 // Env files. Env files is an async server component that asks hostd itself, which this renderer cannot
 // resolve inside a tree, so it is stood in for here and tested on its own in env.test.tsx.
 
-import { render, screen, within } from '@testing-library/react'
+import { act, fireEvent, render, screen, within } from '@testing-library/react'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 const copyRunsAction = vi.fn()
+const verifyDomainAction = vi.fn()
 
 vi.mock('next/navigation', () => ({ useRouter: () => ({ refresh: () => {}, push: () => {} }) }))
 vi.mock('./actions', () => ({
@@ -16,7 +17,7 @@ vi.mock('./actions', () => ({
     copyRunsAction: (...args: unknown[]) => copyRunsAction(...args),
     addDomainAction: async () => ({ ok: true, message: 'ok' }),
     removeDomainAction: async () => ({ ok: true, message: 'ok' }),
-    verifyDomainAction: async () => ({ ok: true, message: 'ok' }),
+    verifyDomainAction: (...args: unknown[]) => verifyDomainAction(...args),
     adoptAction: async () => ({ ok: true, message: 'ok' }),
     adoptPreviewAction: async () => ({ ok: false, error: 'not asked in a test' }),
     setPrimaryDomainAction: async () => ({ ok: true, message: 'ok' }),
@@ -71,6 +72,7 @@ const region = (name: string) => screen.queryByRole('region', { name })
 beforeEach(() => {
     vi.clearAllMocks()
     copyRunsAction.mockResolvedValue({ ok: true, runs: [], running: false })
+    verifyDomainAction.mockResolvedValue({ ok: true, message: 'uat1.acme.com answers.' })
 })
 
 describe('the list', () => {
@@ -169,6 +171,26 @@ describe('the detail, for the operator', () => {
         // No environment is the one shown while adding
         expect(within(screen.getByRole('navigation', { name: 'Environments' })).getByRole('link', { name: /live/ }))
             .not.toHaveAttribute('aria-current')
+    })
+
+    // Deleting an environment goes back to live by navigating on this same route, which rerenders rather
+    // than remounts. The Domains table keys its rows by position, so without a key on the detail a row's
+    // open confirm or its last result would land on live's row beside a different hostname.
+    it("does not carry one environment's domain row state onto the next one shown", async () => {
+        const rows = (name: string, host: string) => ({
+            domains: [domain(host), { ...domain(`www.${host}`), primary: false }],
+            trouble: null,
+        })
+        const { rerender } = render(<EnvironmentsTab {...props} selected="uat1" domains={rows('uat1', 'uat1.acme.com')} />)
+
+        await act(async () => { fireEvent.click(screen.getAllByRole('button', { name: 'Check again' })[0]) })
+        expect(screen.getByText('uat1.acme.com answers.')).toBeInTheDocument()
+        fireEvent.click(screen.getByRole('button', { name: 'Remove' }))
+        expect(screen.getByRole('dialog', { name: 'Remove this address' })).toBeInTheDocument()
+
+        rerender(<EnvironmentsTab {...props} selected="live" domains={rows('live', 'acme.com')} />)
+        expect(screen.queryByText('uat1.acme.com answers.')).toBeNull()
+        expect(screen.queryByRole('dialog')).toBeNull()
     })
 
     it('says an environment that could not be read could not be read, rather than drawing nothing in it', () => {

@@ -102,7 +102,11 @@ export function EnvironmentsTab({ view, isAdmin, selected, adding, file, domains
                     )}
                 </div>
 
-                <div className={styles.envTabDetail}>
+                {/* Keyed on what it shows. Choosing another environment, or going back to live after a
+                    delete, navigates on this same route, which rerenders rather than remounts, and the
+                    sections below keep state in rows keyed by position (a domain's open confirm, its last
+                    result, an env file being edited). None of it may carry over to the next one. */}
+                <div className={styles.envTabDetail} key={addOpen ? 'add' : `env:${selected}`}>
                     {addOpen
                         ? <AddEnvironment id={view.id} taken={view.environments.map(one => one.name)} branches={branches} />
                         : (
