@@ -1,19 +1,20 @@
 'use client'
 
-// A site's environments, on its Settings tab: every one it has, adding another beside live, deleting one,
-// putting a deleted one back within its 30 days, and copying live's data into one. The operator's alone
-// end to end: hostd puts all of it under its provision verb, the actions check again, and a client gets
-// nothing drawn here at all.
+// The client pieces of a site's Environments tab: one environment's Summary, with copying live's data into
+// it and deleting it; the environments deleted in the last 30 days, under the list, each with its Restore;
+// and the form that adds another beside live. Adding, deleting, restoring and copying are the operator's
+// alone end to end: hostd puts all of it under its provision verb, the actions check again, and a client
+// gets none of it drawn.
 
 import { useRouter } from 'next/navigation'
-import { useEffect, useState } from 'react'
+import { createContext, useContext, useEffect, useState, type ReactNode } from 'react'
 
 import { LIVE, newEnvironmentProblem } from '@/server/hostd/environmentName'
 import { Button } from '@/ui/Button/Button'
 import { Callout } from '@/ui/Callout/Callout'
-import { DataTable } from '@/ui/DataTable/DataTable'
 import { Dialog } from '@/ui/Dialog/Dialog'
 import { Field } from '@/ui/Field/Field'
+import { KeyValue } from '@/ui/KeyValue/KeyValue'
 import {
     addEnvironmentAction, copyFromLiveAction, copyRunsAction, deleteEnvironmentAction, restoreEnvironmentAction,
     type CopyRunsResult, type SiteActionResult,
@@ -27,7 +28,7 @@ const DAY_MS = 24 * 60 * 60_000
 // How often a running copy is asked about. A copy takes minutes, so this is plenty.
 const POLL_MS = 3000
 
-type Listed = { name: string, branch: string | null, domain: string | null, deployed: string | null }
+type Listed = { name: string, branch: string | null, domain: string | null, deployed: string | null, port?: number }
 
 // The fields of hostd's deleted-environment record this reads. The whole record type lives in
 // server/hostd/environments.ts, which a browser component cannot import.
@@ -36,35 +37,26 @@ type Deleted = { environment: string, deletedAt: string, purgeAt: string, branch
 // One copy run, as the action hands it back
 type CopyRun = Extract<CopyRunsResult, { ok: true }>['runs'][number]
 
-type Props = {
-    id: string
-    // The site's name, which hostd wants typed back to delete an environment, as it does for the site
-    name: string
-    isAdmin: boolean
-    environments: Listed[]
-    // The repository's branches, or null when they could not be read, which leaves a text field instead
-    branches: string[] | null
-    // null when the list could not be read, which deletedError then says in hostd's own words
-    deleted: Deleted[] | null
-    deletedError: string | null
-    // Only for a test to fix the days left against. The page leaves it out.
-    now?: Date
+// What the last delete, restore or copy said, shown at the top of the tab. Held above the Summary rather
+// than in it: deleting an environment takes the tab back to live, which unmounts that environment's
+// Summary, and what hostd said about the delete has to outlive it.
+const SaidContext = createContext<(said: SiteActionResult) => void>(() => {})
+
+export function EnvironmentsSaid({ children }: { children: ReactNode }) {
+    const [said, setSaid] = useState<SiteActionResult | null>(null)
+    return (
+        <SaidContext.Provider value={setSaid}>
+            {said && (
+                <div className={styles.said}>
+                    {said.ok
+                        ? <Callout title="Done">{said.message}</Callout>
+                        : <Callout tone="crit" title="That did not happen">{said.error}</Callout>}
+                </div>
+            )}
+            {children}
+        </SaidContext.Provider>
+    )
 }
-
-const ENVIRONMENT_COLUMNS = [
-    { key: 'name', head: 'environment' },
-    { key: 'branch', head: 'branch' },
-    { key: 'domain', head: 'address' },
-    { key: 'deployed', head: 'deployed' },
-    { key: 'act', head: 'change it' },
-]
-
-const DELETED_COLUMNS = [
-    { key: 'name', head: 'environment' },
-    { key: 'deleted', head: 'deleted' },
-    { key: 'left', head: 'purged in' },
-    { key: 'act', head: 'change it' },
-]
 
 // What a small action said, beside the thing that caused it
 function Said({ said }: { said: SiteActionResult | null }) {
@@ -92,88 +84,116 @@ function dayOf(iso: string): string {
     return Number.isNaN(at.getTime()) ? iso : formatDay(at)
 }
 
-export function SiteEnvironments({ id, name, isAdmin, environments, branches, deleted, deletedError, now }: Props) {
+type SummaryProps = {
+    id: string
+    // The site's name, which hostd wants typed back to delete an environment, as it does for the site
+    siteName: string
+    isAdmin: boolean
+    environment: Listed
+}
+
+// Keyed on the environment's name here rather than trusted to every caller: choosing another environment
+// navigates to this same route, which rerenders rather than remounts, and a running copy or an open
+// confirm must not pass from one environment to the next.
+export function EnvironmentSummary(props: SummaryProps) {
+    return <SummaryOf key={props.environment.name} {...props} />
+}
+
+function SummaryOf({ id, siteName, isAdmin, environment }: SummaryProps) {
     const router = useRouter()
-    // Said above the list rather than inside a dialog that has closed by the time it lands
-    const [said, setSaid] = useState<SiteActionResult | null>(null)
+    const say = useContext(SaidContext)
 
-    if (!isAdmin) return null
-
-    // live first, then the rest in the registry's own order
-    const ordered = [...environments.filter(one => one.name === LIVE), ...environments.filter(one => one.name !== LIVE)]
-
-    const rows = ordered.map(environment => ({
-        name: <span className={styles.mono}>{environment.name}</span>,
-        branch: environment.branch ?? 'no branch',
-        domain: environment.domain ? <span className={styles.mono}>{environment.domain}</span> : 'none yet',
-        deployed: environment.deployed ? <span className={styles.mono}>{shortCommit(environment.deployed)}</span> : 'not deployed yet',
-        act: environment.name === LIVE
-            ? null
-            // Keyed by name: the table keys rows by position, so without this a row's state (a copy
-            // running, a confirm open) would pass to the next environment once one above it is deleted
-            : <div key={environment.name} className={styles.environmentActs}>
-                <CopyFromLive
-                    id={id}
-                    environment={environment.name}
-                    domain={environment.domain}
-                    onStarted={setSaid}
-                />
-                <DeleteEnvironment
-                    id={id}
-                    siteName={name}
-                    environment={environment.name}
-                    onDone={result => { setSaid(result); router.refresh() }}
-                />
-            </div>,
-    }))
+    const pairs = [
+        { key: 'branch', value: environment.branch ?? 'no branch' },
+        {
+            key: 'deployed',
+            value: environment.deployed
+                ? <span className={styles.mono}>{shortCommit(environment.deployed)}</span>
+                : 'not deployed yet',
+        },
+        // The port is how the operator reaches it on the dedi, which is nothing a client needs
+        ...(isAdmin && environment.port !== undefined
+            ? [{ key: 'port', value: <span className={styles.mono}>{String(environment.port)}</span> }]
+            : []),
+    ]
 
     return (
-        <div className={styles.environments}>
-            <section className={styles.block}>
-                <h2>Environments</h2>
-                {said && (
-                    <div className={styles.said}>
-                        {said.ok
-                            ? <Callout title="Done">{said.message}</Callout>
-                            : <Callout tone="crit" title="That did not happen">{said.error}</Callout>}
-                    </div>
-                )}
-                <DataTable label="Environments" columns={ENVIRONMENT_COLUMNS} rows={rows} />
-            </section>
-
-            <AddEnvironment id={id} taken={environments.map(one => one.name)} branches={branches} />
-
-            <section className={styles.block}>
-                <h2>Deleted environments</h2>
-                {deleted === null
-                    ? <p className={styles.note}>{`The deleted environments could not be read: ${deletedError ?? 'hostd did not answer'}`}</p>
-                    : <DataTable
-                        label="Deleted environments"
-                        columns={DELETED_COLUMNS}
-                        rows={deleted.map(record => ({
-                            name: <span className={styles.mono}>{record.environment}</span>,
-                            deleted: dayOf(record.deletedAt),
-                            left: daysLeft(record.purgeAt, now ?? new Date()),
-                            act: <RestoreEnvironment
-                                id={id}
-                                environment={record.environment}
-                                deletedAt={record.deletedAt}
-                                expired={pastPurge(record.purgeAt, now ?? new Date())}
-                                onDone={result => { setSaid(result); if (result.ok) router.refresh() }}
-                            />,
-                        }))}
-                        empty="There are no deleted environments."
-                    />}
-                <p className={styles.note}>
-                    A deleted environment is kept for 30 days and can be put back until then. After that its
-                    files and volumes are removed for good.
-                </p>
-            </section>
-        </div>
+        <section className={styles.block} aria-labelledby="summary">
+            <h2 id="summary">Summary</h2>
+            <KeyValue pairs={pairs} />
+            {isAdmin && environment.name !== LIVE && (
+                <div className={`${styles.environmentActs} ${styles.summaryActs}`}>
+                    <CopyFromLive
+                        id={id}
+                        environment={environment.name}
+                        domain={environment.domain}
+                        onStarted={say}
+                    />
+                    <DeleteEnvironment
+                        id={id}
+                        siteName={siteName}
+                        environment={environment.name}
+                        onDone={result => {
+                            say(result)
+                            // It is gone, so the tab goes back to live, which also reads the list again
+                            router.push(`/portal/sites/${id}?tab=environments`, { scroll: false })
+                        }}
+                    />
+                </div>
+            )}
+        </section>
     )
 }
 
-function AddEnvironment({ id, taken, branches }: { id: string, taken: string[], branches: string[] | null }) {
+type DeletedProps = {
+    id: string
+    // null when the list could not be read, which deletedError then says in hostd's own words
+    deleted: Deleted[] | null
+    deletedError: string | null
+    // Only for a test to fix the days left against. The page leaves it out.
+    now?: Date
+}
+
+// Under the list of environments, narrow, so a list of lines rather than a table
+export function DeletedEnvironments({ id, deleted, deletedError, now }: DeletedProps) {
+    const router = useRouter()
+    const say = useContext(SaidContext)
+    const at = now ?? new Date()
+
+    return (
+        <section className={styles.deleted} aria-labelledby="deleted-environments">
+            <h2 id="deleted-environments">Deleted environments</h2>
+            {deleted === null
+                ? <p className={styles.note}>{`The deleted environments could not be read: ${deletedError ?? 'hostd did not answer'}`}</p>
+                : deleted.length === 0
+                    ? <p className={styles.empty}>There are no deleted environments.</p>
+                    : <ul className={styles.deletedList} aria-label="Deleted environments">
+                        {deleted.map(record => (
+                            <li className={styles.deletedItem} key={`${record.environment}-${record.deletedAt}`}>
+                                <span className={styles.mono}>{record.environment}</span>
+                                <span className={styles.state}>
+                                    {`Deleted ${dayOf(record.deletedAt)}, ${daysLeft(record.purgeAt, at)}`}
+                                </span>
+                                <RestoreEnvironment
+                                    id={id}
+                                    environment={record.environment}
+                                    deletedAt={record.deletedAt}
+                                    expired={pastPurge(record.purgeAt, at)}
+                                    onDone={result => { say(result); if (result.ok) router.refresh() }}
+                                />
+                            </li>
+                        ))}
+                    </ul>}
+            <p className={styles.note}>
+                A deleted environment is kept for 30 days and can be put back until then. After that its
+                files and volumes are removed for good.
+            </p>
+        </section>
+    )
+}
+
+// Opened in the detail area by the list's Add environment
+export function AddEnvironment({ id, taken, branches }: { id: string, taken: string[], branches: string[] | null }) {
     const router = useRouter()
     const [name, setName] = useState('')
     const [branch, setBranch] = useState('')
@@ -254,8 +274,8 @@ function AddEnvironment({ id, taken, branches }: { id: string, taken: string[], 
             </div>
             <p className={styles.note}>
                 It gets its own folder, port and database, with a copy of live&apos;s env files. It is not
-                started until its first deploy. A hostname can be added later from the Domains tab. A copy
-                of live&apos;s data is real client data, and can also be made later from its row above.
+                started until its first deploy. A hostname can be added later from its Domains section. A
+                copy of live&apos;s data is real client data, and can also be made later from its Summary.
             </p>
         </section>
     )
@@ -372,7 +392,7 @@ function latestOf(runs: CopyRun[]): CopyRun | null {
     return runs.reduce<CopyRun | null>((latest, run) => (latest === null || run.startedAt > latest.startedAt ? run : latest), null)
 }
 
-// What the row says about copies: one going, or how the last one ended
+// What the Summary says about copies: one going, or how the last one ended
 function CopyState({ latest, running, trouble }: { latest: CopyRun | null, running: boolean, trouble: string | null }) {
     if (trouble) return <span className={styles.stateBad}>{`The copies could not be read: ${trouble}`}</span>
     if (running) return <span className={styles.state}>Copying from live...</span>
@@ -392,8 +412,8 @@ function CopyState({ latest, running, trouble }: { latest: CopyRun | null, runni
 
 // Copying live's databases and storage over this environment's. Real client data going somewhere less
 // guarded than live, so the dialog says so and wants the environment's name typed back, and the action
-// checks that again. hostd answers at once and copies in the background, so the row asks how it is going
-// every few seconds while it runs, and stops when it ends or the row goes.
+// checks that again. hostd answers at once and copies in the background, so the Summary asks how it is
+// going every few seconds while it runs, and stops when it ends or the Summary goes.
 function CopyFromLive({ id, environment, domain, onStarted }: {
     id: string
     environment: string

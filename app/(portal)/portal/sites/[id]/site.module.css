@@ -175,9 +175,70 @@
 
 .save { margin-top: 12px; display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
 
-/* The Settings tab's environments: set apart from the registry form above by a rule, the same way the
-   delete section below is set apart from it. */
-.environments { margin-top: 32px; padding-top: 4px; border-top: 1px solid var(--rule); }
+/* The Environments tab: the list of environments beside the chosen one's detail, and the list above the
+   detail once there is no room beside it. */
+.envTab {
+    display: grid;
+    grid-template-columns: 232px minmax(0, 1fr);
+    gap: 28px;
+    align-items: start;
+}
+@media (max-width: 900px) {
+    .envTab { grid-template-columns: minmax(0, 1fr); }
+}
+
+.envTabList { display: flex; flex-direction: column; gap: 10px; min-width: 0; }
+.envRows { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 4px; }
+
+/* One environment in the list: its name, then its branch and what is deployed, in the chip style the env
+   file links use, so the one shown reads as chosen the same way */
+.envRow {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    gap: 2px 10px;
+    padding: 8px 10px;
+    border: 1px solid var(--rule);
+    border-radius: var(--radius-chip);
+    color: var(--ink-2);
+    text-decoration: none;
+    font-size: 12px;
+}
+.envRow:hover { background: rgba(255, 255, 255, .03); color: var(--ink); }
+.envRow[aria-current] { color: var(--ink); background: var(--panel-hi); border-color: var(--lake); }
+.envRow:focus-visible { outline: 2px solid var(--lake); outline-offset: 2px; }
+.envRowName { grid-column: 1 / -1; font-family: var(--font-mono), monospace; font-size: 12.5px; color: var(--ink); }
+.envRowMeta { color: var(--ink-3); font-size: 11.5px; overflow-wrap: anywhere; }
+.envRowMeta + .envRowMeta { font-family: var(--font-mono), monospace; text-align: right; }
+
+.envAdd {
+    align-self: flex-start;
+    font-size: 12px;
+    color: var(--ink-2);
+    text-decoration: none;
+    border: 1px dashed var(--rule-hi);
+    border-radius: var(--radius-chip);
+    padding: 6px 10px;
+}
+.envAdd:hover { color: var(--ink); }
+.envAdd[aria-current] { color: var(--ink); border-style: solid; border-color: var(--lake); }
+.envAdd:focus-visible { outline: 2px solid var(--lake); outline-offset: 2px; }
+
+/* The deleted ones, under the list: narrow, so a line each rather than a table */
+.deleted { margin-top: 14px; padding-top: 12px; border-top: 1px solid var(--rule); }
+.deleted h2 { font-size: 13px; margin: 0 0 8px; }
+.deletedList { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 10px; }
+.deletedItem { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 8px; font-size: 12px; }
+.deletedItem > .state { flex: 1 0 100%; }
+
+.envTabDetail { min-width: 0; }
+.envTabName { font-family: var(--font-mono), monospace; font-size: 15px; margin: 0; }
+
+/* Each section after the Summary, set apart by a rule so the Domains' and Env files' own headings read as
+   inside it */
+.envSection { margin-top: 28px; padding-top: 14px; border-top: 1px solid var(--rule); }
+.envSectionHead { font-size: 11px; text-transform: uppercase; letter-spacing: .08em; color: var(--ink-3); margin: 0; }
+
+.summaryActs { margin-top: 12px; }
 
 /* Name, branch and hostname on one line where there is room, each as wide as what it holds */
 .addEnvironment { display: flex; flex-wrap: wrap; align-items: flex-start; gap: 12px; }
