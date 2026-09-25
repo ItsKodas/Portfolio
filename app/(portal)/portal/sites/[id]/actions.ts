@@ -306,7 +306,8 @@ export async function setPrimaryDomainAction(id: string, environment: string, ho
     revalidatePath(`/portal/sites/${id}`)
     return {
         ok: true,
-        message: `${wanted} is this site's address now. Nothing is served from it until this environment is adopted.`,
+        message: `${wanted} is this site's address now. Nothing is served from it until ${name} is adopted. `
+            + `Adopt it from ${name}'s Domains section on the Environments tab.`,
     }
 }
 

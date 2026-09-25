@@ -283,8 +283,11 @@ export function SiteSettingsForm({ id, name, capabilities, repo, credential, env
 }
 
 // live's main address. Keyed on it, so a change made elsewhere and read back on a refresh starts the
-// control over rather than leaving a half typed address or an open confirm about the old one.
+// control over rather than leaving a half typed address or an open confirm about the old one. What the
+// last set or change said is held here, outside the key: the refresh after this control's own success
+// brings the new address too, and that message (for a set, the only word on adopting) has to survive it.
 function LivePrimaryDomain({ id, live }: { id: string, live: { domain?: string | null } | null }) {
+    const [said, setSaid] = useState<SiteActionResult | null>(null)
     // Without live in the list its address is not known, and offering to set one could put an address over
     // one it already has
     if (!live) {
@@ -296,7 +299,7 @@ function LivePrimaryDomain({ id, live }: { id: string, live: { domain?: string |
         )
     }
     const current = live.domain ?? null
-    return <PrimaryDomain key={current ?? ''} id={id} environment={LIVE} current={current} />
+    return <PrimaryDomain key={current ?? ''} id={id} environment={LIVE} current={current} said={said} onSaid={setSaid} />
 }
 
 function DeleteSite({ id, name }: { id: string, name: string }) {

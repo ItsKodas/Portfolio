@@ -66,6 +66,46 @@ describe('the primary domain', () => {
         expect(refresh).toHaveBeenCalled()
     })
 
+    // The refresh after a set hands the form live's new address. What the set said, which is the only
+    // place the operator is told to adopt, has to survive that.
+    it('keeps what the set said once the refresh brings the new address', async () => {
+        const { rerender } = render(<SiteSettingsForm {...props} environments={withLive(null)} />)
+        await userEvent.type(within(region()).getByLabelText('Address'), 'arbysauto.com')
+        await userEvent.click(within(region()).getByRole('button', { name: /set the address/i }))
+        await screen.findByText(/is this site's address now/)
+
+        rerender(<SiteSettingsForm {...props} environments={withLive('arbysauto.com')} />)
+
+        expect(within(region()).getByRole('button', { name: /change the address/i })).toBeInTheDocument()
+        expect(within(region()).getByText(/is this site's address now/)).toBeInTheDocument()
+    })
+
+    it('keeps what a change said once the refresh brings the new address', async () => {
+        const { rerender } = render(<SiteSettingsForm {...props} environments={withLive('arbysauto.com')} />)
+        await userEvent.type(within(region()).getByLabelText(/new address/i), 'shop.arbysauto.com')
+        await userEvent.click(within(region()).getByRole('button', { name: /change the address/i }))
+        await userEvent.type(await screen.findByLabelText(/to confirm/i), 'shop.arbysauto.com')
+        await userEvent.click(screen.getByRole('button', { name: /^change it$/i }))
+        await screen.findByText(/shop\.arbysauto\.com is this site's address now/)
+
+        rerender(<SiteSettingsForm {...props} environments={withLive('shop.arbysauto.com')} />)
+
+        expect(within(region()).getByText(/shop\.arbysauto\.com is this site's address now/)).toBeInTheDocument()
+    })
+
+    // Settings only ever draws live's, so it names live rather than "this environment"
+    it('speaks of live, not of this environment', () => {
+        const { unmount } = render(<SiteSettingsForm {...props} environments={withLive(null)} />)
+        expect(within(region()).queryByText(/this environment/i)).toBeNull()
+        expect(within(region()).getByText(/The main name live answers to/)).toBeInTheDocument()
+        expect(within(region()).getByText(/once live is adopted/)).toBeInTheDocument()
+        unmount()
+
+        render(<SiteSettingsForm {...props} environments={withLive('arbysauto.com')} />)
+        expect(within(region()).queryByText(/this environment/i)).toBeNull()
+        expect(within(region()).getByText(/live answers on arbysauto\.com today/)).toBeInTheDocument()
+    })
+
     it("changes live's address only once the new one is typed back", async () => {
         render(<SiteSettingsForm {...props} environments={withLive('arbysauto.com')} />)
         await userEvent.type(within(region()).getByLabelText(/new address/i), 'shop.arbysauto.com')

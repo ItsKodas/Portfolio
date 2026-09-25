@@ -96,11 +96,25 @@ export function AddDomain({ id, environment }: { id: string, environment: string
 // Apache configuration. So it goes behind the dialog below, which names all four and asks for the new
 // hostname back, the same ceremony AdoptSite uses for the other change on this tab that a live site
 // notices immediately.
-export function PrimaryDomain({ id, environment, current }: { id: string, environment: string, current: string | null }) {
+//
+// What the last set or change said can be held by the caller instead (said and onSaid), for one that keys
+// this on the address: the refresh after a success brings the new address, which remounts it, and the
+// message has to outlive that. It is the only place a set tells the operator to adopt.
+type PrimaryProps = {
+    id: string
+    environment: string
+    current: string | null
+    said?: SiteActionResult | null
+    onSaid?: (said: SiteActionResult | null) => void
+}
+
+export function PrimaryDomain({ id, environment, current, said: heldSaid, onSaid }: PrimaryProps) {
     const router = useRouter()
     const [hostname, setHostname] = useState('')
     const [pending, setPending] = useState(false)
-    const [said, setSaid] = useState<SiteActionResult | null>(null)
+    const [ownSaid, setOwnSaid] = useState<SiteActionResult | null>(null)
+    const said = onSaid ? heldSaid ?? null : ownSaid
+    const setSaid = onSaid ?? setOwnSaid
     const [asking, setAsking] = useState(false)
     const [typed, setTyped] = useState('')
 
@@ -132,7 +146,7 @@ export function PrimaryDomain({ id, environment, current }: { id: string, enviro
             <h2 id="primary-domain">Primary domain</h2>
             {current
                 ? <p className={styles.addressName}>{current}</p>
-                : <p className={styles.empty}>live has no main address yet.</p>}
+                : <p className={styles.empty}>{`${environment} has no main address yet.`}</p>}
             <div className={styles.addDomain}>
                 <Field
                     label={current ? 'New address' : 'Address'}
@@ -141,8 +155,8 @@ export function PrimaryDomain({ id, environment, current }: { id: string, enviro
                     autoComplete="off"
                     placeholder="example.com"
                     hint={current
-                        ? `This environment answers on ${current} today. What you put here replaces it.`
-                        : 'The main name this environment answers to. Other names can be pointed at it afterwards.'}
+                        ? `${environment} answers on ${current} today. What you put here replaces it.`
+                        : `The main name ${environment} answers to. Other names can be pointed at it afterwards.`}
                     onChange={event => setHostname(event.target.value)}
                 />
                 <div className={styles.addAction}>
@@ -170,9 +184,9 @@ export function PrimaryDomain({ id, environment, current }: { id: string, enviro
             </div>
             {!current && (
                 <p className={styles.note}>
-                    This records the address and changes nothing that is being served: whatever answers
-                    this name today keeps answering it. The site is served from it once this environment
-                    is adopted, which replaces the hand-written configuration in one reload.
+                    {'This records the address and changes nothing that is being served: whatever answers '
+                        + `this name today keeps answering it. The site is served from it once ${environment} `
+                        + 'is adopted, which replaces the hand-written configuration in one reload.'}
                 </p>
             )}
 
@@ -213,10 +227,10 @@ export function PrimaryDomain({ id, environment, current }: { id: string, enviro
                         it and prove it lands on this site before it counts as working, so its DNS needs to
                         point at this server.
                     </li>
-                    <li>Every other name on this environment starts redirecting to the new address instead.</li>
+                    <li>{`Every other name on ${environment} starts redirecting to the new address instead.`}</li>
                     <li>
-                        The Apache configuration for this environment is rewritten and reloaded, if hostd
-                        is the one serving it.
+                        {`The Apache configuration for ${environment} is rewritten and reloaded, if hostd `
+                            + 'is the one serving it.'}
                     </li>
                 </ul>
                 <Field

@@ -255,6 +255,7 @@ describe('setPrimaryDomainAction', () => {
         const result = await setPrimaryDomainAction('acme', 'live', 'acme.com')
 
         expect(result.ok && result.message).toMatch(/adopted/i)
+        expect(result.ok && result.message).toContain("Adopt it from live's Domains section on the Environments tab.")
     })
 
     // This pane is admin-only: hostd puts configure among its admin-only policy verbs ahead of
@@ -437,6 +438,18 @@ describe('addEnvironmentAction', () => {
         const result = await addEnvironmentAction('acme', 'uat1', 'uat', 'uat1.acme.com')
 
         expect(result.ok).toBe(false)
+        expect(addEnvironment).not.toHaveBeenCalled()
+    })
+
+    // live's own domain can sit under horizons.gg too, so even a horizons.gg address waits on the read
+    it("refuses an address under horizons.gg too when live's domain cannot be read", async () => {
+        callerFromSession.mockResolvedValue(ADMIN)
+        listEnvironments.mockResolvedValue({ ok: false, code: 'unavailable', message: 'hostd is not answering' })
+
+        const result = await addEnvironmentAction('acme', 'uat1', 'uat', 'uat1-acme.horizons.gg')
+
+        expect(result.ok).toBe(false)
+        expect(listEnvironments).toHaveBeenCalledWith(expect.anything(), ADMIN.caller, 'acme')
         expect(addEnvironment).not.toHaveBeenCalled()
     })
 
