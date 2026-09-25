@@ -128,8 +128,11 @@ export function PrimaryDomain({ id, environment, current }: { id: string, enviro
     }
 
     return (
-        <section className={styles.block}>
-            <h2>The site&apos;s address</h2>
+        <section className={styles.block} aria-labelledby="primary-domain">
+            <h2 id="primary-domain">Primary domain</h2>
+            {current
+                ? <p className={styles.addressName}>{current}</p>
+                : <p className={styles.empty}>live has no main address yet.</p>}
             <div className={styles.addDomain}>
                 <Field
                     label={current ? 'New address' : 'Address'}

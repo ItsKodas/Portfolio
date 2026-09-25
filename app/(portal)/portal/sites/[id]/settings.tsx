@@ -3,17 +3,20 @@
 // The registry entry itself: which capabilities the project has, its repo, and each environment's
 // branch. This is the only form on the site page that changes the registry rather than asking hostd to
 // act on what is already in it, which is why it is admin only end to end (actions.ts's allow(id, true),
-// the same gate saveEnvAction uses).
+// the same gate saveEnvAction uses). Beside it, live's primary domain, set and changed through the same
+// actions and confirmation the Domains tab used, and deleting the site.
 
 import { useRouter } from 'next/navigation'
 import { useState } from 'react'
 
+import { LIVE } from '@/server/hostd/environmentName'
 import { Button } from '@/ui/Button/Button'
 import { Callout } from '@/ui/Callout/Callout'
 import { Dialog } from '@/ui/Dialog/Dialog'
 import { Field } from '@/ui/Field/Field'
 import { CAPABILITIES, NOT_BUILT, SWITCHES, type SwitchKey } from '../features'
 import { deleteSiteAction, saveSettingsAction, type SiteActionResult } from './actions'
+import { PrimaryDomain } from './domainControls'
 import { PortControl } from './portControl'
 import styles from './site.module.css'
 
@@ -29,7 +32,8 @@ export function SiteSettingsForm({ id, name, capabilities, repo, credential, env
     capabilities: string[]
     repo: string | null
     credential: string | null
-    environments: Array<{ name: string, branch: string | null, websockets?: boolean, flexibleSsl?: boolean, dir?: string, port?: number }>
+    // domain is live's primary domain for the Primary domain section, null when it has none
+    environments: Array<{ name: string, branch: string | null, domain?: string | null, websockets?: boolean, flexibleSsl?: boolean, dir?: string, port?: number }>
     // The repository's branches, fetched for the repo as it stands saved, not for whatever is currently
     // typed into the Repo field above: editing that field without saving leaves this offering the old
     // repo's branches, which is the one thing left as it is rather than fixed, because re-fetching on
@@ -271,9 +275,28 @@ export function SiteSettingsForm({ id, name, capabilities, repo, credential, env
 
             {nothingChanged && <p className={styles.note}>Nothing changed, so nothing was saved.</p>}
 
+            <LivePrimaryDomain id={id} live={environments.find(env => env.name === LIVE) ?? null} />
+
             <DeleteSite id={id} name={name} />
         </div>
     )
+}
+
+// live's main address. Keyed on it, so a change made elsewhere and read back on a refresh starts the
+// control over rather than leaving a half typed address or an open confirm about the old one.
+function LivePrimaryDomain({ id, live }: { id: string, live: { domain?: string | null } | null }) {
+    // Without live in the list its address is not known, and offering to set one could put an address over
+    // one it already has
+    if (!live) {
+        return (
+            <section className={styles.block} aria-labelledby="primary-domain">
+                <h2 id="primary-domain">Primary domain</h2>
+                <p className={styles.note}>live&apos;s address could not be read, so it cannot be changed here right now.</p>
+            </section>
+        )
+    }
+    const current = live.domain ?? null
+    return <PrimaryDomain key={current ?? ''} id={id} environment={LIVE} current={current} />
 }
 
 function DeleteSite({ id, name }: { id: string, name: string }) {
