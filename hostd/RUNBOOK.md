@@ -1388,6 +1388,24 @@ under `$BACKUPS` (`/srv/backups/hostd` unless `HOSTD_BACKUP_DIR` says otherwise)
 its disk fail loses every backup on it, exactly the way it loses everything else under `/var/www`. Nothing
 built so far protects against that. Only the offsite copy, not built in this phase, will.
 
+**A symlink in live's checkout never leads a backup into another site.** Before a run reads anything, the
+folders above each `storage` directory are resolved (`realpath`) and must be inside live's folder; a
+sqlite file is resolved before `sqlite3` reads it (at the path it resolves to) and must be inside live's
+folder; and a `generic` service's bind mount under `/var/www`, or one that resolves into it, must resolve
+inside the site's own folder, checked before the service is stopped. A bind mount elsewhere on the host is
+left alone. A `storage` directory that is itself a symlink is handed to restic as it is, and restic stores
+it as a link, never what it points at. Any of these fails the whole run, never silently: the record is
+`failed` with no snapshot, and the reason is one of
+
+- `storage <path> resolves outside live's folder (through <dir>, to <real path>), so the backup will not read it`
+- `<service>: <file> resolves outside live's folder (to <real path>), so the backup will not read it`, or
+  `<service>: <file> could not be resolved: <error>` when the file is not there
+- `<service>: its bind mount <source> resolves outside the site's folder <site> (to <real path>), so the
+  backup will not read it`, or `... could not be resolved: <error>`
+
+Look at the symlink it names in live's checkout (`ls -l <dir>`). It came from the client's repository: ask
+them to replace it with a real folder or a registered `storage` path, and the next run backs up again.
+
 ### Restoring
 
 This is deliberately a runbook procedure, not a portal button. A restore overwrites a live database with

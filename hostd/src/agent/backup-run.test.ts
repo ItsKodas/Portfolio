@@ -39,6 +39,7 @@ function setup(over: Partial<BackupDeps> = {}) {
         remove: async path => { removed.push(path) },
         copy: async (from, to) => { written.set(to, `copy of ${from}`) },
         exists: async () => true,
+        realpath: async path => path,
     }
     const backups: Array<{ paths: string[], tag: string }> = []
     const restic: Restic = {
@@ -184,5 +185,88 @@ describe('runBackup', () => {
         assert.equal(record.outcome, 'failed')
         assert.match(record.reason ?? '', /restic init exited with code 1/)
         assert.deepEqual(backups, [])
+    })
+})
+
+describe('runBackup and symlinks in the site\'s checkout', () => {
+    // Symlinks: a path, and the path it resolves to, as realpath answers
+    const linked = (links: Record<string, string>) => async (path: string) => {
+        for (const [link, to] of Object.entries(links)) if (path === link || path.startsWith(`${link}/`)) return to + path.slice(link.length)
+        return path
+    }
+    const SQLITE = YAML.replace('db: { role: database, engine: postgres }', 'db: { role: database, engine: sqlite, file: data/app.db }')
+    const GENERIC = YAML.replace('engine: postgres', 'engine: generic')
+    const bindTo = (source: string, commands: string[][]) => async (command: string, args: string[]) => {
+        commands.push([command, ...args])
+        return { exitCode: 0, stdout: JSON.stringify({ name: 'acme', services: { db: { volumes: [{ type: 'bind', source }] } } }), stderr: '', timedOut: false }
+    }
+
+    it('refuses to read a sqlite file through a symlink out of live\'s folder, and says so', async () => {
+        const commands: string[][] = []
+        const { deps, backups } = setup({ runner: async (command, args) => { commands.push([command, ...args]); return { exitCode: 0, stdout: '', stderr: '', timedOut: false } } })
+        deps.fs.realpath = linked({ '/var/www/acme/data': '/var/www/other/data' })
+        const record = await runBackup(parseRegistry(SQLITE).projects.get('acme')!, { tag: 'manual', actor: 'client', run: 'run1', keep: null }, deps)
+        assert.equal(record.outcome, 'failed')
+        assert.equal(record.reason, 'db: data/app.db resolves outside live\'s folder (to /var/www/other/data/app.db), so the backup will not read it')
+        assert.deepEqual(commands.filter(([command]) => command === 'sqlite3'), [])
+        assert.deepEqual(backups, [])
+    })
+
+    it('reads a sqlite file at its resolved path when a symlink keeps it inside live\'s folder', async () => {
+        const commands: string[][] = []
+        const { deps } = setup({ runner: async (command, args) => { commands.push([command, ...args]); return { exitCode: 0, stdout: '', stderr: '', timedOut: false } } })
+        deps.fs.realpath = linked({ '/var/www/acme/data': '/var/www/acme/var/data' })
+        const record = await runBackup(parseRegistry(SQLITE).projects.get('acme')!, { tag: 'manual', actor: 'client', run: 'run1', keep: null }, deps)
+        assert.equal(record.outcome, 'ok', JSON.stringify(record))
+        assert.deepEqual(commands.find(([command]) => command === 'sqlite3')?.[1], '/var/www/acme/var/data/app.db')
+    })
+
+    it('refuses a generic bind mount under /var/www that resolves into another site, before stopping anything', async () => {
+        const commands: string[][] = []
+        const { deps, written, backups } = setup({ runner: bindTo('/var/www/acme/dbdata', commands) })
+        deps.fs.realpath = linked({ '/var/www/acme/dbdata': '/var/www/other/live/dbdata' })
+        const record = await runBackup(parseRegistry(GENERIC).projects.get('acme')!, { tag: 'manual', actor: 'client', run: 'run1', keep: null }, deps)
+        assert.equal(record.outcome, 'failed')
+        assert.equal(record.reason, 'db: its bind mount /var/www/acme/dbdata resolves outside the site\'s folder /var/www/acme (to /var/www/other/live/dbdata), so the backup will not read it')
+        assert.equal(commands.some(command => command.includes('stop')), false, 'the service is never stopped')
+        assert.equal([...written.keys()].some(path => path.includes('dbdata')), false)
+        assert.deepEqual(backups, [])
+    })
+
+    it('refuses a generic bind mount outside /var/www that resolves into it', async () => {
+        const commands: string[][] = []
+        const { deps } = setup({ runner: bindTo('/srv/escape', commands) })
+        deps.fs.realpath = linked({ '/srv/escape': '/var/www/other/live/dbdata' })
+        const record = await runBackup(parseRegistry(GENERIC).projects.get('acme')!, { tag: 'manual', actor: 'client', run: 'run1', keep: null }, deps)
+        assert.equal(record.outcome, 'failed')
+        assert.match(record.reason ?? '', /resolves outside the site's folder/)
+    })
+
+    it('leaves a generic bind mount outside /var/www alone', async () => {
+        const commands: string[][] = []
+        const { deps, written } = setup({ runner: bindTo('/srv/dbdata', commands) })
+        deps.fs.realpath = linked({})
+        const record = await runBackup(parseRegistry(GENERIC).projects.get('acme')!, { tag: 'manual', actor: 'client', run: 'run1', keep: null }, deps)
+        assert.equal(record.outcome, 'ok', JSON.stringify(record))
+        assert.ok([...written.values()].includes('copy of /srv/dbdata'))
+    })
+
+    it('refuses a storage folder whose parent is a symlink out of live\'s folder, before dumping anything', async () => {
+        const { deps, backups, execs } = setup()
+        deps.fs.realpath = linked({ '/var/www/acme/public': '/var/www/other/live/public' })
+        const nested = YAML.replace('path: uploads', 'path: public/uploads')
+        const record = await runBackup(parseRegistry(nested).projects.get('acme')!, { tag: 'manual', actor: 'client', run: 'run1', keep: null }, deps)
+        assert.equal(record.outcome, 'failed')
+        assert.equal(record.reason, 'storage public/uploads resolves outside live\'s folder (through /var/www/acme/public, to /var/www/other/live/public), so the backup will not read it')
+        assert.deepEqual(execs, [])
+        assert.deepEqual(backups, [])
+    })
+
+    it('hands restic a storage folder that is itself a symlink as it is, which restic stores as a link', async () => {
+        const { deps, backups } = setup()
+        deps.fs.realpath = linked({ '/var/www/acme/uploads': '/var/www/other/live/uploads' })
+        const record = await runBackup(project(), { tag: 'manual', actor: 'client', run: 'run1', keep: null }, deps)
+        assert.equal(record.outcome, 'ok', JSON.stringify(record))
+        assert.deepEqual(backups[0]?.paths, ['/backups/.staging/acme/run1', '/var/www/acme/uploads'])
     })
 })

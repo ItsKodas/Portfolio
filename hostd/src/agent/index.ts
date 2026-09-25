@@ -326,6 +326,7 @@ async function main(): Promise<void> {
         remove: async path => { await rm(path, { recursive: true, force: true }) },
         copy: async (from, to) => { await cp(from, to, { recursive: true }) },
         exists,
+        realpath: path => realpath(path),
     }
     const backupStore = new BackupStore(BACKUP_STATE_FILE, undefined, log)
     await backupStore.load()
