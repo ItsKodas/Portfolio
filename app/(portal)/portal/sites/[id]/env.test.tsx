@@ -60,8 +60,10 @@ describe('the Env files section', () => {
         expect(listEnvFiles).not.toHaveBeenCalled()
     })
 
-    it('names the environment it is showing', async () => {
+    // The Environments tab names the environment over all of its sections, so this does not again
+    it('draws no heading naming the environment, which the tab already does', async () => {
         render(await EnvPanel({ id: 'acme', file: null, environment: 'uat1' }))
-        expect(screen.getByRole('heading', { name: 'uat1' })).toBeInTheDocument()
+        expect(screen.queryByRole('heading', { name: 'uat1' })).toBeNull()
+        expect(screen.getByRole('link', { name: /\.env/ })).toBeInTheDocument()
     })
 })

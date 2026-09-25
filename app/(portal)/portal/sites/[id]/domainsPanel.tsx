@@ -1,7 +1,8 @@
-// The Domains section of the Environments tab, for the environment chosen there. Two screens over one list, which is why this takes its domains as a prop rather than
-// asking hostd itself the way DeployPanel does: an operator gets a table of hostnames, states and the
-// controls that change them, and a client gets sentences about their own website address and nothing
-// else. Both are worth rendering in a test without a network in the way.
+// The Domains section of the Environments tab, for the environment chosen there. Two screens over one
+// list, which is why this takes its domains as a prop rather than asking hostd itself the way DeployPanel
+// does: an operator gets a table of hostnames, states and the controls that change them, and a client gets
+// sentences about their own website address and nothing else. Both are worth rendering in a test without
+// a network in the way.
 //
 // A client reads this at all because hostd leaves 'domains-read' out of its admin-only policy verbs
 // (hostd/src/api/policy.ts). Every verb that changes something is admin-only, verifying included, so

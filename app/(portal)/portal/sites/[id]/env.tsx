@@ -1,6 +1,6 @@
-// The env files, the Environments tab's Env files section, for the operator only. A server component: hostd is asked here, the caller is worked out
-// from the session here, and which file is open is part of the URL rather than client state, so the panel
-// reloads and can be linked to.
+// The env files, the Environments tab's Env files section, for the operator only. A server component:
+// hostd is asked here, the caller is worked out from the session here, and which file is open is part of
+// the URL rather than client state, so the panel reloads and can be linked to.
 //
 // It re-derives the caller and re-checks the operator rather than trusting the page that rendered it.
 // hostd puts the same check ahead of ownership (hostd/src/api/policy.ts), and a check that exists in one
@@ -77,8 +77,8 @@ export async function EnvPanel({ id, file, environment }: Props) {
                 and it never leaves the dedi. Nothing here is written down anywhere else.
             </Callout>
 
+            {/* No heading of its own: the Environments tab names the environment over all its sections */}
             <section className={styles.block}>
-                <h2>{environment}</h2>
                 <Files id={id} environment={environment} files={files.value} chosen={chosen} />
 
                 {!chosen && <p className={styles.empty}>Choose a file to read or edit it.</p>}

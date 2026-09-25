@@ -6,7 +6,7 @@
 // the same gate saveEnvAction uses).
 
 import { useRouter } from 'next/navigation'
-import { useState, type ReactNode } from 'react'
+import { useState } from 'react'
 
 import { Button } from '@/ui/Button/Button'
 import { Callout } from '@/ui/Callout/Callout'
@@ -22,7 +22,7 @@ import styles from './site.module.css'
 const CANNOT_CHECK = 'A deploy needs a git repository already at the environment\'s dir (dir/.git). hostd '
     + 'only finds that out when it runs. This form cannot check that ahead of it.'
 
-export function SiteSettingsForm({ id, name, capabilities, repo, credential, environments, branches = null, branchesError = null, credentials = null, credentialsError = null, children }: {
+export function SiteSettingsForm({ id, name, capabilities, repo, credential, environments, branches = null, branchesError = null, credentials = null, credentialsError = null }: {
     id: string
     // The site's name, which hostd wants typed back to delete it
     name: string
@@ -41,9 +41,6 @@ export function SiteSettingsForm({ id, name, capabilities, repo, credential, env
     // the fetcher down). credentialsError says which, in hostd's own words.
     credentials?: string[] | null
     credentialsError?: string | null
-    // More of the tab, drawn after this form and before deleting the site: the environments sections,
-    // which the page hands in so this form stays about the registry entry.
-    children?: ReactNode
 }) {
     const router = useRouter()
     const [checked, setChecked] = useState(() => new Set(capabilities))
@@ -273,8 +270,6 @@ export function SiteSettingsForm({ id, name, capabilities, repo, credential, env
             )}
 
             {nothingChanged && <p className={styles.note}>Nothing changed, so nothing was saved.</p>}
-
-            {children}
 
             <DeleteSite id={id} name={name} />
         </div>

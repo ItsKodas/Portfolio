@@ -32,6 +32,13 @@ beforeEach(() => {
 })
 
 describe('the settings form', () => {
+    // The environments sections it used to draw below the form moved to the Environments tab, and it
+    // takes nothing else in their place
+    it('draws nothing handed to it beyond its own form', () => {
+        render(<SiteSettingsForm {...props}><p>an extra section</p></SiteSettingsForm>)
+        expect(screen.queryByText('an extra section')).toBeNull()
+    })
+
     it('shows every capability, ticked as the registry has it', () => {
         render(<SiteSettingsForm {...props} />)
         expect(screen.getByRole('checkbox', { name: /lifecycle/ })).toBeChecked()
