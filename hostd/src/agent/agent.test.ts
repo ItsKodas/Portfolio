@@ -611,7 +611,7 @@ projects:
     services: { web: { role: site } }
     capabilities: [provision, env]
     environments:
-      live: { dir: /var/www/acme/live, branch: main, port: 5010 }
+      live: { dir: /var/www/acme/live, branch: main, domain: acme.com, port: 5010 }
 `)
         const envFs = fakeEnvFs({
             readdir: async dir => dir === '/var/www/acme/live'
@@ -634,7 +634,7 @@ projects:
         })
         const reply = replyOf(await agent.handle({
             verb: 'provision', project: 'acme',
-            args: { action: 'add-environment', environment: 'uat1', branch: 'develop', domain: null, certificate: null },
+            args: { action: 'add-environment', environment: 'uat1', branch: 'develop', domain: 'uat1.acme.com', certificate: null },
         }))
         assert.equal(reply?.ok, true)
         assert.ok(writes.some(write => write.path.startsWith('/var/www/acme/uat1/')))
@@ -2192,7 +2192,7 @@ describe('copying from live', () => {
         ['a lifecycle action on the project', { verb: 'lifecycle', project: 'acme', args: { action: 'restart' } }, 'acme already has a lifecycle action running'],
         [
             'a provisioning action',
-            { verb: 'provision', project: 'acme', args: { action: 'add-environment', environment: 'staging', branch: 'develop', domain: null, certificate: null } },
+            { verb: 'provision', project: 'acme', args: { action: 'add-environment', environment: 'staging', branch: 'develop', domain: 'staging-acme.horizons.gg', certificate: null } },
             'another provisioning action is in progress',
         ],
     ] as const) {
