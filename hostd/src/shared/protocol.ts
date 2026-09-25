@@ -79,7 +79,9 @@ export type ProvisionAddEnvironmentArgs = {
     // Any environment name but live, which every project already has from its create
     environment: string
     branch: string
-    domain: string | null
+    // Required: an environment always needs an address now, one label below horizons.gg or the
+    // project's live domain, checked in the agent where the live domain is known.
+    domain: string
     certificate: CertificateMode | null
 }
 export type ProvisionRemoveArgs = { action: 'remove', environment: EnvironmentName | null }
@@ -549,14 +551,15 @@ function parseProvisionAddEnvironment(raw: Record<string, unknown>): Parsed {
     if (!isEnvironmentName(environment)) return refuse('bad-request', 'environment must be an environment name')
     if (typeof args.branch !== 'string') return refuse('bad-request', 'branch is malformed')
     const domain = args.domain
-    if (domain !== null && typeof domain !== 'string') return refuse('bad-request', 'domain is malformed')
+    if (domain === null || domain === undefined) return refuse('bad-request', 'an environment needs an address')
+    if (typeof domain !== 'string') return refuse('bad-request', 'domain is malformed')
     const certificate = args.certificate
     if (certificate !== null && !(CERTIFICATE_MODES as readonly string[]).includes(certificate as string)) return refuse('bad-request', 'certificate is malformed')
     return {
         ok: true,
         request: {
             verb: 'provision', project,
-            args: { action: 'add-environment', environment, branch: args.branch, domain: domain as string | null, certificate: certificate as CertificateMode | null },
+            args: { action: 'add-environment', environment, branch: args.branch, domain, certificate: certificate as CertificateMode | null },
         },
     }
 }

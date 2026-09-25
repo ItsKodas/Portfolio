@@ -13,9 +13,10 @@ import { randomBytes } from 'node:crypto'
 
 import { PROJECT_ID, CLIENT_ID, HOSTNAME, RESERVED_PROJECT_IDS, describeError, isEnvironmentName } from '../shared/formats.ts'
 import {
-    GIT_REF, GIT_REPO, DEFAULT_PORT_ENV, PORT_OVERRIDE_FILE,
+    GIT_REF, GIT_REPO, DEFAULT_PORT_ENV, PORT_OVERRIDE_FILE, HORIZONS_BASE,
     type CertificateMode, type EnvironmentEntry, type EnvironmentName, type ProjectEntry, type Registry,
 } from '../shared/registry.ts'
+import { oneLabelBelow } from '../shared/hostnames.ts'
 import type { OwnPort, PortVerdict } from '../shared/ports.ts'
 import { RegistryWriter, type Change } from '../shared/registry-write.ts'
 import type { FetchClient } from './fetch-client.ts'
@@ -557,7 +558,16 @@ export async function addEnvironment(project: ProjectEntry, args: ProvisionAddEn
     if (name === 'live') return refuse('bad-request', 'live cannot be added')
     if (!isEnvironmentName(name)) return refuse('bad-request', 'environment must be an environment name')
     if (!GIT_REF.test(args.branch)) return refuse('bad-request', 'branch must be a plain branch name')
-    if (args.domain !== null && !HOSTNAME.test(args.domain)) return refuse('bad-request', 'domain must be a lowercase hostname')
+    if (!HOSTNAME.test(args.domain)) return refuse('bad-request', 'domain must be a lowercase hostname')
+    // A fresh environment's address must sit exactly one label below horizons.gg or below the site's own
+    // live domain, whichever the operator meant: never the apex of either, and never two labels down,
+    // which would put it out of reach of the vhost and certificate machinery that assumes one label. This
+    // runs before any disk work, on the site as it already was when the request arrived.
+    const liveDomain = project.environments.get('live')?.domain ?? null
+    if (!oneLabelBelow(args.domain, HORIZONS_BASE) && (liveDomain === null || !oneLabelBelow(args.domain, liveDomain))) {
+        const bases = liveDomain === null ? HORIZONS_BASE : `${HORIZONS_BASE} or ${liveDomain}`
+        return refuse('bad-request', `${args.domain} must be one label below ${bases}`)
+    }
     if (!project.repo) return refuse('invalid-project', `${project.id} has no repo to clone from`)
     if (project.environments.has(name)) return refuse('bad-request', `${project.id} already has a ${name} environment`)
     // A deleted environment's tree and volumes wait under its name for a restore; a new one taking the

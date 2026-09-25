@@ -1,6 +1,6 @@
-// The env files, for the operator only. A server component: hostd is asked here, the caller is worked out
-// from the session here, and which file is open is part of the URL rather than client state, so the panel
-// reloads and can be linked to.
+// The env files, the Environments tab's Env files section, for the operator only. A server component:
+// hostd is asked here, the caller is worked out from the session here, and which file is open is part of
+// the URL rather than client state, so the panel reloads and can be linked to.
 //
 // It re-derives the caller and re-checks the operator rather than trusting the page that rendered it.
 // hostd puts the same check ahead of ownership (hostd/src/api/policy.ts), and a check that exists in one
@@ -12,7 +12,6 @@ import { forAdmin } from '@/server/hostd/errors'
 import { callerFromSession } from '@/server/hostd/session'
 import { Callout } from '@/ui/Callout/Callout'
 import { EnvForm } from './envForm'
-import { EnvSwitcher } from './envSwitcher'
 import styles from './site.module.css'
 
 function size(bytes: number): string {
@@ -28,7 +27,7 @@ function Files({ id, environment, files, chosen }: { id: string, environment: st
                 <a
                     className={styles.file}
                     key={file.path}
-                    href={`/portal/sites/${id}?tab=env&env=${environment}&file=${encodeURIComponent(file.path)}`}
+                    href={`/portal/sites/${id}?tab=environments&env=${encodeURIComponent(environment)}&file=${encodeURIComponent(file.path)}`}
                     aria-current={file.path === chosen ? 'page' : undefined}
                 >
                     {file.path}
@@ -42,13 +41,12 @@ function Files({ id, environment, files, chosen }: { id: string, environment: st
 type Props = {
     id: string
     file: string | null
-    // Every environment the site has, for the dropdown, and the one this tab is showing. The page has
-    // already checked the chosen one is among them.
-    environments: { name: EnvironmentName }[]
+    // The environment chosen in the Environments tab's list. The page has already checked it is one this
+    // site has.
     environment: EnvironmentName
 }
 
-export async function EnvPanel({ id, file, environments, environment }: Props) {
+export async function EnvPanel({ id, file, environment }: Props) {
     const who = await callerFromSession()
     if (!who || who.clientId !== null) return null
 
@@ -60,12 +58,7 @@ export async function EnvPanel({ id, file, environments, environment }: Props) {
 
     const files = await listEnvFiles(config, who.caller, id, environment)
     if (!files.ok) {
-        return (
-            <>
-                <EnvSwitcher id={id} tab="env" environments={environments} chosen={environment} />
-                <Callout tone="warn" title="The env files could not be listed">{forAdmin(files.code, files.message)}</Callout>
-            </>
-        )
+        return <Callout tone="warn" title="The env files could not be listed">{forAdmin(files.code, files.message)}</Callout>
     }
 
     // Only a path hostd itself just listed. A path from the address bar never reaches a request, which is
@@ -77,8 +70,6 @@ export async function EnvPanel({ id, file, environments, environment }: Props) {
 
     return (
         <>
-            <EnvSwitcher id={id} tab="env" environments={environments} chosen={environment} />
-
             {/* No tone, so it is not announced as a problem: it is how the thing works, not something
                 that went wrong. */}
             <Callout title="Where this file lives">
@@ -86,8 +77,8 @@ export async function EnvPanel({ id, file, environments, environment }: Props) {
                 and it never leaves the dedi. Nothing here is written down anywhere else.
             </Callout>
 
+            {/* No heading of its own: the Environments tab names the environment over all its sections */}
             <section className={styles.block}>
-                <h2>{environment}</h2>
                 <Files id={id} environment={environment} files={files.value} chosen={chosen} />
 
                 {!chosen && <p className={styles.empty}>Choose a file to read or edit it.</p>}

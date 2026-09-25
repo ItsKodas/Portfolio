@@ -1,20 +1,20 @@
-// The Domains tab. Two screens over one list, which is why this takes its domains as a prop rather than
-// asking hostd itself the way DeployPanel does: an operator gets a table of hostnames, states and the
-// controls that change them, and a client gets sentences about their own website address and nothing
-// else. Both are worth rendering in a test without a network in the way.
+// The Domains section of the Environments tab, for the environment chosen there. Two screens over one
+// list, which is why this takes its domains as a prop rather than asking hostd itself the way DeployPanel
+// does: an operator gets a table of hostnames, states and the controls that change them, and a client gets
+// sentences about their own website address and nothing else. Both are worth rendering in a test without
+// a network in the way.
 //
 // A client reads this at all because hostd leaves 'domains-read' out of its admin-only policy verbs
 // (hostd/src/api/policy.ts). Every verb that changes something is admin-only, verifying included, so
 // every control below sits inside the operator's half.
 
 import type { Domain } from '@/server/hostd/domains'
-import type { EnvironmentName } from '@/server/hostd/env'
+import { LIVE, type EnvironmentName } from '@/server/hostd/env'
 import { Callout } from '@/ui/Callout/Callout'
 import { DataTable } from '@/ui/DataTable/DataTable'
 import { StatusDot, type State as DotState } from '@/ui/StatusDot/StatusDot'
-import { AddDomain, AdoptSite, DomainActions, PrimaryDomain } from './domainControls'
+import { AddDomain, AdoptSite, DomainActions } from './domainControls'
 import { clientSentence, needsYou, sortDomains, stateTone, stateWord } from './domains'
-import { EnvSwitcher } from './envSwitcher'
 import { formatWhen } from '../../format'
 import styles from './site.module.css'
 
@@ -62,9 +62,7 @@ const COLUMNS = [
 
 type Props = {
     id: string
-    // Only the name is read, and the strip is the one DeployPanel draws rather than a second one: a
-    // domain belongs to an environment, so this tab keeps the selector.
-    environments: { name: EnvironmentName }[]
+    // The environment chosen in the Environments tab's list. The list is the selector, so this draws none.
     environment: EnvironmentName
     domains: Domain[]
     isAdmin: boolean
@@ -76,7 +74,26 @@ type Props = {
     trouble: string | null
 }
 
-export function DomainsPanel({ id, environments, environment, domains, isAdmin, projectName, trouble }: Props) {
+// The environment's main address, shown and not changed here. live's is changed from Settings, where a
+// change to the address the site answers on sits beside the site's other settings. Any other environment's
+// is given when it is created.
+function MainAddress({ environment, current }: { environment: EnvironmentName, current: string | null }) {
+    return (
+        <section className={styles.block} aria-labelledby="main-address">
+            <h4 id="main-address">Main address</h4>
+            {current
+                ? <p className={styles.addressName}>{current}</p>
+                : <p className={styles.empty}>
+                    This environment has no main address yet. The first address added below becomes it.
+                </p>}
+            {environment === LIVE && (
+                <p className={styles.note}>live&apos;s main address is set and changed from this site&apos;s Settings tab.</p>
+            )}
+        </section>
+    )
+}
+
+export function DomainsPanel({ id, environment, domains, isAdmin, projectName, trouble }: Props) {
     const ordered = sortDomains(domains)
 
     // A client asked one question: does my website address work. They get the answer to it. No table, no
@@ -85,7 +102,7 @@ export function DomainsPanel({ id, environments, environment, domains, isAdmin, 
     if (!isAdmin) {
         return (
             <section className={styles.block}>
-                <h2>{ordered.length === 1 ? 'Your website address' : 'Your website addresses'}</h2>
+                <h4>{ordered.length === 1 ? 'Your website address' : 'Your website addresses'}</h4>
                 {trouble
                     ? <Callout tone="warn" title="This could not be checked just now">{trouble}</Callout>
                     : ordered.length === 0
@@ -142,8 +159,6 @@ export function DomainsPanel({ id, environments, environment, domains, isAdmin, 
 
     return (
         <>
-            <EnvSwitcher id={id} tab="domains" environments={environments} chosen={environment} />
-
             {trouble && (
                 <div className={styles.said}>
                     <Callout tone="warn" title="The addresses could not be read">{trouble}</Callout>
@@ -152,17 +167,15 @@ export function DomainsPanel({ id, environments, environment, domains, isAdmin, 
 
             {!trouble && (
                 <>
-                    {/* Both, always, and never one instead of the other: they are the two halves of one
-                        job. hostd makes the first hostname an environment gets its primary, so the add
-                        form is open with or without one, and can add to any of the site's environments.
-                        Keyed on the environment: the dropdown switches it by navigating to this same route,
-                        which rerenders rather than remounts, and the add form's own choice has to start
-                        over from the environment now being viewed. */}
-                    <PrimaryDomain id={id} environment={environment} current={primary} />
-                    <AddDomain key={environment} id={id} environments={environments} environment={environment} />
+                    {/* hostd makes the first hostname an environment gets its primary, so the add form is
+                        open with or without one. Keyed on the environment: the list switches it by
+                        navigating to this same route, which rerenders rather than remounts, and a hostname
+                        typed for one environment must not be sent to the next. */}
+                    <MainAddress environment={environment} current={primary} />
+                    <AddDomain key={environment} id={id} environment={environment} />
 
                     <section className={styles.block}>
-                        <h2>Addresses</h2>
+                        <h4>Addresses</h4>
                         <DataTable
                             label={`${environment} addresses`}
                             columns={COLUMNS}

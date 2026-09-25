@@ -85,7 +85,8 @@ that service names no container port (add `expose: ["3000"]` to it), or when it 
 
 To move an existing site onto a port the panel chose:
 
-1. If the domain is still served by a hand-written vhost, adopt it from the Domains tab. A port change
+1. If the domain is still served by a hand-written vhost, adopt it from the environment's Domains section
+   on the portal's Environments tab. A port change
    refuses an environment whose domain hostd has no vhost file for (`<domain> is served by a
    hand-written vhost; ...`), since Apache would go on proxying to the old port.
 2. Change the port in Settings. For a site without `hostd.ports.yml` yet, this writes it and adds it to
@@ -377,7 +378,7 @@ two vhost switches and an optional client. Leave the client out and the site is 
 has no `client:` key and no client can see it. When a domain is given, api also writes the site's first
 vhost straight after the create (an adopt with nothing to disable); if another file already serves that
 hostname, or Apache refuses, the site is still created and the reply's `vhost` says what is left to do
-from the Domains tab.
+from live's Domains section on the Environments tab.
 
 `create` only clones the repo and notices which services the compose files resolve: each one is guessed
 site or database from its image name (postgres, mysql, mariadb, mongo or redis becomes database; anything
@@ -752,14 +753,25 @@ hc -X POST http://hostd-api:8080/projects/acme/environments \
   -d '{"name":"uat1","branch":"develop","domain":"uat1.acme.com"}'
 ```
 
-`domain` may be `null`, and `certificate` is optional (the same values as a create). Only a nested site
-can have one: on a flat live the add is refused with `deploy live once so it moves into the nested layout,
-then add environments`.
+`domain` is required: a missing or `null` one is refused with `an environment needs an address`, before
+anything else runs. `certificate` is optional (the same values as a create). Only a nested site can have
+one: on a flat live the add is refused with `deploy live once so it moves into the nested layout, then add
+environments`.
+
+From the portal, it is **Add environment** under the list on the site's Environments tab. The address is
+required there too, and the form builds it rather than taking any hostname: one label (the prefix) under
+`horizons.gg` or under live's primary domain (the base, a select offering whichever of the two apply). The
+prefix is pre-filled as `<env>-<site id>` under `horizons.gg` and `<env>` under the primary domain, until
+it is edited by hand. The portal checks the base again against live's domain as hostd has it before it
+sends the add. Point the name at the dedi in DNS first: hostd does not create DNS records. Once it is
+added, the tab opens the new environment.
 
 1. It refuses first, before touching anything: `live`, an invalid or reserved name, a name the project
-   already has, a name still in the trash (see **A name stays taken until its purge**), a missing
-   `<site>/git/.git`, a `<site>/<name>` already on disk, any invalid project in the registry, a domain
-   anything already serves (as a primary or an alias, this site's own environments included), and a
+   already has, a name still in the trash (see **A name stays taken until its purge**), a domain that is
+   not exactly one label below `horizons.gg` or below the site's own live domain (the refusal names
+   whichever bases actually apply: both when live has a domain, `horizons.gg` alone when it does not), a
+   missing `<site>/git/.git`, a `<site>/<name>` already on disk, any invalid project in the registry, a
+   domain anything already serves (as a primary or an alias, this site's own environments included), and a
    compose name another registered environment already runs under. That last one can happen because ids
    may hold a hyphen: project `acme-uat1` runs as `acme-uat1`, which is exactly what `acme` plus `uat1`
    would run as, and the refusal names both.
@@ -774,9 +786,9 @@ then add environments`.
    the copy so live's port cannot win, and writes `hostd.ports.yml`.
 5. It resolves compose under the name `<id>-<name>`, gives the tree the owner and mode of the site folder,
    and registers the environment.
-6. When a domain was given, api writes its vhost straight after, as a create does for live's first. If
-   another file already serves that hostname, or Apache refuses, the environment is still added and the
-   reply's `vhost` says what is left to do from the Domains tab.
+6. api writes its vhost straight after, as a create does for live's first. If another file already
+   serves that hostname, or Apache refuses, the environment is still added and the reply's `vhost` says
+   what is left to do from the environment's Domains section on the Environments tab.
 
 A failure before the registry write removes `<site>/<name>`, which that call made, and nothing else. The
 new environment is not started, and its database starts empty, unless the body also had `"copyFromLive":
@@ -785,9 +797,11 @@ never with `docker compose up` by hand.
 
 ### Its first hostname
 
-An environment added without a domain has no primary. The first hostname added to it on the Domains tab
-(pick it in the add form's Environment select, which defaults to the environment being viewed, or
-`POST /projects/<id>/<env>/domains` with `{"hostname":"..."}`) becomes its primary: it is set the way
+Every environment added now carries a domain from the start, so it gets a primary and a first vhost as
+part of the add itself (see **Adding one**). An older environment from before this was required, one with
+no domain at all, still has no primary: the first hostname added to it (choose it in the Environments
+tab's list and add the name in its Domains section, or `POST /projects/<id>/<env>/domains` with
+`{"hostname":"..."}`) becomes its primary: it is set the way
 Settings sets a domain, its first vhost is written, and it is verified as the primary. Every hostname
 after that is an alias, as before, and `maxDomains` counts per environment.
 
@@ -943,7 +957,8 @@ the agent stopped:
    serves, and if the port is taken, pick a free one and set it both in the entry and in the tree's
    `.env` (the next deploy rewrites `hostd.ports.yml`).
 3. Drop the entry from the file, copy it back, and start the agent.
-4. Adopt its primary from the Domains tab to write its vhost, and deploy it to start it.
+4. Adopt its primary from its Domains section on the Environments tab to write its vhost, and deploy it
+   to start it.
 
 ### Removing a whole site
 

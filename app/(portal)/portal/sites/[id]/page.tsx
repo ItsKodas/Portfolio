@@ -16,9 +16,7 @@ import { Shell } from '@/ui/Shell/Shell'
 import { Dashboard } from '@/ui/icons'
 import { StatusDot } from '@/ui/StatusDot/StatusDot'
 import { DeployPanel } from './deployPanel'
-import { DomainsPanel } from './domainsPanel'
-import { EnvPanel } from './env'
-import { SiteEnvironments } from './environments'
+import { EnvironmentsTab } from './environmentsTab'
 import { Lifecycle } from './lifecycle'
 import { SiteLogs } from './logs'
 import { SiteDot, SiteStats } from './reading'
@@ -39,7 +37,7 @@ export const dynamic = 'force-dynamic'
 
 // The Overview's Environment panel says live and only live: a status read answers the project's
 // containers, not one environment's, so there is nothing yet to put in a second panel. That one waits for
-// hostd to report services per environment. The Deploys, Domains and Environment tabs are per environment.
+// hostd to report services per environment. The Environments and Deploys tabs are per environment.
 
 // What stands in for a tab with nothing behind it. A tab is shown and marked rather than left out: a
 // missing tab reads as a product that cannot do the thing, and a marked one reads as a product that will.
@@ -47,8 +45,8 @@ export const dynamic = 'force-dynamic'
 //
 // Backups is the only entry left that means what this record originally meant, which is that nothing is
 // built. Deploys has a real panel and keeps an entry here for the other sentence: the tab works, and
-// hostd would refuse this one site. Domains says that same second sentence beside its own panel instead,
-// rather than through a record whose name says the feature is still coming.
+// hostd would refuse this one site. The Environments tab says that same second sentence in its own
+// Domains and Env files sections instead.
 const WAITING: Record<string, { title: string, body: string }> = {
     // Shown only when this project has no deploy capability: the tab itself works, and hostd refusing
     // the whole thing for this site is a different sentence from the one below.
@@ -56,13 +54,6 @@ const WAITING: Record<string, { title: string, body: string }> = {
         title: 'Not set up for this site',
         body: 'Deploys are not switched on for this site yet. When they are, this is where you will see '
             + 'what changed, and be able to put the last version back.',
-    },
-    // Shown only when this project has no env capability: without it hostd refuses env outright, which
-    // read as broken rather than as off before this tab was disabled for it.
-    env: {
-        title: 'Not switched on for this site',
-        body: 'Environment files are not switched on for this site yet. Turn it on from this site\'s '
-            + 'Settings tab.',
     },
     backups: {
         title: 'Not here yet',
@@ -76,8 +67,12 @@ const WAITING: Record<string, { title: string, body: string }> = {
 // printed as 0, and only one of them is true.
 const NOT_AVAILABLE = 'not available'
 
-type TabId = 'overview' | 'logs' | 'env' | 'deploys' | 'backups' | 'domains' | 'settings'
+type TabId = 'overview' | 'logs' | 'environments' | 'deploys' | 'backups' | 'settings'
 type Tab = { id: TabId, label: string, disabled?: boolean }
+
+// The Domains and Environment tabs became sections of the Environments tab. A link to either still lands
+// on what it was for: ?env= is read on its own, so the environment it named is the one shown.
+const MOVED: Record<string, TabId> = { domains: 'environments', env: 'environments' }
 
 // A search parameter arrives as a string, a list of them, or not at all. Only the first spelling is read:
 // ?tab=logs&tab=env is somebody probing, not somebody navigating.
@@ -124,10 +119,11 @@ function Environment({ name, services, trouble }: { name: string, services: Serv
     )
 }
 
-// The Domains tab's own read. DeployPanel asks hostd itself while it renders; DomainsPanel cannot,
+// The Environments tab's Domains read. DeployPanel asks hostd itself while it renders; DomainsPanel cannot,
 // because the operator's table and the client's sentences are two screens over one list and both are
 // worth rendering without a network in the way, so it takes the list as a prop and the asking happens
-// here. Only when that tab is open: every other tab would be paying for a round trip nobody is looking at.
+// here. Only when that tab is open on an environment: every other tab, and the add form, would be paying
+// for a round trip nobody is looking at.
 //
 // The caller is re-derived from the session rather than taken from the page's own view, the same way
 // env.tsx and deployPanel.tsx do it, so nothing the browser sent decides who hostd is asked as.
@@ -186,54 +182,50 @@ export default async function SitePage({ params, searchParams }: Props) {
 
     // hostd needs the project to carry the deploy capability for any of it, reading the history included
     const canDeploy = view.capabilities.includes('deploy')
-    // The same rule for domains: without the capability hostd refuses the listing too, so the tab is
-    // marked rather than opened onto a refusal.
+    // The same rule for domains: without the capability hostd refuses the listing too, so the Environments
+    // tab says so in its Domains section rather than asking for a refusal.
     const canDomains = view.capabilities.includes('domains')
-    // hostd refuses env outright without this capability, which is why the tab is disabled rather than
-    // simply hidden: it is the operator's own doing to switch on, from the Settings tab below.
-    const canEnv = view.capabilities.includes('env')
 
     const tabs: Tab[] = [
         { id: 'overview', label: 'Overview' },
         { id: 'logs', label: 'Logs' },
-        // Editing env files is the operator's alone: hostd refuses a client outright, ahead of ownership,
-        // so for a client the tab is absent rather than shown and refused. Disabled rather than absent for
-        // the operator until the project has the capability, the same as Deploys below.
-        ...(view.isAdmin ? [{ id: 'env' as const, label: 'Environment', disabled: !canEnv }] : []),
+        // Everything about one environment, for both roles. A client reads the list, each one's Summary
+        // and its addresses: hostd leaves 'domains-read' out of its admin-only verbs. The env files and
+        // every action are the operator's alone, which the tab decides, not this list. Never disabled:
+        // the sections whose capability is off say so themselves.
+        { id: 'environments', label: 'Environments' },
         // A client may read their own site's deploys: hostd's 'deploy-read' is not among its admin-only
         // verbs, so this tab is theirs too, showing what reached their site rather than every build.
         // Both roles need the project to have the capability at all, which is what disables it.
         { id: 'deploys', label: 'Deploys', disabled: !canDeploy },
         { id: 'backups', label: 'Backups', disabled: true },
-        // This was absent for a client, on the reasoning that domains would only ever be the operator's
-        // to set and that promising a tab nobody would be given is the worse lie. That was right for a
-        // tab with no read side. It is not right now: hostd leaves 'domains-read' out of its admin-only
-        // verbs, so a client may read their own site's addresses and be told whether each one works.
-        // Acting on them is still the operator's alone, which the panel decides, not this list.
-        { id: 'domains', label: 'Domains', disabled: !canDomains },
-        // What a site is allowed to do is the operator's alone to see or change, the same as Environment:
-        // absent for a client rather than disabled. Last in the list because it is where the switches for
-        // the tabs above it live, so it reads as the thing behind them rather than one more of them.
+        // What a site is allowed to do is the operator's alone to see or change: absent for a client
+        // rather than disabled. Last in the list because it is where the switches for the tabs above it
+        // live, so it reads as the thing behind them rather than one more of them.
         ...(view.isAdmin ? [{ id: 'settings' as const, label: 'Settings' }] : []),
     ]
 
-    // Checked against the tabs this viewer actually has, not merely against the list of names, so ?tab=env
-    // in a client's address bar lands on Overview rather than on a panel they may not have.
-    const wanted = one(search.tab)
+    // Checked against the tabs this viewer actually has, not merely against the list of names, so
+    // ?tab=settings in a client's address bar lands on Overview rather than on a panel they may not have.
+    const asked = one(search.tab)
+    const wanted = asked !== null && Object.hasOwn(MOVED, asked) ? MOVED[asked] : asked
     const selected = tabs.some(tab => tab.id === wanted) ? wanted as TabId : 'overview'
 
-    // Which environment the Deploys, Domains and Environment tabs are about. All three are per
-    // environment: a deploy runs against one, a hostname belongs to one, and so does an env file. Checked
-    // against the ones this project actually has, so ?env=test on a project that has only live lands on
-    // live rather than asking hostd about an environment that is not there. Falls back to live when the
-    // listing could not be read at all: the panel then asks and reports hostd's own refusal, which is
-    // better than not asking.
+    // Which environment the Environments and Deploys tabs are about. Both are per environment: a deploy
+    // runs against one, and a hostname and an env file each belong to one. Checked against the ones this
+    // project actually has, so ?env=test on a project that has only live lands on live rather than
+    // asking hostd about an environment that is not there. live too when the listing could not be read
+    // at all: the panels then ask and report hostd's own refusal, which is better than not asking.
     const names = view.environments.map(environment => environment.name)
     const askedFor = one(search.env)
-    const environment = names.find(name => name === askedFor) ?? names[0] ?? LIVE
+    const environment = names.find(name => name === askedFor) ?? LIVE
 
-    // Asked for only when that tab is the one open, and only when hostd would answer it at all
-    const domains = selected === 'domains' && canDomains
+    // The operator's add form, open in the Environments tab in place of an environment's detail
+    const adding = view.isAdmin && selected === 'environments' && one(search.add) === '1'
+
+    // Asked for only when the Environments tab is open on an environment, and only when hostd would
+    // answer it at all
+    const domains = selected === 'environments' && !adding && canDomains
         ? await readDomains(view.id, environment, view.isAdmin)
         : { domains: [], trouble: null }
 
@@ -242,9 +234,9 @@ export default async function SitePage({ params, searchParams }: Props) {
     // page asked hostd about this project on its own as well, and that answer is the better one.
     const current: SiteState = view.trouble ? 'unknown' : stateOfServices(view.services)
 
-    // Fetched only for the Settings tab, which is the only place either is used, and only once the
-    // registry entry itself is known to be readable: the form is not drawn otherwise, so there is nothing
-    // for a branch list to fill in. Read for the repo as it stands saved in the registry, hostd's own
+    // Fetched for the Settings tab once the registry entry itself is known to be readable (the form is not
+    // drawn otherwise, so there is nothing for a branch list to fill in), and for the Environments tab's
+    // add form while it is open. Read for the repo as it stands saved in the registry, hostd's own
     // answer to git ls-remote --heads, so this is the state of the remote right now rather than whatever
     // was last cloned. Failure here is ordinary, not exceptional (no repo, an unreachable one, hostd
     // itself down): branches stays null, branchesError carries hostd's own words, and the form below still
@@ -252,16 +244,19 @@ export default async function SitePage({ params, searchParams }: Props) {
     // page. A save must never be blocked by a list that did not load.
     let branches: string[] | null = null
     let branchesError: string | null = null
-    // The credential list, fetched alongside branches from the same caller and config: both are read only
-    // for the Settings tab, and there is exactly one hostd config and one session caller to read either
-    // with, so reading either twice would only be two chances for the two reads to disagree.
+    // The credential list, fetched alongside branches from the same caller and config, for the Settings
+    // tab alone. There is exactly one hostd config and one session caller to read either with, so reading
+    // either twice would only be two chances for the two reads to disagree.
     let credentials: string[] | null = null
     let credentialsError: string | null = null
-    // The environments hostd deleted in the last 30 days and can still put back, for the same tab. A
-    // failure leaves the rest of the tab working and says why where the list would be.
+    // The environments hostd deleted in the last 30 days and can still put back, for the operator's
+    // Environments tab, under its list. A failure leaves the rest of the tab working and says why where
+    // the list would be.
     let deleted: DeletedEnvironment[] | null = null
     let deletedError: string | null = null
-    if (view.isAdmin && selected === 'settings' && view.registryEntry === 'valid') {
+    const forSettings = view.isAdmin && selected === 'settings' && view.registryEntry === 'valid'
+    const forEnvironments = view.isAdmin && selected === 'environments'
+    if (forSettings || forEnvironments) {
         const problems: string[] = []
         const hostdConfig = readHostd(process.env, problems)
         const who = problems.length === 0 ? await callerFromSession() : null
@@ -274,17 +269,23 @@ export default async function SitePage({ params, searchParams }: Props) {
             credentialsError = 'hostd could not be reached.'
             deletedError = 'hostd could not be reached.'
         } else {
-            const result = await listBranches(hostdConfig, who.caller, view.id)
-            if (result.ok) branches = result.value
-            else branchesError = result.message
+            if (forSettings || adding) {
+                const result = await listBranches(hostdConfig, who.caller, view.id)
+                if (result.ok) branches = result.value
+                else branchesError = result.message
+            }
 
-            const held = await listCredentials(hostdConfig, who.caller)
-            if (held.ok) credentials = held.value
-            else credentialsError = held.message
+            if (forSettings) {
+                const held = await listCredentials(hostdConfig, who.caller)
+                if (held.ok) credentials = held.value
+                else credentialsError = held.message
+            }
 
-            const gone = await listDeletedEnvironments(hostdConfig, who.caller, view.id)
-            if (gone.ok) deleted = gone.value
-            else deletedError = gone.message
+            if (forEnvironments) {
+                const gone = await listDeletedEnvironments(hostdConfig, who.caller, view.id)
+                if (gone.ok) deleted = gone.value
+                else deletedError = gone.message
+            }
         }
     }
 
@@ -370,12 +371,20 @@ export default async function SitePage({ params, searchParams }: Props) {
 
                     {selected === 'logs' && <SiteLogs id={view.id} services={view.services.map(service => service.service)} />}
 
-                    {selected === 'env' && canEnv && <EnvPanel
-                        id={view.id}
-                        file={one(search.file)}
-                        environments={view.environments}
-                        environment={environment}
-                    />}
+                    {selected === 'environments' && (
+                        <EnvironmentsTab
+                            view={view}
+                            isAdmin={view.isAdmin}
+                            selected={environment}
+                            adding={adding}
+                            file={one(search.file)}
+                            domains={domains}
+                            branches={branches}
+                            branchesError={branchesError}
+                            deleted={deleted}
+                            deletedError={deletedError}
+                        />
+                    )}
 
                     {selected === 'deploys' && canDeploy && (
                         <DeployPanel
@@ -385,23 +394,6 @@ export default async function SitePage({ params, searchParams }: Props) {
                             enabled={canDeploy}
                         />
                     )}
-
-                    {selected === 'domains' && (canDomains
-                        ? <DomainsPanel
-                            id={view.id}
-                            environments={view.environments}
-                            environment={environment}
-                            domains={domains.domains}
-                            isAdmin={view.isAdmin}
-                            projectName={view.name}
-                            trouble={domains.trouble}
-                        />
-                        // Said here rather than from WAITING, which is for a tab with nothing behind it at
-                        // all. This tab has a panel; it is this one site hostd would refuse.
-                        : <Callout title="Not set up for this site">
-                            Domains are not switched on for this site yet. When they are, this is where its
-                            addresses are listed, with what each one is doing and what secures it.
-                        </Callout>)}
 
                     {/* Never drawn over capabilities that were not actually read: an 'unread' or 'invalid'
                         registry entry says why instead, with no form and no Save, rather than showing eight
@@ -420,17 +412,7 @@ export default async function SitePage({ params, searchParams }: Props) {
                                     branchesError={branchesError}
                                     credentials={credentials}
                                     credentialsError={credentialsError}
-                                >
-                                    <SiteEnvironments
-                                        id={view.id}
-                                        name={view.name}
-                                        isAdmin={view.isAdmin}
-                                        environments={view.environments}
-                                        branches={branches}
-                                        deleted={deleted}
-                                        deletedError={deletedError}
-                                    />
-                                </SiteSettingsForm>
+                                />
                             )
                             : (
                                 <Callout tone="warn" title="Settings are not available">
@@ -441,9 +423,9 @@ export default async function SitePage({ params, searchParams }: Props) {
                             )
                     )}
 
-                    {/* Only when the tab is disabled: deploys and env have panels now, and this is what
-                        stands in for a project hostd would refuse either verb for. */}
-                    {WAITING[selected] && !(selected === 'deploys' && canDeploy) && !(selected === 'env' && canEnv) && (
+                    {/* Only when the tab is disabled: deploys has a panel now, and this is what stands in
+                        for a project hostd would refuse the verb for. */}
+                    {WAITING[selected] && !(selected === 'deploys' && canDeploy) && (
                         <Callout title={WAITING[selected].title}>{WAITING[selected].body}</Callout>
                     )}
                     </div>

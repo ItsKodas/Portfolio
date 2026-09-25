@@ -139,7 +139,11 @@ const DEFAULT_COMPOSE = ['docker-compose.yml']
 
 const DEFAULT_OFFSITE_KEEP: Keep = { daily: 14, weekly: 8, monthly: 6 }
 const DEFAULT_MAX_KEEP: Keep = { daily: 14, weekly: 8, monthly: 12 }
-const DEFAULT_RESERVED = ['horizons.gg']
+// The one base every project's environments may sit under besides their own live domain. Not
+// configurable: a runbook entry could shadow it, but the constant is what add-environment checks
+// against, so it cannot drift from what reserved actually protects.
+export const HORIZONS_BASE = 'horizons.gg'
+const DEFAULT_RESERVED = [HORIZONS_BASE]
 const TOP_KEYS = new Set(['reserved', 'allowed', 'openSubdomains', 'offsite', 'projects'])
 const PROJECT_KEYS = new Set([
     'client', 'name', 'dir', 'compose', 'upstream', 'services', 'storage', 'capabilities', 'maxDomains', 'backups',

@@ -1,6 +1,7 @@
 'use client'
 
-// Everything on the Domains tab that changes something. All of it is the operator's: hostd keeps
+// Everything in the Environments tab's Domains section that changes something, and the main address
+// control Settings draws for live. All of it is the operator's: hostd keeps
 // 'domains' among its admin-only policy verbs and leaves only 'domains-read' to an owner, so the panel
 // never renders any of this for a client, and each action re-derives who is asking from the session
 // anyway. Nothing here decides anything: it names an environment and a hostname, and that is all it is
@@ -31,19 +32,11 @@ function Said({ said }: { said: SiteActionResult | null }) {
         : <span className={styles.stateBad}>{said.error}</span>
 }
 
-// A hostname for any of the site's environments, the one being viewed unless another is chosen. hostd
-// makes the first name an environment gets its primary and every later one an alias redirecting to it,
-// so this is open whether or not the environment has an address yet: it is how a new environment gets
-// its first one.
-export function AddDomain({ id, environments, environment }: {
-    id: string
-    // Every environment the site has, for the select. Only the name is read.
-    environments: { name: string }[]
-    // The one being viewed, which the select starts on
-    environment: string
-}) {
+// A hostname for the environment being viewed. hostd makes the first name an environment gets its
+// primary and every later one an alias redirecting to it, so this is open whether or not the environment
+// has an address yet.
+export function AddDomain({ id, environment }: { id: string, environment: string }) {
     const router = useRouter()
-    const [target, setTarget] = useState(environment)
     const [hostname, setHostname] = useState('')
     const [pending, setPending] = useState(false)
     const [said, setSaid] = useState<SiteActionResult | null>(null)
@@ -52,7 +45,7 @@ export function AddDomain({ id, environments, environment }: {
         setPending(true)
         setSaid(null)
         try {
-            const result = await addDomainAction(id, target, hostname.trim())
+            const result = await addDomainAction(id, environment, hostname.trim())
             setSaid(result)
             if (result.ok) {
                 setHostname('')
@@ -67,21 +60,8 @@ export function AddDomain({ id, environments, environment }: {
 
     return (
         <section className={styles.block}>
-            <h2>Add an address</h2>
+            <h4>Add an address</h4>
             <div className={styles.addDomain}>
-                {/* Only when there is a choice to make. A select over one environment is furniture. */}
-                {environments.length > 1 && (
-                    <div className={styles.addTarget}>
-                        <Field
-                            as="select"
-                            label="Add to environment"
-                            value={target}
-                            onChange={event => setTarget(event.target.value)}
-                        >
-                            {environments.map(one => <option key={one.name} value={one.name}>{one.name}</option>)}
-                        </Field>
-                    </div>
-                )}
                 <Field
                     label="Hostname"
                     value={hostname}
@@ -116,11 +96,25 @@ export function AddDomain({ id, environments, environment }: {
 // Apache configuration. So it goes behind the dialog below, which names all four and asks for the new
 // hostname back, the same ceremony AdoptSite uses for the other change on this tab that a live site
 // notices immediately.
-export function PrimaryDomain({ id, environment, current }: { id: string, environment: string, current: string | null }) {
+//
+// What the last set or change said can be held by the caller instead (said and onSaid), for one that keys
+// this on the address: the refresh after a success brings the new address, which remounts it, and the
+// message has to outlive that. It is the only place a set tells the operator to adopt.
+type PrimaryProps = {
+    id: string
+    environment: string
+    current: string | null
+    said?: SiteActionResult | null
+    onSaid?: (said: SiteActionResult | null) => void
+}
+
+export function PrimaryDomain({ id, environment, current, said: heldSaid, onSaid }: PrimaryProps) {
     const router = useRouter()
     const [hostname, setHostname] = useState('')
     const [pending, setPending] = useState(false)
-    const [said, setSaid] = useState<SiteActionResult | null>(null)
+    const [ownSaid, setOwnSaid] = useState<SiteActionResult | null>(null)
+    const said = onSaid ? heldSaid ?? null : ownSaid
+    const setSaid = onSaid ?? setOwnSaid
     const [asking, setAsking] = useState(false)
     const [typed, setTyped] = useState('')
 
@@ -148,8 +142,11 @@ export function PrimaryDomain({ id, environment, current }: { id: string, enviro
     }
 
     return (
-        <section className={styles.block}>
-            <h2>The site&apos;s address</h2>
+        <section className={styles.block} aria-labelledby="primary-domain">
+            <h2 id="primary-domain">Primary domain</h2>
+            {current
+                ? <p className={styles.addressName}>{current}</p>
+                : <p className={styles.empty}>{`${environment} has no main address yet.`}</p>}
             <div className={styles.addDomain}>
                 <Field
                     label={current ? 'New address' : 'Address'}
@@ -158,8 +155,8 @@ export function PrimaryDomain({ id, environment, current }: { id: string, enviro
                     autoComplete="off"
                     placeholder="example.com"
                     hint={current
-                        ? `This environment answers on ${current} today. What you put here replaces it.`
-                        : 'The main name this environment answers to. Other names can be pointed at it afterwards.'}
+                        ? `${environment} answers on ${current} today. What you put here replaces it.`
+                        : `The main name ${environment} answers to. Other names can be pointed at it afterwards.`}
                     onChange={event => setHostname(event.target.value)}
                 />
                 <div className={styles.addAction}>
@@ -187,9 +184,9 @@ export function PrimaryDomain({ id, environment, current }: { id: string, enviro
             </div>
             {!current && (
                 <p className={styles.note}>
-                    This records the address and changes nothing that is being served: whatever answers
-                    this name today keeps answering it. The site is served from it once this environment
-                    is adopted, which replaces the hand-written configuration in one reload.
+                    {'This records the address and changes nothing that is being served: whatever answers '
+                        + `this name today keeps answering it. The site is served from it once ${environment} `
+                        + 'is adopted, which replaces the hand-written configuration in one reload.'}
                 </p>
             )}
 
@@ -230,10 +227,10 @@ export function PrimaryDomain({ id, environment, current }: { id: string, enviro
                         it and prove it lands on this site before it counts as working, so its DNS needs to
                         point at this server.
                     </li>
-                    <li>Every other name on this environment starts redirecting to the new address instead.</li>
+                    <li>{`Every other name on ${environment} starts redirecting to the new address instead.`}</li>
                     <li>
-                        The Apache configuration for this environment is rewritten and reloaded, if hostd
-                        is the one serving it.
+                        {`The Apache configuration for ${environment} is rewritten and reloaded, if hostd `
+                            + 'is the one serving it.'}
                     </li>
                 </ul>
                 <Field

@@ -193,6 +193,17 @@ describe('parseAgentRequest', () => {
         )
     })
 
+    it('refuses provision add-environment with a missing or null domain, and one that is not a string', () => {
+        const add = (domain: unknown) => {
+            const args: Record<string, unknown> = { action: 'add-environment', environment: 'test', branch: 'develop', certificate: null }
+            if (domain !== undefined) args.domain = domain
+            return refusalOf({ verb: 'provision', project: 'acme', args })
+        }
+        assert.equal(add(undefined), 'bad-request: an environment needs an address')
+        assert.equal(add(null), 'bad-request: an environment needs an address')
+        assert.equal(add(42), 'bad-request: domain is malformed')
+    })
+
     it('refuses a provision create request that carries a project, and one with a malformed or missing field', () => {
         const createArgs = { action: 'create', id: 'bakery', client: 'cl_2', name: 'Bakery', repo: 'git@github.com:x/bakery.git', branch: 'main', domain: 'bakery.com', certificate: 'letsencrypt' }
         assert.equal(refusalOf({ verb: 'provision', project: 'acme', args: createArgs }), 'bad-request: provision create takes only args')
@@ -203,7 +214,7 @@ describe('parseAgentRequest', () => {
 
     it('parses provision add-environment for any environment name', () => {
         for (const environment of ['uat1', 'staging', 'test']) {
-            const addArgs = { action: 'add-environment', environment, branch: 'main', domain: null, certificate: null }
+            const addArgs = { action: 'add-environment', environment, branch: 'main', domain: 'test.acme.com', certificate: null }
             assert.deepEqual(
                 parsed({ verb: 'provision', project: 'acme', args: addArgs }),
                 { ok: true, request: { verb: 'provision', project: 'acme', args: addArgs } },
@@ -212,7 +223,7 @@ describe('parseAgentRequest', () => {
     })
 
     it('refuses provision add-environment for live, a reserved name or an invalid one, and remove for an unknown environment', () => {
-        const add = (environment: unknown) => refusalOf({ verb: 'provision', project: 'acme', args: { action: 'add-environment', environment, branch: 'main', domain: null, certificate: null } })
+        const add = (environment: unknown) => refusalOf({ verb: 'provision', project: 'acme', args: { action: 'add-environment', environment, branch: 'main', domain: 'test.acme.com', certificate: null } })
         assert.equal(add('live'), 'bad-request: live cannot be added')
         for (const environment of ['git', 'next', 'prev', 'environments', 'backups', 'uat-1', 'Uat1', '1uat', '', 'a'.repeat(17), 5, null]) {
             assert.equal(add(environment), 'bad-request: environment must be an environment name', String(environment))
@@ -690,7 +701,7 @@ projects:
         assert.equal(remove.ok, true)
 
         const addEnvironment = checkStructure(
-            registry, { verb: 'provision', project: 'acme', args: { action: 'add-environment', environment: 'test', branch: 'main', domain: null, certificate: null } }, guardInvalid,
+            registry, { verb: 'provision', project: 'acme', args: { action: 'add-environment', environment: 'test', branch: 'main', domain: 'test.acme.com', certificate: null } }, guardInvalid,
         )
         assert.deepEqual(addEnvironment, { ok: false, code: 'invalid-project', message: 'acme is invalid: storage media overlaps a database mount' })
 

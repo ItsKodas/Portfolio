@@ -38,6 +38,14 @@ vi.mock('./actions', () => ({
     verifyDomainAction: async () => ({ ok: true, message: 'ok' }),
     adoptAction: async () => ({ ok: true, message: 'ok' }),
     adoptPreviewAction: async () => ({ ok: false, error: 'not asked in a test' }),
+    copyRunsAction: async () => ({ ok: true, runs: [], running: false }),
+}))
+// The Env files section is an async server component that asks hostd itself, which this renderer cannot
+// resolve inside a tree; env.test.tsx renders it on its own. What belongs here is which environment and
+// file the page hands it.
+vi.mock('./env', () => ({
+    EnvPanel: ({ environment, file }: { environment: string, file: string | null }) =>
+        <p>{`env files of ${environment}${file ? ` at ${file}` : ''}`}</p>,
 }))
 vi.mock('@/server/hostd/deploys', () => ({ listDeploys: (...args: unknown[]) => listDeploys(...args) }))
 vi.mock('@/server/hostd/domains', () => ({ listDomains: (...args: unknown[]) => listDomains(...args) }))
@@ -138,28 +146,10 @@ describe('the site page', () => {
         expect(await thrownBy(page)).toBe('NEXT_REDIRECT:/portal/sign-in')
     })
 
-    it('gives a client no Environment tab, because hostd refuses them env outright', async () => {
-        callerFromSession.mockResolvedValue(client)
-
-        render(await page())
-
-        expect(screen.queryByRole('tab', { name: 'Environment' })).toBeNull()
-    })
-
-    // Otherwise a client could reach a panel by typing its name into the address bar, which is the kind
-    // of gate that only works until somebody tries the obvious thing.
-    it('lands a client asking for the Environment tab on Overview', async () => {
-        callerFromSession.mockResolvedValue(client)
-
-        render(await page({ tab: 'env' }))
-
-        expect(screen.getByRole('tab', { name: 'Overview' })).toHaveAttribute('aria-selected', 'true')
-    })
-
     it('shows the tabs hostd cannot serve yet, marked but still reachable', async () => {
         render(await page())
 
-        for (const name of ['Deploys', 'Backups', 'Domains']) {
+        for (const name of ['Deploys', 'Backups']) {
             const tab = screen.getByRole('tab', { name })
             expect(tab).toHaveAttribute('aria-disabled', 'true')
             expect(tab).not.toHaveAttribute('disabled')
@@ -294,25 +284,15 @@ describe('the settings tab', () => {
         expect(listDeletedEnvironments).not.toHaveBeenCalled()
     })
 
-    it('shows the operator the environments, and the deleted ones hostd is keeping', async () => {
+    // They moved to the Environments tab
+    it('no longer shows the environments, or asks for the deleted ones', async () => {
         listProjects.mockResolvedValue({ ok: true, value: [
             { id: 'asot', name: 'ASOT', valid: true, capabilities: ['lifecycle'], environments: [{ name: 'live', branch: null }, { name: 'uat1', branch: 'uat' }] },
         ] })
-        listDeletedEnvironments.mockResolvedValue({ ok: true, value: [{
-            environment: 'uat2', deletedAt: '2026-09-20T10:00:00.000Z', purgeAt: '2026-10-20T10:00:00.000Z', branch: null, domain: null, aliases: [],
-        }] })
         render(await page({ tab: 'settings' }))
-        expect(listDeletedEnvironments.mock.calls[0]?.[2]).toBe('asot')
-        expect(screen.getByRole('table', { name: 'Environments' })).toBeInTheDocument()
-        expect(screen.getByRole('button', { name: 'Delete uat1' })).toBeInTheDocument()
-        expect(screen.getByRole('button', { name: 'Restore uat2' })).toBeInTheDocument()
-    })
-
-    it('still draws the environments when the deleted ones could not be read, and says so', async () => {
-        listDeletedEnvironments.mockResolvedValue({ ok: false, code: 'unavailable', message: 'the agent is not answering' })
-        render(await page({ tab: 'settings' }))
-        expect(screen.getByRole('heading', { name: 'Environments' })).toBeInTheDocument()
-        expect(screen.getByText(/deleted environments could not be read: the agent is not answering/)).toBeInTheDocument()
+        expect(screen.queryByRole('heading', { name: 'Environments' })).toBeNull()
+        expect(screen.queryByRole('button', { name: 'Delete uat1' })).toBeNull()
+        expect(listDeletedEnvironments).not.toHaveBeenCalled()
     })
 
     // Failure is not an error: the field stays a plain input and a line underneath says why, in hostd's
@@ -323,21 +303,6 @@ describe('the settings tab', () => {
         expect(screen.getByText(/hostd is not answering/)).toBeInTheDocument()
         expect(screen.getByRole('button', { name: /save/i })).toBeInTheDocument()
         expect(document.querySelector('datalist')).toBeNull()
-    })
-})
-
-describe('the environment tab', () => {
-    it('disables the Environment tab until the capability is on, and says where it is turned on', async () => {
-        listProjects.mockResolvedValue({ ok: true, value: [{ id: 'asot', name: 'ASOT', valid: true, capabilities: ['lifecycle'], environments: [] }] })
-        render(await page({ tab: 'env' }))
-        expect(screen.getByRole('tab', { name: 'Environment' })).toHaveAttribute('aria-disabled', 'true')
-        expect(screen.getByText(/Settings tab/)).toBeInTheDocument()
-    })
-
-    it('enables it once it is', async () => {
-        listProjects.mockResolvedValue({ ok: true, value: [{ id: 'asot', name: 'ASOT', valid: true, capabilities: ['lifecycle', 'env'], environments: [] }] })
-        render(await page())
-        expect(screen.getByRole('tab', { name: 'Environment' })).not.toHaveAttribute('aria-disabled')
     })
 })
 
@@ -367,35 +332,151 @@ describe('the deploys tab', () => {
     })
 })
 
-describe('the domains tab', () => {
-    // It was built admin-only and disabled, on the reasoning that domains would never be a client's to
-    // read. hostd leaves 'domains-read' out of its admin-only verbs, so that reasoning is gone: a client
-    // reads their own site's addresses, and only acting on them is the operator's.
-    it('shows a client the Domains tab, which used to be hidden from them', async () => {
-        callerFromSession.mockResolvedValue(client)
+describe('the environments tab', () => {
+    const withEnvironments = (capabilities: string[] = ['lifecycle', 'domains', 'env']) => listProjects.mockResolvedValue({ ok: true, value: [{
+        id: 'asot', name: 'ASOT', valid: true, capabilities,
+        environments: [
+            { name: 'live', branch: 'main', domain: 'asot.com', certificate: null, deployed: null, port: 5010 },
+            { name: 'uat1', branch: 'uat', domain: null, certificate: null, deployed: null, port: 5011 },
+        ],
+    }] })
+    const tabNames = () => screen.getAllByRole('tab').map(tab => tab.textContent)
 
+    it('gives the operator Overview, Logs, Environments, Deploys, Backups and Settings, in that order', async () => {
         render(await page())
-
-        expect(screen.getByRole('tab', { name: 'Domains' })).toBeInTheDocument()
+        expect(tabNames()).toEqual(['Overview', 'Logs', 'Environments', 'Deploys', 'Backups', 'Settings'])
     })
 
-    // It used to be disabled for everyone, whatever the project could do. Now the capability is the only
-    // thing that disables it, exactly as it is for Deploys.
-    it('does not disable the Domains tab for a project hostd serves domains for', async () => {
-        listProjects.mockResolvedValue({
-            ok: true,
-            value: [{ id: 'asot', name: 'ASOT', valid: true, capabilities: ['lifecycle', 'logs', 'domains'] }],
-        })
-
+    it('gives a client the same but Settings', async () => {
+        callerFromSession.mockResolvedValue(client)
         render(await page())
+        expect(tabNames()).toEqual(['Overview', 'Logs', 'Environments', 'Deploys', 'Backups'])
+    })
 
-        expect(screen.getByRole('tab', { name: 'Domains' })).not.toHaveAttribute('aria-disabled')
+    // The sections whose capability is off say so themselves
+    it('is never disabled, whatever the site can do', async () => {
+        render(await page())
+        expect(screen.getByRole('tab', { name: 'Environments' })).not.toHaveAttribute('aria-disabled')
+    })
+
+    it('opens on live and lists every environment', async () => {
+        withEnvironments()
+        render(await page({ tab: 'environments' }))
+        expect(screen.getByRole('tab', { name: 'Environments' })).toHaveAttribute('aria-selected', 'true')
+        expect(screen.getByRole('heading', { level: 2, name: 'live' })).toBeInTheDocument()
+        expect(within(screen.getByRole('navigation', { name: 'Environments' })).getAllByRole('link')).toHaveLength(2)
+    })
+
+    it('shows the environment asked for', async () => {
+        withEnvironments()
+        render(await page({ tab: 'environments', env: 'uat1', file: '.env' }))
+        expect(screen.getByRole('heading', { level: 2, name: 'uat1' })).toBeInTheDocument()
+        expect(listDomains.mock.calls[0]?.[3]).toBe('uat1')
+        expect(screen.getByText('env files of uat1 at .env')).toBeInTheDocument()
+    })
+
+    it('falls back to live for an environment the site does not have', async () => {
+        withEnvironments()
+        render(await page({ tab: 'environments', env: 'nope' }))
+        expect(screen.getByRole('heading', { level: 2, name: 'live' })).toBeInTheDocument()
+        expect(listDomains.mock.calls[0]?.[3]).toBe('live')
+    })
+
+    // Old links to the two tabs this one replaced still land on what they were for
+    it('lands ?tab=domains on Environments, keeping the environment', async () => {
+        withEnvironments()
+        render(await page({ tab: 'domains', env: 'uat1' }))
+        expect(screen.getByRole('tab', { name: 'Environments' })).toHaveAttribute('aria-selected', 'true')
+        expect(screen.getByRole('heading', { level: 2, name: 'uat1' })).toBeInTheDocument()
+        expect(listDomains.mock.calls[0]?.[3]).toBe('uat1')
+    })
+
+    it('lands ?tab=env on Environments, keeping the environment and the file', async () => {
+        withEnvironments()
+        render(await page({ tab: 'env', env: 'uat1', file: '.env' }))
+        expect(screen.getByRole('tab', { name: 'Environments' })).toHaveAttribute('aria-selected', 'true')
+        expect(screen.getByText('env files of uat1 at .env')).toBeInTheDocument()
+    })
+
+    // A client lands on the tab too, which never draws them env files
+    it('lands a client following an old ?tab=env link on Environments, with no env files', async () => {
+        withEnvironments()
+        callerFromSession.mockResolvedValue(client)
+        render(await page({ tab: 'env', env: 'uat1' }))
+        expect(screen.getByRole('tab', { name: 'Environments' })).toHaveAttribute('aria-selected', 'true')
+        expect(screen.queryByText(/env files of/)).toBeNull()
+        expect(screen.queryByRole('region', { name: 'Env files' })).toBeNull()
+    })
+
+    it('gives the operator the deleted environments hostd is keeping, and Delete on another environment', async () => {
+        withEnvironments()
+        listDeletedEnvironments.mockResolvedValue({ ok: true, value: [{
+            environment: 'uat2', deletedAt: '2026-09-20T10:00:00.000Z', purgeAt: '2026-10-20T10:00:00.000Z', branch: null, domain: null, aliases: [],
+        }] })
+        render(await page({ tab: 'environments', env: 'uat1' }))
+        expect(listDeletedEnvironments.mock.calls[0]?.[2]).toBe('asot')
+        expect(screen.getByRole('button', { name: 'Delete uat1' })).toBeInTheDocument()
+        expect(screen.getByRole('button', { name: 'Restore uat2' })).toBeInTheDocument()
+    })
+
+    it('still draws the tab when the deleted ones could not be read, and says so', async () => {
+        withEnvironments()
+        listDeletedEnvironments.mockResolvedValue({ ok: false, code: 'unavailable', message: 'the agent is not answering' })
+        render(await page({ tab: 'environments' }))
+        expect(screen.getByRole('heading', { level: 2, name: 'live' })).toBeInTheDocument()
+        expect(screen.getByText(/deleted environments could not be read: the agent is not answering/)).toBeInTheDocument()
+    })
+
+    it('never asks for a client\'s deleted environments', async () => {
+        withEnvironments()
+        callerFromSession.mockResolvedValue(client)
+        render(await page({ tab: 'environments' }))
+        expect(listDeletedEnvironments).not.toHaveBeenCalled()
+        expect(screen.queryByRole('link', { name: 'Add environment' })).toBeNull()
+    })
+
+    it('reads the domains, the deleted environments and nothing else only when the tab is open', async () => {
+        withEnvironments()
+        render(await page())
+        expect(listDomains).not.toHaveBeenCalled()
+        expect(listDeletedEnvironments).not.toHaveBeenCalled()
+
+        render(await page({ tab: 'environments' }))
+        expect(listDomains).toHaveBeenCalledTimes(1)
+        expect(listDeletedEnvironments).toHaveBeenCalledTimes(1)
+        expect(listBranches).not.toHaveBeenCalled()
+        expect(listCredentials).not.toHaveBeenCalled()
     })
 
     it('never asks hostd for a list it would refuse, on a site with no domains capability', async () => {
-        render(await page({ tab: 'domains' }))
-
+        withEnvironments(['lifecycle', 'env'])
+        render(await page({ tab: 'environments' }))
         expect(listDomains).not.toHaveBeenCalled()
-        expect(screen.getByText(/not switched on for this site/)).toBeInTheDocument()
+        expect(screen.getByText(/Domains are not switched on for this site/)).toBeInTheDocument()
+    })
+
+    it('opens the add form for the operator, reading the branches for it and not the domains', async () => {
+        withEnvironments()
+        listBranches.mockResolvedValue({ ok: true, value: ['main', 'develop'] })
+        render(await page({ tab: 'environments', add: '1' }))
+        expect(screen.getByRole('heading', { name: 'Add an environment' })).toBeInTheDocument()
+        expect(listBranches.mock.calls[0]?.[2]).toBe('asot')
+        expect(listDomains).not.toHaveBeenCalled()
+    })
+
+    it("says in the add form why the repository's branches are not listed", async () => {
+        withEnvironments()
+        listBranches.mockResolvedValue({ ok: false, code: 'unavailable', message: 'hostd is not answering' })
+        render(await page({ tab: 'environments', add: '1' }))
+        expect(screen.getByText("The repository's branches could not be read: hostd is not answering")).toBeInTheDocument()
+        expect(screen.getByLabelText('Branch').tagName).toBe('INPUT')
+    })
+
+    it('opens no add form for a client', async () => {
+        withEnvironments()
+        callerFromSession.mockResolvedValue(client)
+        render(await page({ tab: 'environments', add: '1' }))
+        expect(screen.queryByRole('heading', { name: 'Add an environment' })).toBeNull()
+        expect(listBranches).not.toHaveBeenCalled()
     })
 })

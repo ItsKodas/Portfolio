@@ -13,6 +13,7 @@ import {
     addDomain, adoptSite, previewAdopt, removeDomain, verifyDomain, type AdoptPreview,
 } from '@/server/hostd/domains'
 import { isEnvironmentName, LIVE, newEnvironmentProblem, writeEnvFile, type EnvironmentName } from '@/server/hostd/env'
+import { addressProblem, NEEDS_ADDRESS } from '@/server/hostd/environmentAddress'
 import {
     addEnvironment, copyFromLive, copyRuns, deleteEnvironment, restoreEnvironment, type CopyRecord,
 } from '@/server/hostd/environments'
@@ -305,7 +306,8 @@ export async function setPrimaryDomainAction(id: string, environment: string, ho
     revalidatePath(`/portal/sites/${id}`)
     return {
         ok: true,
-        message: `${wanted} is this site's address now. Nothing is served from it until this environment is adopted.`,
+        message: `${wanted} is this site's address now. Nothing is served from it until ${name} is adopted. `
+            + `Adopt it from ${name}'s Domains section on the Environments tab.`,
     }
 }
 
@@ -442,23 +444,37 @@ export async function deleteSiteAction(id: string, confirm: string): Promise<Sit
 // policy verb, ahead of ownership, and this is the same rule applied a step earlier. live is never
 // added, deleted or restored, and is refused here before the session is read.
 
+// The address is required, and is exactly one label below horizons.gg or below live's primary domain.
+// The form only offers those two bases, but a request is a request: the base is checked here against live's
+// domain as hostd has it now, read again, never against one the browser says it saw.
 export async function addEnvironmentAction(
-    id: string, name: string, branch: string, domain: string | null, copyLive: boolean = false,
+    id: string, name: string, branch: string, domain: string, copyLive: boolean = false,
 ): Promise<SiteActionResult> {
     if (typeof name !== 'string') return { ok: false, error: 'That is not something this page can do.' }
     // The form checks the same rule before it sends, so this sentence is only ever seen by a request the
     // form did not make. hostd has the final word either way: only it knows the names already taken.
     const problem = newEnvironmentProblem(name)
     if (problem) return { ok: false, error: problem }
-    if (typeof branch !== 'string' || branch.trim() === '' || (domain !== null && typeof domain !== 'string')) {
+    if (typeof branch !== 'string' || branch.trim() === '') {
         return { ok: false, error: 'That is not something this page can do.' }
     }
+    if (domain === null || domain === undefined || (typeof domain === 'string' && domain.trim() === '')) {
+        return { ok: false, error: NEEDS_ADDRESS }
+    }
+    if (typeof domain !== 'string') return { ok: false, error: 'That is not something this page can do.' }
 
     const allowed = await allow(id, true)
     if (!allowed.ok) return allowed
 
     // Lowercased for the reason the domain actions do it: a pasted hostname often has capitals in it
-    const hostname = domain === null || domain.trim() === '' ? null : domain.trim().toLowerCase()
+    const hostname = domain.trim().toLowerCase()
+    // Read for every address, even one ending in horizons.gg: live's own domain can sit under it too
+    const listed = await listEnvironments(allowed.config, allowed.caller, id)
+    if (!listed.ok) return refused(`environments of ${id} for a new address`, allowed.isAdmin, listed)
+    const liveDomain = listed.value.find(one => one.name === LIVE)?.domain ?? null
+    const wrong = addressProblem(hostname, liveDomain)
+    if (wrong) return { ok: false, error: wrong }
+
     // Only a real true asks for a copy: this arrived from a browser like everything else here
     const result = await addEnvironment(allowed.config, allowed.caller, id, {
         name, branch: branch.trim(), domain: hostname, copyFromLive: copyLive === true,
@@ -466,13 +482,13 @@ export async function addEnvironmentAction(
     if (!result.ok) return refused(`add environment ${name} on ${id}`, allowed.isAdmin, result)
 
     revalidatePath(`/portal/sites/${id}`)
-    // The environment exists either way; only its address is missing, and the Domains tab can add it
+    // The environment exists either way; only its vhost is missing, and its Domains section can add it
     const vhost = result.value.vhost
     const said = vhost && !vhost.ok
-        ? `${name} is added, but its address was not set up: ${vhost.message}. Add it again from the Domains tab.`
+        ? `${name} is added, but its address was not set up: ${vhost.message}. Add it again from its Domains section on the Environments tab.`
         : null
     // The copy is beside the add too: a refused one leaves the environment there, and it can be copied into
-    // from its row once whatever hostd named is sorted.
+    // from its Summary once whatever hostd named is sorted.
     const copy = result.value.copy
     if (copy && 'run' in copy) {
         return { ok: true, message: `${said ?? `${name} is added.`} A copy of live's data into it has started.` }

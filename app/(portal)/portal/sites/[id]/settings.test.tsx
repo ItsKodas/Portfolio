@@ -4,6 +4,8 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 const saveSettingsAction = vi.fn()
 const deleteSiteAction = vi.fn()
+const setPrimaryDomainAction = vi.fn()
+const changePrimaryDomainAction = vi.fn()
 const refresh = vi.fn()
 const push = vi.fn()
 
@@ -12,6 +14,14 @@ vi.mock('./actions', () => ({
     saveSettingsAction: (...args: unknown[]) => saveSettingsAction(...args),
     deleteSiteAction: (...args: unknown[]) => deleteSiteAction(...args),
     setPortAction: vi.fn(),
+    setPrimaryDomainAction: (...args: unknown[]) => setPrimaryDomainAction(...args),
+    changePrimaryDomainAction: (...args: unknown[]) => changePrimaryDomainAction(...args),
+    // The rest of what domainControls.tsx imports, never called from Settings
+    adoptAction: vi.fn(),
+    adoptPreviewAction: vi.fn(),
+    addDomainAction: vi.fn(),
+    removeDomainAction: vi.fn(),
+    verifyDomainAction: vi.fn(),
 }))
 vi.mock('../portActions', () => ({ checkPortAction: async () => ({ ok: true, suggested: 5012, problem: null }) }))
 
@@ -29,9 +39,113 @@ const props = {
 beforeEach(() => {
     vi.clearAllMocks()
     saveSettingsAction.mockResolvedValue({ ok: true, message: 'Saved.' })
+    setPrimaryDomainAction.mockResolvedValue({ ok: true, message: 'arbysauto.com is this site\'s address now.' })
+    changePrimaryDomainAction.mockResolvedValue({ ok: true, message: 'shop.arbysauto.com is this site\'s address now.' })
+})
+
+// live's main address moved here from the Domains tab. Setting and changing it use the same actions and
+// the same confirmation they always have.
+describe('the primary domain', () => {
+    const region = () => screen.getByRole('region', { name: 'Primary domain' })
+    const withLive = (domain: string | null) =>
+        [{ name: 'live', branch: null, domain, dir: '/var/www/arbysauto', port: 5011 }, { name: 'uat1', branch: null, domain: 'uat1.arbysauto.com' }]
+
+    it("shows live's main address", () => {
+        render(<SiteSettingsForm {...props} environments={withLive('arbysauto.com')} />)
+        expect(within(region()).getByText('arbysauto.com')).toBeInTheDocument()
+        expect(within(region()).getByRole('button', { name: /change the address/i })).toBeInTheDocument()
+    })
+
+    it("sets live's address when it has none", async () => {
+        render(<SiteSettingsForm {...props} environments={withLive(null)} />)
+        await userEvent.type(within(region()).getByLabelText('Address'), 'ArbysAuto.com')
+        await userEvent.click(within(region()).getByRole('button', { name: /set the address/i }))
+
+        expect(setPrimaryDomainAction).toHaveBeenCalledWith('arbysauto', 'live', 'arbysauto.com')
+        expect(await screen.findByText(/is this site's address now/)).toBeInTheDocument()
+        expect(refresh).toHaveBeenCalled()
+    })
+
+    // The refresh after a set hands the form live's new address. What the set said, which is the only
+    // place the operator is told to adopt, has to survive that.
+    it('keeps what the set said once the refresh brings the new address', async () => {
+        const { rerender } = render(<SiteSettingsForm {...props} environments={withLive(null)} />)
+        await userEvent.type(within(region()).getByLabelText('Address'), 'arbysauto.com')
+        await userEvent.click(within(region()).getByRole('button', { name: /set the address/i }))
+        await screen.findByText(/is this site's address now/)
+
+        rerender(<SiteSettingsForm {...props} environments={withLive('arbysauto.com')} />)
+
+        expect(within(region()).getByRole('button', { name: /change the address/i })).toBeInTheDocument()
+        expect(within(region()).getByText(/is this site's address now/)).toBeInTheDocument()
+    })
+
+    it('keeps what a change said once the refresh brings the new address', async () => {
+        const { rerender } = render(<SiteSettingsForm {...props} environments={withLive('arbysauto.com')} />)
+        await userEvent.type(within(region()).getByLabelText(/new address/i), 'shop.arbysauto.com')
+        await userEvent.click(within(region()).getByRole('button', { name: /change the address/i }))
+        await userEvent.type(await screen.findByLabelText(/to confirm/i), 'shop.arbysauto.com')
+        await userEvent.click(screen.getByRole('button', { name: /^change it$/i }))
+        await screen.findByText(/shop\.arbysauto\.com is this site's address now/)
+
+        rerender(<SiteSettingsForm {...props} environments={withLive('shop.arbysauto.com')} />)
+
+        expect(within(region()).getByText(/shop\.arbysauto\.com is this site's address now/)).toBeInTheDocument()
+    })
+
+    // Settings only ever draws live's, so it names live rather than "this environment"
+    it('speaks of live, not of this environment', () => {
+        const { unmount } = render(<SiteSettingsForm {...props} environments={withLive(null)} />)
+        expect(within(region()).queryByText(/this environment/i)).toBeNull()
+        expect(within(region()).getByText(/The main name live answers to/)).toBeInTheDocument()
+        expect(within(region()).getByText(/once live is adopted/)).toBeInTheDocument()
+        unmount()
+
+        render(<SiteSettingsForm {...props} environments={withLive('arbysauto.com')} />)
+        expect(within(region()).queryByText(/this environment/i)).toBeNull()
+        expect(within(region()).getByText(/live answers on arbysauto\.com today/)).toBeInTheDocument()
+    })
+
+    it("changes live's address only once the new one is typed back", async () => {
+        render(<SiteSettingsForm {...props} environments={withLive('arbysauto.com')} />)
+        await userEvent.type(within(region()).getByLabelText(/new address/i), 'shop.arbysauto.com')
+        await userEvent.click(within(region()).getByRole('button', { name: /change the address/i }))
+
+        const confirm = await screen.findByLabelText(/type shop\.arbysauto\.com to confirm/i)
+        const go = screen.getByRole('button', { name: /^change it$/i })
+        expect(go).toBeDisabled()
+        await userEvent.type(confirm, 'shop.arbysauto.com')
+        await userEvent.click(go)
+
+        expect(changePrimaryDomainAction).toHaveBeenCalledWith('arbysauto', 'live', 'shop.arbysauto.com', 'shop.arbysauto.com')
+        expect(setPrimaryDomainAction).not.toHaveBeenCalled()
+    })
+
+    // Without live in the list its address is unknown, and offering to set one could put a second
+    // address over one it already has
+    it('offers nothing when live could not be read', () => {
+        render(<SiteSettingsForm {...props} environments={[]} />)
+        expect(within(region()).getByText(/could not be read/)).toBeInTheDocument()
+        expect(within(region()).queryByRole('button')).toBeNull()
+    })
+
+    // Moved to the Environments tab, with the add form
+    it('shows no Environments section', () => {
+        render(<SiteSettingsForm {...props} environments={withLive('arbysauto.com')} />)
+        expect(screen.queryByRole('heading', { name: /environments/i })).toBeNull()
+        expect(screen.queryByText(/add an environment/i)).toBeNull()
+        expect(screen.queryByRole('button', { name: /add environment/i })).toBeNull()
+    })
 })
 
 describe('the settings form', () => {
+    // The environments sections it used to draw below the form moved to the Environments tab, and it
+    // takes nothing else in their place
+    it('draws nothing handed to it beyond its own form', () => {
+        render(<SiteSettingsForm {...props}><p>an extra section</p></SiteSettingsForm>)
+        expect(screen.queryByText('an extra section')).toBeNull()
+    })
+
     it('shows every capability, ticked as the registry has it', () => {
         render(<SiteSettingsForm {...props} />)
         expect(screen.getByRole('checkbox', { name: /lifecycle/ })).toBeChecked()

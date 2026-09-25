@@ -28,7 +28,7 @@ export type NewSite = {
 }
 
 // Only present when a domain was given. A failure here is beside a create that succeeded: the site
-// exists, and the message says what is left to do from its Domains tab.
+// exists, and the message says what is left to do from live's Domains section.
 export type Created = { vhost?: { ok: true } | { ok: false, message: string } }
 
 // hostd's own PROJECT_ID and HOSTNAME, from hostd/src/shared/formats.ts, so a bad id never reaches a

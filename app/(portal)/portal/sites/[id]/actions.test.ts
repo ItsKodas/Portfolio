@@ -255,6 +255,7 @@ describe('setPrimaryDomainAction', () => {
         const result = await setPrimaryDomainAction('acme', 'live', 'acme.com')
 
         expect(result.ok && result.message).toMatch(/adopted/i)
+        expect(result.ok && result.message).toContain("Adopt it from live's Domains section on the Environments tab.")
     })
 
     // This pane is admin-only: hostd puts configure among its admin-only policy verbs ahead of
@@ -352,42 +353,123 @@ describe('deleteSiteAction', () => {
 })
 
 describe('addEnvironmentAction', () => {
-    it('sends the name, the branch and a trimmed, lowercased hostname', async () => {
+    const liveOn = (domain: string | null) => ({ ...env('live'), domain })
+
+    it('sends the name, the branch and a trimmed, lowercased address under horizons.gg', async () => {
         callerFromSession.mockResolvedValue(ADMIN)
         addEnvironment.mockResolvedValue({ ok: true, value: {} })
 
-        const result = await addEnvironmentAction('acme', 'uat1', 'uat', '  UAT.acme.com ')
+        const result = await addEnvironmentAction('acme', 'uat1', 'uat', '  UAT1-acme.Horizons.gg ')
 
         expect(result).toEqual({ ok: true, message: 'uat1 is added. Its first deploy starts it.' })
-        expect(addEnvironment).toHaveBeenCalledWith(expect.anything(), ADMIN.caller, 'acme', { name: 'uat1', branch: 'uat', domain: 'uat.acme.com', copyFromLive: false })
+        expect(addEnvironment).toHaveBeenCalledWith(expect.anything(), ADMIN.caller, 'acme', { name: 'uat1', branch: 'uat', domain: 'uat1-acme.horizons.gg', copyFromLive: false })
     })
 
-    it('sends a blank hostname as none', async () => {
+    // The base the browser sent is checked against live's domain as hostd has it now
+    it("takes an address under live's primary domain, read again from hostd", async () => {
         callerFromSession.mockResolvedValue(ADMIN)
+        listEnvironments.mockResolvedValue({ ok: true, value: [liveOn('acme.com')] })
         addEnvironment.mockResolvedValue({ ok: true, value: {} })
 
-        await addEnvironmentAction('acme', 'uat1', 'uat', '  ')
+        const result = await addEnvironmentAction('acme', 'uat1', 'uat', 'uat1.acme.com')
 
-        expect(addEnvironment).toHaveBeenCalledWith(expect.anything(), expect.anything(), 'acme', { name: 'uat1', branch: 'uat', domain: null, copyFromLive: false })
+        expect(result.ok).toBe(true)
+        expect(listEnvironments).toHaveBeenCalledWith(expect.anything(), ADMIN.caller, 'acme')
+        expect(addEnvironment).toHaveBeenCalledWith(expect.anything(), ADMIN.caller, 'acme', { name: 'uat1', branch: 'uat', domain: 'uat1.acme.com', copyFromLive: false })
+    })
+
+    // A site hosted as acme.horizons.gg has its environments one label below that, not below horizons.gg
+    it("takes an address under a primary domain that is itself under horizons.gg", async () => {
+        callerFromSession.mockResolvedValue(ADMIN)
+        listEnvironments.mockResolvedValue({ ok: true, value: [liveOn('acme.horizons.gg')] })
+        addEnvironment.mockResolvedValue({ ok: true, value: {} })
+
+        expect((await addEnvironmentAction('acme', 'uat1', 'uat', 'uat1.acme.horizons.gg')).ok).toBe(true)
+        expect(addEnvironment).toHaveBeenCalledWith(expect.anything(), ADMIN.caller, 'acme', { name: 'uat1', branch: 'uat', domain: 'uat1.acme.horizons.gg', copyFromLive: false })
+    })
+
+    it('refuses a missing address before the session is read', async () => {
+        for (const domain of [null, '', '   ', undefined]) {
+            expect(await addEnvironmentAction('acme', 'uat1', 'uat', domain as never)).toEqual({ ok: false, error: 'An environment needs an address.' })
+        }
+        expect(await addEnvironmentAction('acme', 'uat1', 'uat', 5 as never)).toEqual(CANNOT)
+        expect(callerFromSession).not.toHaveBeenCalled()
+        expect(addEnvironment).not.toHaveBeenCalled()
+    })
+
+    it('refuses a prefix that is not one DNS label', async () => {
+        callerFromSession.mockResolvedValue(ADMIN)
+
+        const result = await addEnvironmentAction('acme', 'uat1', 'uat', '-uat1.horizons.gg')
+
+        expect(result.ok).toBe(false)
+        expect(!result.ok && result.error).toMatch(/not a valid prefix/)
+        expect(addEnvironment).not.toHaveBeenCalled()
+    })
+
+    it('refuses two labels below a base', async () => {
+        callerFromSession.mockResolvedValue(ADMIN)
+        listEnvironments.mockResolvedValue({ ok: true, value: [liveOn('acme.com')] })
+
+        expect(await addEnvironmentAction('acme', 'uat1', 'uat', 'a.uat1.acme.com'))
+            .toEqual({ ok: false, error: 'a.uat1.acme.com must be under horizons.gg or acme.com.' })
+        expect(addEnvironment).not.toHaveBeenCalled()
+    })
+
+    // A browser can send any base. One that is not live's domain now, whether live has another or none,
+    // is refused here.
+    it("refuses a base that is neither horizons.gg nor live's current domain", async () => {
+        callerFromSession.mockResolvedValue(ADMIN)
+        listEnvironments.mockResolvedValue({ ok: true, value: [liveOn('acme.com')] })
+        expect(await addEnvironmentAction('acme', 'uat1', 'uat', 'uat1.old-acme.com'))
+            .toEqual({ ok: false, error: 'uat1.old-acme.com must be under horizons.gg or acme.com.' })
+
+        listEnvironments.mockResolvedValue({ ok: true, value: [liveOn(null)] })
+        expect(await addEnvironmentAction('acme', 'uat1', 'uat', 'uat1.acme.com'))
+            .toEqual({ ok: false, error: 'uat1.acme.com must be under horizons.gg.' })
+
+        expect(addEnvironment).not.toHaveBeenCalled()
+    })
+
+    it("refuses an address under another base when live's domain cannot be read", async () => {
+        callerFromSession.mockResolvedValue(ADMIN)
+        listEnvironments.mockResolvedValue({ ok: false, code: 'unavailable', message: 'hostd is not answering' })
+
+        const result = await addEnvironmentAction('acme', 'uat1', 'uat', 'uat1.acme.com')
+
+        expect(result.ok).toBe(false)
+        expect(addEnvironment).not.toHaveBeenCalled()
+    })
+
+    // live's own domain can sit under horizons.gg too, so even a horizons.gg address waits on the read
+    it("refuses an address under horizons.gg too when live's domain cannot be read", async () => {
+        callerFromSession.mockResolvedValue(ADMIN)
+        listEnvironments.mockResolvedValue({ ok: false, code: 'unavailable', message: 'hostd is not answering' })
+
+        const result = await addEnvironmentAction('acme', 'uat1', 'uat', 'uat1-acme.horizons.gg')
+
+        expect(result.ok).toBe(false)
+        expect(listEnvironments).toHaveBeenCalledWith(expect.anything(), ADMIN.caller, 'acme')
+        expect(addEnvironment).not.toHaveBeenCalled()
     })
 
     it('says the environment exists when only its address could not be set up', async () => {
         callerFromSession.mockResolvedValue(ADMIN)
         addEnvironment.mockResolvedValue({ ok: true, value: { vhost: { ok: false, message: 'Apache refused it' } } })
 
-        const result = await addEnvironmentAction('acme', 'uat1', 'uat', 'uat.acme.com')
+        const result = await addEnvironmentAction('acme', 'uat1', 'uat', 'uat1-acme.horizons.gg')
 
         expect(result.ok).toBe(true)
-        expect(result.ok && result.message).toMatch(/uat1 is added.*Apache refused it.*Domains tab/)
+        expect(result.ok && result.message).toMatch(/uat1 is added.*Apache refused it.*Domains section on the Environments tab/)
     })
 
     it("asks for a copy of live's data when told to, and says it started", async () => {
         callerFromSession.mockResolvedValue(ADMIN)
         addEnvironment.mockResolvedValue({ ok: true, value: { copy: { run: 'r1' } } })
 
-        const result = await addEnvironmentAction('acme', 'uat1', 'uat', null, true)
+        const result = await addEnvironmentAction('acme', 'uat1', 'uat', 'uat1-acme.horizons.gg', true)
 
-        expect(addEnvironment).toHaveBeenCalledWith(expect.anything(), ADMIN.caller, 'acme', { name: 'uat1', branch: 'uat', domain: null, copyFromLive: true })
+        expect(addEnvironment).toHaveBeenCalledWith(expect.anything(), ADMIN.caller, 'acme', { name: 'uat1', branch: 'uat', domain: 'uat1-acme.horizons.gg', copyFromLive: true })
         expect(result).toEqual({ ok: true, message: "uat1 is added. A copy of live's data into it has started." })
     })
 
@@ -395,7 +477,7 @@ describe('addEnvironmentAction', () => {
         callerFromSession.mockResolvedValue(ADMIN)
         addEnvironment.mockResolvedValue({ ok: true, value: { copy: { refused: 'db is a generic database' } } })
 
-        const result = await addEnvironmentAction('acme', 'uat1', 'uat', null, true)
+        const result = await addEnvironmentAction('acme', 'uat1', 'uat', 'uat1-acme.horizons.gg', true)
 
         expect(result).toEqual({ ok: true, message: "uat1 is added, but the copy of live's data did not start: db is a generic database." })
     })
@@ -404,32 +486,32 @@ describe('addEnvironmentAction', () => {
         callerFromSession.mockResolvedValue(ADMIN)
         addEnvironment.mockResolvedValue({ ok: true, value: {} })
 
-        await addEnvironmentAction('acme', 'uat1', 'uat', null, 'yes' as never)
+        await addEnvironmentAction('acme', 'uat1', 'uat', 'uat1-acme.horizons.gg', 'yes' as never)
 
-        expect(addEnvironment).toHaveBeenCalledWith(expect.anything(), expect.anything(), 'acme', { name: 'uat1', branch: 'uat', domain: null, copyFromLive: false })
+        expect(addEnvironment).toHaveBeenCalledWith(expect.anything(), expect.anything(), 'acme', { name: 'uat1', branch: 'uat', domain: 'uat1-acme.horizons.gg', copyFromLive: false })
     })
 
     it('refuses live, a reserved name or a hyphen with the reason, before the session is read', async () => {
-        expect(await addEnvironmentAction('acme', 'live', 'uat', null)).toEqual({ ok: false, error: 'Every site has live already.' })
-        expect(await addEnvironmentAction('acme', 'next', 'uat', null)).toEqual({ ok: false, error: 'next is reserved. Choose another name.' })
-        expect((await addEnvironmentAction('acme', 'uat-1', 'uat', null)).ok).toBe(false)
-        expect(await addEnvironmentAction('acme', 'uat1', '', null)).toEqual(CANNOT)
-        expect(await addEnvironmentAction('acme', 'uat1', 'uat', 5 as never)).toEqual(CANNOT)
+        const at = 'uat1-acme.horizons.gg'
+        expect(await addEnvironmentAction('acme', 'live', 'uat', at)).toEqual({ ok: false, error: 'Every site has live already.' })
+        expect(await addEnvironmentAction('acme', 'next', 'uat', at)).toEqual({ ok: false, error: 'next is reserved. Choose another name.' })
+        expect((await addEnvironmentAction('acme', 'uat-1', 'uat', at)).ok).toBe(false)
+        expect(await addEnvironmentAction('acme', 'uat1', '', at)).toEqual(CANNOT)
         expect(callerFromSession).not.toHaveBeenCalled()
     })
 
     it('refuses a client outright', async () => {
         callerFromSession.mockResolvedValue(CLIENT)
 
-        expect(await addEnvironmentAction('acme', 'uat1', 'uat', null)).toEqual({ ok: false, error: 'This is not set up yet.' })
+        expect(await addEnvironmentAction('acme', 'uat1', 'uat', 'uat1-acme.horizons.gg')).toEqual({ ok: false, error: 'This is not set up yet.' })
         expect(addEnvironment).not.toHaveBeenCalled()
     })
 
-    it('shows hostd\'s refusal to the operator', async () => {
+    it("shows hostd's refusal to the operator", async () => {
         callerFromSession.mockResolvedValue(ADMIN)
         addEnvironment.mockResolvedValue({ ok: false, code: 'conflict', message: 'uat1 was deleted and is still kept for a restore; restore it or wait for it to be purged' })
 
-        const result = await addEnvironmentAction('acme', 'uat1', 'uat', null)
+        const result = await addEnvironmentAction('acme', 'uat1', 'uat', 'uat1-acme.horizons.gg')
 
         expect(result.ok).toBe(false)
         expect(!result.ok && result.error).toMatch(/restore it or wait/)
