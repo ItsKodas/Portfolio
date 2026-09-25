@@ -312,6 +312,17 @@ async function main(): Promise<void> {
         log,
     })
 
+    // lstat: what is at a path itself, a symlink never followed
+    const lkind = async (path: string): Promise<'none' | 'link' | 'dir' | 'file' | 'other'> => {
+        try {
+            const info = await lstat(path)
+            return info.isSymbolicLink() ? 'link' : info.isDirectory() ? 'dir' : info.isFile() ? 'file' : 'other'
+        } catch (error) {
+            const code = (error as NodeJS.ErrnoException).code
+            if (code === 'ENOENT' || code === 'ENOTDIR') return 'none'
+            throw error
+        }
+    }
     const source = systemSource()
     const backupFs: BackupFs = {
         mkdir: async dir => { await mkdir(dir, { recursive: true }) },
@@ -327,6 +338,7 @@ async function main(): Promise<void> {
         copy: async (from, to) => { await cp(from, to, { recursive: true }) },
         exists,
         realpath: path => realpath(path),
+        lkind,
     }
     const backupStore = new BackupStore(BACKUP_STATE_FILE, undefined, log)
     await backupStore.load()
@@ -379,16 +391,7 @@ async function main(): Promise<void> {
         move: (from, to) => rename(from, to),
         rmdir: dir => rm(dir, { recursive: true, force: true }),
         exists,
-        lkind: async path => {
-            try {
-                const info = await lstat(path)
-                return info.isSymbolicLink() ? 'link' : info.isDirectory() ? 'dir' : info.isFile() ? 'file' : 'other'
-            } catch (error) {
-                const code = (error as NodeJS.ErrnoException).code
-                if (code === 'ENOENT' || code === 'ENOTDIR') return 'none'
-                throw error
-            }
-        },
+        lkind,
         realpath: path => realpath(path),
         owner: ownerOf,
         own: (dir, like) => ownTree(dir, like),

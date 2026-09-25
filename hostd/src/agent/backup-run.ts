@@ -32,6 +32,8 @@ export type BackupFs = {
     exists(path: string): Promise<boolean>
     // Where a path really is, every symlink along it followed
     realpath(path: string): Promise<string>
+    // lstat: what is at the path itself, a symlink (dangling or not) never followed
+    lkind(path: string): Promise<'none' | 'link' | 'dir' | 'file' | 'other'>
 }
 
 // Where client sites live: a bind mount under it (or resolving into it) must stay in its own site's folder
@@ -67,6 +69,17 @@ export async function writeChunk(sink: Writable, chunk: Buffer): Promise<void> {
     } finally {
         stop.abort()
     }
+}
+
+// sqlite3 opens these beside the database file itself, by name, so resolving the database's own path
+// does not confine them: a symlink at any of them could have sqlite3 read (or, for a hot journal, write)
+// another site's file. The first one beside source that is a symlink, dangling or not, or null.
+export const SQLITE_SIDE_FILES = ['-wal', '-shm', '-journal'] as const
+export async function linkedSideFile(source: string, fs: Pick<BackupFs, 'lkind'>): Promise<string | null> {
+    for (const suffix of SQLITE_SIDE_FILES) {
+        if ((await fs.lkind(`${source}${suffix}`)) === 'link') return `${source}${suffix}`
+    }
+    return null
 }
 
 export type BackupRequest = { tag: BackupTag, actor: string, run: string, keep: Keep | null }
@@ -147,9 +160,16 @@ export async function runBackup(project: ProjectEntry, request: BackupRequest, d
 // this one's repository. restic reads each path it is given with lstat, so a storage folder that is itself
 // a symlink is stored as the link and nothing it points at is read: only the folders above it are resolved
 // here. One that is not there is left to restic, which reports a missing path as it always has. Null when
-// every storage folder stays inside live's folder, or why the backup will not run.
+// every storage folder stays inside live's folder (or there is none, when live's folder is not even
+// looked at), or why the backup will not run.
 async function storageOutside(project: ProjectEntry, dir: string, fs: BackupFs): Promise<string | null> {
-    const root = await fs.realpath(dir)
+    if (Object.keys(project.storage).length === 0) return null
+    let root: string
+    try {
+        root = await fs.realpath(dir)
+    } catch (error) {
+        return `live's folder ${dir} could not be resolved (${describeError(error)}), so its storage will not be read`
+    }
     for (const entry of Object.values(project.storage)) {
         const parent = posix.dirname(entry.absolute)
         let real: string
@@ -184,6 +204,8 @@ async function dump(
         }
         const root = await deps.fs.realpath(dir)
         if (!isWithin(root, source)) return `${plan.service}: ${plan.source} resolves outside live's folder (to ${source}), so the backup will not read it`
+        const linked = await linkedSideFile(source, deps.fs)
+        if (linked) return `${plan.service}: ${linked} is a symlink, and sqlite3 would open it beside the database, so the backup will not read it`
         const result = await deps.runner('sqlite3', [source, `.backup ${target}`], LIFECYCLE_TIMEOUT_MS)
         return result.exitCode === 0 && !result.timedOut ? null : `${plan.service}: sqlite3 exited with code ${result.exitCode}: ${tail(result.stderr.trim(), 500)}`
     }

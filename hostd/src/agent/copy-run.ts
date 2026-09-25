@@ -20,7 +20,7 @@ import type { CopyRecord } from '../shared/protocol.ts'
 import { composeBase, resolveCompose, tail, type Runner } from './compose.ts'
 import { checkedId, pickPerService, type ContainerSummary, type DockerApi } from './docker.ts'
 import { dumpPlan, isProblem } from './backup-dumps.ts'
-import { writeChunk } from './backup-run.ts'
+import { linkedSideFile, writeChunk } from './backup-run.ts'
 import { loadPlan, parseSize, postgresErrorCollector, readyPasses, readyProbe, renameStream, sizeProbe } from './copy-plans.ts'
 import { MIN_FREE_BYTES } from './deploy.ts'
 
@@ -610,8 +610,11 @@ async function copySqlite(context: Context, service: string, file: string): Prom
     const target = posix.join(environment.dir, file)
     await requireLive(context)
     if (!(await deps.fs.exists(posix.join(live.dir, file)))) fail(`${service}: live has no ${file}`)
-    // Read at the path it resolves to, which is inside live's folder
+    // Read at the path it resolves to, which is inside live's folder, and with nothing beside it that
+    // sqlite3 would open through a symlink
     const source = await liveSource(context, file)
+    const linked = await linkedSideFile(source, deps.fs)
+    if (linked) fail(`live's ${linked} is a symlink, and sqlite3 would open it beside the database, so the copy will not read it`)
     await confine(context, file)
     await setAsideLeftover(context, `${target}${COPY_ASIDE}`, posix.join('sqlite', service))
     await ensureParents(context, file)

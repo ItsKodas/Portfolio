@@ -803,6 +803,24 @@ describe('runCopy', () => {
         assert.equal(calls.some(call => call.startsWith('sqlite3') || call.startsWith(`move ${ENV}/data`)), false, calls.join('\n'))
     })
 
+    for (const suffix of ['-wal', '-shm', '-journal']) {
+        it(`refuses to run sqlite3 when live's ${suffix} file beside the database is a symlink, which sqlite3 would open itself`, async () => {
+            const { deps, calls } = setup({ links: { [`${LIVE}/data/app.db${suffix}`]: `/var/www/other/live/data/app.db${suffix}` } })
+            const record = await runCopy(project(), 'uat1', RUN, 'koda', deps)
+            assert.equal(record.step, 'sqlite:files')
+            assert.ok(record.reason?.startsWith(`live's ${LIVE}/data/app.db${suffix} is a symlink, and sqlite3 would open it beside the database, so the copy will not read it`), record.reason ?? '')
+            assert.equal(calls.some(call => call.startsWith('sqlite3') || call.startsWith(`move ${ENV}/data`)), false, calls.join('\n'))
+        })
+    }
+
+    it('checks the side files beside where live\'s sqlite file resolves, not beside the path as named', async () => {
+        const { deps, calls } = setup({ links: { [`${LIVE}/data`]: `${LIVE}/var/data`, [`${LIVE}/var/data/app.db-wal`]: '/var/www/other/live/data/app.db-wal' } })
+        const record = await runCopy(project(), 'uat1', RUN, 'koda', deps)
+        assert.equal(record.step, 'sqlite:files')
+        assert.match(record.reason ?? '', /live's \/var\/www\/acme\/live\/var\/data\/app\.db-wal is a symlink/)
+        assert.equal(calls.some(call => call.startsWith('sqlite3')), false, calls.join('\n'))
+    })
+
     it('refuses to read live\'s storage through a symlink out of live\'s folder', async () => {
         const { deps, calls } = setup({ links: { [`${LIVE}/storage`]: '/var/www/other/live/storage' } })
         const record = await runCopy(project(), 'uat1', RUN, 'koda', deps)

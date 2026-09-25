@@ -40,6 +40,7 @@ function setup(over: Partial<BackupDeps> = {}) {
         copy: async (from, to) => { written.set(to, `copy of ${from}`) },
         exists: async () => true,
         realpath: async path => path,
+        lkind: async () => 'none',
     }
     const backups: Array<{ paths: string[], tag: string }> = []
     const restic: Restic = {
@@ -221,6 +222,30 @@ describe('runBackup and symlinks in the site\'s checkout', () => {
         assert.deepEqual(commands.find(([command]) => command === 'sqlite3')?.[1], '/var/www/acme/var/data/app.db')
     })
 
+    for (const suffix of ['-wal', '-shm', '-journal']) {
+        it(`refuses to run sqlite3 when the ${suffix} file beside the database is a symlink, which sqlite3 would open itself`, async () => {
+            const commands: string[][] = []
+            const { deps, backups } = setup({ runner: async (command, args) => { commands.push([command, ...args]); return { exitCode: 0, stdout: '', stderr: '', timedOut: false } } })
+            deps.fs.lkind = async path => (path === `/var/www/acme/data/app.db${suffix}` ? 'link' : 'none')
+            const record = await runBackup(parseRegistry(SQLITE).projects.get('acme')!, { tag: 'manual', actor: 'client', run: 'run1', keep: null }, deps)
+            assert.equal(record.outcome, 'failed')
+            assert.equal(record.reason, `db: /var/www/acme/data/app.db${suffix} is a symlink, and sqlite3 would open it beside the database, so the backup will not read it`)
+            assert.deepEqual(commands.filter(([command]) => command === 'sqlite3'), [])
+            assert.deepEqual(backups, [])
+        })
+    }
+
+    it('checks the side files beside where the sqlite file resolves, not beside the path as named', async () => {
+        const commands: string[][] = []
+        const { deps } = setup({ runner: async (command, args) => { commands.push([command, ...args]); return { exitCode: 0, stdout: '', stderr: '', timedOut: false } } })
+        deps.fs.realpath = linked({ '/var/www/acme/data': '/var/www/acme/var/data' })
+        deps.fs.lkind = async path => (path === '/var/www/acme/var/data/app.db-wal' ? 'link' : 'none')
+        const record = await runBackup(parseRegistry(SQLITE).projects.get('acme')!, { tag: 'manual', actor: 'client', run: 'run1', keep: null }, deps)
+        assert.equal(record.outcome, 'failed')
+        assert.match(record.reason ?? '', /\/var\/www\/acme\/var\/data\/app\.db-wal is a symlink/)
+        assert.deepEqual(commands.filter(([command]) => command === 'sqlite3'), [])
+    })
+
     it('refuses a generic bind mount under /var/www that resolves into another site, before stopping anything', async () => {
         const commands: string[][] = []
         const { deps, written, backups } = setup({ runner: bindTo('/var/www/acme/dbdata', commands) })
@@ -258,6 +283,25 @@ describe('runBackup and symlinks in the site\'s checkout', () => {
         const record = await runBackup(parseRegistry(nested).projects.get('acme')!, { tag: 'manual', actor: 'client', run: 'run1', keep: null }, deps)
         assert.equal(record.outcome, 'failed')
         assert.equal(record.reason, 'storage public/uploads resolves outside live\'s folder (through /var/www/acme/public, to /var/www/other/live/public), so the backup will not read it')
+        assert.deepEqual(execs, [])
+        assert.deepEqual(backups, [])
+    })
+
+    it('backs up a project with no storage even when live\'s folder cannot be resolved', async () => {
+        const { deps, backups } = setup()
+        deps.fs.realpath = async path => { throw new Error(`ENOENT: no such file or directory, realpath '${path}'`) }
+        const bare = YAML.replace('    storage:\n      media: { path: uploads, mode: rw }\n', '')
+        const record = await runBackup(parseRegistry(bare).projects.get('acme')!, { tag: 'manual', actor: 'client', run: 'run1', keep: null }, deps)
+        assert.equal(record.outcome, 'ok', JSON.stringify(record))
+        assert.deepEqual(backups[0]?.paths, ['/backups/.staging/acme/run1'])
+    })
+
+    it('says live\'s folder could not be resolved when a project with storage has none, before dumping anything', async () => {
+        const { deps, backups, execs } = setup()
+        deps.fs.realpath = async path => { throw new Error(`ENOENT: no such file or directory, realpath '${path}'`) }
+        const record = await runBackup(project(), { tag: 'manual', actor: 'client', run: 'run1', keep: null }, deps)
+        assert.equal(record.outcome, 'failed')
+        assert.equal(record.reason, 'live\'s folder /var/www/acme could not be resolved (ENOENT: no such file or directory, realpath \'/var/www/acme\'), so its storage will not be read')
         assert.deepEqual(execs, [])
         assert.deepEqual(backups, [])
     })
