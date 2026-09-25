@@ -9,6 +9,7 @@
 import { useRouter } from 'next/navigation'
 import { createContext, useContext, useEffect, useState, type ReactNode } from 'react'
 
+import { addressBases, HORIZONS_BASE, isAddressLabel, prefilledPrefix } from '@/server/hostd/environmentAddress'
 import { LIVE, newEnvironmentProblem } from '@/server/hostd/environmentName'
 import { Button } from '@/ui/Button/Button'
 import { Callout } from '@/ui/Callout/Callout'
@@ -192,12 +193,24 @@ export function DeletedEnvironments({ id, deleted, deletedError, now }: DeletedP
     )
 }
 
+type AddProps = {
+    id: string
+    taken: string[]
+    branches: string[] | null
+    // live's primary domain as the page read it, offered as a base beside horizons.gg. null when live has
+    // none. Only an offer: the action checks the base again against hostd's current value.
+    primaryDomain: string | null
+}
+
 // Opened in the detail area by the list's Add environment
-export function AddEnvironment({ id, taken, branches }: { id: string, taken: string[], branches: string[] | null }) {
+export function AddEnvironment({ id, taken, branches, primaryDomain }: AddProps) {
     const router = useRouter()
     const [name, setName] = useState('')
     const [branch, setBranch] = useState('')
-    const [hostname, setHostname] = useState('')
+    const [base, setBase] = useState(HORIZONS_BASE)
+    // The prefix follows the name and the base until it is edited by hand, and is the typed value after
+    const [typedPrefix, setTypedPrefix] = useState('')
+    const [touched, setTouched] = useState(false)
     const [copyLive, setCopyLive] = useState(false)
     const [pending, setPending] = useState(false)
     const [said, setSaid] = useState<SiteActionResult | null>(null)
@@ -208,20 +221,31 @@ export function AddEnvironment({ id, taken, branches }: { id: string, taken: str
     const problem = wanted === ''
         ? null
         : taken.includes(wanted) ? `This site has ${wanted} already.` : newEnvironmentProblem(wanted)
-    const ready = wanted !== '' && problem === null && branch.trim() !== '' && !pending
+
+    const bases = addressBases(primaryDomain)
+    // A primary domain that went away on a refresh leaves horizons.gg chosen rather than a base on offer
+    // nowhere
+    const chosenBase = bases.includes(base) ? base : HORIZONS_BASE
+    const prefix = touched ? typedPrefix : prefilledPrefix(wanted, id, chosenBase)
+    const prefixProblem = prefix === '' || isAddressLabel(prefix)
+        ? null
+        : 'Use one name of lowercase letters, digits and hyphens, with no dots, not starting or ending with a hyphen.'
+    const hostname = `${prefix}.${chosenBase}`
+
+    const ready = wanted !== '' && problem === null && branch.trim() !== '' && prefix !== '' && prefixProblem === null && !pending
 
     async function add() {
         setPending(true)
         setSaid(null)
         try {
-            const result = await addEnvironmentAction(
-                id, wanted, branch.trim(), hostname.trim() === '' ? null : hostname.trim(), copyLive,
-            )
+            const result = await addEnvironmentAction(id, wanted, branch.trim(), hostname, copyLive)
             setSaid(result)
             if (result.ok) {
                 setName('')
                 setBranch('')
-                setHostname('')
+                setBase(HORIZONS_BASE)
+                setTypedPrefix('')
+                setTouched(false)
                 setCopyLive(false)
                 router.refresh()
             }
@@ -253,14 +277,32 @@ export function AddEnvironment({ id, taken, branches }: { id: string, taken: str
                 ) : (
                     <Field label="Branch" value={branch} spellCheck={false} onChange={event => setBranch(event.target.value)} />
                 )}
+            </div>
+            <div className={`${styles.addEnvironment} ${styles.addAddress}`}>
                 <Field
-                    label="Hostname (optional)"
-                    value={hostname}
+                    label="Prefix"
+                    value={prefix}
                     spellCheck={false}
                     autoComplete="off"
-                    placeholder="uat1.example.com"
-                    onChange={event => setHostname(event.target.value)}
+                    error={prefixProblem ?? undefined}
+                    onChange={event => {
+                        setTypedPrefix(event.target.value)
+                        setTouched(true)
+                    }}
                 />
+                <Field as="select" label="Base" value={chosenBase} onChange={event => setBase(event.target.value)}>
+                    {bases.map(one => <option key={one} value={one}>{one}</option>)}
+                </Field>
+            </div>
+            <div className={styles.addressHelp}>
+                {prefix !== '' && (
+                    <p className={styles.note}>
+                        Address: <span className={styles.addressName}>{hostname}</span>
+                    </p>
+                )}
+                <p className={styles.note}>
+                    Point this name at the dedi in DNS first. hostd does not create DNS records.
+                </p>
             </div>
             <label className={styles.capability}>
                 <input type="checkbox" checked={copyLive} onChange={event => setCopyLive(event.target.checked)} />
@@ -274,7 +316,7 @@ export function AddEnvironment({ id, taken, branches }: { id: string, taken: str
             </div>
             <p className={styles.note}>
                 It gets its own folder, port and database, with a copy of live&apos;s env files. It is not
-                started until its first deploy. A hostname can be added later from its Domains section. A
+                started until its first deploy. More names can be added later from its Domains section. A
                 copy of live&apos;s data is real client data, and can also be made later from its Summary.
             </p>
         </section>

@@ -27,22 +27,26 @@ describe('addEnvironment', () => {
         expect(JSON.parse(calls[0].body as string)).toEqual({ name: 'uat1', branch: 'uat', domain: 'uat.acme.com', copyFromLive: false })
     })
 
-    it('sends no hostname as null', async () => {
+    // hostd refuses an environment with no address, so it is refused here before asking
+    it('refuses a missing hostname before asking', async () => {
         const { fetchImpl, calls } = fakeFetch({ ok: true })
-        await addEnvironment(config, admin, 'acme', { name: 'uat1', branch: 'uat', domain: null }, fetchImpl)
-        expect(JSON.parse(calls[0].body as string)).toEqual({ name: 'uat1', branch: 'uat', domain: null, copyFromLive: false })
+        for (const domain of [null, '', undefined]) {
+            const result = await addEnvironment(config, admin, 'acme', { name: 'uat1', branch: 'uat', domain: domain as never }, fetchImpl)
+            expect(result).toEqual({ ok: false, code: 'bad-request', message: 'an environment needs an address' })
+        }
+        expect(calls).toHaveLength(0)
     })
 
     it("asks for a copy of live's data when told to, and carries back the run it started", async () => {
         const { fetchImpl, calls } = fakeFetch({ ok: true, copy: { run: 'r1' } })
-        const result = await addEnvironment(config, admin, 'acme', { name: 'uat1', branch: 'uat', domain: null, copyFromLive: true }, fetchImpl)
-        expect(JSON.parse(calls[0].body as string)).toEqual({ name: 'uat1', branch: 'uat', domain: null, copyFromLive: true })
+        const result = await addEnvironment(config, admin, 'acme', { name: 'uat1', branch: 'uat', domain: 'uat1-acme.horizons.gg', copyFromLive: true }, fetchImpl)
+        expect(JSON.parse(calls[0].body as string)).toEqual({ name: 'uat1', branch: 'uat', domain: 'uat1-acme.horizons.gg', copyFromLive: true })
         expect(result).toEqual({ ok: true, value: { copy: { run: 'r1' } } })
     })
 
     it('carries back why a copy after the add was refused', async () => {
         const { fetchImpl } = fakeFetch({ ok: true, copy: { refused: 'db is a generic database' } })
-        const result = await addEnvironment(config, admin, 'acme', { name: 'uat1', branch: 'uat', domain: null, copyFromLive: true }, fetchImpl)
+        const result = await addEnvironment(config, admin, 'acme', { name: 'uat1', branch: 'uat', domain: 'uat1-acme.horizons.gg', copyFromLive: true }, fetchImpl)
         expect(result).toEqual({ ok: true, value: { copy: { refused: 'db is a generic database' } } })
     })
 
@@ -55,16 +59,16 @@ describe('addEnvironment', () => {
     it('refuses live, a reserved name, a bad name or a bad hostname before asking', async () => {
         const { fetchImpl, calls } = fakeFetch({ ok: true })
         for (const name of ['live', 'next', 'uat-1']) {
-            expect((await addEnvironment(config, admin, 'acme', { name, branch: 'uat', domain: null }, fetchImpl)).ok, name).toBe(false)
+            expect((await addEnvironment(config, admin, 'acme', { name, branch: 'uat', domain: 'uat1.acme.com' }, fetchImpl)).ok, name).toBe(false)
         }
         expect((await addEnvironment(config, admin, 'acme', { name: 'uat1', branch: 'uat', domain: 'not a host' }, fetchImpl)).ok).toBe(false)
-        expect((await addEnvironment(config, admin, '../x', { name: 'uat1', branch: 'uat', domain: null }, fetchImpl)).ok).toBe(false)
+        expect((await addEnvironment(config, admin, '../x', { name: 'uat1', branch: 'uat', domain: 'uat1.acme.com' }, fetchImpl)).ok).toBe(false)
         expect(calls).toHaveLength(0)
     })
 
     it('carries hostd\'s refusal through', async () => {
         const { fetchImpl } = fakeFetch({ ok: false, code: 'conflict', message: 'acme already has uat1' }, 409)
-        expect(await addEnvironment(config, admin, 'acme', { name: 'uat1', branch: 'uat', domain: null }, fetchImpl))
+        expect(await addEnvironment(config, admin, 'acme', { name: 'uat1', branch: 'uat', domain: 'uat1.acme.com' }, fetchImpl))
             .toEqual({ ok: false, code: 'conflict', message: 'acme already has uat1' })
     })
 })

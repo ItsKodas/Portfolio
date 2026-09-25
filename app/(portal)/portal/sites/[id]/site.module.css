@@ -244,6 +244,10 @@
 .addEnvironment { display: flex; flex-wrap: wrap; align-items: flex-start; gap: 12px; }
 .addEnvironment > * { flex: 1 1 180px; max-width: 280px; }
 .addEnvironment + .capability { margin-top: 12px; }
+/* The address row under the name and branch, then the full hostname and the DNS note */
+.addAddress { margin-top: 12px; }
+.addressHelp { margin-top: 6px; }
+.addressHelp + .capability { margin-top: 12px; }
 
 /* A row's copy and delete buttons, with what the last copy did beside them */
 .environmentActs { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }

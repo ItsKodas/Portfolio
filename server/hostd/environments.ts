@@ -15,13 +15,14 @@ export type NewEnvironment = {
     name: EnvironmentName
     // A branch of the site's repository, which hostd fetches and checks out for it
     branch: string
-    // Its first hostname, or null for none yet. hostd writes the vhost straight after when there is one.
-    domain: string | null
+    // Its address, which hostd requires: exactly one label below horizons.gg or below live's primary
+    // domain. hostd writes the vhost for it straight after the add.
+    domain: string
     // Whether hostd starts a copy of live's data into it straight after the add. Off unless asked for.
     copyFromLive?: boolean
 }
 
-// Only present when a domain was given. A failure here is beside an add that succeeded: the environment
+// Present when hostd wrote the vhost for the address. A failure here is beside an add that succeeded: the environment
 // exists, and the message says what is left to do from its Domains section. The same shape a new site has.
 // copy is only present when a copy was asked for: the run hostd started, or why it would not start one.
 // Either way the environment was added.
@@ -110,7 +111,11 @@ export async function addEnvironment(
 ): Promise<HostdResult<AddedEnvironment>> {
     const bad = badTarget(id, environment.name)
     if (bad) return bad
-    if (environment.domain !== null && !HOSTNAME.test(environment.domain)) {
+    // A browser or an older caller can still hand this nothing; hostd would refuse it in the same words
+    if (typeof environment.domain !== 'string' || environment.domain === '') {
+        return { ok: false, code: 'bad-request', message: 'an environment needs an address' }
+    }
+    if (!HOSTNAME.test(environment.domain)) {
         return { ok: false, code: 'bad-request', message: 'hostname must be a plain domain name' }
     }
 

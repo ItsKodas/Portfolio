@@ -108,7 +108,12 @@ export function EnvironmentsTab({ view, isAdmin, selected, adding, file, domains
                     result, an env file being edited). None of it may carry over to the next one. */}
                 <div className={styles.envTabDetail} key={addOpen ? 'add' : `env:${selected}`}>
                     {addOpen
-                        ? <AddEnvironment id={view.id} taken={view.environments.map(one => one.name)} branches={branches} />
+                        ? <AddEnvironment
+                            id={view.id}
+                            taken={view.environments.map(one => one.name)}
+                            branches={branches}
+                            primaryDomain={view.environments.find(one => one.name === LIVE)?.domain ?? null}
+                        />
                         : (
                             <>
                                 <h2 className={styles.envTabName}>{selected}</h2>

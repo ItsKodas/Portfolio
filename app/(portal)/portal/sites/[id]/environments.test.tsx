@@ -55,7 +55,7 @@ const deletedList = (over: DeletedProps = {}) => (
     </EnvironmentsSaid>
 )
 const adding = (over: AddProps = {}) => (
-    <AddEnvironment id="acme" taken={['live', 'uat1']} branches={['main', 'uat', 'develop']} {...over} />
+    <AddEnvironment id="acme" taken={['live', 'uat1']} branches={['main', 'uat', 'develop']} primaryDomain="acme.com" {...over} />
 )
 
 beforeEach(() => {
@@ -136,25 +136,15 @@ describe('adding an environment', () => {
         expect(screen.getByRole('button', { name: 'Add environment' })).toBeDisabled()
     })
 
-    it('sends the name, a branch from the repository and the hostname, then re-reads the page', async () => {
+    it('sends the name, a branch from the repository and the address, then re-reads the page', async () => {
         render(adding())
         await userEvent.type(screen.getByLabelText('Name'), 'uat3')
         await userEvent.selectOptions(screen.getByLabelText('Branch'), 'develop')
-        await userEvent.type(screen.getByLabelText(/hostname/i), 'uat3.acme.com')
         await userEvent.click(screen.getByRole('button', { name: 'Add environment' }))
 
-        expect(addEnvironmentAction).toHaveBeenCalledWith('acme', 'uat3', 'develop', 'uat3.acme.com', false)
+        expect(addEnvironmentAction).toHaveBeenCalledWith('acme', 'uat3', 'develop', 'uat3-acme.horizons.gg', false)
         expect(await screen.findByText('uat3 is added. Its first deploy starts it.')).toBeInTheDocument()
         expect(refresh).toHaveBeenCalled()
-    })
-
-    it('sends no hostname as null', async () => {
-        render(adding())
-        await userEvent.type(screen.getByLabelText('Name'), 'uat3')
-        await userEvent.selectOptions(screen.getByLabelText('Branch'), 'develop')
-        await userEvent.click(screen.getByRole('button', { name: 'Add environment' }))
-
-        expect(addEnvironmentAction).toHaveBeenCalledWith('acme', 'uat3', 'develop', null, false)
     })
 
     it('shows hostd\'s refusal and keeps what was typed', async () => {
@@ -179,7 +169,7 @@ describe('adding an environment', () => {
         await userEvent.click(box)
         await userEvent.click(screen.getByRole('button', { name: 'Add environment' }))
 
-        expect(addEnvironmentAction).toHaveBeenCalledWith('acme', 'uat3', 'develop', null, true)
+        expect(addEnvironmentAction).toHaveBeenCalledWith('acme', 'uat3', 'develop', 'uat3-acme.horizons.gg', true)
         expect(await screen.findByText(/A copy of live's data into it has started/)).toBeInTheDocument()
         // Unticked again for the next one, with the rest of the form
         expect(screen.getByRole('checkbox', { name: "Start with a copy of live's data" })).not.toBeChecked()
@@ -191,7 +181,109 @@ describe('adding an environment', () => {
         await userEvent.type(screen.getByLabelText('Branch'), 'feature')
         await userEvent.click(screen.getByRole('button', { name: 'Add environment' }))
 
-        expect(addEnvironmentAction).toHaveBeenCalledWith('acme', 'uat3', 'feature', null, false)
+        expect(addEnvironmentAction).toHaveBeenCalledWith('acme', 'uat3', 'feature', 'uat3-acme.horizons.gg', false)
+    })
+})
+
+describe("a new environment's address", () => {
+    const base = () => screen.getByLabelText('Base') as HTMLSelectElement
+    const prefix = () => screen.getByLabelText('Prefix') as HTMLInputElement
+    const options = () => within(base()).getAllByRole('option').map(option => option.textContent)
+
+    it("offers horizons.gg and live's primary domain as the base", () => {
+        render(adding())
+        expect(options()).toEqual(['horizons.gg', 'acme.com'])
+        expect(base()).toHaveValue('horizons.gg')
+    })
+
+    it('offers horizons.gg alone when live has no primary domain', () => {
+        render(adding({ primaryDomain: null }))
+        expect(options()).toEqual(['horizons.gg'])
+    })
+
+    it('pre-fills <env>-<site id> under horizons.gg, from the name as it is typed', async () => {
+        render(adding())
+        expect(prefix()).toHaveValue('')
+        await userEvent.type(screen.getByLabelText('Name'), 'uat3')
+        expect(prefix()).toHaveValue('uat3-acme')
+    })
+
+    it('pre-fills <env> under the primary domain, and again when the base changes back', async () => {
+        render(adding())
+        await userEvent.type(screen.getByLabelText('Name'), 'uat3')
+        await userEvent.selectOptions(base(), 'acme.com')
+        expect(prefix()).toHaveValue('uat3')
+        await userEvent.selectOptions(base(), 'horizons.gg')
+        expect(prefix()).toHaveValue('uat3-acme')
+    })
+
+    it('shows the full hostname as it will be created', async () => {
+        render(adding())
+        await userEvent.type(screen.getByLabelText('Name'), 'uat3')
+        expect(screen.getByText('uat3-acme.horizons.gg')).toBeInTheDocument()
+        await userEvent.selectOptions(base(), 'acme.com')
+        expect(screen.getByText('uat3.acme.com')).toBeInTheDocument()
+    })
+
+    it('stops following the name, and the base, once the prefix is edited by hand', async () => {
+        render(adding())
+        await userEvent.type(screen.getByLabelText('Name'), 'uat3')
+        await userEvent.clear(prefix())
+        await userEvent.type(prefix(), 'preview')
+        await userEvent.type(screen.getByLabelText('Name'), 'x')
+        expect(prefix()).toHaveValue('preview')
+        await userEvent.selectOptions(base(), 'acme.com')
+        expect(prefix()).toHaveValue('preview')
+        expect(screen.getByText('preview.acme.com')).toBeInTheDocument()
+
+        await userEvent.selectOptions(screen.getByLabelText('Branch'), 'develop')
+        await userEvent.click(screen.getByRole('button', { name: 'Add environment' }))
+        expect(addEnvironmentAction).toHaveBeenCalledWith('acme', 'uat3x', 'develop', 'preview.acme.com', false)
+    })
+
+    it('will not send a prefix that is not one DNS label, and says why', async () => {
+        render(adding())
+        await userEvent.type(screen.getByLabelText('Name'), 'uat3')
+        await userEvent.selectOptions(screen.getByLabelText('Branch'), 'develop')
+        expect(screen.getByRole('button', { name: 'Add environment' })).toBeEnabled()
+
+        await userEvent.clear(prefix())
+        await userEvent.type(prefix(), 'uat3.preview')
+        expect(screen.getByText(/lowercase letters, digits and hyphens/)).toBeInTheDocument()
+        expect(screen.getByRole('button', { name: 'Add environment' })).toBeDisabled()
+
+        await userEvent.clear(prefix())
+        await userEvent.type(prefix(), 'uat3-')
+        expect(screen.getByRole('button', { name: 'Add environment' })).toBeDisabled()
+    })
+
+    it('needs a prefix before it can send', async () => {
+        render(adding())
+        await userEvent.type(screen.getByLabelText('Name'), 'uat3')
+        await userEvent.selectOptions(screen.getByLabelText('Branch'), 'develop')
+        await userEvent.clear(prefix())
+        expect(screen.getByRole('button', { name: 'Add environment' })).toBeDisabled()
+    })
+
+    it('says the name has to point at the dedi in DNS first', () => {
+        render(adding())
+        expect(screen.getByText(/Point this name at the dedi in DNS first/)).toBeInTheDocument()
+        expect(screen.getByText(/hostd does not create DNS records/)).toBeInTheDocument()
+    })
+
+    it('starts over, following the name again, after an add', async () => {
+        render(adding())
+        await userEvent.type(screen.getByLabelText('Name'), 'uat3')
+        await userEvent.selectOptions(screen.getByLabelText('Branch'), 'develop')
+        await userEvent.selectOptions(base(), 'acme.com')
+        await userEvent.clear(prefix())
+        await userEvent.type(prefix(), 'preview')
+        await userEvent.click(screen.getByRole('button', { name: 'Add environment' }))
+        await screen.findByText('uat3 is added. Its first deploy starts it.')
+
+        expect(base()).toHaveValue('horizons.gg')
+        await userEvent.type(screen.getByLabelText('Name'), 'uat4')
+        expect(prefix()).toHaveValue('uat4-acme')
     })
 })
 

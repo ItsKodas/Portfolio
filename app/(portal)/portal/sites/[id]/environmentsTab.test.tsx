@@ -173,6 +173,20 @@ describe('the detail, for the operator', () => {
             .not.toHaveAttribute('aria-current')
     })
 
+    // live's primary domain is the second base the form offers, taken from the site's own environments
+    it("offers live's primary domain as a base in the add form, and only horizons.gg without one", () => {
+        const { unmount } = tab({ adding: true })
+        const bases = () => within(screen.getByLabelText('Base')).getAllByRole('option').map(option => option.textContent)
+        expect(bases()).toEqual(['horizons.gg', 'acme.com'])
+        unmount()
+
+        tab({
+            adding: true,
+            view: { ...view, environments: [environment('live', { domain: null }), environment('uat1')] },
+        })
+        expect(bases()).toEqual(['horizons.gg'])
+    })
+
     // Deleting an environment goes back to live by navigating on this same route, which rerenders rather
     // than remounts. The Domains table keys its rows by position, so without a key on the detail a row's
     // open confirm or its last result would land on live's row beside a different hostname.
