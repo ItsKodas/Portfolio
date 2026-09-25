@@ -3,7 +3,7 @@
 
 import { createServer, createConnection } from 'node:net'
 import { createReadStream, createWriteStream } from 'node:fs'
-import { chmod, chown, constants, copyFile, cp, lstat, mkdir, readdir, readFile, realpath, rename, rm, rmdir, stat, statfs, unlink, writeFile } from 'node:fs/promises'
+import { chmod, chown, constants, copyFile, cp, lchown, lstat, mkdir, readdir, readFile, realpath, rename, rm, rmdir, stat, statfs, unlink, writeFile } from 'node:fs/promises'
 import { randomBytes } from 'node:crypto'
 import { posix } from 'node:path'
 import { RegistryStore, explainRegistryError } from '../shared/registry-store.ts'
@@ -378,10 +378,21 @@ async function main(): Promise<void> {
         move: (from, to) => rename(from, to),
         rmdir: dir => rm(dir, { recursive: true, force: true }),
         exists,
+        lkind: async path => {
+            try {
+                const info = await lstat(path)
+                return info.isSymbolicLink() ? 'link' : info.isDirectory() ? 'dir' : info.isFile() ? 'file' : 'other'
+            } catch (error) {
+                const code = (error as NodeJS.ErrnoException).code
+                if (code === 'ENOENT' || code === 'ENOTDIR') return 'none'
+                throw error
+            }
+        },
         realpath: path => realpath(path),
         owner: ownerOf,
         own: (dir, like) => ownTree(dir, like),
-        chown: (path, uid, gid) => chown(path, uid, gid),
+        // lchown: never through a symlink
+        chown: (path, uid, gid) => lchown(path, uid, gid),
         chmod: (path, mode) => chmod(path, mode),
         writeStream: backupFs.writeStream,
         readStream: path => createReadStream(path),

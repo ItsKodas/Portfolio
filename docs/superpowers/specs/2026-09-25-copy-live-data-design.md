@@ -92,14 +92,23 @@ A copy starts, answers at once with a run id, and runs in the background, like a
      `<dir>/<dbfilename>` in the environment's container, start the service.
    - Databases whose name is not `<id>` are loaded under their own name, unchanged. That matches the
      environment's env files, which only had `<id>` rewritten.
-5. **sqlite and storage.** For each sqlite service, `sqlite3 <live>/<file> ".backup <env>/<file>.hostd-copy"`
-   then rename over the environment's file. For each registered storage folder, `cp -a` live's folder to
-   `<env>/<path>.hostd-copy`, move the environment's current folder to `<site>/.copy/<run>/old/<path>`,
-   move the copy into place. The copy keeps the owners `cp -a` preserved from live (a deploy's storage carry
-   never changes ownership either); only folders the copy itself creates are owned like the environment's tree.
-   Before either touches a target, every existing folder on the way to it is resolved with `realpath` and
-   must be inside the environment's folder and not inside live's, so a symlink in the checkout cannot aim
-   the step at live. Live's folder having gone by then fails the step.
+5. **sqlite and storage.** Nothing is written through a path in the environment's checkout: each copy is
+   made in the run's private staging (same filesystem) and renamed into place. For each sqlite service,
+   `sqlite3 <live>/<file> ".backup <site>/.copy/<run>/new/sqlite/<service>/<name>"`, `lchown` (and `chmod`,
+   on that regular file only) like the environment's file, then rename over it. For each registered storage
+   folder, `cp -a` live's folder to `<site>/.copy/<run>/new/storage/<path>`, move whatever is at the
+   environment's to `<site>/.copy/<run>/old/<path>`, rename the copy into place. The copy keeps the owners
+   `cp -a` preserved from live (a deploy's storage carry never changes ownership either); only folders the
+   copy itself creates are owned like the environment's tree, and only after `lstat` shows a real folder.
+   Confinement, destination side: before either touches a target, every folder on the way to it that is
+   there (a symlink counts, dangling or not) is resolved with `realpath` and must be inside the
+   environment's folder and not inside live's; one that cannot be resolved fails the step. The target
+   itself and everything beside it that is moved (`.hostd-copy` from an earlier version, `-wal`, `-shm`,
+   `-journal`) is checked with `lstat` and renamed as itself, never followed. Source side: live's sqlite
+   file and each storage folder are resolved with `realpath` before they are read and must be inside
+   live's folder, so a symlink in live's checkout cannot make the copy read another site's data. `cp -a`
+   carries a symlink inside live's storage (or a storage folder that is itself a link) as a link, which
+   points where it pointed in live. Live's folder having gone by then fails the step.
 6. **Restore the environment's state.** Start the services step 3 stopped that were running before it. Stop the
    database services step 3 started, so the environment ends in the state it began in.
 7. **Clean up.** Remove `<site>/.copy/<run>/` (staging dumps and old storage) whatever the outcome.

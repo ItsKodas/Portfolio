@@ -91,6 +91,8 @@ type Options = {
     composeServices?: string[]
     // Symlinks: a path, and the path it resolves to
     links?: Record<string, string>
+    // Dangling symlinks: a path, and the missing path it points at
+    dangling?: Record<string, string>
 }
 
 function setup(options: Options = {}) {
@@ -108,6 +110,12 @@ function setup(options: Options = {}) {
     ])
     const under = (path: string, root: string) => path === root || path.startsWith(`${root}/`)
     const exists = (path: string) => [...paths, ...files.keys()].some(entry => under(entry, path))
+    // Every symlink, as the entry itself (lstat sees it wherever it points), and folders mkdir made
+    const links = new Map<string, { to: string, dangling: boolean }>([
+        ...Object.entries(options.links ?? {}).map(([link, to]) => [link, { to, dangling: false }] as const),
+        ...Object.entries(options.dangling ?? {}).map(([link, to]) => [link, { to, dangling: true }] as const),
+    ])
+    const dirs = new Set<string>()
 
     const dockerApi: CopyDeps['dockerApi'] = {
         listProjectContainers: async name => {
@@ -183,12 +191,15 @@ function setup(options: Options = {}) {
     }
 
     const fs: CopyFs = {
-        mkdir: async (dir, mkdirOptions) => { calls.push(`mkdir ${dir}${mkdirOptions?.private ? ' private' : ''}`); paths.add(dir) },
+        mkdir: async (dir, mkdirOptions) => { calls.push(`mkdir ${dir}${mkdirOptions?.private ? ' private' : ''}`); paths.add(dir); dirs.add(dir) },
         move: async (from, to) => {
             calls.push(`move ${from} -> ${to}`)
-            if (!exists(from)) throw new Error(`ENOENT: ${from}`)
+            // rename moves a symlink itself, dangling or not
+            if (!exists(from) && !links.has(from)) throw new Error(`ENOENT: ${from}`)
             for (const entry of [...paths]) if (under(entry, from)) { paths.delete(entry); paths.add(to + entry.slice(from.length)) }
             for (const [entry, text] of [...files]) if (under(entry, from)) { files.delete(entry); files.set(to + entry.slice(from.length), text) }
+            for (const [entry, link] of [...links]) if (under(entry, from)) { links.delete(entry); links.set(to + entry.slice(from.length), link) }
+            for (const entry of [...dirs]) if (under(entry, from)) { dirs.delete(entry); dirs.add(to + entry.slice(from.length)) }
         },
         rmdir: async dir => {
             calls.push(`rmdir ${dir}`)
@@ -196,8 +207,17 @@ function setup(options: Options = {}) {
             for (const entry of [...files.keys()]) if (under(entry, dir)) files.delete(entry)
         },
         exists: async path => exists(path),
+        lkind: async path => {
+            if (links.has(path)) return 'link'
+            if (!exists(path)) return 'none'
+            return dirs.has(path) || [...paths, ...files.keys()].some(entry => entry !== path && under(entry, path)) ? 'dir' : 'file'
+        },
         realpath: async path => {
-            for (const [link, target] of Object.entries(options.links ?? {})) if (under(path, link)) return target + path.slice(link.length)
+            for (const [link, { to, dangling }] of links) {
+                if (!under(path, link)) continue
+                if (dangling) throw new Error(`ENOENT: no such file or directory, realpath '${path}'`)
+                return to + path.slice(link.length)
+            }
             return path
         },
         owner: async () => ({ uid: 33, gid: 33, mode: 0o755 }),
@@ -290,19 +310,22 @@ describe('runCopy', () => {
             `docker cp ${STAGING}/cache/dump.rdb acme-uat1/cache:/data/dump.rdb`,
             'compose acme-uat1 start cache',
             `exec acme-uat1/cache ${REDIS_READY}`,
-            // 5: sqlite and storage, the sqlite file owned and moded like the one it replaces
-            `sqlite3 ${LIVE}/data/app.db .backup ${ENV}/data/app.db.hostd-copy`,
-            `chown ${ENV}/data/app.db.hostd-copy 33:33`,
-            `chmod ${ENV}/data/app.db.hostd-copy 755`,
+            // 5: sqlite and storage, each written into staging and renamed into place, the sqlite file
+            // owned and moded like the one it replaces
+            `mkdir ${STAGING}/new/sqlite/files private`,
+            `sqlite3 ${LIVE}/data/app.db .backup ${STAGING}/new/sqlite/files/app.db`,
+            `chown ${STAGING}/new/sqlite/files/app.db 33:33`,
+            `chmod ${STAGING}/new/sqlite/files/app.db 755`,
             `mkdir ${STAGING}/old/sqlite/files private`,
             `move ${ENV}/data/app.db -> ${STAGING}/old/sqlite/files/app.db`,
             `move ${ENV}/data/app.db-wal -> ${STAGING}/old/sqlite/files/app.db-wal`,
-            `move ${ENV}/data/app.db.hostd-copy -> ${ENV}/data/app.db`,
-            `cp -a ${LIVE}/storage/uploads ${ENV}/storage/uploads.hostd-copy`,
+            `move ${STAGING}/new/sqlite/files/app.db -> ${ENV}/data/app.db`,
+            `mkdir ${STAGING}/new/storage/storage private`,
+            `cp -a ${LIVE}/storage/uploads ${STAGING}/new/storage/storage/uploads`,
             `mkdir ${STAGING}/old/storage private`,
             `move ${ENV}/storage/uploads -> ${STAGING}/old/storage/uploads`,
             // The copy keeps the owners cp -a kept: nothing of it is chowned
-            `move ${ENV}/storage/uploads.hostd-copy -> ${ENV}/storage/uploads`,
+            `move ${STAGING}/new/storage/storage/uploads -> ${ENV}/storage/uploads`,
             // 6: the environment as it was: web was running, the worker was not, db was started by the copy
             ...RESTORE,
             // 7
@@ -606,7 +629,7 @@ describe('runCopy', () => {
         const { deps, paths, calls } = setup()
         const move = deps.fs.move
         deps.fs.move = async (from, to) => {
-            if (from === `${ENV}/data/app.db.hostd-copy`) throw new Error('EIO')
+            if (from === `${STAGING}/new/sqlite/files/app.db`) throw new Error('EIO')
             return move(from, to)
         }
         const record = await runCopy(project(), 'uat1', RUN, 'koda', deps)
@@ -710,6 +733,97 @@ describe('runCopy', () => {
         const record = await runCopy(project(), 'uat1', RUN, 'koda', deps)
         assert.equal(record.step, 'sqlite:files')
         assert.match(record.reason ?? '', /live's folder \/var\/www\/acme\/live is gone/)
+    })
+
+    // Nothing the copy runs may write through a path under the checkout: a write to anywhere outside the
+    // environment's folder and the site's .copy folder is one through a symlink
+    const writesOutside = (calls: string[]) => calls.filter(call => {
+        const written = /^sqlite3 \S+ \.backup (\S+)$/.exec(call)?.[1]
+            ?? /^cp -a \S+ (\S+)$/.exec(call)?.[1]
+            ?? /^(?:chown|chmod|own) (\S+) /.exec(call)?.[1]
+        return written !== undefined && !written.startsWith(`${STAGING}/`) && !(written.startsWith(`${ENV}/`) && !written.includes('.hostd-copy'))
+    })
+
+    it('sets aside a dangling .hostd-copy symlink committed beside the sqlite file, and backs up into staging', async () => {
+        const { deps, calls } = setup({ dangling: { [`${ENV}/data/app.db.hostd-copy`]: '/etc/cron.d/owned' } })
+        const record = await runCopy(project(), 'uat1', RUN, 'koda', deps)
+        assert.equal(record.outcome, 'ok', JSON.stringify(record))
+        const aside = calls.indexOf(`move ${ENV}/data/app.db.hostd-copy -> ${STAGING}/leftover/sqlite/files`)
+        assert.ok(aside !== -1 && aside < calls.findIndex(call => call.startsWith('sqlite3')), calls.join('\n'))
+        assert.ok(calls.includes(`sqlite3 ${LIVE}/data/app.db .backup ${STAGING}/new/sqlite/files/app.db`), calls.join('\n'))
+        assert.deepEqual(writesOutside(calls), [])
+        assert.ok(calls.includes(`move ${STAGING}/new/sqlite/files/app.db -> ${ENV}/data/app.db`), calls.join('\n'))
+    })
+
+    it('sets aside a symlink committed at the sqlite file itself, and owns the copy like its folder', async () => {
+        const { deps, calls } = setup({
+            paths: [LIVE, ENV, `${LIVE}/data/app.db`, `${ENV}/data/keep`, `${LIVE}/storage/uploads`, `${ENV}/storage/uploads`],
+            dangling: { [`${ENV}/data/app.db`]: '/etc/shadow-copy' },
+        })
+        const record = await runCopy(project(), 'uat1', RUN, 'koda', deps)
+        assert.equal(record.outcome, 'ok', JSON.stringify(record))
+        assert.deepEqual(writesOutside(calls), [])
+        assert.ok(calls.includes(`move ${ENV}/data/app.db -> ${STAGING}/old/sqlite/files/app.db`), calls.join('\n'))
+        // No file of its own to take the mode of: chowned like the folder, never chmodded through the link
+        assert.deepEqual(calls.filter(call => /^(chown|chmod) /.test(call)), [`chown ${STAGING}/new/sqlite/files/app.db 33:33`])
+    })
+
+    it('sets aside a symlink at the storage folder itself and its .hostd-copy, and copies through staging', async () => {
+        const { deps, calls } = setup({
+            paths: [LIVE, ENV, `${LIVE}/data/app.db`, `${ENV}/data/app.db`, `${LIVE}/storage/uploads`, `${ENV}/storage/keep`],
+            dangling: { [`${ENV}/storage/uploads`]: '/etc/cron.d', [`${ENV}/storage/uploads.hostd-copy`]: '/root/.ssh' },
+        })
+        const record = await runCopy(project(), 'uat1', RUN, 'koda', deps)
+        assert.equal(record.outcome, 'ok', JSON.stringify(record))
+        assert.deepEqual(writesOutside(calls), [])
+        const from = calls.indexOf(`cp -a ${LIVE}/storage/uploads ${STAGING}/new/storage/storage/uploads`)
+        assert.ok(from !== -1, calls.join('\n'))
+        assert.ok(calls.indexOf(`move ${ENV}/storage/uploads.hostd-copy -> ${STAGING}/leftover/storage/uploads`) < from, calls.join('\n'))
+        const old = calls.indexOf(`move ${ENV}/storage/uploads -> ${STAGING}/old/storage/uploads`)
+        const into = calls.indexOf(`move ${STAGING}/new/storage/storage/uploads -> ${ENV}/storage/uploads`)
+        assert.ok(from < old && old < into, calls.join('\n'))
+    })
+
+    it('refuses a target whose folder is a dangling symlink, making nothing through it', async () => {
+        const { deps, calls } = setup({
+            paths: [LIVE, ENV, `${LIVE}/data/app.db`, `${ENV}/data/app.db`, `${LIVE}/storage/uploads`],
+            dangling: { [`${ENV}/storage`]: '/etc/nowhere' },
+        })
+        const record = await runCopy(project(), 'uat1', RUN, 'koda', deps)
+        assert.equal(record.step, 'storage:storage/uploads')
+        assert.match(record.reason ?? '', /storage\/uploads could not be resolved \(through \/var\/www\/acme\/uat1\/storage: .*ENOENT/)
+        assert.equal(calls.some(call => call.startsWith('cp ') || call.startsWith(`mkdir ${ENV}/storage`) || call.startsWith(`own ${ENV}/storage`)), false, calls.join('\n'))
+    })
+
+    it('refuses to read live\'s sqlite file through a symlink out of live\'s folder', async () => {
+        const { deps, calls } = setup({ links: { [`${LIVE}/data`]: '/var/www/other/live/data' } })
+        const record = await runCopy(project(), 'uat1', RUN, 'koda', deps)
+        assert.equal(record.step, 'sqlite:files')
+        assert.match(record.reason ?? '', /live's data\/app\.db resolves outside live's folder \(to \/var\/www\/other\/live\/data\/app\.db\), so the copy will not read it/)
+        assert.equal(calls.some(call => call.startsWith('sqlite3') || call.startsWith(`move ${ENV}/data`)), false, calls.join('\n'))
+    })
+
+    it('refuses to read live\'s storage through a symlink out of live\'s folder', async () => {
+        const { deps, calls } = setup({ links: { [`${LIVE}/storage`]: '/var/www/other/live/storage' } })
+        const record = await runCopy(project(), 'uat1', RUN, 'koda', deps)
+        assert.equal(record.step, 'storage:storage/uploads')
+        assert.match(record.reason ?? '', /live's storage\/uploads resolves outside live's folder \(to \/var\/www\/other\/live\/storage\/uploads\), so the copy will not read it/)
+        assert.equal(calls.some(call => call.startsWith('cp ') || call.startsWith(`move ${ENV}/storage`)), false, calls.join('\n'))
+    })
+
+    it('reads live\'s storage folder through a symlink that stays inside live, carrying the link as cp -a does', async () => {
+        const { deps, calls } = setup({ links: { [`${LIVE}/storage/uploads`]: `${LIVE}/shared/uploads` } })
+        const record = await runCopy(project(), 'uat1', RUN, 'koda', deps)
+        assert.equal(record.outcome, 'ok', JSON.stringify(record))
+        // The path as live has it, not the resolved one: cp -a copies the link itself
+        assert.ok(calls.includes(`cp -a ${LIVE}/storage/uploads ${STAGING}/new/storage/storage/uploads`), calls.join('\n'))
+    })
+
+    it('reads live\'s sqlite file at its resolved path when a symlink keeps it inside live', async () => {
+        const { deps, calls } = setup({ links: { [`${LIVE}/data`]: `${LIVE}/var/data` } })
+        const record = await runCopy(project(), 'uat1', RUN, 'koda', deps)
+        assert.equal(record.outcome, 'ok', JSON.stringify(record))
+        assert.ok(calls.includes(`sqlite3 ${LIVE}/var/data/app.db .backup ${STAGING}/new/sqlite/files/app.db`), calls.join('\n'))
     })
 })
 

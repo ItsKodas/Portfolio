@@ -1071,26 +1071,48 @@ Each step below is the `step` a failed record names.
    the dump recreates every database live has, and one left from an earlier copy would otherwise fail
    with `already exists`. Anything created by hand in the environment's database server is gone after a
    copy.
-5. **`sqlite:<service>`** and **`storage:<path>`.** For each sqlite database, `sqlite3 <live>/<file>
-   ".backup <env>/<file>.hostd-copy"` (safe while live writes), owned and moded like the environment's own
-   file; then the environment's file, with any `-wal`, `-shm` or `-journal` beside it, moves into
-   `.copy/<run>/old/`, and the copy moves into place. For each storage folder, `cp -a` copies live's to
-   `<env>/<path>.hostd-copy`, the environment's own moves into `.copy/<run>/old/<path>`, and the copy moves
-   into place. **Copied storage keeps live's owners**, as `cp -a` preserved them: a deploy's storage carry
-   never changes ownership either, and containers often write as their own user (`www-data`, say) rather
-   than the environment's tree owner. Only a parent folder the copy had to make is owned like the
-   environment's tree. If the environment's containers run as a different user from live's, chown the
-   copied folder by hand afterwards. A storage folder live does not have is left as it is in the
-   environment. A `.hostd-copy` left by an earlier copy that stopped part way is moved into staging first,
-   never copied into.
+5. **`sqlite:<service>`** and **`storage:<path>`.** Both write only into the run's own staging, never
+   through a path in the environment's checkout, and then rename the result into place (staging is in the
+   same site folder, so on the same filesystem). For each sqlite database, `sqlite3 <live>/<file> ".backup
+   .copy/<run>/new/sqlite/<service>/<name>"` (safe while live writes), chowned (`lchown`) and moded like
+   the environment's own file, or chowned like the folder it goes in when the environment has no regular
+   file there; then whatever is at the environment's file, with any `-wal`, `-shm` or `-journal` beside
+   it, moves into `.copy/<run>/old/`, and the copy is renamed into place. For each storage folder, `cp -a`
+   copies live's to `.copy/<run>/new/storage/<path>`, whatever is at the environment's own moves into
+   `.copy/<run>/old/<path>`, and the copy is renamed into place. **Copied storage keeps live's owners**,
+   as `cp -a` preserved them: a deploy's storage carry never changes ownership either, and containers often
+   write as their own user (`www-data`, say) rather than the environment's tree owner. Only a parent folder
+   the copy had to make is owned like the environment's tree. If the environment's containers run as a
+   different user from live's, chown the copied folder by hand afterwards. A storage folder live does not
+   have is left as it is in the environment. Anything at `<env>/<path>.hostd-copy` (where an earlier
+   version of the copy wrote, or anything committed at that name) is moved into staging first and never written to.
 
-   Before anything is set aside, made or moved, every folder that already exists on the way to the target
-   is resolved (`realpath`) and must be inside the environment's folder and not inside live's. A symlink
-   in the environment's checkout (committed to the repo, say) that leads out of it fails the step with
-   `<path> resolves outside the environment's folder (through <dir>, to <real path>), so the copy will not
-   touch it`, and nothing is written there. If live's own folder has gone by the time these steps run (a
-   deploy of live moving it, say), the step fails with `live's folder <dir> is gone, so there is nothing
-   to copy from` rather than ending ok with nothing copied.
+   **What is confined, and how.** On the environment's side: before anything is set aside, made or moved,
+   every folder on the way to the target that is there (a symlink counts, dangling or not) is resolved
+   (`realpath`) and must be inside the environment's folder and not inside live's. One that leads out
+   fails the step with `<path> resolves outside the environment's folder (through <dir>, to <real
+   path>), so the copy will not touch it`; one that cannot be resolved (a dangling symlink) fails it with
+   `<path> could not be resolved (through <dir>: <error>), so the copy will not touch it`. Nothing is
+   written there. The last part of the path (the file or folder itself, and `.hostd-copy`, `-wal`, `-shm`,
+   `-journal` beside it) is looked at with `lstat`, never followed: a symlink there, dangling or not, is
+   renamed into staging as the link itself, and the copy is renamed in over the empty name. `chown` is
+   `lchown`, and `chmod` only ever runs on the regular file sqlite3 just wrote in staging. On live's side:
+   the sqlite file and each storage folder are resolved (`realpath`) before they are read and must be
+   inside live's own folder, so a symlink committed in live's checkout (`storage ->
+   /var/www/<other site>/live/storage`, say) cannot make a copy read another site's files or database. One
+   that leads out fails the step with `live's <path> resolves outside live's folder (to <real path>), so
+   the copy will not read it`, and nothing is read. sqlite3 reads the file at the path it resolved to.
+
+   **Symlinks inside live's storage are carried as links.** `cp -a` copies a symlink as a symlink, not
+   what it points at, and that includes a storage folder that is itself a symlink (to somewhere inside
+   live's folder). A carried link still points wherever it pointed in live: a relative one now resolves
+   inside the environment, an absolute one to the same place as live's did (live's own folder, say). A
+   site reading through such a link sees what it points at, the same as live does. Check with `find
+   /var/www/<site>/<env>/<path> -type l -ls` if that matters.
+
+   If live's own folder has gone by the time these steps run (a deploy of live moving it, say), the step
+   fails with `live's folder <dir> is gone, so there is nothing to copy from` rather than ending ok with
+   nothing copied.
 6. **`restore-state`.** The services step 3 stopped that were running before it are started again, and
    the database services step 3 started are stopped again. The environment ends in the state it began in:
    running if it was, stopped if it was, whatever happened in between.
@@ -1154,25 +1176,13 @@ stopped stays stopped). Its databases may be wiped or half loaded. Put it right 
 
    List every file in the environment's `compose:` key with its own `-f`, in order, as for any hand
    compose call.
-2. Look for a file or folder a copy was putting in place:
-
-   ```bash
-   sudo find /var/www/<site>/<env> -name '*.hostd-copy' -prune -print
-   ```
-
-   For each one, if the real `<path>` beside it is there, leave the `.hostd-copy` alone: the next copy
-   moves it aside and removes it. If the real one is **missing**, the agent stopped between the two moves
-   of a storage folder or sqlite file: the environment's own had gone into staging (which the boot has
-   just removed, so the environment's old copy is lost; it was being replaced anyway), and the copy had not
-   yet moved into place. Move the copy in. It already has the owners it should (live's for storage, the
-   environment's file's for sqlite), so do not chown it:
-
-   ```bash
-   sudo mv /var/www/<site>/<env>/<path>.hostd-copy /var/www/<site>/<env>/<path>
-   ```
-
-   Do the same when a copy failed at a `sqlite:` step and the agent log says a file `could not be moved
-   back`: the environment's own file went with staging.
+2. Check the environment's sqlite files and storage folders are there. If the agent stopped between the
+   two renames of a storage folder or sqlite file, the environment's own had already gone into staging and
+   the copy was still in staging too, and the boot has just removed both (the environment's old copy was
+   being replaced anyway). The same is true when a copy failed at a `sqlite:` step and the agent log says
+   a file `could not be moved back`. Nothing needs moving by hand: the new copy in the next step puts
+   them in place. A `<path>.hostd-copy` in the environment (left by an earlier version of the copy, which
+   wrote beside the target) can be left alone: the next copy moves it into staging and removes it.
 3. Run a new copy from the Settings tab. It wipes and reloads everything, and its own step 6 then leaves
    the environment as it now finds it. If the environment was running before the crash, deploy it
    afterwards (or `compose start` the services step 3 stopped) to bring it back. If it had never been deployed,
