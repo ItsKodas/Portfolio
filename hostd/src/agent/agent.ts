@@ -286,7 +286,7 @@ export class Agent {
         try {
             let problem: string | null
             try {
-                problem = await copyRefusal(project, name, { dockerApi: this.deps.docker })
+                problem = await copyRefusal(project, name, { dockerApi: this.deps.docker, runner: this.deps.runner })
             } catch (error) {
                 return refuse('failed', `whether a copy can start could not be checked: ${describeError(error)}`)
             }

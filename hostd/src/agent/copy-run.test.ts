@@ -735,6 +735,15 @@ describe('runCopy', () => {
         assert.deepEqual(calls.filter(call => /^compose acme-uat1 (stop|start|up)/.test(call)), [])
     })
 
+    // The start checked this too, but a deploy can change the compose file between the start and the run
+    it("fails prepare, changing nothing, when the environment's compose file does not declare one of live's databases", async () => {
+        const { deps, calls } = setup({ composeServices: ['web', 'worker', 'db'] })
+        const record = await runCopy(project(), 'uat1', RUN, 'koda', deps)
+        assert.equal(record.step, 'prepare')
+        assert.equal(record.reason, "uat1 does not run cache: its compose file does not declare it, so live's data has nowhere to go")
+        assert.deepEqual(calls.filter(call => /^compose acme-uat1 (stop|start|up)/.test(call)), [])
+    })
+
     it('keeps the owners of copied storage, and owns only a parent folder the copy made', async () => {
         const { deps, calls } = setup({
             paths: [LIVE, ENV, `${LIVE}/data/app.db`, `${ENV}/data/app.db`, `${LIVE}/storage/uploads`],
@@ -945,7 +954,7 @@ describe('copyRefusal', () => {
         const problem = await copyRefusal(project(overrides.yaml), overrides.environment ?? 'uat1', context.deps)
         return { problem, calls: context.calls }
     }
-    const readsOnly = (calls: string[]) => assert.deepEqual(calls.filter(call => !call.startsWith('list ')), [])
+    const readsOnly = (calls: string[]) => assert.deepEqual(calls.filter(call => !call.startsWith('list ') && !/^compose \S+ config /.test(call)), [])
 
     it('lets a copy start when nothing is in the way', async () => {
         const { problem, calls } = await refusal()
@@ -981,6 +990,25 @@ describe('copyRefusal', () => {
         const { problem, calls } = await refusal({ states: { acme: { web: 'running', db: 'running', cache: 'exited' } } })
         assert.match(problem ?? '', /^cache has no running container in live/)
         readsOnly(calls)
+    })
+
+    // A branch may run fewer services than the registry lists, and live's cache cannot be loaded into
+    // an environment with no cache to load it into (spotondrones' main, which runs no mongo of its own)
+    it("refuses when the environment's compose file does not declare one of live's databases", async () => {
+        const { problem, calls } = await refusal({ composeServices: ['web', 'worker', 'db'] })
+        assert.equal(problem, "uat1 does not run cache: its compose file does not declare it, so live's data has nowhere to go")
+        readsOnly(calls)
+        assert.ok(calls.some(call => call.startsWith('compose acme-uat1 config ')))
+    })
+
+    it('names every database the environment lacks', async () => {
+        const { problem } = await refusal({ composeServices: ['web'] })
+        assert.equal(problem, "uat1 does not run db, cache: its compose file does not declare them, so live's data has nowhere to go")
+    })
+
+    it("says so when the environment's compose file cannot be read", async () => {
+        const { problem } = await refusal({ runFail: (_command, args) => (args.includes('config') ? { stderr: 'yaml: line 3' } : null) })
+        assert.equal(problem, "the environment's compose file could not be read: docker compose config failed: yaml: line 3")
     })
 
     it('leaves the disk to the run, so a start answers at once', async () => {

@@ -29,6 +29,7 @@ import { linkedSideFile, sqliteBackup, writeChunk } from './backup-run.ts'
 import { mkdirArgv, renameArgv, type IoHelper } from './io-helper.ts'
 import { loadPlan, parseSize, postgresErrorCollector, readyPasses, readyProbe, renameStream, sizeProbe } from './copy-plans.ts'
 import { MIN_FREE_BYTES } from './deploy.ts'
+import { declaredServices, environmentServices, type EnvironmentServices } from './environment-services.ts'
 
 // The same margin a deploy keeps, on top of what the copy of live's storage and databases is about to take
 export const COPY_MIN_FREE_BYTES = MIN_FREE_BYTES
@@ -106,13 +107,23 @@ const storagePathsOf = (project: ProjectEntry): string[] => Object.values(projec
 // provision.ts's rewriteEnvText wrote into the environment's env files
 const databaseNameOf = (project: ProjectEntry, environment: EnvironmentEntry): string => `${project.id}-${environment.name}`
 
+// Every one of live's databases is loaded into the environment, so each has to be a service the
+// environment's own compose file declares. A branch may run fewer services than the registry lists
+// (environment-services.ts), and a database it does not run has nowhere for live's data to go.
+function undeclaredProblem(project: ProjectEntry, name: string, declared: EnvironmentServices): string | null {
+    const missing = databasesOf(project).filter(([service, entry]) => isComposeService(entry) && !Object.hasOwn(declared, service))
+    if (missing.length === 0) return null
+    const names = missing.map(([service]) => service)
+    return `${name} does not run ${names.join(', ')}: its compose file does not declare ${names.length === 1 ? 'it' : 'them'}, so live's data has nowhere to go`
+}
+
 const gib = (bytes: number): string => (bytes / 1024 ** 3).toFixed(1)
 
 // Why a copy into this environment may not start, or null when it may. Reads only, and only what is quick
 // to read, so a start answers at once: the disk is the run's own first step (spaceProblem). The agent
 // refuses a busy environment, and a running backup, itself.
 export async function copyRefusal(
-    project: ProjectEntry, name: string, deps: { dockerApi: Pick<DockerApi, 'listProjectContainers'> },
+    project: ProjectEntry, name: string, deps: { dockerApi: Pick<DockerApi, 'listProjectContainers'>, runner: Runner },
 ): Promise<string | null> {
     if (name === 'live') return 'live is what a copy reads from; it is never copied into'
     const environment = environmentOf(project, name)
@@ -129,6 +140,11 @@ export async function copyRefusal(
         const load = loadPlan(service, entry, project.id, databaseNameOf(project, environment))
         if (load !== null && isProblem(load)) return load.problem
     }
+
+    const declared = await environmentServices(project, environment, deps.runner)
+    if (!declared.ok) return declared.problem
+    const undeclared = undeclaredProblem(project, name, declared.services)
+    if (undeclared) return undeclared
 
     const running = pickPerService(await deps.dockerApi.listProjectContainers(live.composeName))
     for (const [service, entry] of databasesOf(project)) {
@@ -399,6 +415,8 @@ async function prepare(context: Context): Promise<Containers> {
     const location = { dir: environment.dir, composePaths: environment.composePaths, composeName: environment.composeName }
     const resolved = await resolveCompose(location, deps.runner)
     if (!resolved.ok) fail(`the environment's compose file could not be read: ${resolved.problem}`)
+    const undeclared = undeclaredProblem(project, environment.name, declaredServices(project, resolved.resolved))
+    if (undeclared) fail(undeclared)
     const base = composeBase(location)
     let containers: Containers = pickPerService(await deps.dockerApi.listProjectContainers(environment.composeName))
     const databases = databasesOf(project).filter(([, entry]) => isComposeService(entry)).map(([service]) => service)

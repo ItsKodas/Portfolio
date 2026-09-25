@@ -531,6 +531,17 @@ any container that declares a healthcheck reports `healthy`, within 60 seconds. 
 HTTP request to the site's port: the agent runs `network_mode: none` and has no network namespace to make
 one from. A repo that wants the stronger check declares a `healthcheck:` in its compose file.
 
+"Registered" means the services the registry lists **that this tree's own compose file declares**. The
+registry lists a site's services once, and they describe live, but every environment deploys its own
+branch, and a branch may run fewer services (an older `main` that still points at an outside database
+has no `mongo` service, say). The deploy reads `docker compose config` from the tree it just swapped in
+and checks only the registered services that config declares, so such a branch deploys rather than
+failing on `mongo (missing)` for ever. Two things still fail it: a compose file that cannot be read
+(`the environment's compose file could not be read: ...`), and one that declares none of the registry's
+site services (`none of the registry's site services (web) is in this environment's compose file`),
+because then there would be nothing left to check. A service the compose file declares and the registry
+does not list is still not checked, exactly as on live.
+
 **When it fails.** A fetch, checkout, env-file copy or build that fails ends the deploy with the running
 site untouched, and the build output kept in the history. A failed health check (or a version that will
 not start at all) swaps straight back to `<dir>.prev`, confirms that copy is healthy, and records the
@@ -991,6 +1002,8 @@ Before anything changes:
 | `<id> has no <env> environment` (404) | The environment is not in the registry. |
 | `<id> is on a flat site; a copy needs live and <env> in the nested layout, which each moves into on its next deploy` | Live and the environment must both be nested, in the same site folder. |
 | `<service> uses the generic engine, which cannot be copied while live runs; give it a real engine in the registry` | A `generic` database can only be read by stopping it, and a copy never stops live. See **Copying by hand**. |
+| `<env> does not run <service>: its compose file does not declare it, so live's data has nowhere to go` | Every registered database (sqlite aside) is loaded into the environment's own service of the same name, and this environment's branch does not run one. Deploy a branch whose compose file has it, or copy by hand. Also checked again at step `prepare`, before anything is stopped, in case a deploy changed the compose file in between. |
+| `the environment's compose file could not be read: ...` | The check above needs `docker compose config` for the environment. |
 | `<service> has no running container in live, so there is nothing to copy from` | Every registered database (sqlite aside) is dumped from live's running container. Start live first. |
 | `<id> <env> has a deploy running`, `is moving to another port`, `is being deleted or restored`, `already has an env write running for <env>` | Wait for it to finish. |
 | `<id> <env> already has a copy running` | One copy per environment at a time. Poll the one running. |
