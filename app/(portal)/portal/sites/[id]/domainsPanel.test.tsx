@@ -3,7 +3,7 @@
 // network in the way.
 
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { fireEvent, render, screen } from '@testing-library/react'
+import { fireEvent, render, screen, within } from '@testing-library/react'
 
 const { adoptPreview, changePrimary, addDomain } = vi.hoisted(() => ({ adoptPreview: vi.fn(), changePrimary: vi.fn(), addDomain: vi.fn() }))
 
@@ -22,6 +22,7 @@ vi.mock('./actions', () => ({
 vi.mock('next/navigation', () => ({ useRouter: () => ({ push: () => {}, refresh: () => {} }) }))
 
 import type { AdoptPreview, Domain } from '@/server/hostd/domains'
+import { PrimaryDomain } from './domainControls'
 import { DomainsPanel } from './domainsPanel'
 
 const domain = (over: Partial<Domain> = {}): Domain => ({
@@ -31,7 +32,6 @@ const domain = (over: Partial<Domain> = {}): Domain => ({
 
 const props = {
     id: 'acme', environment: 'live', projectName: 'Acme Bakery',
-    environments: [{ name: 'live' }, { name: 'test' }],
     domains: [domain()], isAdmin: true, trouble: null,
 }
 
@@ -73,9 +73,10 @@ beforeEach(() => {
 describe('DomainsPanel, for the operator', () => {
     it('lists every hostname with its state', () => {
         render(<DomainsPanel {...props} domains={[domain(), domain({ hostname: 'www.acme.com', primary: false, state: 'pending' })]} />)
-        expect(screen.getByText('acme.com')).toBeInTheDocument()
-        expect(screen.getByText('www.acme.com')).toBeInTheDocument()
-        expect(screen.getByText('not verified yet')).toBeInTheDocument()
+        const table = within(screen.getByRole('table', { name: 'live addresses' }))
+        expect(table.getByText('acme.com')).toBeInTheDocument()
+        expect(table.getByText('www.acme.com')).toBeInTheDocument()
+        expect(table.getByText('not verified yet')).toBeInTheDocument()
     })
 
     it('marks which one is the primary, since every other name redirects to it', () => {
@@ -179,63 +180,78 @@ describe('DomainsPanel, for the operator', () => {
 
     // hostd makes the first hostname an environment gets its primary, so the add form is open whether or
     // not the environment has one. A new environment gets its address from here.
-    it('offers the address form and an open add form, with no primary', () => {
-        render(<DomainsPanel {...props} domains={[]} />)
-        expect(screen.getByRole('button', { name: /set the address/i })).toBeInTheDocument()
+    it('offers an open add form with no primary, and says the first name becomes the address', () => {
+        render(<DomainsPanel {...props} environment="uat1" domains={[]} />)
         expect(screen.getByLabelText(/hostname/i)).toBeEnabled()
-    })
-
-    it('says the first name an environment gets becomes its address', () => {
-        render(<DomainsPanel {...props} domains={[]} />)
         expect(screen.getByText(/first name an environment gets becomes its address/i)).toBeInTheDocument()
     })
 
-    it('adds to the environment being viewed unless another is chosen', () => {
-        render(<DomainsPanel {...props} environment="test" />)
-        expect(screen.getByRole('combobox', { name: 'Add to environment' })).toHaveValue('test')
-
-        fireEvent.change(screen.getByLabelText(/hostname/i), { target: { value: 'test.acme.com' } })
-        fireEvent.click(screen.getByRole('button', { name: /^add$/i }))
-        expect(addDomain).toHaveBeenCalledWith('acme', 'test', 'test.acme.com')
-    })
-
-    it('sends a hostname to the environment chosen in the add form', () => {
-        render(<DomainsPanel {...props} environments={[{ name: 'live' }, { name: 'test' }, { name: 'uat1' }]} />)
-
-        fireEvent.change(screen.getByRole('combobox', { name: 'Add to environment' }), { target: { value: 'uat1' } })
-        fireEvent.change(screen.getByLabelText(/hostname/i), { target: { value: 'uat.acme.com' } })
-        fireEvent.click(screen.getByRole('button', { name: /^add$/i }))
-        expect(addDomain).toHaveBeenCalledWith('acme', 'uat1', 'uat.acme.com')
-    })
-
-    // The dropdown above changes the environment by navigating to the same route, which rerenders this
-    // panel rather than remounting it. The add form has to follow, or it adds to the one left behind.
-    it('follows the environment being viewed when it changes', () => {
-        const { rerender } = render(<DomainsPanel {...props} environment="live" />)
-        rerender(<DomainsPanel {...props} environment="test" />)
-        expect(screen.getByRole('combobox', { name: 'Add to environment' })).toHaveValue('test')
-
-        fireEvent.change(screen.getByLabelText(/hostname/i), { target: { value: 'test.acme.com' } })
-        fireEvent.click(screen.getByRole('button', { name: /^add$/i }))
-        expect(addDomain).toHaveBeenCalledWith('acme', 'test', 'test.acme.com')
-    })
-
-    it('has no environment select in the add form for a site with one environment', () => {
-        render(<DomainsPanel {...props} environments={[{ name: 'live' }]} />)
+    // The Environments tab shows one environment at a time, so the add form adds to that one and offers
+    // no other
+    it('adds to the environment being viewed, with no choice of another', () => {
+        render(<DomainsPanel {...props} environment="uat1" />)
         expect(screen.queryByRole('combobox', { name: 'Add to environment' })).toBeNull()
+
+        fireEvent.change(screen.getByLabelText(/hostname/i), { target: { value: 'uat1.acme.com' } })
+        fireEvent.click(screen.getByRole('button', { name: /^add$/i }))
+        expect(addDomain).toHaveBeenCalledWith('acme', 'uat1', 'uat1.acme.com')
     })
 
-    it('says what setting the address does, since nothing is served from it until the site is adopted', () => {
-        render(<DomainsPanel {...props} domains={[]} />)
+    // Choosing another environment in the list navigates to this same route, which rerenders rather than
+    // remounts. What was typed for one environment must not be sent to the next.
+    it('starts the add form over when the environment being viewed changes', () => {
+        const { rerender } = render(<DomainsPanel {...props} environment="uat1" />)
+        fireEvent.change(screen.getByLabelText(/hostname/i), { target: { value: 'uat1.acme.com' } })
+        rerender(<DomainsPanel {...props} environment="uat2" />)
+        expect(screen.getByLabelText(/hostname/i)).toHaveValue('')
+
+        fireEvent.change(screen.getByLabelText(/hostname/i), { target: { value: 'uat2.acme.com' } })
+        fireEvent.click(screen.getByRole('button', { name: /^add$/i }))
+        expect(addDomain).toHaveBeenCalledWith('acme', 'uat2', 'uat2.acme.com')
+    })
+
+    // live's main address is changed from Settings now, so the tab shows it and says where
+    it('shows live\'s main address with no way to change it here, and points to Settings', () => {
+        render(<DomainsPanel {...props} environment="live" />)
+        expect(screen.getByRole('region', { name: 'Main address' })).toHaveTextContent('acme.com')
+        expect(screen.queryByRole('button', { name: /change the address/i })).toBeNull()
+        expect(screen.queryByRole('button', { name: /set the address/i })).toBeNull()
+        expect(screen.queryByLabelText(/new address/i)).toBeNull()
+        expect(screen.getByText(/Settings tab/)).toBeInTheDocument()
+    })
+
+    // Any other environment's main address is set when it is created
+    it('shows another environment\'s main address read-only', () => {
+        render(<DomainsPanel {...props} environment="uat1" domains={[domain({ hostname: 'uat1.acme.com' })]} />)
+        expect(screen.getByRole('region', { name: 'Main address' })).toHaveTextContent('uat1.acme.com')
+        expect(screen.queryByRole('button', { name: /change the address/i })).toBeNull()
+        expect(screen.queryByRole('button', { name: /set the address/i })).toBeNull()
+        expect(screen.queryByText(/Settings tab/)).toBeNull()
+    })
+
+    it('says an environment has no main address yet when it has none', () => {
+        render(<DomainsPanel {...props} environment="uat1" domains={[]} />)
+        expect(screen.getByRole('region', { name: 'Main address' })).toHaveTextContent(/no main address yet/i)
+    })
+
+    // The list beside the detail chooses the environment, so there is no dropdown here
+    it('draws no environment dropdown of its own', () => {
+        render(<DomainsPanel {...props} />)
+        expect(screen.queryByRole('combobox', { name: 'Environment' })).toBeNull()
+    })
+})
+
+// The main address control, which the Domains tab used to draw for every environment. It is kept for
+// Settings to draw for live.
+describe('PrimaryDomain', () => {
+    it('offers to set the address when there is none, and says what that does', () => {
+        render(<PrimaryDomain id="acme" environment="live" current={null} />)
+        expect(screen.getByRole('button', { name: /set the address/i })).toBeInTheDocument()
         expect(screen.getByText(/adopted/i)).toBeInTheDocument()
     })
 
-    // The operator asked for both, and one replacing the other is the whole complaint: with an address
-    // set, the tab could add names to it but never move it.
-    it('offers both the address form and the alias form once a primary exists', () => {
-        render(<DomainsPanel {...props} />)
-        // The alias box takes a hostname again, rather than only explaining why it cannot
-        expect(screen.getByLabelText(/hostname/i)).toBeEnabled()
+    it('offers to change the address once there is one', () => {
+        render(<PrimaryDomain id="acme" environment="live" current="acme.com" />)
         expect(screen.getByRole('button', { name: /change the address/i })).toBeInTheDocument()
         expect(screen.getByLabelText(/new address/i)).toBeInTheDocument()
     })
@@ -243,7 +259,7 @@ describe('DomainsPanel, for the operator', () => {
     // Moving a live site off the address it answers on. The dialog has to name what follows and take the
     // new hostname back, the same ceremony adoption uses for the other change a live site notices.
     it('will not change the address until the new hostname is typed back', async () => {
-        render(<DomainsPanel {...props} />)
+        render(<PrimaryDomain id="acme" environment="live" current="acme.com" />)
 
         fireEvent.change(screen.getByLabelText(/new address/i), { target: { value: 'shop.acme.com' } })
         fireEvent.click(screen.getByRole('button', { name: /change the address/i }))
@@ -264,7 +280,7 @@ describe('DomainsPanel, for the operator', () => {
     // The four things that follow, in the operator's own words. Without them the dialog is a speed bump
     // rather than a decision.
     it('names what a change does before it happens', async () => {
-        render(<DomainsPanel {...props} />)
+        render(<PrimaryDomain id="acme" environment="live" current="acme.com" />)
         fireEvent.change(screen.getByLabelText(/new address/i), { target: { value: 'shop.acme.com' } })
         fireEvent.click(screen.getByRole('button', { name: /change the address/i }))
 
@@ -273,12 +289,6 @@ describe('DomainsPanel, for the operator', () => {
         expect(screen.getByText(/starts unverified/i)).toBeInTheDocument()
         expect(screen.getByText(/redirecting to the new address/i)).toBeInTheDocument()
         expect(screen.getByText(/rewritten and reloaded/i)).toBeInTheDocument()
-    })
-
-    it('keeps the environment selector, because a domain belongs to an environment', () => {
-        render(<DomainsPanel {...props} />)
-        // The same dropdown DeployPanel draws, not a second one invented here
-        expect(screen.getByRole('combobox', { name: 'Environment' })).toHaveValue('live')
     })
 })
 

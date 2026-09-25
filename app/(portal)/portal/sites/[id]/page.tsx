@@ -373,7 +373,6 @@ export default async function SitePage({ params, searchParams }: Props) {
                     {selected === 'env' && canEnv && <EnvPanel
                         id={view.id}
                         file={one(search.file)}
-                        environments={view.environments}
                         environment={environment}
                     />}
 
@@ -389,7 +388,6 @@ export default async function SitePage({ params, searchParams }: Props) {
                     {selected === 'domains' && (canDomains
                         ? <DomainsPanel
                             id={view.id}
-                            environments={view.environments}
                             environment={environment}
                             domains={domains.domains}
                             isAdmin={view.isAdmin}

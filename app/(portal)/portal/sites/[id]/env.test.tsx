@@ -1,4 +1,4 @@
-// The Environment tab reads and writes whichever environment is chosen, not always live. The panel is an
+// The Env files section of the Environments tab reads and writes whichever environment is chosen, not always live. The panel is an
 // async server component, so the test awaits it and renders what it returns, as deployPanel.test does.
 
 import { fireEvent, render, screen } from '@testing-library/react'
@@ -21,7 +21,6 @@ vi.mock('next/navigation', () => ({ useRouter: () => ({ push: () => {}, refresh:
 const { EnvPanel } = await import('./env')
 
 const admin = { caller: { actor: 'admin', user: 'koda@horizons.gg' }, clientId: null }
-const environments = [{ name: 'live' }, { name: 'uat1' }]
 
 beforeEach(() => {
     vi.clearAllMocks()
@@ -33,29 +32,36 @@ beforeEach(() => {
     saveEnvAction.mockResolvedValue({ ok: true, message: 'Saved.' })
 })
 
-describe('the Environment tab', () => {
+describe('the Env files section', () => {
     it('lists, reads and saves the environment chosen, round trip', async () => {
-        render(await EnvPanel({ id: 'acme', file: '.env', environments, environment: 'uat1' }))
+        render(await EnvPanel({ id: 'acme', file: '.env', environment: 'uat1' }))
 
         expect(listEnvFiles.mock.calls[0][3]).toBe('uat1')
         expect(readEnvFile.mock.calls[0][3]).toBe('uat1')
         expect(readEnvFile.mock.calls[0][4]).toBe('.env')
 
         // A file link keeps the environment, so opening one does not fall back to live
-        expect(screen.getByRole('link', { name: /\.env/ })).toHaveAttribute('href', '/portal/sites/acme?tab=env&env=uat1&file=.env')
+        expect(screen.getByRole('link', { name: /\.env/ })).toHaveAttribute('href', '/portal/sites/acme?tab=environments&env=uat1&file=.env')
 
         fireEvent.change(screen.getByLabelText('.env'), { target: { value: 'A=2\n' } })
         fireEvent.click(screen.getByRole('button', { name: /save and restart/i }))
         expect(saveEnvAction).toHaveBeenCalledWith('acme', 'uat1', '.env', 'A=2\n')
     })
 
-    it('offers the environment dropdown on this tab too', async () => {
-        render(await EnvPanel({ id: 'acme', file: null, environments, environment: 'uat1' }))
-        expect(screen.getByRole('combobox', { name: 'Environment' })).toHaveValue('uat1')
+    // The list beside it chooses the environment, so it draws no dropdown of its own
+    it('draws no environment dropdown', async () => {
+        render(await EnvPanel({ id: 'acme', file: null, environment: 'uat1' }))
+        expect(screen.queryByRole('combobox', { name: 'Environment' })).toBeNull()
+    })
+
+    it('draws nothing for a client', async () => {
+        callerFromSession.mockResolvedValue({ caller: { actor: 'client:c1', user: 'c1' }, clientId: 'c1' })
+        expect(await EnvPanel({ id: 'acme', file: null, environment: 'uat1' })).toBeNull()
+        expect(listEnvFiles).not.toHaveBeenCalled()
     })
 
     it('names the environment it is showing', async () => {
-        render(await EnvPanel({ id: 'acme', file: null, environments, environment: 'uat1' }))
+        render(await EnvPanel({ id: 'acme', file: null, environment: 'uat1' }))
         expect(screen.getByRole('heading', { name: 'uat1' })).toBeInTheDocument()
     })
 })

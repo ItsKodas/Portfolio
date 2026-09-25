@@ -1,6 +1,7 @@
 'use client'
 
-// Everything on the Domains tab that changes something. All of it is the operator's: hostd keeps
+// Everything in the Environments tab's Domains section that changes something, and the main address
+// control Settings draws for live. All of it is the operator's: hostd keeps
 // 'domains' among its admin-only policy verbs and leaves only 'domains-read' to an owner, so the panel
 // never renders any of this for a client, and each action re-derives who is asking from the session
 // anyway. Nothing here decides anything: it names an environment and a hostname, and that is all it is
@@ -31,19 +32,11 @@ function Said({ said }: { said: SiteActionResult | null }) {
         : <span className={styles.stateBad}>{said.error}</span>
 }
 
-// A hostname for any of the site's environments, the one being viewed unless another is chosen. hostd
-// makes the first name an environment gets its primary and every later one an alias redirecting to it,
-// so this is open whether or not the environment has an address yet: it is how a new environment gets
-// its first one.
-export function AddDomain({ id, environments, environment }: {
-    id: string
-    // Every environment the site has, for the select. Only the name is read.
-    environments: { name: string }[]
-    // The one being viewed, which the select starts on
-    environment: string
-}) {
+// A hostname for the environment being viewed. hostd makes the first name an environment gets its
+// primary and every later one an alias redirecting to it, so this is open whether or not the environment
+// has an address yet.
+export function AddDomain({ id, environment }: { id: string, environment: string }) {
     const router = useRouter()
-    const [target, setTarget] = useState(environment)
     const [hostname, setHostname] = useState('')
     const [pending, setPending] = useState(false)
     const [said, setSaid] = useState<SiteActionResult | null>(null)
@@ -52,7 +45,7 @@ export function AddDomain({ id, environments, environment }: {
         setPending(true)
         setSaid(null)
         try {
-            const result = await addDomainAction(id, target, hostname.trim())
+            const result = await addDomainAction(id, environment, hostname.trim())
             setSaid(result)
             if (result.ok) {
                 setHostname('')
@@ -69,19 +62,6 @@ export function AddDomain({ id, environments, environment }: {
         <section className={styles.block}>
             <h2>Add an address</h2>
             <div className={styles.addDomain}>
-                {/* Only when there is a choice to make. A select over one environment is furniture. */}
-                {environments.length > 1 && (
-                    <div className={styles.addTarget}>
-                        <Field
-                            as="select"
-                            label="Add to environment"
-                            value={target}
-                            onChange={event => setTarget(event.target.value)}
-                        >
-                            {environments.map(one => <option key={one.name} value={one.name}>{one.name}</option>)}
-                        </Field>
-                    </div>
-                )}
                 <Field
                     label="Hostname"
                     value={hostname}
