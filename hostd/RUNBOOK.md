@@ -752,14 +752,17 @@ hc -X POST http://hostd-api:8080/projects/acme/environments \
   -d '{"name":"uat1","branch":"develop","domain":"uat1.acme.com"}'
 ```
 
-`domain` may be `null`, and `certificate` is optional (the same values as a create). Only a nested site
-can have one: on a flat live the add is refused with `deploy live once so it moves into the nested layout,
-then add environments`.
+`domain` is required: a missing or `null` one is refused with `an environment needs an address`, before
+anything else runs. `certificate` is optional (the same values as a create). Only a nested site can have
+one: on a flat live the add is refused with `deploy live once so it moves into the nested layout, then add
+environments`.
 
 1. It refuses first, before touching anything: `live`, an invalid or reserved name, a name the project
-   already has, a name still in the trash (see **A name stays taken until its purge**), a missing
-   `<site>/git/.git`, a `<site>/<name>` already on disk, any invalid project in the registry, a domain
-   anything already serves (as a primary or an alias, this site's own environments included), and a
+   already has, a name still in the trash (see **A name stays taken until its purge**), a domain that is
+   not exactly one label below `horizons.gg` or below the site's own live domain (the refusal names
+   whichever bases actually apply: both when live has a domain, `horizons.gg` alone when it does not), a
+   missing `<site>/git/.git`, a `<site>/<name>` already on disk, any invalid project in the registry, a
+   domain anything already serves (as a primary or an alias, this site's own environments included), and a
    compose name another registered environment already runs under. That last one can happen because ids
    may hold a hyphen: project `acme-uat1` runs as `acme-uat1`, which is exactly what `acme` plus `uat1`
    would run as, and the refusal names both.
@@ -774,9 +777,9 @@ then add environments`.
    the copy so live's port cannot win, and writes `hostd.ports.yml`.
 5. It resolves compose under the name `<id>-<name>`, gives the tree the owner and mode of the site folder,
    and registers the environment.
-6. When a domain was given, api writes its vhost straight after, as a create does for live's first. If
-   another file already serves that hostname, or Apache refuses, the environment is still added and the
-   reply's `vhost` says what is left to do from the Domains tab.
+6. api writes its vhost straight after, as a create does for live's first. If another file already
+   serves that hostname, or Apache refuses, the environment is still added and the reply's `vhost` says
+   what is left to do from the Domains tab.
 
 A failure before the registry write removes `<site>/<name>`, which that call made, and nothing else. The
 new environment is not started, and its database starts empty, unless the body also had `"copyFromLive":
@@ -785,8 +788,10 @@ never with `docker compose up` by hand.
 
 ### Its first hostname
 
-An environment added without a domain has no primary. The first hostname added to it on the Domains tab
-(pick it in the add form's Environment select, which defaults to the environment being viewed, or
+Every environment added now carries a domain from the start, so it gets a primary and a first vhost as
+part of the add itself (see **Adding one**). An older environment from before this was required, one with
+no domain at all, still has no primary: the first hostname added to it on the Domains tab (pick it in the
+add form's Environment select, which defaults to the environment being viewed, or
 `POST /projects/<id>/<env>/domains` with `{"hostname":"..."}`) becomes its primary: it is set the way
 Settings sets a domain, its first vhost is written, and it is verified as the primary. Every hostname
 after that is an alias, as before, and `maxDomains` counts per environment.

@@ -955,13 +955,16 @@ describe('POST /projects/:id/environments', () => {
         const provisionReply: AgentReply = { ok: true, project: { id: 'acme', state: 'needs-setup' }, envFiles: [] }
         agent.reply = () => provisionReply
         const response = await request('/projects/acme/environments', {
-            method: 'POST', actor: 'admin', body: { name: 'uat1', branch: 'main', domain: null },
+            method: 'POST', actor: 'admin', body: { name: 'uat1', branch: 'main', domain: 'uat1.acme.example' },
         })
         assert.equal(response.status, 200)
-        assert.deepEqual(await response.json(), provisionReply)
+        assert.deepEqual(await response.json(), {
+            ...provisionReply,
+            vhost: { ok: false, message: 'acme uat1 was created, but its entry could not be read back to write its vhost' },
+        })
         assert.deepEqual(agent.calls, [{
             verb: 'provision', project: 'acme',
-            args: { action: 'add-environment', environment: 'uat1', branch: 'main', domain: null, certificate: null },
+            args: { action: 'add-environment', environment: 'uat1', branch: 'main', domain: 'uat1.acme.example', certificate: null },
         }])
         const [entry] = await audit.read({ limit: 1 })
         assert.deepEqual([entry?.verb, entry?.target, entry?.outcome], ['provision', 'acme add-environment', 'ok'])
@@ -970,23 +973,32 @@ describe('POST /projects/:id/environments', () => {
     it('carries a certificate through when one is given', async () => {
         agent.reply = () => ({ ok: true, project: { id: 'acme', state: 'needs-setup' }, envFiles: [] })
         await request('/projects/acme/environments', {
-            method: 'POST', actor: 'admin', body: { name: 'uat1', branch: 'main', domain: null, certificate: 'letsencrypt' },
+            method: 'POST', actor: 'admin', body: { name: 'uat1', branch: 'main', domain: 'uat1.acme.example', certificate: 'letsencrypt' },
         })
         assert.equal((agent.calls[0] as { args: { certificate: unknown } }).args.certificate, 'letsencrypt')
     })
 
     it('refuses live, a reserved or invalid name, a missing name and an unknown field, without calling the agent', async () => {
         const bodies: unknown[] = [
-            { name: 'live', branch: 'main', domain: null },
-            { name: 'git', branch: 'main', domain: null },
-            { name: 'backups', branch: 'main', domain: null },
-            { name: 'uat-1', branch: 'main', domain: null },
-            { branch: 'main', domain: null },
-            { name: 'uat1', branch: 'main', domain: null, port: 5020 },
+            { name: 'live', branch: 'main', domain: 'uat1.acme.example' },
+            { name: 'git', branch: 'main', domain: 'uat1.acme.example' },
+            { name: 'backups', branch: 'main', domain: 'uat1.acme.example' },
+            { name: 'uat-1', branch: 'main', domain: 'uat1.acme.example' },
+            { branch: 'main', domain: 'uat1.acme.example' },
+            { name: 'uat1', branch: 'main', domain: 'uat1.acme.example', port: 5020 },
         ]
         for (const body of bodies) {
             const response = await request('/projects/acme/environments', { method: 'POST', actor: 'admin', body })
             assert.equal(response.status, 400, JSON.stringify(body))
+        }
+        assert.deepEqual(agent.calls, [])
+    })
+
+    it('refuses a missing or null domain, without calling the agent', async () => {
+        for (const body of [{ name: 'uat1', branch: 'main' }, { name: 'uat1', branch: 'main', domain: null }]) {
+            const response = await request('/projects/acme/environments', { method: 'POST', actor: 'admin', body })
+            assert.equal(response.status, 400, JSON.stringify(body))
+            assert.equal((await response.json()).message, 'an environment needs an address')
         }
         assert.deepEqual(agent.calls, [])
     })
@@ -1014,12 +1026,13 @@ describe('POST /projects/:id/environments', () => {
         assert.deepEqual([record?.primary, record?.state, record?.token], [true, 'pending', adopt.args.token])
     })
 
-    it('writes no vhost for an environment added without a domain', async () => {
-        agent.reply = () => ({ ok: true, project: { id: 'acme', state: 'needs-setup' }, envFiles: [] })
-        await through(movingHandler(parseRegistry(NESTED_ACME), nestedWithUat1(null)), '/projects/acme/environments', {
+    it('refuses a missing domain before ever reaching the agent, on the moving handler too', async () => {
+        const response = await through(movingHandler(parseRegistry(NESTED_ACME), nestedWithUat1(null)), '/projects/acme/environments', {
             method: 'POST', actor: 'admin', body: { name: 'uat1', branch: 'main', domain: null },
         })
-        assert.deepEqual(agent.calls.map(call => call.verb), ['provision'])
+        assert.equal(response.status, 400)
+        assert.equal((await response.json()).message, 'an environment needs an address')
+        assert.deepEqual(agent.calls, [])
     })
 
     it('writes no vhost when the agent refuses the add', async () => {
@@ -2706,16 +2719,17 @@ describe('copying from live', () => {
 
     describe('when an environment is added with copyFromLive', () => {
         const added: AgentReply = { ok: true, project: { id: 'acme', state: 'needs-setup' }, envFiles: [] }
+        const VHOST_REFUSAL = { ok: false, message: 'acme uat1 was created, but its entry could not be read back to write its vhost' }
 
         it('starts a copy once the add succeeded, and says so in the reply', async () => {
             agent.reply = sent => (sent.verb === 'copy' ? { ok: true, run: RUN } : added)
             const response = await request('/projects/acme/environments', {
-                method: 'POST', actor: 'admin', body: { name: 'uat1', branch: 'main', domain: null, copyFromLive: true },
+                method: 'POST', actor: 'admin', body: { name: 'uat1', branch: 'main', domain: 'uat1.acme.example', copyFromLive: true },
             })
             assert.equal(response.status, 200)
-            assert.deepEqual(await response.json(), { ...added, copy: { run: RUN } })
+            assert.deepEqual(await response.json(), { ...added, vhost: VHOST_REFUSAL, copy: { run: RUN } })
             assert.deepEqual(agent.calls, [
-                { verb: 'provision', project: 'acme', args: { action: 'add-environment', environment: 'uat1', branch: 'main', domain: null, certificate: null } },
+                { verb: 'provision', project: 'acme', args: { action: 'add-environment', environment: 'uat1', branch: 'main', domain: 'uat1.acme.example', certificate: null } },
                 { verb: 'copy', project: 'acme', args: { action: 'start', environment: 'uat1', actor: 'user_1' } },
             ])
             const entries = await audit.read({ limit: 2 })
@@ -2727,21 +2741,21 @@ describe('copying from live', () => {
         it('keeps the environment and says why when the copy is refused', async () => {
             agent.reply = sent => (sent.verb === 'copy' ? { ok: false, code: 'bad-request', message: 'db has no running container in live, so there is nothing to copy from' } : added)
             const response = await request('/projects/acme/environments', {
-                method: 'POST', actor: 'admin', body: { name: 'uat1', branch: 'main', domain: null, copyFromLive: true },
+                method: 'POST', actor: 'admin', body: { name: 'uat1', branch: 'main', domain: 'uat1.acme.example', copyFromLive: true },
             })
             assert.equal(response.status, 200)
-            assert.deepEqual(await response.json(), { ...added, copy: { refused: 'db has no running container in live, so there is nothing to copy from' } })
+            assert.deepEqual(await response.json(), { ...added, vhost: VHOST_REFUSAL, copy: { refused: 'db has no running container in live, so there is nothing to copy from' } })
         })
 
         it('starts no copy when it is false, and none when the add is refused', async () => {
             agent.reply = () => added
             const plain = await request('/projects/acme/environments', {
-                method: 'POST', actor: 'admin', body: { name: 'uat1', branch: 'main', domain: null, copyFromLive: false },
+                method: 'POST', actor: 'admin', body: { name: 'uat1', branch: 'main', domain: 'uat1.acme.example', copyFromLive: false },
             })
-            assert.deepEqual(await plain.json(), added)
+            assert.deepEqual(await plain.json(), { ...added, vhost: VHOST_REFUSAL })
             agent.reply = () => ({ ok: false, code: 'bad-request', message: 'acme already has a uat1 environment' })
             const refused = await request('/projects/acme/environments', {
-                method: 'POST', actor: 'admin', body: { name: 'uat1', branch: 'main', domain: null, copyFromLive: true },
+                method: 'POST', actor: 'admin', body: { name: 'uat1', branch: 'main', domain: 'uat1.acme.example', copyFromLive: true },
             })
             assert.equal(refused.status, 400)
             assert.deepEqual(agent.calls.map(call => call.verb), ['provision', 'provision'])
@@ -2749,7 +2763,7 @@ describe('copying from live', () => {
 
         it('refuses a copyFromLive that is not true or false', async () => {
             const response = await request('/projects/acme/environments', {
-                method: 'POST', actor: 'admin', body: { name: 'uat1', branch: 'main', domain: null, copyFromLive: 'yes' },
+                method: 'POST', actor: 'admin', body: { name: 'uat1', branch: 'main', domain: 'uat1.acme.example', copyFromLive: 'yes' },
             })
             assert.equal(response.status, 400)
             assert.deepEqual(agent.calls, [])

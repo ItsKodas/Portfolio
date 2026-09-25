@@ -40,6 +40,18 @@ export function atOrBelow(host: string, parent: string): boolean {
     return host === parent || host.endsWith(`.${parent}`)
 }
 
+// One DNS label below a base, no more and no fewer: a fresh site address is exactly this shape, whether
+// the base is horizons.gg or the project's own live domain. The label itself follows the same grammar as
+// any other hostname label; it just may not contain a further dot, which host.endsWith already rules the
+// base out of matching if the remainder does.
+const LABEL = /^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$/
+
+export function oneLabelBelow(host: string, base: string): boolean {
+    if (!host.endsWith(`.${base}`)) return false
+    const label = host.slice(0, host.length - base.length - 1)
+    return LABEL.test(label)
+}
+
 export function isReserved(host: string, reserved: string[], allowed: string[]): boolean {
     // Exact match only. A subtree exemption would mean exempting one test name also exempted every name
     // below it, which is the hole this key is shaped to avoid.

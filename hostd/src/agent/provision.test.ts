@@ -731,6 +731,46 @@ describe('addEnvironment', () => {
         assert.deepEqual(calls, [])
     })
 
+    it('accepts a domain one label below horizons.gg, or one label below the live domain', async () => {
+        const openYaml = `
+openSubdomains: [horizons.gg]
+${NESTED_LIVE_YAML.trim()}
+`
+        const { deps: horizonsDeps } = nested({ registryYaml: openYaml })
+        const horizons = await addEnvironment(project(openYaml), args({ environment: 'uat9', domain: 'uat9-acme.horizons.gg' }), horizonsDeps)
+        assert.equal(horizons.ok, true)
+
+        const { deps: siteDeps } = nested()
+        const site = await addEnvironment(project(), args({ environment: 'uat9', domain: 'uat9.acme.com' }), siteDeps)
+        assert.equal(site.ok, true)
+    })
+
+    it('refuses a domain that is not one label below either base, before touching anything', async () => {
+        const { deps, calls } = nested()
+        for (const domain of ['a.b.acme.com', 'uat1.other.com', 'horizons.gg', 'acme.com']) {
+            const reply = await addEnvironment(project(), args({ domain }), deps)
+            assert.deepEqual(
+                reply,
+                { ok: false, code: 'bad-request', message: `${domain} must be one label below horizons.gg or acme.com` },
+                domain,
+            )
+        }
+        assert.deepEqual(calls, [])
+    })
+
+    it('names only horizons.gg when live has no primary domain yet', async () => {
+        const noDomainYaml = NESTED_LIVE_YAML.split('\n').filter(line => !line.includes('domain: acme.com')).join('\n')
+        const { deps, calls } = nested({ registryYaml: noDomainYaml })
+        const refused = await addEnvironment(project(noDomainYaml), args({ domain: 'uat1.acme.com' }), deps)
+        assert.deepEqual(refused, { ok: false, code: 'bad-request', message: 'uat1.acme.com must be one label below horizons.gg' })
+        assert.deepEqual(calls, [])
+
+        const openYaml = `\nopenSubdomains: [horizons.gg]\n${noDomainYaml.trim()}\n`
+        const { deps: openDeps } = nested({ registryYaml: openYaml })
+        const accepted = await addEnvironment(project(openYaml), args({ domain: 'uat1-acme.horizons.gg' }), openDeps)
+        assert.equal(accepted.ok, true)
+    })
+
     it('refuses live, and a reserved or invalid name, before touching anything', async () => {
         const { deps, calls } = nested()
         assert.deepEqual(await addEnvironment(project(), args({ environment: 'live' }), deps), { ok: false, code: 'bad-request', message: 'live cannot be added' })

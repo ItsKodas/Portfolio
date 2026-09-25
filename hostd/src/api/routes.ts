@@ -411,12 +411,13 @@ function parseAddEnvironmentBody(
     if (!isEnvironmentName(name)) return { ok: false, message: 'name must be an environment name' }
     if (typeof value.branch !== 'string') return { ok: false, message: 'branch is malformed' }
     const domain = value.domain
-    if (domain !== null && typeof domain !== 'string') return { ok: false, message: 'domain is malformed' }
+    if (domain === null || domain === undefined) return { ok: false, message: 'an environment needs an address' }
+    if (typeof domain !== 'string') return { ok: false, message: 'domain is malformed' }
     const certificate = value.certificate ?? null
     if (certificate !== null && !(CERTIFICATE_MODES as readonly string[]).includes(certificate as string)) return { ok: false, message: 'certificate is malformed' }
     return {
         ok: true, copyFromLive,
-        args: { action: 'add-environment', environment: name, branch: value.branch, domain: domain as string | null, certificate: certificate as CertificateMode | null },
+        args: { action: 'add-environment', environment: name, branch: value.branch, domain, certificate: certificate as CertificateMode | null },
     }
 }
 
@@ -1221,7 +1222,7 @@ export function createHandler(deps: ApiDeps): (req: IncomingMessage, res: Server
                     route.project, 'provision', target,
                 )
                 if (!reply) return
-                if (!reply.ok || (parsed.args.domain === null && !parsed.copyFromLive)) {
+                if (!reply.ok) {
                     return respondAgentAction('provision', reply, route.project, target, true)
                 }
 
@@ -1234,9 +1235,9 @@ export function createHandler(deps: ApiDeps): (req: IncomingMessage, res: Server
                 } catch (error) {
                     console.error(`[api] ${new Date().toISOString()} registry refresh after provision ${target} failed: ${describeError(error)}`)
                 }
-                const vhost = parsed.args.domain === null ? null : await firstVhost(route.project, parsed.args.environment)
+                const vhost = await firstVhost(route.project, parsed.args.environment)
                 const copy = parsed.copyFromLive ? await startCopy(route.project, parsed.args.environment) : null
-                return sendJson(res, 200, { ...reply, ...(vhost === null ? {} : { vhost }), ...(copy === null ? {} : { copy }) })
+                return sendJson(res, 200, { ...reply, vhost, ...(copy === null ? {} : { copy }) })
             }
 
             case 'remove-environment':

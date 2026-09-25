@@ -1,7 +1,7 @@
 import { describe, it } from 'node:test'
 import assert from 'node:assert/strict'
 
-import { normaliseHostname, atOrBelow, isReserved, allowedEntryProblem, isOpenSubdomain, openSubdomainEntryProblem } from './hostnames.ts'
+import { normaliseHostname, atOrBelow, oneLabelBelow, isReserved, allowedEntryProblem, isOpenSubdomain, openSubdomainEntryProblem } from './hostnames.ts'
 
 describe('normaliseHostname', () => {
     it('lowercases and keeps a plain hostname', () => {
@@ -47,6 +47,29 @@ describe('atOrBelow', () => {
 
     it('does not match a name that merely ends with the same letters', () => {
         assert.equal(atOrBelow('nothorizons.gg', 'horizons.gg'), false)
+    })
+})
+
+describe('oneLabelBelow', () => {
+    it('accepts exactly one label below the base', () => {
+        assert.equal(oneLabelBelow('uat1.horizons.gg', 'horizons.gg'), true)
+        assert.equal(oneLabelBelow('uat1.clientsite.com', 'clientsite.com'), true)
+    })
+
+    it('refuses the base itself', () => {
+        assert.equal(oneLabelBelow('horizons.gg', 'horizons.gg'), false)
+    })
+
+    it('refuses two or more labels below the base', () => {
+        assert.equal(oneLabelBelow('a.b.clientsite.com', 'clientsite.com'), false)
+    })
+
+    it('refuses a name under a different base', () => {
+        assert.equal(oneLabelBelow('uat1.other.com', 'clientsite.com'), false)
+    })
+
+    it('refuses a name that merely ends with the same letters as the base', () => {
+        assert.equal(oneLabelBelow('nothorizons.gg', 'horizons.gg'), false)
     })
 })
 
