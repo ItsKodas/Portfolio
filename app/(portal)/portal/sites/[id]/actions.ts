@@ -466,13 +466,13 @@ export async function addEnvironmentAction(
     if (!result.ok) return refused(`add environment ${name} on ${id}`, allowed.isAdmin, result)
 
     revalidatePath(`/portal/sites/${id}`)
-    // The environment exists either way; only its address is missing, and the Domains tab can add it
+    // The environment exists either way; only its address is missing, and its Domains section can add it
     const vhost = result.value.vhost
     const said = vhost && !vhost.ok
-        ? `${name} is added, but its address was not set up: ${vhost.message}. Add it again from the Domains tab.`
+        ? `${name} is added, but its address was not set up: ${vhost.message}. Add it again from its Domains section on the Environments tab.`
         : null
     // The copy is beside the add too: a refused one leaves the environment there, and it can be copied into
-    // from its row once whatever hostd named is sorted.
+    // from its Summary once whatever hostd named is sorted.
     const copy = result.value.copy
     if (copy && 'run' in copy) {
         return { ok: true, message: `${said ?? `${name} is added.`} A copy of live's data into it has started.` }

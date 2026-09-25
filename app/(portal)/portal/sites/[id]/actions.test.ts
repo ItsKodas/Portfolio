@@ -378,7 +378,7 @@ describe('addEnvironmentAction', () => {
         const result = await addEnvironmentAction('acme', 'uat1', 'uat', 'uat.acme.com')
 
         expect(result.ok).toBe(true)
-        expect(result.ok && result.message).toMatch(/uat1 is added.*Apache refused it.*Domains tab/)
+        expect(result.ok && result.message).toMatch(/uat1 is added.*Apache refused it.*Domains section on the Environments tab/)
     })
 
     it("asks for a copy of live's data when told to, and says it started", async () => {

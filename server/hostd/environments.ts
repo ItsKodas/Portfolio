@@ -22,7 +22,7 @@ export type NewEnvironment = {
 }
 
 // Only present when a domain was given. A failure here is beside an add that succeeded: the environment
-// exists, and the message says what is left to do from the Domains tab. The same shape a new site has.
+// exists, and the message says what is left to do from its Domains section. The same shape a new site has.
 // copy is only present when a copy was asked for: the run hostd started, or why it would not start one.
 // Either way the environment was added.
 export type AddedEnvironment = {

@@ -1,8 +1,7 @@
 'use client'
 
-// The dropdown that says which environment a tab is about. The Deploys, Domains and Environment tabs are
-// all per environment, so they share this one rather than each drawing its own: three that are meant to
-// look and behave identically drift the moment one of them is edited on its own.
+// The dropdown that says which environment the Deploys tab is about. The Environments tab chooses with its
+// own list instead, since it is the list of environments.
 //
 // A select that navigates rather than client state, for the reason the env file list is links: which
 // environment is open is part of the URL, so it reloads, it is shareable, and the panels drawing it stay
