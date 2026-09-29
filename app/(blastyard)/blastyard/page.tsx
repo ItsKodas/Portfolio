@@ -4,7 +4,7 @@ import Link from 'next/link'
 import { ArrowBack } from '@/ui/icons'
 
 // Blastyard's page: the game's website for its store listings and the Epic Developer Portal, which asks for
-// an application website and a privacy policy on a verified domain (the policy is ./privacy)
+// an application website and a privacy policy on a verified domain (the policy is ./privacy, the EULA ./eula)
 export const metadata: Metadata = {
     title: 'Blastyard',
     description: 'Blastyard is a third-person team arena shooter with jetpacks, wall runs and toy robots, made by Horizons.',
@@ -36,6 +36,9 @@ export default function BlastyardPage() {
                     </a>
                     <Link href="/blastyard/privacy" className="rounded-md border border-[#8fd4f5]/40 px-4 py-2 text-sm font-semibold text-[#8fd4f5] transition-colors hover:border-white hover:text-white">
                         Privacy policy
+                    </Link>
+                    <Link href="/blastyard/eula" className="rounded-md border border-[#8fd4f5]/40 px-4 py-2 text-sm font-semibold text-[#8fd4f5] transition-colors hover:border-white hover:text-white">
+                        End user licence agreement
                     </Link>
                 </div>
             </div>
