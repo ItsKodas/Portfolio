@@ -10,6 +10,13 @@ services:
       context: .
       target: agent
     container_name: hostd-agent
+    # An init as PID 1, on all three services, and it is load-bearing. Node as PID 1 only reaps the
+    # children it spawned itself, so every orphan handed to it stays a zombie for the life of the
+    # container: the esbuild that each healthcheck's tsx leaves behind (one a minute, in all three), and
+    # the detached `git gc --auto` that each fetch leaves behind in fetcher. Zombies count against the
+    # container's pids limit, and fetcher reached it in under a week, after which every fetch failed with
+    # "cannot fork() for git-remote-https" and no site could deploy.
+    init: true
     # Root, because it holds the Docker socket. It listens only on the Unix socket in hostd-sock.
     network_mode: none
     # RESTIC_PASSWORD, and nothing else. The agent's other settings are inline below because this file is
@@ -95,6 +102,8 @@ services:
       context: .
       target: api
     container_name: hostd-api
+    # See the note on agent.
+    init: true
     env_file: .env
     environment:
       HOSTD_REGISTRY_FILE: /etc/hostd/registry/projects.yaml
@@ -124,6 +133,8 @@ services:
       context: .
       target: fetcher
     container_name: hostd-fetcher
+    # See the note on agent.
+    init: true
     env_file: .env.fetcher
     environment:
       HOSTD_FETCH_SOCKET: /run/hostd-fetch/fetch.sock
