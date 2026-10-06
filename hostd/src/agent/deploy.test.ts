@@ -127,6 +127,8 @@ type SetupOptions = {
     // The services `compose config` says the tree declares. Defaults to web, the one service the test
     // registries list.
     declared?: string[]
+    // The compose services Docker has a container for. Defaults to web.
+    containers?: string[]
 }
 
 // Every dependency is a plain recorder, the same style provision.test.ts uses: a factory that hands back
@@ -248,9 +250,9 @@ function setup(options: SetupOptions = {}) {
     const frameNow = () => (rolledBack ? options.afterRollback ?? { state: 'running' } : options.containerState ?? { state: 'running' })
     const docker: DockerApi = {
         ping: async () => true,
-        listProjectContainers: async (): Promise<ContainerSummary[]> => ([
-            { Id: `${'a'.repeat(12)}1`, State: 'running', Labels: { 'com.docker.compose.service': 'web' } },
-        ]),
+        listProjectContainers: async (): Promise<ContainerSummary[]> => (options.containers ?? ['web']).map((service, index) => (
+            { Id: `${'a'.repeat(12)}${index + 1}`, State: 'running', Labels: { 'com.docker.compose.service': service } }
+        )),
         listAllContainers: async () => [],
         inspect: async (): Promise<ContainerInspect> => {
             const frame = frameNow()
@@ -780,6 +782,60 @@ describe('runDeploy, on a branch that runs fewer services than the registry list
         const record = await runDeploy(context.project(), context.environment(), { ...request, commit: TIP }, context.deps)
         assert.equal(record.outcome, 'rolled-back')
         assert.match(record.reason ?? '', /the environment's compose file could not be read/)
+    })
+})
+
+// The incident this exists for: a commit renamed the site's service (geoguesser to mappies), the registry
+// went on naming the old one, and every deploy failed the health check and rolled back onto code that
+// could not read the live .env, until someone edited the registry by hand.
+describe('runDeploy, on a commit that renames the site service', () => {
+    const renamed = { declared: ['mappies'], containers: ['mappies'] }
+
+    it('checks the new service, deploys, and writes the new name into the registry', async () => {
+        const context = setup(renamed)
+        const record = await runDeploy(context.project(), context.environment(), { ...request, commit: TIP }, context.deps)
+        assert.equal(record.outcome, 'ok', record.reason ?? '')
+        const registry = parseRegistry(context.registryFiles.get(REGISTRY_PATH)!)
+        const acme = registry.projects.get('acme')!
+        assert.deepEqual(acme.services, { mappies: { role: 'site' } })
+        assert.equal(acme.environments.get('live')!.deployed, TIP)
+        assert.ok(context.logs.some(line => /has no web, so mappies is checked as the site instead/.test(line)))
+    })
+
+    it('still rolls back when the new service is not healthy, and leaves the registry alone', async () => {
+        const context = setup({ ...renamed, containerState: { state: 'running', health: 'unhealthy' } })
+        const record = await runDeploy(context.project(), context.environment(), { ...request, commit: TIP }, context.deps)
+        assert.equal(record.outcome, 'rolled-back')
+        assert.match(record.reason ?? '', /mappies \(unhealthy\)/)
+        assert.deepEqual(parseRegistry(context.registryFiles.get(REGISTRY_PATH)!).projects.get('acme')!.services, { web: { role: 'site' } })
+    })
+
+    it('says so when the new name cannot be written', async () => {
+        const context = setup({ ...renamed, registryWriteFails: true })
+        const record = await runDeploy(context.project(), context.environment(), { ...request, commit: TIP }, context.deps)
+        assert.equal(record.outcome, 'failed')
+        assert.match(record.reason ?? '', /^deployed, but the registry's site services could not be updated/)
+    })
+
+    // The registry describes live, which may still run the old name while a branch tries the new one.
+    it('deploys another environment under the new name without rewriting the registry', async () => {
+        const context = setup({
+            ...renamed, registryYaml: REGISTRY_YAML_NESTED,
+            existsPaths: ['/var/www/acme', '/var/www/acme/git/.git', '/var/www/acme/test'],
+            owners: { '/var/www/acme': { uid: 1000, gid: 1000, mode: 0o775 }, '/var/www/acme/test': { uid: 1000, gid: 1000, mode: 0o775 } },
+            envTree: { '/var/www/acme/test/.env': 'X=1\n' },
+        })
+        const project = context.deps.registry().projects.get('acme')!
+        const record = await runDeploy(project, project.environments.get('test')!, { ...request, commit: TIP }, context.deps)
+        assert.equal(record.outcome, 'ok', record.reason ?? '')
+        assert.deepEqual(context.deps.registry().projects.get('acme')!.services, { web: { role: 'site' } })
+    })
+
+    it('touches nothing on an ordinary deploy', async () => {
+        const context = setup()
+        const record = await runDeploy(context.project(), context.environment(), { ...request, commit: TIP }, context.deps)
+        assert.equal(record.outcome, 'ok', record.reason ?? '')
+        assert.equal(context.calls.filter(call => call === 'registry-write').length, 1)
     })
 })
 
