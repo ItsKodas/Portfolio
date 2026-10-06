@@ -27,6 +27,15 @@ export type RelayDeps = BaseRelayDeps & {
     ) => Promise<LogStream>
 }
 
+export type BackupDownloadRelayDeps = BaseRelayDeps & {
+    openBackupDownload: (
+        config: HostdConfig,
+        caller: Caller,
+        id: string,
+        snapshot: string,
+    ) => Promise<LogStream>
+}
+
 export type DeployWatchRelayDeps = BaseRelayDeps & {
     openDeployStream: (
         config: HostdConfig,
@@ -99,6 +108,29 @@ export async function relayDeployWatch(deps: DeployWatchRelayDeps, id: string, p
             'cache-control': 'no-store',
             connection: 'keep-alive',
             // Stops a proxy buffering the stream into uselessness
+            'x-accel-buffering': 'no',
+        },
+    })
+}
+
+// A backup's archive, piped straight through: never buffered here, because a site with a large uploads
+// folder is a large file. hostd names the file for the site and the day, never a snapshot id or a path on
+// the dedi, so its own content-disposition is passed on rather than a second one invented here.
+export async function relayBackupDownload(deps: BackupDownloadRelayDeps, id: string, snapshot: string): Promise<Response> {
+    // A client may only download their own site's backups, and is answered 404 for anybody else's for the
+    // same reason as the log relay.
+    if (deps.clientId && !(await deps.assertOwned(deps.clientId, id))) return problem('not-found')
+
+    const stream = await deps.openBackupDownload(deps.config, deps.caller, id, snapshot)
+    if (!stream.ok) return problem(stream.code)
+
+    const disposition = stream.response.headers.get('content-disposition')
+    return new Response(stream.response.body, {
+        status: 200,
+        headers: {
+            'content-type': 'application/gzip',
+            'content-disposition': disposition ?? `attachment; filename="${id}-backup.tar.gz"`,
+            'cache-control': 'no-store',
             'x-accel-buffering': 'no',
         },
     })

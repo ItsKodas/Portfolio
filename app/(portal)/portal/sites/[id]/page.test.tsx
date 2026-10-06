@@ -56,6 +56,9 @@ vi.mock('@/server/hostd/credentials', () => ({ listCredentials: (...args: unknow
 const listDeletedEnvironments = vi.fn()
 vi.mock('@/server/hostd/environments', () => ({ listDeletedEnvironments: (...args: unknown[]) => listDeletedEnvironments(...args) }))
 
+// An async server component like the deploy panel; backupPanel.test.tsx renders it on its own
+vi.mock('./backupPanel', () => ({ BackupPanel: ({ id }: { id: string }) => <p>{`backups of ${id}`}</p> }))
+
 const { default: SitePage } = await import('./page')
 
 const service = (state: string) => ({
@@ -160,7 +163,7 @@ describe('the site page', () => {
         render(await page({ tab: 'backups' }))
 
         expect(screen.getByRole('tab', { name: 'Backups' })).toHaveAttribute('aria-selected', 'true')
-        expect(screen.getByText(/ask for a copy/)).toBeInTheDocument()
+        expect(screen.getByText(/Backups are not switched on for this site/)).toBeInTheDocument()
     })
 
     it('says a restart count it could not read is not available, rather than zero', async () => {
@@ -329,6 +332,23 @@ describe('the deploys tab', () => {
         render(await page())
 
         expect(screen.getByRole('tab', { name: 'Deploys' })).not.toHaveAttribute('aria-disabled')
+    })
+})
+
+describe('the backups tab', () => {
+    it('opens the backups panel once the project has the capability, for a client as well', async () => {
+        callerFromSession.mockResolvedValue(client)
+        assertOwned.mockResolvedValue(true)
+        listProjects.mockResolvedValue({
+            ok: true,
+            value: [{ id: 'asot', name: 'ASOT', valid: true, capabilities: ['lifecycle', 'logs', 'backups'] }],
+        })
+
+        render(await page({ tab: 'backups' }))
+
+        expect(screen.getByRole('tab', { name: 'Backups' })).not.toHaveAttribute('aria-disabled')
+        expect(screen.getByText('backups of asot')).toBeInTheDocument()
+        expect(screen.queryByText(/not switched on/)).not.toBeInTheDocument()
     })
 })
 

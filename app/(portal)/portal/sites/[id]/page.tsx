@@ -15,6 +15,7 @@ import { Callout } from '@/ui/Callout/Callout'
 import { Shell } from '@/ui/Shell/Shell'
 import { Dashboard } from '@/ui/icons'
 import { StatusDot } from '@/ui/StatusDot/StatusDot'
+import { BackupPanel } from './backupPanel'
 import { DeployPanel } from './deployPanel'
 import { EnvironmentsTab } from './environmentsTab'
 import { Lifecycle } from './lifecycle'
@@ -43,10 +44,9 @@ export const dynamic = 'force-dynamic'
 // missing tab reads as a product that cannot do the thing, and a marked one reads as a product that will.
 // In the client's language rather than the stack's, and with no date promised, because there is not one.
 //
-// Backups is the only entry left that means what this record originally meant, which is that nothing is
-// built. Deploys has a real panel and keeps an entry here for the other sentence: the tab works, and
-// hostd would refuse this one site. The Environments tab says that same second sentence in its own
-// Domains and Env files sections instead.
+// Nothing here means "not built" any more. Deploys and Backups both have real panels and keep an entry for
+// the other sentence: the tab works, and hostd would refuse this one site. The Environments tab says that
+// same second sentence in its own Domains and Env files sections instead.
 const WAITING: Record<string, { title: string, body: string }> = {
     // Shown only when this project has no deploy capability: the tab itself works, and hostd refusing
     // the whole thing for this site is a different sentence from the one below.
@@ -55,10 +55,11 @@ const WAITING: Record<string, { title: string, body: string }> = {
         body: 'Deploys are not switched on for this site yet. When they are, this is where you will see '
             + 'what changed, and be able to put the last version back.',
     },
+    // Shown only when this project has no backups capability, for the same reason as deploys above
     backups: {
-        title: 'Not here yet',
-        body: 'Your site is backed up, and this is where you will be able to see when it last happened '
-            + 'and ask for a copy. The page comes after the deploys work.',
+        title: 'Not set up for this site',
+        body: 'Backups are not switched on for this site yet. When they are, this is where you will see '
+            + 'when your site was last copied, and be able to make and download a copy yourself.',
     },
 }
 
@@ -185,6 +186,8 @@ export default async function SitePage({ params, searchParams }: Props) {
     // The same rule for domains: without the capability hostd refuses the listing too, so the Environments
     // tab says so in its Domains section rather than asking for a refusal.
     const canDomains = view.capabilities.includes('domains')
+    // And for backups: hostd refuses even the list without it, for the operator and a client alike
+    const canBackups = view.capabilities.includes('backups')
 
     const tabs: Tab[] = [
         { id: 'overview', label: 'Overview' },
@@ -198,7 +201,9 @@ export default async function SitePage({ params, searchParams }: Props) {
         // verbs, so this tab is theirs too, showing what reached their site rather than every build.
         // Both roles need the project to have the capability at all, which is what disables it.
         { id: 'deploys', label: 'Deploys', disabled: !canDeploy },
-        { id: 'backups', label: 'Backups', disabled: true },
+        // The client's as much as the operator's: hostd's backup and backup-read verbs let an owner list,
+        // make, delete, download and schedule their own site's copies. Disabled without the capability.
+        { id: 'backups', label: 'Backups', disabled: !canBackups },
         // What a site is allowed to do is the operator's alone to see or change: absent for a client
         // rather than disabled. Last in the list because it is where the switches for the tabs above it
         // live, so it reads as the thing behind them rather than one more of them.
@@ -395,6 +400,8 @@ export default async function SitePage({ params, searchParams }: Props) {
                         />
                     )}
 
+                    {selected === 'backups' && canBackups && <BackupPanel id={view.id} />}
+
                     {/* Never drawn over capabilities that were not actually read: an 'unread' or 'invalid'
                         registry entry says why instead, with no form and no Save, rather than showing eight
                         unticked boxes over a site that may have every one of them on. */}
@@ -423,9 +430,9 @@ export default async function SitePage({ params, searchParams }: Props) {
                             )
                     )}
 
-                    {/* Only when the tab is disabled: deploys has a panel now, and this is what stands in
-                        for a project hostd would refuse the verb for. */}
-                    {WAITING[selected] && !(selected === 'deploys' && canDeploy) && (
+                    {/* Only when the tab is disabled: deploys and backups have panels now, and this is what
+                        stands in for a project hostd would refuse the verb for. */}
+                    {WAITING[selected] && !(selected === 'deploys' && canDeploy) && !(selected === 'backups' && canBackups) && (
                         <Callout title={WAITING[selected].title}>{WAITING[selected].body}</Callout>
                     )}
                     </div>

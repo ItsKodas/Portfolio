@@ -7,6 +7,9 @@
 import { revalidatePath } from 'next/cache'
 
 import { getDb } from '@/server/db'
+import {
+    deleteBackup, SCHEDULE_MODES, setSchedule, SNAPSHOT_ID, startBackup, type Schedule,
+} from '@/server/hostd/backups'
 import { readHostd, type HostdConfig } from '@/server/hostd/config'
 import { rollback, setBranch, startDeploy } from '@/server/hostd/deploys'
 import {
@@ -582,4 +585,85 @@ export async function copyRunsAction(id: string, environment: string): Promise<C
     if (!result.ok) return refused(`copy runs of ${name} on ${id}`, allowed.isAdmin, result)
 
     return { ok: true, runs: result.value.runs, running: result.value.running }
+}
+
+// Backups. Unlike deploys, these are the client's as well as the operator's: hostd's backup and
+// backup-read policy verbs let an owner run, delete, download and schedule backups of their own site, so
+// every one of these goes through allow(id, false). hostd still needs the project's backups capability
+// and refuses without it.
+
+// What a client is told when hostd refuses a run as a bad request. The only bad requests a run can be are
+// the manual cap and the cooldown, and the page already says which before the button is pressed; this is
+// for the race where another tab got there first.
+const BACKUP_REFUSED = 'There are already five copies, or one was taken in the last ten minutes. Delete one, or wait, and try again.'
+
+export async function backupNowAction(id: string): Promise<SiteActionResult> {
+    const allowed = await allow(id, false)
+    if (!allowed.ok) return allowed
+
+    const result = await startBackup(allowed.config, allowed.caller, id)
+    if (!result.ok) {
+        if (!allowed.isAdmin && result.code === 'bad-request') {
+            console.error(`[portal] backup of ${id} failed: ${forAdmin(result.code, result.message)}`)
+            return { ok: false, error: BACKUP_REFUSED }
+        }
+        return refused(`backup of ${id}`, allowed.isAdmin, result)
+    }
+
+    revalidatePath(`/portal/sites/${id}`)
+    return { ok: true, message: 'Started. A copy takes a few minutes, and it appears in the list when it is done.' }
+}
+
+export async function deleteBackupAction(id: string, snapshot: string): Promise<SiteActionResult> {
+    if (typeof snapshot !== 'string' || !SNAPSHOT_ID.test(snapshot)) return { ok: false, error: 'That is not something this page can do.' }
+
+    const allowed = await allow(id, false)
+    if (!allowed.ok) return allowed
+
+    const result = await deleteBackup(allowed.config, allowed.caller, id, snapshot)
+    if (!result.ok) return refused(`backup delete ${snapshot} on ${id}`, allowed.isAdmin, result)
+
+    revalidatePath(`/portal/sites/${id}`)
+    return { ok: true, message: 'Deleted.' }
+}
+
+export type ScheduleSaveResult = { ok: true, message: string, schedule: Schedule } | { ok: false, error: string }
+
+const whole = (value: unknown, min: number, max: number): value is number =>
+    typeof value === 'number' && Number.isInteger(value) && value >= min && value <= max
+
+// The same shape hostd's parseSchedule accepts, checked here because this object arrived from a browser.
+// hostd checks it again and clamps the keep counts to the operator's ceiling, which only it knows.
+function isSchedule(value: unknown): value is Schedule {
+    if (!value || typeof value !== 'object') return false
+    const { mode, hour, minute, weekday, keep } = value as Record<string, unknown>
+    if (typeof mode !== 'string' || !(SCHEDULE_MODES as readonly string[]).includes(mode)) return false
+    if (!whole(hour, 0, 23) || !whole(minute, 0, 59) || !whole(weekday, 0, 6)) return false
+    if (!keep || typeof keep !== 'object') return false
+    const { daily, weekly, monthly } = keep as Record<string, unknown>
+    return whole(daily, 0, 3650) && whole(weekly, 0, 520) && whole(monthly, 0, 120)
+}
+
+export async function saveScheduleAction(id: string, schedule: unknown): Promise<ScheduleSaveResult> {
+    if (!isSchedule(schedule)) return { ok: false, error: 'That is not something this page can do.' }
+
+    const allowed = await allow(id, false)
+    if (!allowed.ok) return allowed
+
+    // Only the fields hostd reads, so nothing else a browser added rides along to it
+    const { mode, hour, minute, weekday, keep } = schedule
+    const asked: Schedule = { mode, hour, minute, weekday, keep: { daily: keep.daily, weekly: keep.weekly, monthly: keep.monthly } }
+
+    const result = await setSchedule(allowed.config, allowed.caller, id, asked)
+    if (!result.ok) return refused(`backup schedule on ${id}`, allowed.isAdmin, result)
+
+    const saved = result.value
+    const clamped = saved.keep.daily !== keep.daily || saved.keep.weekly !== keep.weekly || saved.keep.monthly !== keep.monthly
+
+    revalidatePath(`/portal/sites/${id}`)
+    return {
+        ok: true,
+        schedule: saved,
+        message: clamped ? 'Saved, with fewer copies kept than asked for: that is the most this site can keep.' : 'Saved.',
+    }
 }

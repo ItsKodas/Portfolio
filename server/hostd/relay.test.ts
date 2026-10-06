@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
-import { relayDeployWatch, relayLogs } from './relay'
+import { relayBackupDownload, relayDeployWatch, relayLogs } from './relay'
 
 const config = { url: 'http://hostd-api:8080', token: 'a'.repeat(32) }
 const admin = { actor: 'admin', user: 'koda@horizons.gg' }
@@ -91,5 +91,44 @@ describe('relayDeployWatch', () => {
         const withClient = { ...deps(open, false), clientId: 'cl_8F2K1ABC' }
         const response = await relayDeployWatch(withClient, 'acme-bakery', new URLSearchParams({ environment: 'live' }))
         expect(response.status).toBe(404)
+    })
+})
+
+describe('relayBackupDownload', () => {
+    const withDownload = (open: unknown, owns = true, clientId: string | null = null) => ({
+        config,
+        caller: admin,
+        clientId,
+        assertOwned: async () => owns,
+        openBackupDownload: open as never,
+    })
+
+    it('passes the archive through with the file name hostd chose', async () => {
+        const open = async () => ({
+            ok: true,
+            response: new Response('archive bytes', {
+                headers: { 'content-type': 'application/gzip', 'content-disposition': 'attachment; filename="acme-bakery-2026-10-06.tar.gz"' },
+            }),
+        })
+        const response = await relayBackupDownload(withDownload(open), 'acme-bakery', '4f1c2a9b')
+
+        expect(response.status).toBe(200)
+        expect(response.headers.get('content-type')).toBe('application/gzip')
+        expect(response.headers.get('content-disposition')).toBe('attachment; filename="acme-bakery-2026-10-06.tar.gz"')
+        expect(response.headers.get('cache-control')).toBe('no-store')
+        expect(await response.text()).toBe('archive bytes')
+    })
+
+    it('refuses a site belonging to another client, before hostd is asked', async () => {
+        const open = async () => { throw new Error('should not be called') }
+        const response = await relayBackupDownload(withDownload(open, false, 'cl_8F2K1ABC'), 'acme-bakery', '4f1c2a9b')
+        expect(response.status).toBe(404)
+    })
+
+    it('turns a hostd refusal into a status, without passing its words to the browser', async () => {
+        const open = async () => ({ ok: false, code: 'not-found', message: 'no snapshot 4f1c2a9b in /backups/acme-bakery' })
+        const response = await relayBackupDownload(withDownload(open), 'acme-bakery', '4f1c2a9b')
+        expect(response.status).toBe(404)
+        expect(await response.text()).not.toContain('/backups')
     })
 })
