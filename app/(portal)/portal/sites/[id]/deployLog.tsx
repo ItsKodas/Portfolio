@@ -9,6 +9,7 @@ import { useRouter } from 'next/navigation'
 
 import type { EnvironmentName } from '@/server/hostd/environmentName'
 import { Button } from '@/ui/Button/Button'
+import { useStickToBottom } from '@/ui/useStickToBottom'
 import styles from './site.module.css'
 
 // The same ceiling the container log view keeps, for the same reason.
@@ -36,22 +37,10 @@ export function DeployLog({ id, environment }: { id: string, environment: Enviro
     // Bumped to reopen the stream by hand after a refusal, which is the only thing Try again does
     const [attempt, setAttempt] = useState(0)
     const startedAt = useRef<string | null>(null)
-    const list = useRef<HTMLOListElement>(null)
-    // Whether the reader is at the bottom. Scrolled up to read something earlier, they are left there
-    // rather than yanked back down by every line that arrives.
-    const following = useRef(true)
+    // Newest at the bottom, like every log anyone has ever read. Scrolled up to read something earlier,
+    // the reader is left there rather than yanked back down by every line that arrives.
+    const list = useStickToBottom<HTMLOListElement>()
     const router = useRouter()
-
-    useEffect(() => {
-        // Newest at the bottom, like every log anyone has ever read
-        const pane = list.current
-        if (pane && following.current) pane.scrollTop = pane.scrollHeight
-    }, [lines])
-
-    function onScroll() {
-        const pane = list.current
-        if (pane) following.current = pane.scrollHeight - pane.scrollTop - pane.clientHeight < 24
-    }
 
     useEffect(() => {
         let stopped = false
@@ -156,7 +145,7 @@ export function DeployLog({ id, environment }: { id: string, environment: Enviro
                 </>
             )}
             {!problem && lines.length === 0 && !dropped && <p className={styles.deployLogIdle}>Nothing has deployed yet.</p>}
-            <ol ref={list} className={styles.deployLogLines} onScroll={onScroll}>
+            <ol ref={list} className={styles.deployLogLines}>
                 {lines.map((line, index) => (
                     <li key={`${line.at}-${index}`} className={styles[line.kind]}>{line.text}</li>
                 ))}

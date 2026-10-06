@@ -455,6 +455,8 @@
     padding: 0;
     max-height: 60vh;
     overflow: auto;
+    /* ui/useStickToBottom does the anchoring; the browser's own would fight it as lines leave the top */
+    overflow-anchor: none;
 }
 
 /* The narrative: the deploy's own phase lines, read like the rest of the page. */
