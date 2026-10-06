@@ -191,7 +191,7 @@ export default function Gallery() {
 
             <Section title="LogPane" note="Tab into it: the focus ring should be obvious, and the arrow keys should scroll it.">
                 <Wide>
-                    <LogPane lines={LOG} label="asot-web log" following />
+                    <LogPane lines={LOG} label="asot-web log" />
                     <LogPane lines={[]} label="An empty log" />
                 </Wide>
             </Section>

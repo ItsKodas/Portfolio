@@ -27,7 +27,7 @@ describe('LogPane', () => {
 
     it('does not announce every arriving line', () => {
         // A following log is a firehose. Making it a live region would read the whole thing aloud.
-        const { container } = render(<LogPane lines={lines} label="asot-web log" following />)
+        const { container } = render(<LogPane lines={lines} label="asot-web log" />)
         expect(container.querySelector('[aria-live]')).not.toBeInTheDocument()
     })
 

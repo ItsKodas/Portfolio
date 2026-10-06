@@ -297,9 +297,6 @@ export function SiteLogs({ id, services }: { id: string, services: string[] }) {
     // What is being asked of the site outranks what its streams are doing: half of them being down is
     // the restart happening, and counting them as a shortfall says the opposite.
     const said = waiting ? { text: waiting, bad: false } : summarise(chosen.map(service => states[service] ?? 'connecting'))
-    // Follow the bottom while anything is arriving, not only when every stream is up: one container
-    // reconnecting must not freeze the pane against the one that is still talking.
-    const following = chosen.some(service => states[service] === 'live')
     // Held back rather than cleared, so a stream that was genuinely refused before any of this says so
     // again the moment the operation is over.
     const refused = waiting ? [] : Object.entries(problems)
@@ -340,7 +337,6 @@ export function SiteLogs({ id, services }: { id: string, services: string[] }) {
             <LogPane
                 lines={lines}
                 label={chosen.length === 1 ? `${chosen[0]} logs` : 'Container logs'}
-                following={following}
                 fill
             />
         </>
