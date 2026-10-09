@@ -543,6 +543,16 @@ site services (`none of the registry's site services (web) is in this environmen
 because then there would be nothing left to check. A service the compose file declares and the registry
 does not list is still not checked, exactly as on live.
 
+**A commit that renames the site's service.** When the compose file declares none of the registry's site
+services, the services it declares that the registry does not list at all stand in for them, guessed the
+same way `create` guesses a new project's services (anything that does not look like a database image is
+a site). So a commit that renames `geoguesser` to `mappies` is checked as `mappies`, and the deploy log
+says so. A **live** deploy that comes up healthy that way then rewrites the registry's site services to
+the new names (databases are never touched), so the storage guard, the status view and the next deploy
+all follow the rename without anyone editing `projects.yaml`. Another environment's deploy checks the new
+name the same way but leaves the registry alone, since live may still run the old one. Renaming a
+database service still needs the registry edited by hand, because its backups and storage go by name.
+
 **When it fails.** A fetch, checkout, env-file copy or build that fails ends the deploy with the running
 site untouched, and the build output kept in the history. A failed health check (or a version that will
 not start at all) swaps straight back to `<dir>.prev`, confirms that copy is healthy, and records the

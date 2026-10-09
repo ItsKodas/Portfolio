@@ -559,6 +559,34 @@ describe('set-layout', () => {
     })
 })
 
+describe('rename-sites', () => {
+    const WITH_MONGO = BASE.replace('      web: { role: site }\n', '      web: { role: site } # the site\n      mongo: { role: database, engine: mongodb }\n')
+
+    it('swaps the site service for its new name, leaving the database and the comments alone', () => {
+        const result = applyChange(WITH_MONGO, { kind: 'rename-sites', id: 'acme', removed: ['web'], added: ['mappies'] })
+        assert.ok(result.ok)
+        const services = parseRegistry(result.text).projects.get('acme')!.services
+        assert.deepEqual(Object.keys(services).sort(), ['mappies', 'mongo'])
+        assert.deepEqual(services.mappies, { role: 'site' })
+        assert.match(result.text, /mappies: \{ role: site \}/)
+        assert.match(result.text, /mongo: \{ role: database, engine: mongodb \}/)
+    })
+
+    it('refuses to remove a database', () => {
+        const result = applyChange(WITH_MONGO, { kind: 'rename-sites', id: 'acme', removed: ['mongo'], added: [] })
+        assert.deepEqual(result, { ok: false, problem: 'acme has no site service mongo' })
+    })
+
+    it('refuses to add a name the registry already has', () => {
+        const result = applyChange(WITH_MONGO, { kind: 'rename-sites', id: 'acme', removed: ['web'], added: ['mongo'] })
+        assert.deepEqual(result, { ok: false, problem: 'acme already has a service mongo' })
+    })
+
+    it('refuses to leave the project with no site service', () => {
+        assert.equal(applyChange(WITH_MONGO, { kind: 'rename-sites', id: 'acme', removed: ['web'], added: [] }).ok, false)
+    })
+})
+
 describe('configure credential', () => {
     it('writes the name onto the entry', () => {
         const result = applyChange(BASE, { kind: 'configure', id: 'acme', credential: 'acme' })
