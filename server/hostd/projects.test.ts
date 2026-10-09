@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
-import { assertOwned, getProject, lifecycle, listEnvironments, listProjects } from './projects'
+import { hasAccess, getProject, lifecycle, listEnvironments, listProjects } from './projects'
 
 const config = { url: 'http://hostd-api:8080', token: 'a'.repeat(32) }
 const admin = { actor: 'admin', user: 'koda@horizons.gg' }
@@ -121,19 +121,28 @@ describe('lifecycle', () => {
     })
 })
 
-describe('assertOwned', () => {
-    const sites = [{ projectId: 'acme-bakery', clientId: 'cl_8F2K1ABC' }]
-    const findSite = async (projectId: string) => sites.find(s => s.projectId === projectId) ?? null
+describe('hasAccess', () => {
+    const grants = [
+        { clientId: 'cl_8F2K1ABC', projectId: 'acme-bakery', permissions: ['LOGS', 'LIFECYCLE'] as const },
+        { clientId: 'cl_OTHER123', projectId: 'acme-bakery', permissions: [] as const },
+    ]
+    const findAccess = async (clientId: string, projectId: string) =>
+        grants.find(g => g.clientId === clientId && g.projectId === projectId)?.permissions ?? null
 
-    it('passes when the site belongs to this client', async () => {
-        expect(await assertOwned('cl_8F2K1ABC', 'acme-bakery', findSite)).toBe(true)
+    it('passes any client with access to the site when no permission is named', async () => {
+        expect(await hasAccess('cl_8F2K1ABC', 'acme-bakery', findAccess)).toBe(true)
+        // Two clients sharing one site, the second with nothing beyond the Overview
+        expect(await hasAccess('cl_OTHER123', 'acme-bakery', findAccess)).toBe(true)
     })
 
-    it('refuses a site belonging to another client, before hostd is ever asked', async () => {
-        expect(await assertOwned('cl_OTHER123', 'acme-bakery', findSite)).toBe(false)
+    it('needs the named permission when there is one', async () => {
+        expect(await hasAccess('cl_8F2K1ABC', 'acme-bakery', findAccess, 'LOGS')).toBe(true)
+        expect(await hasAccess('cl_8F2K1ABC', 'acme-bakery', findAccess, 'DEPLOYS')).toBe(false)
+        expect(await hasAccess('cl_OTHER123', 'acme-bakery', findAccess, 'LOGS')).toBe(false)
     })
 
-    it('refuses a project the portal has no site row for', async () => {
-        expect(await assertOwned('cl_8F2K1ABC', 'never-heard-of-it', findSite)).toBe(false)
+    it('refuses a client with no access, before hostd is ever asked', async () => {
+        expect(await hasAccess('cl_NOBODY12', 'acme-bakery', findAccess)).toBe(false)
+        expect(await hasAccess('cl_8F2K1ABC', 'never-heard-of-it', findAccess)).toBe(false)
     })
 })

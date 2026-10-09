@@ -52,6 +52,13 @@ const POLICY_CAPABILITY: Record<PolicyVerb, Capability | null> = {
 
 // What only the admin may ever do, whatever the registry says and whoever owns the project.
 const ADMIN_ONLY: PolicyVerb[] = ['provision', 'remove', 'env', 'deploy', 'domains', 'configure']
+// Whether a client may reach this project at all. The portal's list when it sent one: a site is shared by
+// as many clients as the operator gives it to, and the registry's single client field cannot say that. The
+// registry's field only when the portal sent no list, which is a portal from before site access existed.
+function ownsProject(actor: Extract<Actor, { kind: 'client' }>, project: ProjectEntry): boolean {
+    return actor.sites !== undefined ? actor.sites.has(project.id) : actor.client === project.client
+}
+
 export type Decision =
     | { ok: true, project: ProjectEntry }
     | { ok: false, status: 403 | 404 | 409, code: 'not-found' | 'capability-disabled' | 'invalid-project', message: string }
@@ -71,7 +78,7 @@ export function authorize(registry: Registry, actor: Actor, projectId: string, v
     }
     const project = registry.projects.get(projectId)
     // Someone else's project and a missing one get the same answer, so a client cannot probe for ids.
-    if (!project || (actor.kind === 'client' && actor.client !== project.client)) {
+    if (!project || (actor.kind === 'client' && !ownsProject(actor, project))) {
         return { ok: false, status: 404, code: 'not-found', message: `no project ${projectId}` }
     }
     const capability = POLICY_CAPABILITY[verb]
@@ -82,5 +89,5 @@ export function authorize(registry: Registry, actor: Actor, projectId: string, v
 }
 
 export function visibleProjects(registry: Registry, actor: Actor): ProjectEntry[] {
-    return [...registry.projects.values()].filter(project => actor.kind === 'admin' || project.client === actor.client)
+    return [...registry.projects.values()].filter(project => actor.kind === 'admin' || ownsProject(actor, project))
 }

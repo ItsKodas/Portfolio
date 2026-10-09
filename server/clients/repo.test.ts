@@ -10,7 +10,7 @@ import type { PrismaClient } from '../generated/prisma/client'
 import { clientRepo, type ClientRepo } from './repo'
 
 const url = process.env.TEST_DATABASE_URL
-const TABLES = '"Client", "Site", "ClientSession", "ClientToken", "ClientRecoveryCode", "ClientTotpUse", "ClientAuthAttempt", "Quote", "Note"'
+const TABLES = '"Client", "Site", "SiteAccess", "ClientSession", "ClientToken", "ClientRecoveryCode", "ClientTotpUse", "ClientAuthAttempt", "Quote", "Note"'
 
 const details = { name: 'Ann Example', company: 'Acme', email: 'ann@example.com' }
 const hour = (count: number) => new Date(Date.now() + count * 60 * 60 * 1000)
@@ -159,11 +159,40 @@ describe.skipIf(!url)('clientRepo', () => {
         expect((await db.quote.findUnique({ where: { id: quote.id } }))?.clientId).toBe(client.id)
     })
 
-    it('only removes a site that belongs to the client it was asked about', async () => {
+    it('gives two clients the same site, creating the site once', async () => {
+        const ann = await invited()
+        const bo = await repo.createWithInvite({ ...details, email: 'bo@example.com' }, 'cl_BOBOBOBO', { tokenHash: 'invite2', expiresAt: hour(1) })
+        await repo.grantAccess(ann.id, { projectId: 'acme-bakery', name: 'Acme Bakery' }, ['LOGS', 'LIFECYCLE'])
+        await repo.grantAccess(bo.id, { projectId: 'acme-bakery', name: 'Another Name' }, [])
+
+        expect(await db.site.count()).toBe(1)
+        const shared = await repo.accessToSite('acme-bakery')
+        expect(shared.map(row => [row.client.id, row.permissions])).toEqual([
+            ['cl_ABCDEFGH', ['LOGS', 'LIFECYCLE']],
+            ['cl_BOBOBOBO', []],
+        ])
+        // The first grant named the site; a later one does not rename it
+        expect((await repo.listAccess(bo.id))[0].site.name).toBe('Acme Bakery')
+    })
+
+    it('changes only the permissions when a client is given a site they already have', async () => {
         const client = await invited()
-        await repo.createSite(client.id, { projectId: 'acme-bakery', name: 'Acme Bakery' })
-        const [site] = await repo.listSites(client.id)
-        await repo.removeSite('cl_SOMEONEE', site.id)
-        expect(await repo.listSites(client.id)).toHaveLength(1)
+        await repo.grantAccess(client.id, { projectId: 'acme-bakery', name: 'Acme Bakery' }, ['LOGS'])
+        await repo.grantAccess(client.id, { projectId: 'acme-bakery', name: 'Acme Bakery' }, ['DEPLOYS'])
+        const [row] = await repo.listAccess(client.id)
+        expect(row.permissions).toEqual(['DEPLOYS'])
+        await repo.setAccessPermissions(row.siteId, client.id, ['LOGS', 'ENVIRONMENTS'])
+        expect((await repo.listAccess(client.id))[0].permissions).toEqual(['LOGS', 'ENVIRONMENTS'])
+    })
+
+    it('takes a site from one client and leaves the site, and everyone else\'s access, alone', async () => {
+        const client = await invited()
+        await repo.grantAccess(client.id, { projectId: 'acme-bakery', name: 'Acme Bakery' }, [])
+        const [row] = await repo.listAccess(client.id)
+        await repo.revokeAccess(row.siteId, 'cl_SOMEONEE')
+        expect(await repo.listAccess(client.id)).toHaveLength(1)
+        await repo.revokeAccess(row.siteId, client.id)
+        expect(await repo.listAccess(client.id)).toHaveLength(0)
+        expect(await db.site.count()).toBe(1)
     })
 })

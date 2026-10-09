@@ -65,4 +65,29 @@ describe('authenticate', () => {
             assert.equal(!result.ok && result.message, 'X-Hostd-User is missing or malformed')
         }
     })
+
+    // The portal names the sites a client has been given; hostd keeps that list beside the actor.
+    it('reads the sites the portal gave a client', () => {
+        const result = authenticate(headers({ 'x-hostd-sites': 'acme,other' }), TOKEN)
+        assert.ok(result.ok)
+        assert.deepEqual(result.ok && result.caller.actor, { kind: 'client', client: 'cl_1', sites: new Set(['acme', 'other']) })
+    })
+
+    it('reads an empty list as a client with access to nothing', () => {
+        const result = authenticate(headers({ 'x-hostd-sites': '' }), TOKEN)
+        assert.deepEqual(result.ok && result.caller.actor, { kind: 'client', client: 'cl_1', sites: new Set() })
+    })
+
+    it('ignores the list for the operator, who reaches everything', () => {
+        const result = authenticate(headers({ 'x-hostd-actor': 'admin', 'x-hostd-sites': 'acme' }), TOKEN)
+        assert.deepEqual(result.ok && result.caller.actor, { kind: 'admin' })
+    })
+
+    it('refuses a malformed list with 400 rather than reading part of it', () => {
+        for (const sites of ['acme,', 'acme,../x', 'ACME', ',']) {
+            const result = authenticate(headers({ 'x-hostd-sites': sites }), TOKEN)
+            assert.equal(!result.ok && result.status, 400, sites)
+            assert.equal(!result.ok && result.message, 'X-Hostd-Sites must be a comma separated list of project ids')
+        }
+    })
 })

@@ -9,6 +9,7 @@ function sources(overrides: Partial<SessionSources> = {}): SessionSources {
         adminSession: async () => null,
         adminEmail: ADMIN_EMAIL,
         clientSession: async () => null,
+        clientSites: async () => [],
         ...overrides,
     }
 }
@@ -21,12 +22,13 @@ describe('callerFromSession', () => {
         expect(who).toEqual({ caller: { actor: 'admin', user: ADMIN_EMAIL }, clientId: null })
     })
 
-    it('turns a client session into that client, and reports the id the relay checks ownership with', async () => {
+    it('turns a client session into that client, with their sites, and reports the id the relay checks access with', async () => {
         const who = await callerFromSession(sources({
             clientSession: async () => ({ client: { id: 'cl_8F2K1ABC' } }),
+            clientSites: async clientId => (clientId === 'cl_8F2K1ABC' ? ['acme-bakery', 'shared-shop'] : []),
         }))
         expect(who).toEqual({
-            caller: { actor: 'client:cl_8F2K1ABC', user: 'cl_8F2K1ABC' },
+            caller: { actor: 'client:cl_8F2K1ABC', user: 'cl_8F2K1ABC', sites: ['acme-bakery', 'shared-shop'] },
             clientId: 'cl_8F2K1ABC',
         })
     })

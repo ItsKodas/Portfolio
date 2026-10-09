@@ -192,6 +192,11 @@ hc() {
 
 `ACTOR` defaults to `admin`. Prefix a call with `ACTOR=client:<id>` to act as a client.
 
+These calls send no `X-Hostd-Sites`, so a client is checked against the registry's `client:` key, which is
+what the checks below rely on. The portal always sends `X-Hostd-Sites` (the comma separated projects the
+client has been given in the portal), and then that list decides and `client:` is not read at all. Add
+`-H "X-Hostd-Sites: hostd-test"` to a call to act as the portal does.
+
 ## Live checks with a throwaway project
 
 These prove phase 1 end to end. Do them once after the first deploy, and again after any change to

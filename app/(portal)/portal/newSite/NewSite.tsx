@@ -198,13 +198,13 @@ function NewSiteDialog({ onClose }: { onClose: () => void }) {
                     <Field
                         as="select"
                         label="Client"
-                        hint={values.client === '' ? 'Only you will see this site.' : 'This client will see the site in their portal.'}
+                        hint={values.client === '' ? 'Only you will see this site. Clients can be given it later from its Access tab.' : 'This client is given the site with every permission. Change it from the Access tab.'}
                         value={values.client}
                         onChange={event => set('client', event.target.value)}
                         disabled={!options}
                         error={problem('client')}
                     >
-                        <option value="">None (managed by you)</option>
+                        <option value="">Nobody yet (only you)</option>
                         {options?.clients.map(client => <option key={client.id} value={client.id}>{client.name}</option>)}
                     </Field>
                 </section>

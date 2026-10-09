@@ -32,6 +32,7 @@ export async function hostdRequest<T>(
                 Authorization: `Bearer ${config.token}`,
                 'X-Hostd-Actor': caller.actor,
                 'X-Hostd-User': caller.user,
+                ...(caller.sites !== undefined ? { 'X-Hostd-Sites': caller.sites.join(',') } : {}),
             },
             cache: 'no-store',
             signal: AbortSignal.timeout(timeoutMs),

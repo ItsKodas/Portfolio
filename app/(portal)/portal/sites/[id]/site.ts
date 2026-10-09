@@ -2,13 +2,14 @@
 // app/(portal)/portal/home.ts does it for the dashboard. Deliberately no 'server-only' import: this is
 // plain logic and its test runs it directly.
 //
-// The order below is the point of the module. A client's ownership is settled before hostd is asked
+// The order below is the point of the module. A client's access is settled before hostd is asked
 // anything, and the project is found by looking through the listing hostd already scoped to this caller,
 // so neither step can be used to learn that somebody else's project exists.
 
 import { forClient } from '@/server/hostd/errors'
 import type { Environment, Project, ServiceStatus } from '@/server/hostd/projects'
 import { fillStatuses } from '@/server/hostd/statuses'
+import { ALL_PERMISSIONS, type Permission } from '@/server/sites/permissions'
 
 type Ok<T> = { ok: true, value: T }
 type Bad = { ok: false, code?: string, message?: string, problems?: string[] }
@@ -23,7 +24,8 @@ export type SiteDeps = {
     // The services hostd reports for this one project. Not a Project: GET /projects/:id answers
     // StatusReply, which carries no name, valid or capabilities (see server/hostd/projects.ts).
     getProject: (config: Config, caller: Caller, id: string) => Promise<Ok<ServiceStatus[]> | Bad>
-    owns: (clientId: string, projectId: string) => Promise<boolean>
+    // What a client may do on this site, null for no access at all. Never asked for the operator.
+    access: (clientId: string, projectId: string) => Promise<readonly Permission[] | null>
 }
 
 export type SiteView =
@@ -35,6 +37,9 @@ export type SiteView =
         id: string
         name: string
         isAdmin: boolean
+        // What this viewer may do here beyond the Overview: every permission for the operator, and the ones
+        // their access carries for a client. The page draws a tab or a control only when this allows it.
+        permissions: readonly Permission[]
         capabilities: string[]
         // What this project has: live alone, or live and test. hostd answers them from its registry on
         // every listing (hostd/src/api/routes.ts, environmentsFor), so the page no longer has to assume
@@ -82,9 +87,10 @@ export async function gatherSite(deps: SiteDeps, id: string): Promise<SiteView> 
 
     const isAdmin = who.clientId === null
 
-    // First line, not the only one: hostd checks ownership too. This one is what stops the portal asking
+    // First line, not the only one: hostd checks access too. This one is what stops the portal asking
     // hostd about a project on behalf of someone with no business naming it.
-    if (who.clientId && !(await deps.owns(who.clientId, id))) return { kind: 'forbidden' }
+    const permissions = who.clientId ? await deps.access(who.clientId, id) : ALL_PERMISSIONS
+    if (permissions === null) return { kind: 'forbidden' }
 
     const config = deps.config()
     if (!config.ok) {
@@ -95,6 +101,7 @@ export async function gatherSite(deps: SiteDeps, id: string): Promise<SiteView> 
             id,
             name: id,
             isAdmin,
+            permissions,
             capabilities: [],
             environments: [],
             repo: null,
@@ -116,6 +123,7 @@ export async function gatherSite(deps: SiteDeps, id: string): Promise<SiteView> 
             id,
             name: id,
             isAdmin,
+            permissions,
             capabilities: [],
             environments: [],
             repo: null,
@@ -148,6 +156,7 @@ export async function gatherSite(deps: SiteDeps, id: string): Promise<SiteView> 
         // reason and nothing else
         name: project.name ?? project.id,
         isAdmin,
+        permissions,
         capabilities: project.capabilities ?? [],
         environments: project.environments ?? [],
         repo: project.repo ?? null,

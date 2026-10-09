@@ -4,6 +4,7 @@
 import 'server-only'
 
 import type { ClientSession, ClientTokenPurpose, PrismaClient, Site } from '../generated/prisma/client'
+import type { Permission } from '../sites/permissions'
 import type { LockUpdate } from './limits'
 import type { ClientDetails, SiteInput } from './schema'
 
@@ -15,7 +16,7 @@ const ATTEMPT_TTL_MS = 60 * 60 * 1000
 const listColumns = {
     id: true, name: true, company: true, email: true, createdAt: true, lastSignInAt: true,
     passwordHash: true, totpConfirmedAt: true, suspendedAt: true, lockedUntil: true,
-    _count: { select: { sites: true } },
+    _count: { select: { siteAccess: true } },
 } as const
 
 export function clientRepo(db: PrismaClient) {
@@ -168,15 +169,46 @@ export function clientRepo(db: PrismaClient) {
             ])
         },
 
-        listSites: (clientId: string) => db.site.findMany({ where: { clientId }, orderBy: { name: 'asc' } }),
+        // The sites this client has been given, each with what they may do on it
+        listAccess: (clientId: string) => db.siteAccess.findMany({
+            where: { clientId },
+            include: { site: true },
+            orderBy: { site: { name: 'asc' } },
+        }),
 
-        createSite: async (clientId: string, input: SiteInput) => {
-            await db.site.create({ data: { clientId, ...input } })
+        // Every client given this site, for the site's own Access tab
+        accessToSite: (projectId: string) => db.siteAccess.findMany({
+            where: { site: { projectId } },
+            include: { client: { select: { id: true, name: true, company: true, email: true } } },
+            orderBy: [{ client: { name: 'asc' } }, { clientId: 'asc' }],
+        }),
+
+        // Gives a client a site, creating the portal's row for the site the first time anyone is given it.
+        // A site already held keeps its name: the first grant named it, and a second client's grant is about
+        // the client, not the site. Giving a client a site they already have only changes what they may do.
+        grantAccess: async (clientId: string, site: SiteInput, permissions: readonly Permission[]) => {
+            await db.$transaction(async tx => {
+                const row = await tx.site.upsert({
+                    where: { projectId: site.projectId },
+                    create: site,
+                    update: {},
+                    select: { id: true },
+                })
+                await tx.siteAccess.upsert({
+                    where: { siteId_clientId: { siteId: row.id, clientId } },
+                    create: { siteId: row.id, clientId, permissions: [...permissions] },
+                    update: { permissions: [...permissions] },
+                })
+            })
         },
 
-        // Scoped to the client, so a site can only be removed from the page it is shown on
-        removeSite: async (clientId: string, siteId: string) => {
-            await db.site.deleteMany({ where: { id: siteId, clientId } })
+        setAccessPermissions: async (siteId: string, clientId: string, permissions: readonly Permission[]) => {
+            await db.siteAccess.update({ where: { siteId_clientId: { siteId, clientId } }, data: { permissions: [...permissions] } })
+        },
+
+        // The site itself stays: it is not the client's, and other clients may still have it
+        revokeAccess: async (siteId: string, clientId: string) => {
+            await db.siteAccess.deleteMany({ where: { siteId, clientId } })
         },
 
         linkQuote: async (quoteId: string, clientId: string) => {
