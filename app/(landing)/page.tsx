@@ -137,7 +137,7 @@ export default function Landing() {
 
             {/* Clients */}
             <section>
-                <p className="mb-8 text-center text-xs font-semibold uppercase tracking-[0.3em] text-[#8fd4f5]/50">Trusted by</p>
+                <p className="mb-8 text-center text-xs font-semibold uppercase tracking-[0.3em] text-[#8fd4f5]/50">Worked with</p>
                 <div className="flex flex-wrap items-center justify-center gap-x-14 gap-y-8">
                     {clients.map(c => {
                         const logo = <Image src={c.src} alt={c.name} fill className="object-contain" style={c.style} />
@@ -191,16 +191,16 @@ export default function Landing() {
                                 {p.stores?.map(({ name, icon: Icon, href }) => href
                                     ? (
                                         <Link key={name} href={href} target="_blank" rel="noopener noreferrer"
-                                            className="group inline-flex items-center gap-2 rounded-full border border-[#8fd4f5]/20 bg-[#8fd4f5]/[0.06] px-4 py-2 text-sm font-medium text-[#bfe6fb] transition-colors hover:border-[#8fd4f5]/45 hover:text-white">
+                                            className="group inline-flex items-center gap-1.5 whitespace-nowrap rounded-full border border-[#8fd4f5]/20 bg-[#8fd4f5]/[0.06] px-3.5 py-2 text-sm font-medium text-[#bfe6fb] transition-colors hover:border-[#8fd4f5]/45 hover:text-white">
                                             <Icon size={16} /> {name}
                                             <NorthEast size={14} className="opacity-60 transition-transform group-hover:-translate-y-0.5 group-hover:translate-x-0.5" />
                                         </Link>
                                     )
                                     : (
                                         <span key={name} aria-disabled="true" title={`${name}: coming soon`}
-                                            className="inline-flex cursor-not-allowed items-center gap-2 rounded-full border border-white/10 bg-white/[0.03] px-4 py-2 text-sm font-medium text-[#8fa3c7]/70">
+                                            className="inline-flex cursor-not-allowed items-center gap-1.5 whitespace-nowrap rounded-full border border-white/10 bg-white/[0.03] px-3.5 py-2 text-sm font-medium text-[#8fa3c7]/70">
                                             <Icon size={16} /> {name}
-                                            <span className="text-xs uppercase tracking-wider text-[#8fa3c7]/60">Coming soon</span>
+                                            <span className="text-[11px] uppercase tracking-wide text-[#8fa3c7]/60">Coming soon</span>
                                         </span>
                                     ))}
                                 {p.website && (
