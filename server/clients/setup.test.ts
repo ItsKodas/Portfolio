@@ -25,6 +25,7 @@ const client = (overrides: Record<string, unknown> = {}) => ({
     publicEmail: null,
     publicPhone: null,
     publicContactListed: false,
+    totpRequired: true,
     ...overrides,
 })
 
@@ -59,6 +60,8 @@ const inviteDeps = (overrides: Record<string, unknown> = {}) => ({
     setPassword: vi.fn(async () => {}),
     useToken: vi.fn(async () => {}),
     createSession: vi.fn(async () => ({ id: 'session1' })),
+    completeMfa: vi.fn(async () => {}),
+    recordSuccess: vi.fn(async () => {}),
     newToken: vi.fn(() => 'raw-token'),
     hashToken: vi.fn((token: string) => `hashed:${token}`),
     now: () => now,
@@ -71,11 +74,25 @@ describe('completeInvite', () => {
         const deps = inviteDeps()
         const result = await completeInvite({ tokenHash: 'h', password: 'correct horse battery', userAgent: null }, deps)
 
-        expect(result).toMatchObject({ ok: true, token: 'raw-token' })
+        expect(result).toMatchObject({ ok: true, next: 'setup', token: 'raw-token' })
         expect(deps.setPassword).toHaveBeenCalledWith('cl_ABCDEFGH', 'new-hash', now)
         expect(deps.useToken).toHaveBeenCalledWith('token1', now)
         // mfaAt is not set anywhere in this flow: enrolment is still ahead
         expect(deps.createSession).toHaveBeenCalledWith('cl_ABCDEFGH', 'hashed:raw-token', expect.any(Date), null)
+        expect(deps.completeMfa).not.toHaveBeenCalled()
+    })
+
+    it('signs a client excused from two-step sign-in straight in, with nothing to enrol', async () => {
+        const deps = inviteDeps({
+            tokenByHash: vi.fn(async () => ({
+                id: 'token1', purpose: 'INVITE' as const, usedAt: null, expiresAt: later(1000), client: client({ totpRequired: false }),
+            })),
+        })
+        const result = await completeInvite({ tokenHash: 'h', password: 'correct horse battery', userAgent: null }, deps)
+
+        expect(result).toMatchObject({ ok: true, next: 'home', token: 'raw-token' })
+        expect(deps.setPassword).toHaveBeenCalledWith('cl_ABCDEFGH', 'new-hash', now)
+        expect(deps.completeMfa).toHaveBeenCalledWith('session1', now, expect.any(Date))
     })
 
     it('refuses a spent token and changes nothing', async () => {

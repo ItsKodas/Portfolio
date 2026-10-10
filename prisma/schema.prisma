@@ -104,6 +104,10 @@ model Client {
   // AES-256-GCM under CLIENT_SECRET_KEY, never plaintext
   totpSecret        String?
   totpConfirmedAt   DateTime?
+  // Whether signing in asks for an authenticator code. On for every client unless the operator turns it off
+  // on the client's page, for a client who cannot manage an authenticator. Turning it off keeps any
+  // enrolment, so turning it back on asks for the same authenticator again.
+  totpRequired      Boolean   @default(true)
   suspendedAt       DateTime?
   lastSignInAt      DateTime?
   // Who a visitor should reach while one of this client's sites is down, shown on that site's holding page.

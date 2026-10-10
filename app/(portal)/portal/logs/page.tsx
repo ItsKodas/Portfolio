@@ -117,7 +117,7 @@ export default async function ActivityLog({ searchParams }: { searchParams: Prom
 
 // Taking something away is worth seeing at a glance; everything else reads as plain
 function toneOf(kind: string): 'warn' | 'crit' | undefined {
-    if (/\.(delete|revoke|suspend|signInRefused|codeRefused|twoFactorReset)$/.test(kind)) return 'crit'
+    if (/\.(delete|revoke|suspend|signInRefused|codeRefused|twoFactorReset|twoFactorOptional)$/.test(kind)) return 'crit'
     if (/\.(stop|rollback|noteDelete)$/.test(kind)) return 'warn'
     return undefined
 }

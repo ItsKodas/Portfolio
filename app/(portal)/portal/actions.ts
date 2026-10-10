@@ -58,6 +58,11 @@ export async function signInAction(email: string, password: string): Promise<Por
             return result
         }
         await setSessionCookie(result.token, result.expiresAt)
+        if (result.next === 'home') {
+            // Excused from two-step sign-in, so the password finished it and this is the whole sign-in
+            await record({ kind: 'auth.signIn', actor: clientActor(result.client), summary: `${result.client.name} signed in` })
+            redirect(PORTAL_HOME)
+        }
         redirect(result.next === 'code' ? CODE_PATH : SETUP_PATH)
     } catch (error) {
         // redirect() works by throwing, so it must not be swallowed here
@@ -146,8 +151,9 @@ export async function completeInviteAction(token: string, password: string): Pro
             await record({ kind: 'auth.inviteAccepted', actor: clientActor(invited.client), summary: `${invited.client.name} accepted their invite` })
         }
         await setSessionCookie(result.token, result.expiresAt)
-        // Straight into enrolment: the account does nothing until an authenticator is set up
-        redirect(SETUP_PATH)
+        // Straight into enrolment: the account does nothing until an authenticator is set up. Unless the
+        // client is excused from two-step sign-in, in which case they are already signed in.
+        redirect(result.next === 'home' ? PORTAL_HOME : SETUP_PATH)
     } catch (error) {
         if (error && typeof error === 'object' && 'digest' in error) throw error
         return failure('Completing an invite', error)
