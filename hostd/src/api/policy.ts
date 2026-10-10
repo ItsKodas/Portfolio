@@ -17,11 +17,16 @@ import type { Actor } from './auth.ts'
 // list is how a client watches their own DNS land, so that half is theirs. Re-checking is in the admin
 // half rather than the read one because it writes the record it checks.
 //
+// 'backup-restore' is putting a backup back over live, and reading what earlier restores did. It needs the
+// same capability as the rest of backups, but it is the operator's alone: it replaces the live site's data,
+// and the restore records name services and folders on the dedi. A client keeps listing, taking, deleting
+// and downloading their own backups through 'backup' and 'backup-read'.
+//
 // 'remove' is deleting a whole project, split from 'provision' so it needs no capability: see its entry
 // below.
 export type PolicyVerb =
     | 'status' | 'lifecycle' | 'logs' | 'audit' | 'provision' | 'remove' | 'env' | 'deploy' | 'deploy-read'
-    | 'backup' | 'backup-read'
+    | 'backup' | 'backup-read' | 'backup-restore'
     | 'domains' | 'domains-read' | 'configure'
 
 // Deliberately its own table rather than protocol.ts's VERB_CAPABILITY: that one is keyed by the agent's
@@ -41,6 +46,7 @@ const POLICY_CAPABILITY: Record<PolicyVerb, Capability | null> = {
     'deploy-read': 'deploy',
     backup: 'backups',
     'backup-read': 'backups',
+    'backup-restore': 'backups',
     domains: 'domains',
     'domains-read': 'domains',
     // Null on purpose: gating the verb that edits capabilities on a capability would mean a project with
@@ -51,7 +57,7 @@ const POLICY_CAPABILITY: Record<PolicyVerb, Capability | null> = {
 }
 
 // What only the admin may ever do, whatever the registry says and whoever owns the project.
-const ADMIN_ONLY: PolicyVerb[] = ['provision', 'remove', 'env', 'deploy', 'domains', 'configure']
+const ADMIN_ONLY: PolicyVerb[] = ['provision', 'remove', 'env', 'deploy', 'backup-restore', 'domains', 'configure']
 // Whether a client may reach this project at all. The portal's list when it sent one: a site is shared by
 // as many clients as the operator gives it to, and the registry's single client field cannot say that. The
 // registry's field only when the portal sent no list, which is a portal from before site access existed.

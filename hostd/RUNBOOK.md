@@ -1297,7 +1297,7 @@ stopped stays stopped). Its databases may be wiped or half loaded. Put it right 
   not yet been tried on the dedi. `copy.rdb` is client data: remove it when done.
 - **redis with `requirepass` fails.** hostd runs `redis-cli` without a password, for backups as here, so
   the first thing the copy asks that redis (its dump, its data directory, or its readiness probe) is
-  answered `NOAUTH`, and the step fails. Copy it by hand the way **Restoring** under **Backups** loads a
+  answered `NOAUTH`, and the step fails. Copy it by hand the way **Restoring by hand** under **Backups** loads a
   redis, with `REDISCLI_AUTH` set to the password inside the container for each `redis-cli`.
 - **A redis still `LOADING` after 60 seconds** fails its load step with `did not become ready in the
   environment within 60 seconds`, though its data is in place and it finishes loading on its own. Check
@@ -1375,7 +1375,7 @@ follow, because there is no per-environment lifecycle yet.
    and lost the only key to them.
 
 3. Install `restic` on the dedi itself too, not only in the agent image, while things are calm. An
-   ordinary restore never needs this (see **Restoring** below: `docker exec hostd-agent restic` already
+   ordinary restore never needs this (see **Restoring by hand** below: `docker exec hostd-agent restic` already
    works, because the agent image carries its own copy), but the day `hostd` itself is down, or the dedi
    is being rebuilt, there is no agent container to exec into, and the bind mount at `/backups` exists
    for exactly that day: it lets restic on the bare host reach the repository files directly off
@@ -1478,12 +1478,53 @@ that folder.
 Look at the symlink it names in live's checkout (`ls -l <dir>`). It came from the client's repository: ask
 them to replace it with a real folder or a registered `storage` path, and the next run backs up again.
 
-### Restoring
+### Restoring from the portal
 
-This is deliberately a runbook procedure, not a portal button. A restore overwrites a live database with
-an old one; a control that can do that from one click in a tired 3am moment is a worse design than a
-procedure that costs ten minutes and forces you to look at what you are about to overwrite before you do
-it.
+The operator can put a backup back from the site's Backups tab: **Restore** on a copy, then the site's
+name typed back. A client sees no Restore button and the api answers them 404 (the `backup-restore` policy
+verb is admin-only), though they keep listing, taking, deleting and downloading their own backups. The
+same thing by hand:
+
+```bash
+hc -X POST http://hostd-api:8080/projects/<id>/backups/<snapshot>/restore \
+   -H 'content-type: application/json' -d '{"name":"<the project name>"}'
+hc http://hostd-api:8080/projects/<id>/backups/restores          # every restore, and whether one runs
+hc http://hostd-api:8080/projects/<id>/backups/restores/<run>    # one of them
+```
+
+The start answers `202` with a run id as soon as the run has begun. The run, in `hostd-agent`:
+
+1. **safety**: takes a fresh manual backup of live first and waits for it. If it fails, nothing else
+   happens. It is outside the five-manual cap and the cooldown, and like any manual backup it is kept until
+   someone deletes it. Its id is on the restore record (`safety`).
+2. **space**: needs 10 GiB free under the site folder plus the snapshot's restore size.
+3. **extract**: `restic restore` of the snapshot into `/var/www/<site>/.restore/<run>/`, which no client
+   container mounts. Every registered database must have a dump in it, or the run stops here with live
+   untouched.
+4. **prepare**: stops live's other services (site, workers) and makes sure its databases run, exactly as a
+   copy prepares an environment.
+5. **load:<service>**, **sqlite:<service>**, **storage:<path>**: each database is wiped and loaded from its
+   dump with the engine's own client (redis gets its rdb file while stopped), each sqlite file and storage
+   folder is renamed into place, and live's own copy goes into staging. A storage folder the backup does
+   not hold is left as live has it.
+6. Live's services are started again as they were found, and staging is removed.
+
+While it runs, live cannot be deployed, started, stopped or restarted, have its port or env files changed,
+be copied from or backed up, and the project cannot be reconfigured or removed: each answers `busy`
+naming the restore. The record's `step` says where it is while it runs and where it stopped if it fails.
+A failure from **prepare** on says live may be partly restored and names the safety backup: restoring that
+one puts live back as it was. If the agent restarts mid-run, the record is marked failed at boot, its
+staging is removed, and live's site services may be left stopped; start them from the portal or with
+`lifecycle start`.
+
+The portal refuses, with the reason, a project on a flat site (it moves into the nested layout on its next
+deploy) and one with a `generic` database, which has no way to be loaded. Those, and the case where `hostd`
+itself is down, are what the procedure below is for.
+
+### Restoring by hand
+
+A restore by hand overwrites a live database with an old one, so it is written out per engine to be
+followed rather than improvised at three in the morning.
 
 There are two ways to run the restic commands below, and which one applies depends on whether `hostd`
 itself is up:
@@ -1687,6 +1728,7 @@ database on a timer.
 | `another backup is running; only one runs on the dedi at a time` | Wait for it to finish. Only one backup runs across the whole dedi at once, on purpose, so a scheduled sweep across many projects can never saturate the disk together. |
 | `<id> already has a backup running` | The same project's own backup is still running; read its run status instead of starting another. |
 | `<id> <env> is being copied from live; a backup waits until it has finished` | A copy reads the same databases and storage. Wait for it to finish (see **Copying live's data into an environment**). |
+| `<id> is having a backup put back over live; wait until that has finished` | A restore is replacing what a backup would read, and takes its own safety backup first. Wait for it to finish (see **Restoring from the portal**). |
 | `<id> is deploying; a backup waits until that has finished` | A deploy renames the directory storage lives under, so a backup started mid-swap would walk a tree that is moving. Wait for the deploy to finish (or fail) and try again. |
 
 ## What is deliberately not automatic

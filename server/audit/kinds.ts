@@ -59,6 +59,7 @@ export const KINDS = {
     'backup.delete': 'Backup deleted',
     'backup.schedule': 'Backup schedule saved',
     'backup.download': 'Backup downloaded',
+    'backup.restore': 'Backup restore started',
 
     'access.grant': 'Access given',
     'access.permissions': 'Access changed',

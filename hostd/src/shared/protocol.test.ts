@@ -887,3 +887,25 @@ describe('deploy-watch', () => {
         assert.equal(refusalOf({ verb: 'deploy-watch', project: 'acme', args: { environment: 'live', follow: true } }), 'bad-request: deploy-watch takes only environment')
     })
 })
+
+describe('restore', () => {
+    it('parses a start, a list and a get-run', () => {
+        assert.deepEqual(
+            parsed({ verb: 'restore', project: 'acme', args: { action: 'start', snapshot: '0123abcd', actor: 'koda' } }),
+            { ok: true, request: { verb: 'restore', project: 'acme', args: { action: 'start', snapshot: '0123abcd', actor: 'koda' } } },
+        )
+        assert.deepEqual(parsed({ verb: 'restore', project: 'acme', args: { action: 'list' } }), { ok: true, request: { verb: 'restore', project: 'acme', args: { action: 'list' } } })
+        assert.deepEqual(
+            parsed({ verb: 'restore', project: 'acme', args: { action: 'get-run', run: 'abcdef012345' } }),
+            { ok: true, request: { verb: 'restore', project: 'acme', args: { action: 'get-run', run: 'abcdef012345' } } },
+        )
+    })
+
+    it('refuses a snapshot that is not hex, a bad run id, a bad actor and an extra field', () => {
+        assert.equal(refusalOf({ verb: 'restore', project: 'acme', args: { action: 'start', snapshot: '../x' } }), 'bad-request: a snapshot id must be hex')
+        assert.equal(refusalOf({ verb: 'restore', project: 'acme', args: { action: 'get-run', run: '../x' } }), 'bad-request: get-run needs a run id')
+        assert.equal(refusalOf({ verb: 'restore', project: 'acme', args: { action: 'start', snapshot: '0123abcd', actor: 'a b' } }), 'bad-request: actor is malformed')
+        assert.equal(refusalOf({ verb: 'restore', project: 'acme', args: { action: 'list', environment: 'live' } }), 'bad-request: list takes only action')
+        assert.equal(refusalOf({ verb: 'restore', project: 'acme', args: { action: 'drop' } }), 'bad-request: restore action must be start, list or get-run')
+    })
+})
