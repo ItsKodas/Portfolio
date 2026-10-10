@@ -6,6 +6,7 @@
 
 import { revalidatePath } from 'next/cache'
 
+import { callerActor, record, type AuditEntry } from '@/server/audit/record'
 import { getDb } from '@/server/db'
 import {
     deleteBackup, SCHEDULE_MODES, setSchedule, SNAPSHOT_ID, startBackup, type Schedule,
@@ -52,6 +53,13 @@ const SAID: Record<LifecycleAction, string> = {
     start: 'Starting. It takes a few seconds for the containers to come up.',
     stop: 'Stopping. The site will show its holding page until it is started again.',
     restart: 'Restarting. The site is unavailable for a few seconds.',
+}
+
+// The activity log's sentence for each, in the past tense, because the log is read after the fact
+const DID: Record<LifecycleAction, (id: string) => string> = {
+    start: id => `Started ${id}`,
+    stop: id => `Stopped ${id}`,
+    restart: id => `Restarted ${id}`,
 }
 
 const SIGN_IN_AGAIN = 'Your session has expired. Sign in again.'
@@ -102,6 +110,12 @@ async function allowOn(id: string, environment: EnvironmentName, adminOnly: bool
     return allowed
 }
 
+// What the activity log is told once hostd has done something. Only after: a refusal changed nothing, and its
+// reason is in the console beside everything else hostd said no to.
+function done(allowed: Allowed, site: string, entry: Omit<AuditEntry, 'actor' | 'site'>): Promise<void> {
+    return record({ ...entry, actor: callerActor(allowed.caller), site })
+}
+
 // hostd's message names paths, services and project ids, which is right for the operator and wrong for a
 // client. The original is logged either way, so a client's refusal is still diagnosable from this side.
 function refused(where: string, isAdmin: boolean, result: { code: string, message: string }): { ok: false, error: string } {
@@ -119,9 +133,19 @@ export async function lifecycleAction(id: string, action: string): Promise<SiteA
 
     const result = await lifecycle(allowed.config, allowed.caller, id, asked)
     if (!result.ok) return refused(`lifecycle ${asked} on ${id}`, allowed.isAdmin, result)
+    await done(allowed, id, { kind: `site.${asked}`, summary: DID[asked](id) })
 
     revalidatePath(`/portal/sites/${id}`)
     return { ok: true, message: SAID[asked] }
+}
+
+// The names an env file sets, for the activity log. A line is NAME=value, optionally behind export; comments
+// and blank lines set nothing.
+function variableNames(text: string): string[] {
+    const names = text.split(/\r?\n/)
+        .map(line => /^\s*(?:export\s+)?([A-Za-z_][A-Za-z0-9_.-]*)\s*=/.exec(line)?.[1])
+        .filter((name): name is string => !!name)
+    return [...new Set(names)]
 }
 
 export async function saveEnvAction(id: string, environment: string, path: string, text: string): Promise<SiteActionResult> {
@@ -135,6 +159,13 @@ export async function saveEnvAction(id: string, environment: string, path: strin
 
     const result = await writeEnvFile(allowed.config, allowed.caller, id, name, path, text)
     if (!result.ok) return refused(`env write ${path} on ${id}`, allowed.isAdmin, result)
+    // The variable names and never their values, which are the secrets this file exists to hold
+    await done(allowed, id, {
+        kind: 'env.file',
+        summary: `Saved ${path} on ${name}`,
+        target: { type: 'environment', id: name },
+        detail: { path, variables: variableNames(text) },
+    })
 
     revalidatePath(`/portal/sites/${id}`)
     return { ok: true, message: 'Saved. The containers are restarting, which takes about twenty seconds.' }
@@ -161,6 +192,7 @@ export async function deployAction(id: string, environment: string): Promise<Sit
 
     const result = await startDeploy(allowed.config, allowed.caller, id, name)
     if (!result.ok) return refused(`deploy ${name} on ${id}`, allowed.isAdmin, result)
+    await done(allowed, id, { kind: 'deploy.start', summary: `Deployed ${name}`, target: { type: 'environment', id: name } })
 
     revalidatePath(`/portal/sites/${id}`)
     return { ok: true, message: 'Deploying. It builds first and swaps over after, which usually takes a minute or two.' }
@@ -177,6 +209,7 @@ export async function rollbackAction(id: string, environment: string): Promise<S
     // beforehand from the same rule, but it is never sent.
     const result = await rollback(allowed.config, allowed.caller, id, name)
     if (!result.ok) return refused(`rollback ${name} on ${id}`, allowed.isAdmin, result)
+    await done(allowed, id, { kind: 'deploy.rollback', summary: `Rolled ${name} back`, target: { type: 'environment', id: name } })
 
     revalidatePath(`/portal/sites/${id}`)
     return { ok: true, message: 'Rolling back. The last version that worked is going up, which takes a minute or two.' }
@@ -215,6 +248,7 @@ export async function saveSettingsAction(id: string, settings: SiteSettings): Pr
 
     const result = await writeSettings(allowed.config, allowed.caller, id, settings)
     if (!result.ok) return refused(`settings on ${id}`, allowed.isAdmin, result)
+    await done(allowed, id, { kind: 'site.settings', summary: `Saved the settings of ${id}`, detail: { settings } })
 
     revalidatePath(`/portal/sites/${id}`)
     return {
@@ -232,6 +266,9 @@ export async function setBranchAction(id: string, environment: string, branch: s
 
     const result = await setBranch(allowed.config, allowed.caller, id, name, branch)
     if (!result.ok) return refused(`branch ${name} on ${id}`, allowed.isAdmin, result)
+    await done(allowed, id, {
+        kind: 'deploy.branch', summary: `${name} now follows ${branch}`, target: { type: 'environment', id: name }, detail: { branch },
+    })
 
     revalidatePath(`/portal/sites/${id}`)
     // Switching branch deploys its tip, and it is also what resumes an environment hostd has paused, so
@@ -251,6 +288,9 @@ export async function setPortAction(id: string, environment: string, port: numbe
 
     const result = await setPort(allowed.config, allowed.caller, id, name, port)
     if (!result.ok) return refused(`port ${name} on ${id}`, allowed.isAdmin, result)
+    await done(allowed, id, {
+        kind: 'env.port', summary: `Moved ${name} to port ${port}`, target: { type: 'environment', id: name }, detail: { port },
+    })
 
     revalidatePath(`/portal/sites/${id}`)
     // hostd's own output already names the environment and the port, and says whether it restarted
@@ -278,6 +318,7 @@ export async function addDomainAction(id: string, environment: string, hostname:
     const wanted = hostname.trim().toLowerCase()
     const result = await addDomain(allowed.config, allowed.caller, id, name, wanted)
     if (!result.ok) return refused(`add domain ${wanted} on ${id}`, allowed.isAdmin, result)
+    await done(allowed, id, { kind: 'domain.add', summary: `Added ${wanted} to ${name}`, target: { type: 'domain', id: wanted } })
 
     revalidatePath(`/portal/sites/${id}`)
     return { ok: true, message: `${wanted} is added. hostd checks its DNS before it starts serving it.` }
@@ -303,6 +344,7 @@ export async function setPrimaryDomainAction(id: string, environment: string, ho
     const wanted = hostname.trim().toLowerCase()
     const result = await writeSettings(allowed.config, allowed.caller, id, { domains: { [name]: wanted } })
     if (!result.ok) return refused(`set primary domain ${wanted} on ${id}`, allowed.isAdmin, result)
+    await done(allowed, id, { kind: 'domain.primary', summary: `Set ${name}'s address to ${wanted}`, target: { type: 'domain', id: wanted } })
 
     revalidatePath(`/portal/sites/${id}`)
     return {
@@ -338,6 +380,7 @@ export async function changePrimaryDomainAction(
 
     const result = await writeSettings(allowed.config, allowed.caller, id, { domains: { [name]: wanted } })
     if (!result.ok) return refused(`change primary domain to ${wanted} on ${id}`, allowed.isAdmin, result)
+    await done(allowed, id, { kind: 'domain.primary', summary: `Moved ${name}'s address to ${wanted}`, target: { type: 'domain', id: wanted } })
 
     revalidatePath(`/portal/sites/${id}`)
     return {
@@ -356,6 +399,7 @@ export async function removeDomainAction(id: string, environment: string, hostna
     const wanted = hostname.trim().toLowerCase()
     const result = await removeDomain(allowed.config, allowed.caller, id, name, wanted)
     if (!result.ok) return refused(`remove domain ${wanted} on ${id}`, allowed.isAdmin, result)
+    await done(allowed, id, { kind: 'domain.remove', summary: `Removed ${wanted} from ${name}`, target: { type: 'domain', id: wanted } })
 
     revalidatePath(`/portal/sites/${id}`)
     return { ok: true, message: `${wanted} is gone. The configuration reloads in a few seconds.` }
@@ -371,6 +415,9 @@ export async function verifyDomainAction(id: string, environment: string, hostna
     const wanted = hostname.trim().toLowerCase()
     const result = await verifyDomain(allowed.config, allowed.caller, id, name, wanted)
     if (!result.ok) return refused(`verify domain ${wanted} on ${id}`, allowed.isAdmin, result)
+    await done(allowed, id, {
+        kind: 'domain.verify', summary: `Checked ${wanted}: ${stateWord(result.value.state)}`, target: { type: 'domain', id: wanted },
+    })
 
     revalidatePath(`/portal/sites/${id}`)
     // This one answers the record it just re-checked, so the outcome is said rather than the asking
@@ -406,6 +453,7 @@ export async function adoptAction(id: string, environment: string, confirm: stri
     // check is the whole point of it: softening it here would throw away the confirmation.
     const result = await adoptSite(allowed.config, allowed.caller, id, name, confirm)
     if (!result.ok) return refused(`adopt ${name} on ${id}`, allowed.isAdmin, result)
+    await done(allowed, id, { kind: 'site.adopt', summary: `Adopted ${name}'s configuration`, target: { type: 'environment', id: name } })
 
     revalidatePath(`/portal/sites/${id}`)
     return {
@@ -426,6 +474,7 @@ export async function deleteSiteAction(id: string, confirm: string): Promise<Sit
     // Sent as typed, for the same reason adoptAction sends it as typed: hostd's comparison is the confirmation.
     const result = await removeProject(allowed.config, allowed.caller, id, confirm)
     if (!result.ok) return refused(`delete ${id}`, allowed.isAdmin, result)
+    await done(allowed, id, { kind: 'site.delete', summary: `Deleted ${id}` })
 
     // Only once hostd has let it go, so a refusal never takes anyone's access away from a site that is still
     // there. Deleting the row takes every client's access with it. A failure here leaves access to a site
@@ -481,6 +530,12 @@ export async function addEnvironmentAction(
         name, branch: branch.trim(), domain: hostname, copyFromLive: copyLive === true,
     })
     if (!result.ok) return refused(`add environment ${name} on ${id}`, allowed.isAdmin, result)
+    await done(allowed, id, {
+        kind: 'env.add',
+        summary: `Added ${name}, following ${branch.trim()} at ${hostname}`,
+        target: { type: 'environment', id: name },
+        detail: { branch: branch.trim(), domain: hostname, copyFromLive: copyLive === true },
+    })
 
     revalidatePath(`/portal/sites/${id}`)
     // The environment exists either way; only its vhost is missing, and its Domains section can add it
@@ -511,6 +566,7 @@ export async function deleteEnvironmentAction(id: string, environment: string, c
     // Sent as typed, for the reason deleteSiteAction sends it as typed: hostd's comparison is the confirmation
     const result = await deleteEnvironment(allowed.config, allowed.caller, id, name, confirm)
     if (!result.ok) return refused(`delete environment ${name} on ${id}`, allowed.isAdmin, result)
+    await done(allowed, id, { kind: 'env.delete', summary: `Deleted ${name}`, target: { type: 'environment', id: name } })
 
     revalidatePath(`/portal/sites/${id}`)
     return { ok: true, message: `${name} is deleted. It is stopped and kept for 30 days, and can be restored from here until then.` }
@@ -527,6 +583,9 @@ export async function restoreEnvironmentAction(id: string, environment: string, 
 
     const result = await restoreEnvironment(allowed.config, allowed.caller, id, name, deletedAt)
     if (!result.ok) return refused(`restore environment ${name} on ${id}`, allowed.isAdmin, result)
+    await done(allowed, id, {
+        kind: 'env.restore', summary: `Restored ${name}`, target: { type: 'environment', id: name }, detail: { ...result.value },
+    })
 
     revalidatePath(`/portal/sites/${id}`)
     // What hostd had to change on the way back is said, because each one is something to fix elsewhere:
@@ -565,6 +624,7 @@ export async function copyFromLiveAction(id: string, environment: string, confir
 
     const result = await copyFromLive(allowed.config, allowed.caller, id, name)
     if (!result.ok) return refused(`copy from live into ${name} on ${id}`, allowed.isAdmin, result)
+    await done(allowed, id, { kind: 'env.copy', summary: `Copied live's data into ${name}`, target: { type: 'environment', id: name } })
 
     revalidatePath(`/portal/sites/${id}`)
     return { ok: true, run: result.value.run, message: `Copying live's data into ${name}. It can take a few minutes.` }
@@ -607,6 +667,7 @@ export async function backupNowAction(id: string): Promise<SiteActionResult> {
         }
         return refused(`backup of ${id}`, allowed.isAdmin, result)
     }
+    await done(allowed, id, { kind: 'backup.start', summary: `Started a backup of ${id}` })
 
     revalidatePath(`/portal/sites/${id}`)
     return { ok: true, message: 'Started. A copy takes a few minutes, and it appears in the list when it is done.' }
@@ -620,6 +681,7 @@ export async function deleteBackupAction(id: string, snapshot: string): Promise<
 
     const result = await deleteBackup(allowed.config, allowed.caller, id, snapshot)
     if (!result.ok) return refused(`backup delete ${snapshot} on ${id}`, allowed.isAdmin, result)
+    await done(allowed, id, { kind: 'backup.delete', summary: `Deleted backup ${snapshot}`, target: { type: 'backup', id: snapshot } })
 
     revalidatePath(`/portal/sites/${id}`)
     return { ok: true, message: 'Deleted.' }
@@ -654,6 +716,7 @@ export async function saveScheduleAction(id: string, schedule: unknown): Promise
 
     const result = await setSchedule(allowed.config, allowed.caller, id, asked)
     if (!result.ok) return refused(`backup schedule on ${id}`, allowed.isAdmin, result)
+    await done(allowed, id, { kind: 'backup.schedule', summary: `Saved the backup schedule (${result.value.mode})`, detail: { schedule: result.value } })
 
     const saved = result.value
     const clamped = saved.keep.daily !== keep.daily || saved.keep.weekly !== keep.weekly || saved.keep.monthly !== keep.monthly

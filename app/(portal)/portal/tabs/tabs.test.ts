@@ -6,8 +6,8 @@ const active = (admin: boolean, pathname: string) =>
     tabsFor(admin, pathname).filter(tab => tab.active).map(tab => tab.label)
 
 describe('tabsFor', () => {
-    it('gives the operator the sites, the quotes and the clients', () => {
-        expect(tabsFor(true, '/portal').map(tab => tab.label)).toEqual(['Sites', 'Quotes', 'Clients'])
+    it('gives the operator the sites, the quotes, the clients and the logs', () => {
+        expect(tabsFor(true, '/portal').map(tab => tab.label)).toEqual(['Sites', 'Quotes', 'Clients', 'Logs'])
     })
 
     it('gives a client their overview and their account, and nothing of the operator\'s', () => {
@@ -22,6 +22,7 @@ describe('tabsFor', () => {
     it('lights a section\'s tab on the pages under it', () => {
         expect(active(true, '/portal/quotes/42')).toEqual(['Quotes'])
         expect(active(true, '/portal/clients/new')).toEqual(['Clients'])
+        expect(active(true, '/portal/logs/emails/abc')).toEqual(['Logs'])
     })
 
     it('does not let /portal claim every page beneath it', () => {

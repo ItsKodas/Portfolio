@@ -4,7 +4,9 @@ import { revalidatePath } from 'next/cache'
 import { redirect } from 'next/navigation'
 import { z } from 'zod'
 
+import { adminActor, record, type Actor } from '@/server/audit/record'
 import { requireAdmin } from '@/server/auth'
+import { getDb } from '@/server/db'
 import { EnvError } from '@/server/env'
 import { emailChangedEmail, inviteEmail, resetEmail, twoFactorResetEmail } from '@/server/clients/emails'
 import { clientDetailsSchema, siteSchema } from '@/server/clients/schema'
@@ -19,6 +21,10 @@ const id = z.string().min(1).max(64)
 const INVALID = { ok: false, error: 'That request was not valid.' } as const
 const FAILED: AdminResult = { ok: false, error: 'That did not work. The client may have been deleted, so try reloading.' }
 
+// The activity log's target for a client, by the name they had when it happened
+const asTarget = (client: { id: string, name: string, company?: string | null }) =>
+    ({ type: 'client', id: client.id, name: client.company ? `${client.name} (${client.company})` : client.name })
+
 const refresh = (clientId?: string) => {
     revalidatePath('/admin/clients')
     if (clientId) revalidatePath(`/admin/clients/${clientId}`)
@@ -31,19 +37,20 @@ const emailFailure = (what: string, error: unknown) => {
     return `${what} was saved, but the email did not send. The server log has the reason.`
 }
 
-async function change(clientId: string, work: () => Promise<void>): Promise<AdminResult> {
+async function change(clientId: string, work: () => Promise<void>, recorded: () => Promise<void>): Promise<AdminResult> {
     try {
         await work()
     } catch (error) {
         log(`Admin change to client ${clientId} failed`, error)
         return FAILED
     }
+    await recorded()
     refresh(clientId)
     return { ok: true }
 }
 
 export async function createClientAction(input: unknown, fromQuoteId?: string): Promise<AdminResult> {
-    await requireAdmin()
+    const actor = adminActor(await requireAdmin())
     const parsed = clientDetailsSchema.safeParse(input)
     if (!parsed.success) return { ok: false, error: parsed.error.issues[0]?.message ?? INVALID.error }
 
@@ -58,6 +65,12 @@ export async function createClientAction(input: unknown, fromQuoteId?: string): 
         log('Creating a client failed', error)
         return { ok: false, error: 'That did not work. Please try again.' }
     }
+
+    await record({
+        kind: 'client.create', actor, target: asTarget(created.client),
+        summary: `Created ${created.client.name} (${created.client.email})`,
+        detail: fromQuoteId ? { fromQuote: fromQuoteId } : undefined,
+    })
 
     if (fromQuoteId && id.safeParse(fromQuoteId).success) {
         try {
@@ -82,7 +95,7 @@ export async function createClientAction(input: unknown, fromQuoteId?: string): 
 }
 
 export async function updateClientAction(clientId: string, input: unknown): Promise<AdminResult> {
-    await requireAdmin()
+    const actor = adminActor(await requireAdmin())
     if (!id.safeParse(clientId).success) return INVALID
     const parsed = clientDetailsSchema.safeParse(input)
     if (!parsed.success) return { ok: false, error: parsed.error.issues[0]?.message ?? INVALID.error }
@@ -96,6 +109,11 @@ export async function updateClientAction(clientId: string, input: unknown): Prom
         log(`Updating client ${clientId} failed`, error)
         return FAILED
     }
+    await record({
+        kind: 'client.update', actor, target: asTarget({ ...before, ...parsed.data }),
+        summary: `Changed the details of ${parsed.data.name}`,
+        detail: { changed: changedFields(before, parsed.data) },
+    })
     refresh(clientId)
 
     if (parsed.data.email !== before.email) {
@@ -112,7 +130,7 @@ export async function updateClientAction(clientId: string, input: unknown): Prom
 }
 
 export async function resendInviteAction(clientId: string): Promise<AdminResult> {
-    await requireAdmin()
+    const actor = adminActor(await requireAdmin())
     if (!id.safeParse(clientId).success) return INVALID
     const client = await repo().byId(clientId)
     if (!client) return FAILED
@@ -132,6 +150,7 @@ export async function resendInviteAction(clientId: string): Promise<AdminResult>
         log(`Creating a fresh invite for ${clientId} failed`, error)
         return FAILED
     }
+    await record({ kind: 'client.invite', actor, target: asTarget(client), summary: `Sent ${client.name} a fresh invite` })
 
     try {
         await sendClientEmail(options => inviteEmail(client, token, options))
@@ -143,7 +162,7 @@ export async function resendInviteAction(clientId: string): Promise<AdminResult>
 }
 
 export async function sendResetAction(clientId: string): Promise<AdminResult> {
-    await requireAdmin()
+    const actor = adminActor(await requireAdmin())
     if (!id.safeParse(clientId).success) return INVALID
     const client = await repo().byId(clientId)
     if (!client) return FAILED
@@ -157,6 +176,7 @@ export async function sendResetAction(clientId: string): Promise<AdminResult> {
         log(`Creating a password reset for ${clientId} failed`, error)
         return FAILED
     }
+    await record({ kind: 'client.reset', actor, target: asTarget(client), summary: `Sent ${client.name} a password reset link` })
 
     try {
         await sendClientEmail(options => resetEmail(client, token, options))
@@ -168,7 +188,7 @@ export async function sendResetAction(clientId: string): Promise<AdminResult> {
 }
 
 export async function resetTwoFactorAction(clientId: string): Promise<AdminResult> {
-    await requireAdmin()
+    const actor = adminActor(await requireAdmin())
     if (!id.safeParse(clientId).success) return INVALID
     const client = await repo().byId(clientId)
     if (!client) return FAILED
@@ -180,6 +200,10 @@ export async function resetTwoFactorAction(clientId: string): Promise<AdminResul
         log(`Resetting 2FA for ${clientId} failed`, error)
         return FAILED
     }
+    await record({
+        kind: 'client.twoFactorReset', actor, target: asTarget(client),
+        summary: `Reset ${client.name}'s authenticator and signed them out everywhere`,
+    })
 
     try {
         await sendClientEmail(options => twoFactorResetEmail(client, options))
@@ -192,26 +216,41 @@ export async function resetTwoFactorAction(clientId: string): Promise<AdminResul
 }
 
 export async function setSuspendedAction(clientId: string, suspended: boolean): Promise<AdminResult> {
-    await requireAdmin()
+    const actor = adminActor(await requireAdmin())
     if (!id.safeParse(clientId).success || typeof suspended !== 'boolean') return INVALID
-    return change(clientId, () => repo().setSuspended(clientId, suspended ? new Date() : null))
+    return change(
+        clientId,
+        () => repo().setSuspended(clientId, suspended ? new Date() : null),
+        () => recordAbout(actor, clientId, suspended ? 'client.suspend' : 'client.unsuspend', name => (suspended ? `Suspended ${name}` : `Restored ${name}`)),
+    )
 }
 
 export async function clearLockAction(clientId: string): Promise<AdminResult> {
-    await requireAdmin()
+    const actor = adminActor(await requireAdmin())
     if (!id.safeParse(clientId).success) return INVALID
-    return change(clientId, () => repo().clearLock(clientId))
+    return change(
+        clientId,
+        () => repo().clearLock(clientId),
+        () => recordAbout(actor, clientId, 'client.unlock', name => `Cleared the sign-in lock on ${name}`),
+    )
 }
 
 export async function deleteClientAction(clientId: string): Promise<AdminResult> {
-    await requireAdmin()
+    const actor = adminActor(await requireAdmin())
     if (!id.safeParse(clientId).success) return INVALID
+    // Read first, because afterwards there is no name left to say who was deleted
+    const before = await repo().byId(clientId)
     try {
         await repo().remove(clientId)
     } catch (error) {
         log(`Deleting client ${clientId} failed`, error)
         return FAILED
     }
+    await record({
+        kind: 'client.delete', actor,
+        target: before ? asTarget(before) : { type: 'client', id: clientId },
+        summary: `Deleted ${before ? `${before.name} (${before.email})` : clientId}`,
+    })
     revalidatePath('/admin/clients')
     // Outside the try: redirect() works by throwing
     redirect('/admin/clients')
@@ -219,13 +258,14 @@ export async function deleteClientAction(clientId: string): Promise<AdminResult>
 
 // Access is shown on both the client's page and the site's Access tab, and a site's nav and tabs follow it, so
 // a change to it refreshes the whole portal rather than guessing which page asked.
-async function changeAccess(clientId: string, work: () => Promise<void>): Promise<AdminResult> {
+async function changeAccess(clientId: string, work: () => Promise<void>, recorded: () => Promise<void>): Promise<AdminResult> {
     try {
         await work()
     } catch (error) {
         log(`Changing site access for ${clientId} failed`, error)
         return FAILED
     }
+    await recorded()
     revalidatePath('/portal', 'layout')
     return { ok: true }
 }
@@ -233,27 +273,79 @@ async function changeAccess(clientId: string, work: () => Promise<void>): Promis
 // Gives a client a site, or changes what they may do on one they already have. Taken from the client's page
 // (any project id, typed) and from a site's Access tab (that site, by its id and name) alike.
 export async function grantSiteAction(clientId: string, input: unknown, permissions: unknown): Promise<AdminResult> {
-    await requireAdmin()
+    const actor = adminActor(await requireAdmin())
     if (!id.safeParse(clientId).success) return INVALID
     const parsed = siteSchema.safeParse(input)
     if (!parsed.success) return { ok: false, error: parsed.error.issues[0]?.message ?? INVALID.error }
     const allowed = parsePermissions(permissions)
     if (!allowed) return INVALID
-    if (!(await repo().byId(clientId))) return FAILED
+    const client = await repo().byId(clientId)
+    if (!client) return FAILED
 
-    return changeAccess(clientId, () => repo().grantAccess(clientId, parsed.data, allowed))
+    return changeAccess(clientId, () => repo().grantAccess(clientId, parsed.data, allowed), () => record({
+        kind: 'access.grant', actor, site: parsed.data.projectId, target: asTarget(client),
+        summary: `Gave ${client.name} ${parsed.data.projectId}: ${permissionWords(allowed)}`,
+        detail: { permissions: allowed },
+    }))
 }
 
 export async function setSitePermissionsAction(clientId: string, siteId: string, permissions: unknown): Promise<AdminResult> {
-    await requireAdmin()
+    const actor = adminActor(await requireAdmin())
     if (!id.safeParse(clientId).success || !id.safeParse(siteId).success) return INVALID
     const allowed = parsePermissions(permissions)
     if (!allowed) return INVALID
-    return changeAccess(clientId, () => repo().setAccessPermissions(siteId, clientId, allowed))
+    return changeAccess(clientId, () => repo().setAccessPermissions(siteId, clientId, allowed), () => recordAccess(
+        actor, clientId, siteId, 'access.permissions', (name, site) => `Changed ${name}'s access to ${site}: ${permissionWords(allowed)}`,
+        { permissions: allowed },
+    ))
 }
 
 export async function revokeSiteAction(clientId: string, siteId: string): Promise<AdminResult> {
-    await requireAdmin()
+    const actor = adminActor(await requireAdmin())
     if (!id.safeParse(clientId).success || !id.safeParse(siteId).success) return INVALID
-    return changeAccess(clientId, () => repo().revokeAccess(siteId, clientId))
+    // The site is named before the row goes, since afterwards there is nothing to read it from
+    const site = await siteName(siteId)
+    return changeAccess(clientId, () => repo().revokeAccess(siteId, clientId), () => recordAccess(
+        actor, clientId, siteId, 'access.revoke', (name, project) => `Took ${project} away from ${name}`, undefined, site,
+    ))
+}
+
+// What the activity log says about a change that only had the client's id to hand
+async function recordAbout(
+    actor: Actor, clientId: string, kind: 'client.suspend' | 'client.unsuspend' | 'client.unlock', say: (name: string) => string,
+) {
+    const client = await repo().byId(clientId).catch(() => null)
+    await record({
+        kind, actor,
+        target: client ? asTarget(client) : { type: 'client', id: clientId },
+        summary: say(client?.name ?? clientId),
+    })
+}
+
+// SiteAccess names a site by the portal's own row id. The log names the hostd project id instead, which is
+// what every site event and the Logs page's site filter use.
+async function siteName(siteId: string): Promise<string | null> {
+    const row = await getDb().site.findUnique({ where: { id: siteId }, select: { projectId: true } }).catch(() => null)
+    return row?.projectId ?? null
+}
+
+async function recordAccess(
+    actor: Actor, clientId: string, siteId: string, kind: 'access.permissions' | 'access.revoke',
+    say: (name: string, site: string) => string, detail?: Record<string, unknown>, known?: string | null,
+) {
+    const [client, site] = await Promise.all([repo().byId(clientId).catch(() => null), known ?? siteName(siteId)])
+    await record({
+        kind, actor, site,
+        target: client ? asTarget(client) : { type: 'client', id: clientId },
+        summary: say(client?.name ?? clientId, site ?? siteId),
+        detail,
+    })
+}
+
+const permissionWords = (permissions: readonly string[]) =>
+    permissions.length === 0 ? 'overview only' : permissions.map(one => one.toLowerCase()).join(', ')
+
+// Which fields an edit changed, by name. The values are on the client's page; the log says what moved.
+function changedFields(before: Record<string, unknown>, after: Record<string, unknown>): string[] {
+    return Object.keys(after).filter(key => (before[key] ?? null) !== (after[key] ?? null))
 }
