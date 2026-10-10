@@ -1,6 +1,6 @@
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 
-import { hasAccess, getProject, lifecycle, listEnvironments, listProjects } from './projects'
+import { hasAccess, getProject, lifecycle, LIFECYCLE_TIMEOUT_MS, listEnvironments, listProjects } from './projects'
 
 const config = { url: 'http://hostd-api:8080', token: 'a'.repeat(32) }
 const admin = { actor: 'admin', user: 'koda@horizons.gg' }
@@ -111,6 +111,19 @@ describe('lifecycle', () => {
         await lifecycle(config, admin, 'acme-bakery', 'restart', fetchImpl)
         expect(calls[0].url).toBe('http://hostd-api:8080/projects/acme-bakery/restart')
         expect(calls[0].method).toBe('POST')
+    })
+
+    // hostd answers once compose has finished, and a stop alone waits out a ten second grace period per
+    // container. The default ten second timeout reported every such stop as hostd not answering, while
+    // the site stopped regardless.
+    it('waits as long as hostd itself may take, rather than the default ten seconds', async () => {
+        const timeout = vi.spyOn(AbortSignal, 'timeout')
+        const { fetchImpl } = fakeFetch({ ok: true })
+        await lifecycle(config, admin, 'acme-bakery', 'stop', fetchImpl)
+        expect(timeout).toHaveBeenCalledWith(LIFECYCLE_TIMEOUT_MS)
+        // Past hostd's own 150 second call timeout, so its answer, refusal or not, always arrives first
+        expect(LIFECYCLE_TIMEOUT_MS).toBeGreaterThan(150_000)
+        timeout.mockRestore()
     })
 
     it('refuses a project id hostd would not recognise', async () => {

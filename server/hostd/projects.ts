@@ -124,6 +124,12 @@ export async function listEnvironments(
     return result.ok ? { ok: true, value: result.value.environments ?? [] } : result
 }
 
+// hostd answers a lifecycle call when compose has finished, not when it has started: up to 120 seconds in
+// the agent (hostd/src/agent/compose.ts) inside a 150 second call. A stop waits out each container's grace
+// period before Docker kills it, which is ten seconds for anything that ignores SIGTERM, so the default
+// timeout gave up on every such stop and reported hostd as not answering while the stop went on regardless.
+export const LIFECYCLE_TIMEOUT_MS = 180_000
+
 export async function lifecycle(
     config: HostdConfig,
     caller: Caller,
@@ -132,7 +138,7 @@ export async function lifecycle(
     fetchImpl: typeof fetch = fetch,
 ): Promise<HostdResult<{ ok: boolean }>> {
     if (!PROJECT_ID.test(id)) return { ok: false, code: 'not-found', message: 'no such project' }
-    return hostdRequest<{ ok: boolean }>(config, caller, `/projects/${id}/${action}`, { method: 'POST' }, fetchImpl)
+    return hostdRequest<{ ok: boolean }>(config, caller, `/projects/${id}/${action}`, { method: 'POST' }, fetchImpl, LIFECYCLE_TIMEOUT_MS)
 }
 
 // The portal's own access check. hostd runs its own, and describes it as a second line of defence against
