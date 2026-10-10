@@ -20,6 +20,8 @@ const copyRuns = vi.fn()
 const startBackup = vi.fn()
 const deleteBackup = vi.fn()
 const setSchedule = vi.fn()
+const restoreBackup = vi.fn()
+const listRestores = vi.fn()
 const hasAccess = vi.fn()
 const lifecycle = vi.fn()
 const record = vi.fn()
@@ -63,6 +65,8 @@ vi.mock('@/server/hostd/backups', async importOriginal => ({
     startBackup: (...args: unknown[]) => startBackup(...args),
     deleteBackup: (...args: unknown[]) => deleteBackup(...args),
     setSchedule: (...args: unknown[]) => setSchedule(...args),
+    restoreBackup: (...args: unknown[]) => restoreBackup(...args),
+    listRestores: (...args: unknown[]) => listRestores(...args),
 }))
 
 vi.mock('@/server/hostd/environments', () => ({
@@ -74,9 +78,9 @@ vi.mock('@/server/hostd/environments', () => ({
 }))
 
 const {
-    backupNowAction, deleteBackupAction, saveScheduleAction,
+    backupNowAction, deleteBackupAction, saveScheduleAction, restoreBackupAction, restoresAction,
     addDomainAction, addEnvironmentAction, lifecycleAction, copyFromLiveAction, copyRunsAction, deleteEnvironmentAction, restoreEnvironmentAction, changePrimaryDomainAction, deleteSiteAction, deployAction, saveEnvAction, saveSettingsAction,
-    setPortAction, setPrimaryDomainAction,
+    makePrimaryDomainAction, setPortAction, setPrimaryDomainAction,
 } = await import('./actions')
 
 const ADMIN = { caller: { actor: 'admin', user: 'koda@horizons.gg' }, clientId: null }
@@ -332,6 +336,35 @@ describe('setPrimaryDomainAction', () => {
 // Moving an address that already exists is the same request behind a confirmation, and the confirmation
 // is checked here rather than only in the dialog: a server action is a request like any other, so a
 // disabled button proves nothing about what actually arrived.
+describe('makePrimaryDomainAction', () => {
+    it('refuses an environment or a hostname the page could not have sent', async () => {
+        expect(await makePrimaryDomainAction('acme', 'uat-1', 'www.acme.com')).toEqual(CANNOT)
+        expect(await makePrimaryDomainAction('acme', 'live', 5 as never)).toEqual(CANNOT)
+        expect(writeSettings).not.toHaveBeenCalled()
+    })
+
+    // hostd turns an alias given as the new domain into a swap, so this is the same configure request
+    it('sends the alias as the environment\'s new domain', async () => {
+        callerFromSession.mockResolvedValue({ caller: { kind: 'admin' }, clientId: null })
+        writeSettings.mockResolvedValue({ ok: true, data: { ok: true } })
+
+        const result = await makePrimaryDomainAction('acme', 'live', ' WWW.acme.com ')
+
+        expect(result.ok).toBe(true)
+        expect(writeSettings).toHaveBeenCalledWith(
+            expect.anything(), expect.anything(), 'acme', { domains: { live: 'www.acme.com' } },
+        )
+    })
+
+    it('refuses a client outright', async () => {
+        callerFromSession.mockResolvedValue({ caller: { kind: 'client' }, clientId: 'cl_1' })
+
+        expect(await makePrimaryDomainAction('acme', 'live', 'www.acme.com'))
+            .toEqual({ ok: false, error: 'This is not set up yet.' })
+        expect(writeSettings).not.toHaveBeenCalled()
+    })
+})
+
 describe('changePrimaryDomainAction', () => {
     it('refuses an environment, a hostname or a confirmation the page could not have sent', async () => {
         expect(await changePrimaryDomainAction('acme', 'uat-1', 'acme.com', 'acme.com')).toEqual(CANNOT)
@@ -872,6 +905,56 @@ describe('the backup actions', () => {
         expect(setSchedule).toHaveBeenCalledWith(expect.anything(), CLIENT.caller, 'asot', schedule)
         expect(result).toMatchObject({ ok: true, schedule: clamped })
         expect(result.ok ? result.message : '').toMatch(/fewer copies kept/)
+    })
+})
+
+describe('restoreBackupAction', () => {
+    it('starts a restore for the operator with the name as typed, and records it in the activity log', async () => {
+        callerFromSession.mockResolvedValue(ADMIN)
+        restoreBackup.mockResolvedValue({ ok: true, value: { run: 'abcdef012345' } })
+
+        const result = await restoreBackupAction('asot', '4f1c2a9b', 'A State of Trance')
+
+        expect(result).toMatchObject({ ok: true, run: 'abcdef012345' })
+        expect(restoreBackup).toHaveBeenCalledWith(expect.anything(), ADMIN.caller, 'asot', '4f1c2a9b', 'A State of Trance')
+        expect(record).toHaveBeenCalledWith(expect.objectContaining({
+            kind: 'backup.restore', site: 'asot', target: { type: 'backup', id: '4f1c2a9b' }, detail: { run: 'abcdef012345' },
+        }))
+    })
+
+    it('refuses a client, even one with the Backups permission, before hostd is asked', async () => {
+        callerFromSession.mockResolvedValue(CLIENT)
+
+        expect(await restoreBackupAction('asot', '4f1c2a9b', 'A State of Trance')).toEqual({ ok: false, error: 'This is not set up yet.' })
+        expect(await restoresAction('asot')).toEqual({ ok: false, error: 'This is not set up yet.' })
+        expect(restoreBackup).not.toHaveBeenCalled()
+        expect(listRestores).not.toHaveBeenCalled()
+        expect(record).not.toHaveBeenCalled()
+    })
+
+    it('refuses something that is not a snapshot id, or a confirmation that is not text, before the session is read', async () => {
+        for (const [snapshot, confirm] of [['../x', 'asot'], [42, 'asot'], ['4f1c2a9b', null]]) {
+            expect(await restoreBackupAction('asot', snapshot as never, confirm as never)).toEqual(CANNOT)
+        }
+        expect(callerFromSession).not.toHaveBeenCalled()
+    })
+
+    it('passes hostd\'s refusal on and records nothing', async () => {
+        callerFromSession.mockResolvedValue(ADMIN)
+        restoreBackup.mockResolvedValue({ ok: false, code: 'bad-request', message: 'name must match the project name to confirm the restore' })
+        vi.spyOn(console, 'error').mockImplementation(() => {})
+
+        const result = await restoreBackupAction('asot', '4f1c2a9b', 'asot')
+        expect(result).toMatchObject({ ok: false })
+        expect(result.ok ? '' : result.error).toMatch(/name must match/)
+        expect(record).not.toHaveBeenCalled()
+    })
+
+    it('reads the restores for the operator', async () => {
+        callerFromSession.mockResolvedValue(ADMIN)
+        listRestores.mockResolvedValue({ ok: true, value: { restores: [], running: true } })
+
+        expect(await restoresAction('asot')).toEqual({ ok: true, restores: [], running: true })
     })
 })
 

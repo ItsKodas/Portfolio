@@ -5,7 +5,9 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { fireEvent, render, screen, within } from '@testing-library/react'
 
-const { adoptPreview, changePrimary, addDomain } = vi.hoisted(() => ({ adoptPreview: vi.fn(), changePrimary: vi.fn(), addDomain: vi.fn() }))
+const { adoptPreview, changePrimary, addDomain, makePrimary } = vi.hoisted(() => ({
+    adoptPreview: vi.fn(), changePrimary: vi.fn(), addDomain: vi.fn(), makePrimary: vi.fn(),
+}))
 
 // The panel is a server component, but its controls are the client half, and importing those for real
 // drags Prisma and next/cache into a jsdom test for nothing. useRouter needs a mounted app router, which
@@ -18,6 +20,7 @@ vi.mock('./actions', () => ({
     adoptPreviewAction: (...args: unknown[]) => adoptPreview(...args),
     setPrimaryDomainAction: async () => ({ ok: true, message: 'ok' }),
     changePrimaryDomainAction: (...args: unknown[]) => changePrimary(...args),
+    makePrimaryDomainAction: (...args: unknown[]) => makePrimary(...args),
 }))
 vi.mock('next/navigation', () => ({ useRouter: () => ({ push: () => {}, refresh: () => {} }) }))
 
@@ -68,6 +71,7 @@ beforeEach(() => {
     adoptPreview.mockResolvedValue({ ok: true, preview: preview() })
     changePrimary.mockResolvedValue({ ok: true, message: 'ok' })
     addDomain.mockResolvedValue({ ok: true, message: 'ok' })
+    makePrimary.mockResolvedValue({ ok: true, message: 'ok' })
 })
 
 describe('DomainsPanel, for the operator', () => {
@@ -81,7 +85,21 @@ describe('DomainsPanel, for the operator', () => {
 
     it('marks which one is the primary, since every other name redirects to it', () => {
         render(<DomainsPanel {...props} domains={[domain(), domain({ hostname: 'www.acme.com', primary: false })]} />)
-        expect(screen.getByText(/primary/i)).toBeInTheDocument()
+        expect(screen.getByText('primary')).toBeInTheDocument()
+    })
+
+    // The swap: an alias row offers to become the main address, and the main address row does not.
+    it('offers to make an alias the primary, naming the address it swaps with', async () => {
+        render(<DomainsPanel {...props} domains={[domain(), domain({ hostname: 'www.acme.com', primary: false })]} />)
+        const buttons = screen.getAllByRole('button', { name: 'Make primary' })
+        expect(buttons).toHaveLength(1)
+
+        fireEvent.click(buttons[0])
+        const dialog = within(screen.getByRole('dialog'))
+        expect(dialog.getByText(/becomes an alias that redirects to it/)).toBeInTheDocument()
+        fireEvent.click(dialog.getByRole('button', { name: 'Make it primary' }))
+
+        await vi.waitFor(() => expect(makePrimary).toHaveBeenCalledWith('acme', 'live', 'www.acme.com'))
     })
 
     it('offers to adopt a site that is still served by hand', () => {

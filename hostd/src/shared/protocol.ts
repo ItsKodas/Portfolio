@@ -172,10 +172,28 @@ export type CopyListReply = { ok: true, runs: CopyRecord[], running: boolean }
 // record rather than run, so it can never be mistaken for a started reply's run id
 export type CopyRunReply = { ok: true, record: CopyRecord | null, running: boolean }
 
-// The registry's own ceiling on maxDomains. A list longer than this cannot be valid for any project, so
-// it is refused here before the registry is even read; the real per-project cap is checked in the agent,
-// which is what knows which project this is.
-export const MAX_ALIASES = 20
+// Putting one of the project's backups back over live: its databases loaded and its storage folders put
+// in place of live's. Admin only, by api's policy (backup-restore), and the backups capability here. start
+// answers at once with the run id, as a copy does; the run takes a fresh backup of live first, so what the
+// restore replaces can itself be put back, and its record is what get-run and list read. A restore record
+// is a copy record into live, with the snapshot it put back and the safety backup it took first.
+// step is the step the run is on while it runs (safety, space, extract, prepare, load:<service>,
+// sqlite:<service>, storage:<path>), the one that failed when it failed, and null once it is done.
+export type RestoreRecord = CopyRecord & { snapshot: string, safety: string | null }
+export type RestoreStartArgs = { action: 'start', snapshot: string, actor?: string }
+export type RestoreListArgs = { action: 'list' }
+export type RestoreGetRunArgs = { action: 'get-run', run: string }
+export type RestoreArgs = RestoreStartArgs | RestoreListArgs | RestoreGetRunArgs
+export type RestoreRequest = { verb: 'restore', project: string, args: RestoreArgs }
+
+// start answers a CopyStartedReply: the same { ok, run } shape. The other two have keys of their own, so
+// neither can be mistaken for a copy's.
+export type RestoreListReply = { ok: true, restores: RestoreRecord[], running: boolean }
+export type RestoreRunReply = { ok: true, restore: RestoreRecord | null, running: boolean }
+
+// A sanity ceiling on one request, not a policy: it keeps a set-aliases line far inside the agent's 64 KB
+// request limit (100 hostnames of 253 characters is about 26 KB).
+export const MAX_ALIASES = 100
 
 export type DomainsWriteArgs = { action: 'write', environment: EnvironmentName, token: string }
 export type DomainsRemoveArgs = { action: 'remove', environment: EnvironmentName }
@@ -278,7 +296,7 @@ export type PortRequest = { verb: 'port', project: string, args: { environment: 
 
 export type ProjectRequest =
     | StatusRequest | LifecycleRequest | LogsRequest | ProvisionOnProjectRequest | EnvRequest | DeployRequest | DeployWatchRequest
-    | BackupRequest | DomainsRequest | ConfigureRequest | BranchesRequest | PortRequest | CopyRequest
+    | BackupRequest | DomainsRequest | ConfigureRequest | BranchesRequest | PortRequest | CopyRequest | RestoreRequest
 export type AgentRequest = HealthRequest | StatusesRequest | ProvisionCreateRequest | CredentialsRequest | PortsRequest | ProjectRequest
 export type Verb = AgentRequest['verb']
 
@@ -368,7 +386,7 @@ export type AgentReply =
     | HealthReply | StatusReply | StatusesReply | LifecycleReply | ProvisionReply | EnvListReply | EnvReadReply
     | DeployStartedReply | DeployHistoryReply | DeployCommitsReply | BranchesReply | CredentialsReply | PortsReply | ConfigureReply
     | BackupStartedReply | BackupListReply | BackupRunReply | DeletedEnvironmentsReply | RestoreEnvironmentReply
-    | CopyStartedReply | CopyListReply | CopyRunReply
+    | CopyStartedReply | CopyListReply | CopyRunReply | RestoreListReply | RestoreRunReply
     | DomainsWritten | AdoptPreview | Refusal
 export type LogLine = { stream: 'stdout' | 'stderr', ts: string | null, text: string, truncated: boolean }
 
@@ -404,6 +422,8 @@ export const VERB_CAPABILITY: Record<Verb, Capability | null> = {
     port: null,
     // provision, as adding the environment it copies into is, and admin-only by api's policy
     copy: 'provision',
+    // backups, as every other backup action is, and admin-only by api's policy (backup-restore)
+    restore: 'backups',
 }
 
 type Parsed = { ok: true, request: AgentRequest } | Refusal
@@ -741,6 +761,26 @@ function parseCopyArgs(raw: unknown): CopyArgs | Refusal {
     return refuse('bad-request', 'copy action must be start, list or get-run')
 }
 
+function parseRestoreArgs(raw: unknown): RestoreArgs | Refusal {
+    if (!isRecord(raw)) return refuse('bad-request', 'restore needs args')
+    if (raw.action === 'start') {
+        if (!onlyKeys(raw, ['action', 'snapshot', 'actor'])) return refuse('bad-request', 'start takes only snapshot and actor')
+        if (typeof raw.snapshot !== 'string' || !SNAPSHOT_ID.test(raw.snapshot)) return refuse('bad-request', 'a snapshot id must be hex')
+        if (raw.actor !== undefined && (typeof raw.actor !== 'string' || !USER_ID.test(raw.actor))) return refuse('bad-request', 'actor is malformed')
+        return { action: 'start', snapshot: raw.snapshot, ...(raw.actor !== undefined ? { actor: raw.actor as string } : {}) }
+    }
+    if (raw.action === 'list') {
+        if (!onlyKeys(raw, ['action'])) return refuse('bad-request', 'list takes only action')
+        return { action: 'list' }
+    }
+    if (raw.action === 'get-run') {
+        if (!onlyKeys(raw, ['action', 'run'])) return refuse('bad-request', 'get-run takes only action and run')
+        if (typeof raw.run !== 'string' || !RUN_ID.test(raw.run)) return refuse('bad-request', 'get-run needs a run id')
+        return { action: 'get-run', run: raw.run }
+    }
+    return refuse('bad-request', 'restore action must be start, list or get-run')
+}
+
 // Hex only, and bounded. This string is interpolated into a <Location> and into a header value in the
 // vhost, so it is the one value from api that reaches Apache's configuration. Nothing that could be read
 // as a path, a quote or a directive is allowed to be a token.
@@ -817,9 +857,7 @@ export function parseDomainsArgs(args: unknown): { ok: true, args: DomainsArgs }
             if (value === null) return refuse('bad-request', 'token must be lowercase hex')
             const list = args.aliases
             if (!Array.isArray(list)) return refuse('bad-request', 'aliases must be a list of hostnames')
-            // maxDomains caps at 20 per project, so a longer list cannot be valid for any project and is
-            // refused before the registry is even read. The real per-project cap is checked in the agent,
-            // which is what knows which project this is.
+            // See MAX_ALIASES: a ceiling on the request, not a per-project cap
             if (list.length > MAX_ALIASES) return refuse('bad-request', `at most ${MAX_ALIASES} aliases`)
             const aliases: string[] = []
             for (const entry of list) {
@@ -1106,6 +1144,15 @@ export function parseAgentRequest(line: string): Parsed {
             const args = parseCopyArgs(raw.args)
             if ('ok' in args) return args
             return { ok: true, request: { verb: 'copy', project, args } }
+        }
+
+        case 'restore': {
+            if (!onlyKeys(raw, ['verb', 'project', 'args'])) return refuse('bad-request', 'restore takes only project and args')
+            const project = projectOf(raw)
+            if (!project) return refuse('bad-request', 'project is malformed')
+            const args = parseRestoreArgs(raw.args)
+            if ('ok' in args) return args
+            return { ok: true, request: { verb: 'restore', project, args } }
         }
 
         default:

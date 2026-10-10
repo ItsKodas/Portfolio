@@ -289,3 +289,37 @@ describe('the portal\'s list of sites', () => {
         assert.deepEqual(visibleProjects(registry, { kind: 'client', client: 'cl_1', sites: new Set() }), [])
     })
 })
+
+describe('putting a backup back is the operator\'s alone', () => {
+    const registry = parseRegistry(`
+projects:
+  acme:
+    client: cl_1
+    name: Acme
+    dir: /var/www/acme
+    upstream: 127.0.0.1:5010
+    capabilities: [backups]
+    services: { web: { role: site } }
+  plain:
+    client: cl_1
+    name: Plain
+    dir: /var/www/plain
+    upstream: 127.0.0.1:5011
+    capabilities: [lifecycle]
+    services: { web: { role: site } }
+`)
+    const owner = { kind: 'client', client: 'cl_1', label: 'client:cl_1', user: 'u1' } as const
+    const admin = { kind: 'admin', label: 'admin', user: 'koda' } as Actor
+
+    it('lets the admin restore, and answers the owning client as though the project were not there', () => {
+        assert.equal(authorize(registry, admin, 'acme', 'backup-restore').ok, true)
+        const refused = authorize(registry, owner, 'acme', 'backup-restore')
+        assert.equal(refused.ok, false)
+        assert.equal(!refused.ok && refused.status, 404)
+    })
+
+    it('still needs the backups capability', () => {
+        const refused = authorize(registry, admin, 'plain', 'backup-restore')
+        assert.equal(!refused.ok && refused.code, 'capability-disabled')
+    })
+})

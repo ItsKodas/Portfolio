@@ -77,8 +77,8 @@ projects:
   #                                         # project-level compose key above
   #       branch: main
   #       domain: widgetshop.com
-  #       aliases: [www.widgetshop.com]  # served, and each one 301s to the domain above. The domain
-  #                                      # plus its aliases must not exceed maxDomains (default 3).
+  #       aliases: [www.widgetshop.com]  # served, and each one 301s to the domain above. No limit
+  #                                      # on how many: only the admin can add them.
   #       port: 5020
   #       certificate: letsencrypt          # letsencrypt | cloudflare-origin
   #       deployed: 3f7c1a2                 # the commit currently checked out, set by hostd itself

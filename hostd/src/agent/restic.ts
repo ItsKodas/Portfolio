@@ -57,6 +57,15 @@ export const retentionArgv = (repo: string, keep: Keep): string[] => [
 ]
 export const pruneArgv = (repo: string): string[] => [...base(repo), 'prune']
 export const dumpArgv = (repo: string, snapshot: string): string[] => [...base(repo), 'dump', '--archive', 'tar', snapshot, '/']
+// One snapshot's own entry, for the paths it captured: a restore needs to know where in it the dumps are
+export const snapshotArgv = (repo: string, snapshot: string): string[] => [...base(repo), 'snapshots', '--json', snapshot]
+// How many bytes the snapshot's files come to when they are written back out, which is what a restore
+// needs room for
+export const restoreSizeArgv = (repo: string, snapshot: string): string[] =>
+    [...base(repo), 'stats', '--json', '--mode', 'restore-size', snapshot]
+// Every path in the snapshot, written under target at its own absolute path, owners and modes kept
+export const restoreArgv = (repo: string, snapshot: string, target: string): string[] =>
+    [...base(repo), 'restore', snapshot, '--target', target]
 
 export type StreamHandle = { stdout: Readable, exit: Promise<{ exitCode: number | null, stderr: string }> }
 export type SpawnStream = (command: string, args: string[]) => StreamHandle
@@ -83,10 +92,14 @@ export type Restic = {
     retention(repo: string, keep: Keep): Promise<{ ok: true } | ResticFailure>
     prune(repo: string): Promise<{ ok: true } | ResticFailure>
     dump(repo: string, snapshot: string): StreamHandle
+    // The paths one snapshot captured, as the agent saw them when it took it
+    paths(repo: string, snapshot: string): Promise<{ ok: true, paths: string[] } | ResticFailure>
+    restoreSize(repo: string, snapshot: string): Promise<{ ok: true, bytes: number } | ResticFailure>
+    restore(repo: string, snapshot: string, target: string): Promise<{ ok: true } | ResticFailure>
 }
 
 type Summary = { message_type?: string, snapshot_id?: string, total_bytes_processed?: number }
-type ResticSnapshot = { short_id?: string, id?: string, time?: string, tags?: string[] }
+type ResticSnapshot = { short_id?: string, id?: string, time?: string, tags?: string[], paths?: unknown }
 
 export function createRestic(run: Runner, spawnStream: SpawnStream): Restic {
     // Every failure is returned, never thrown, and carries the tail of stderr so a broken repository is
@@ -148,5 +161,32 @@ export function createRestic(run: Runner, spawnStream: SpawnStream): Restic {
         },
 
         dump: (repo, snapshot) => spawnStream('restic', dumpArgv(repo, snapshot)),
+
+        restore: (repo, snapshot, target) => simple('restore', restoreArgv(repo, snapshot, target)),
+
+        async paths(repo, snapshot) {
+            const result = await run('restic', snapshotArgv(repo, snapshot), RESTIC_TIMEOUT_MS)
+            if (result.exitCode !== 0 || result.timedOut) return failed('snapshots', result)
+            try {
+                const parsed = JSON.parse(result.stdout) as ResticSnapshot[]
+                const paths = parsed.length === 1 ? parsed[0]!.paths : undefined
+                if (Array.isArray(paths) && paths.every(path => typeof path === 'string')) return { ok: true, paths: paths as string[] }
+            } catch {
+                // Answered below, the same as a reply with no paths in it
+            }
+            return { ok: false, reason: `restic did not say which paths ${snapshot} holds`, output: '' }
+        },
+
+        async restoreSize(repo, snapshot) {
+            const result = await run('restic', restoreSizeArgv(repo, snapshot), RESTIC_TIMEOUT_MS)
+            if (result.exitCode !== 0 || result.timedOut) return failed('stats', result)
+            try {
+                const parsed = JSON.parse(result.stdout) as { total_size?: unknown }
+                if (typeof parsed.total_size === 'number' && Number.isFinite(parsed.total_size)) return { ok: true, bytes: parsed.total_size }
+            } catch {
+                // Answered below
+            }
+            return { ok: false, reason: `restic did not say how large ${snapshot} is`, output: '' }
+        },
     }
 }

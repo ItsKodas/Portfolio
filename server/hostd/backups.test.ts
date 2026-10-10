@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
-import { deleteBackup, getSchedule, listBackups, openBackupDownload, setSchedule, startBackup } from './backups'
+import { deleteBackup, getSchedule, listBackups, listRestores, openBackupDownload, restoreBackup, setSchedule, startBackup } from './backups'
 
 const config = { url: 'http://hostd-api:8080', token: 'a'.repeat(32) }
 const client = { actor: 'client:cl_8F2K1ABC', user: 'cl_8F2K1ABC' }
@@ -114,5 +114,53 @@ describe('openBackupDownload', () => {
         const { fetchImpl, calls } = fakeFetch('')
         expect(await openBackupDownload(config, client, 'acme-bakery', 'nope', fetchImpl)).toMatchObject({ ok: false, code: 'not-found' })
         expect(calls).toHaveLength(0)
+    })
+})
+
+describe('restoreBackup', () => {
+    const admin = { actor: 'admin', user: 'koda@horizons.gg' }
+
+    it('posts the typed name to the copy\'s restore route and answers the run it started', async () => {
+        const { fetchImpl, calls } = fakeFetch({ ok: true, run: 'abcdef012345' }, 202)
+        const result = await restoreBackup(config, admin, 'acme-bakery', '4f1c2a9b', 'Acme Bakery', fetchImpl)
+
+        expect(calls[0]).toEqual({ url: 'http://hostd-api:8080/projects/acme-bakery/backups/4f1c2a9b/restore', method: 'POST', body: JSON.stringify({ name: 'Acme Bakery' }) })
+        expect(result).toEqual({ ok: true, value: { run: 'abcdef012345' } })
+    })
+
+    it('passes hostd\'s refusal on, and never builds a path from a bad id', async () => {
+        const refused = fakeFetch({ ok: false, code: 'busy', message: 'acme-bakery has a backup running' }, 409)
+        expect(await restoreBackup(config, admin, 'acme-bakery', '4f1c2a9b', 'Acme Bakery', refused.fetchImpl))
+            .toEqual({ ok: false, code: 'busy', message: 'acme-bakery has a backup running' })
+
+        const unused = fakeFetch({})
+        expect((await restoreBackup(config, admin, 'acme-bakery', '../etc', 'x', unused.fetchImpl)).ok).toBe(false)
+        expect((await restoreBackup(config, admin, '../etc', '4f1c2a9b', 'x', unused.fetchImpl)).ok).toBe(false)
+        expect(unused.calls).toEqual([])
+    })
+})
+
+describe('listRestores', () => {
+    const admin = { actor: 'admin', user: 'koda@horizons.gg' }
+
+    it('reads the restores and whether one runs, dropping a record it cannot read', async () => {
+        const restore = {
+            project: 'acme-bakery', environment: 'live', run: 'abcdef012345', actor: 'koda@horizons.gg', startedAt: '2026-10-10T06:00:00.000Z',
+            durationMs: 5000, outcome: 'running', step: 'load:db', reason: null, services: ['db'], storage: [], snapshot: '4f1c2a9b', safety: 'fe11a5af',
+        }
+        const { fetchImpl, calls } = fakeFetch({ ok: true, restores: [restore, { run: 7 }], running: true })
+        const result = await listRestores(config, admin, 'acme-bakery', fetchImpl)
+
+        expect(calls[0].url).toBe('http://hostd-api:8080/projects/acme-bakery/backups/restores')
+        expect(result).toEqual({
+            ok: true,
+            value: {
+                restores: [{
+                    run: 'abcdef012345', actor: 'koda@horizons.gg', startedAt: '2026-10-10T06:00:00.000Z', durationMs: 5000,
+                    outcome: 'running', step: 'load:db', reason: null, snapshot: '4f1c2a9b', safety: 'fe11a5af',
+                }],
+                running: true,
+            },
+        })
     })
 })

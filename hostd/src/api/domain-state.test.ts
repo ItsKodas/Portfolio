@@ -88,6 +88,23 @@ describe('reconcile', () => {
         assert.equal(s.get(domainKey('acme', 'live', 'acme.com'))?.attempts, 9)
     })
 
+    // An alias promoted to primary swaps the flag on both records and keeps everything else, so the two
+    // names that were answering a moment ago are not made to prove themselves again.
+    it('moves the primary flag when the registry swaps the primary and an alias', async () => {
+        const { store: s } = store()
+        await s.load()
+        await s.put({ ...newRecord('acme', 'live', 'acme.com', false, NOW), state: 'active', attempts: 4 })
+        await s.put({ ...newRecord('acme', 'live', 'www.acme.com', true, NOW), state: 'active', attempts: 7 })
+        await s.reconcile(parseRegistry(REGISTRY), NOW)
+        const apex = s.get(domainKey('acme', 'live', 'acme.com'))
+        const www = s.get(domainKey('acme', 'live', 'www.acme.com'))
+        assert.equal(apex?.primary, true)
+        assert.equal(apex?.state, 'active')
+        assert.equal(apex?.attempts, 4)
+        assert.equal(www?.primary, false)
+        assert.equal(www?.attempts, 7)
+    })
+
     it('drops a record for a hostname the registry no longer names', async () => {
         const { store: s } = store()
         await s.load()

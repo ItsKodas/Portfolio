@@ -75,9 +75,9 @@ type Props = {
     trouble: string | null
 }
 
-// The environment's main address, shown and not changed here. live's is changed from Settings, where a
+// The environment's main address, shown and not typed in here. live's is changed from Settings, where a
 // change to the address the site answers on sits beside the site's other settings. Any other environment's
-// is given when it is created.
+// is given when it is created. On any environment, an alias in the table below can be swapped in.
 function MainAddress({ environment, current }: { environment: EnvironmentName, current: string | null }) {
     return (
         <section className={styles.block} aria-labelledby="main-address">
@@ -88,7 +88,7 @@ function MainAddress({ environment, current }: { environment: EnvironmentName, c
                     This environment has no main address yet. The first address added below becomes it.
                 </p>}
             {environment === LIVE && (
-                <p className={styles.note}>live&apos;s main address is set and changed from this site&apos;s Settings tab.</p>
+                <p className={styles.note}>live&apos;s main address is set and changed from this site&apos;s Settings tab, or by making one of its aliases primary below.</p>
             )}
         </section>
     )
@@ -155,7 +155,8 @@ export function DomainsPanel({ id, environment, domains, isAdmin, projectName, t
         // it over, and that is per environment rather than per name.
         act: domain.state === 'unmanaged'
             ? <AdoptSite id={id} environment={environment} projectName={projectName} />
-            : <DomainActions id={id} environment={environment} hostname={domain.hostname} removable={!domain.primary} />,
+            : <DomainActions id={id} environment={environment} hostname={domain.hostname} removable={!domain.primary}
+                promotable={!domain.primary} primary={primary} />,
     }))
 
     return (

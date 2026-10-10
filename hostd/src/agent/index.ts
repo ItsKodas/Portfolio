@@ -41,8 +41,10 @@ import type { DomainsConfig, DomainsDeps } from './domains.ts'
 import { SitesEnabledReader, findShadows, shadowWarnings } from './sites-enabled.ts'
 import { siblingDirProblem } from './boot-checks.ts'
 import { DeletedStore } from './deleted-store.ts'
-import { CopyStore } from './copy-store.ts'
+import { CopyStore, RESTORES } from './copy-store.ts'
 import { removeInterruptedStaging, type CopyFs } from './copy-run.ts'
+import { removeInterruptedRestoreStaging } from './restore-run.ts'
+import type { RestoreRecord } from '../shared/protocol.ts'
 import { HoldingPages } from './holding-pages.ts'
 
 const REGISTRY_FILE = process.env.HOSTD_REGISTRY_FILE ?? '/etc/hostd/registry/projects.yaml'
@@ -62,6 +64,9 @@ const DELETED_ENVIRONMENTS_FILE = process.env.HOSTD_DELETED_ENVIRONMENTS_FILE ??
 // The record of copies from live into another environment, the last 20 of each. Beside the others, so a
 // restart remembers them, and can tell which copy it interrupted.
 const COPIES_FILE = process.env.HOSTD_COPIES_FILE ?? '/var/lib/hostd/copies.json'
+// The record of backups put back over live, the last 20 of each project, beside the copies for the same
+// reason: a restart must be able to say which restore it interrupted.
+const RESTORES_FILE = process.env.HOSTD_RESTORES_FILE ?? '/var/lib/hostd/restores.json'
 // The flags Apache reads to serve the holding page. Bind-mounted from the host's own /run, which is a
 // tmpfs, so a reboot can never leave a site behind a maintenance page nobody remembers putting up.
 const MAINTENANCE_DIR = process.env.HOSTD_MAINTENANCE_DIR ?? '/run/hostd/maintenance'
@@ -454,6 +459,11 @@ async function main(): Promise<void> {
     await copyStore.load()
     // A copy still marked running belonged to the agent that stopped: it is failed, and its staging goes
     await removeInterruptedStaging(await copyStore.markInterrupted(Date.now()), store.current(), copyFs, log)
+    const restoreStore = new CopyStore<RestoreRecord>(RESTORES_FILE, undefined, log, RESTORES)
+    await restoreStore.load()
+    // The same for a restore: its staging holds the backup's copy of the client's data. Live may have been
+    // left part way, with its services stopped; the record says so, for the operator to act on.
+    await removeInterruptedRestoreStaging(await restoreStore.markInterrupted(Date.now()), store.current(), copyFs, log)
 
     // The agent's end of the host rail: a file dropped for a systemd path unit on the host to pick up,
     // since this process has no network namespace of its own to reach Apache through.
@@ -513,6 +523,7 @@ async function main(): Promise<void> {
         ...backupStore.warnings(),
         ...deletedStore.warnings(),
         ...copyStore.warnings(),
+        ...restoreStore.warnings(),
         ...[...store.current().invalid].map(([id, problem]) => `project ${id} is invalid: ${problem}`),
         ...guard.warnings(),
         // A file in sites-enabled that cannot be opened fails apache2ctl configtest, and hostd runs a
@@ -584,6 +595,15 @@ async function main(): Promise<void> {
         },
         copies: {
             store: copyStore,
+            fs: copyFs,
+            helper: ioHelper,
+            // Six bytes of hex, which is what RUN_ID accepts
+            newRunId: () => randomBytes(6).toString('hex'),
+            log,
+            now: Date.now,
+        },
+        restores: {
+            store: restoreStore,
             fs: copyFs,
             helper: ioHelper,
             // Six bytes of hex, which is what RUN_ID accepts

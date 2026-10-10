@@ -16,8 +16,8 @@ import { Callout } from '@/ui/Callout/Callout'
 import { Dialog } from '@/ui/Dialog/Dialog'
 import { Field } from '@/ui/Field/Field'
 import {
-    adoptAction, adoptPreviewAction, addDomainAction, changePrimaryDomainAction, removeDomainAction,
-    setPrimaryDomainAction, verifyDomainAction, type SiteActionResult,
+    adoptAction, adoptPreviewAction, addDomainAction, changePrimaryDomainAction, makePrimaryDomainAction,
+    removeDomainAction, setPrimaryDomainAction, verifyDomainAction, type SiteActionResult,
 } from './actions'
 import styles from './site.module.css'
 
@@ -254,13 +254,18 @@ type ActionProps = {
     // (an environment without one has nothing for its aliases to redirect to), and a button that only
     // ever answers that refusal is worse than no button. Moving it somewhere else is PrimaryDomain's job.
     removable: boolean
+    // An alias can be made the main address, which swaps it with the current one
+    promotable: boolean
+    // The environment's main address now, named in the swap dialog. null when it has none.
+    primary: string | null
 }
 
-export function DomainActions({ id, environment, hostname, removable }: ActionProps) {
+export function DomainActions({ id, environment, hostname, removable, promotable, primary }: ActionProps) {
     const router = useRouter()
     const [pending, setPending] = useState<string | null>(null)
     const [said, setSaid] = useState<SiteActionResult | null>(null)
     const [asking, setAsking] = useState(false)
+    const [promoting, setPromoting] = useState(false)
 
     async function run(what: string, action: () => Promise<SiteActionResult>) {
         setPending(what)
@@ -274,6 +279,7 @@ export function DomainActions({ id, environment, hostname, removable }: ActionPr
         } finally {
             setPending(null)
             setAsking(false)
+            setPromoting(false)
         }
     }
 
@@ -287,6 +293,12 @@ export function DomainActions({ id, environment, hostname, removable }: ActionPr
                 {pending === 'verify' ? 'Checking...' : 'Check again'}
             </Button>
 
+            {promotable && (
+                <Button size="small" disabled={pending !== null} onClick={() => setPromoting(true)}>
+                    Make primary
+                </Button>
+            )}
+
             {removable && (
                 <Button size="small" variant="danger" disabled={pending !== null} onClick={() => setAsking(true)}>
                     Remove
@@ -294,6 +306,34 @@ export function DomainActions({ id, environment, hostname, removable }: ActionPr
             )}
 
             <Said said={said} />
+
+            <Dialog
+                open={promoting}
+                onClose={() => setPromoting(false)}
+                title="Make this the main address"
+                footer={
+                    <>
+                        <Button variant="quiet" onClick={() => setPromoting(false)}>Leave it</Button>
+                        <Button
+                            disabled={pending !== null}
+                            onClick={() => run('promote', () => makePrimaryDomainAction(id, environment, hostname))}
+                        >
+                            {pending === 'promote' ? 'Switching...' : 'Make it primary'}
+                        </Button>
+                    </>
+                }
+            >
+                <p>
+                    <span className={styles.mono}>{hostname}</span> becomes this environment&apos;s main
+                    address{primary
+                        ? <>, and <span className={styles.mono}>{primary}</span> becomes an alias that redirects to it</>
+                        : null}. Both keep being served; only the direction of the redirect changes.
+                </p>
+                <p className={styles.note}>
+                    If the site itself redirects to one particular address (a site URL setting in the app),
+                    make sure it is this one, or the two redirects will send visitors back and forth.
+                </p>
+            </Dialog>
 
             <Dialog
                 open={asking}

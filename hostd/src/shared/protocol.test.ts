@@ -1,7 +1,7 @@
 import { describe, it } from 'node:test'
 import assert from 'node:assert/strict'
 import {
-    parseAgentRequest, checkStructure, parseDomainsArgs, parseConfigureArgs, VERB_CAPABILITY, MAX_REQUEST_BYTES, MAX_COMMITS, DEFAULT_COMMITS, SNAPSHOT_ID,
+    parseAgentRequest, checkStructure, parseDomainsArgs, parseConfigureArgs, VERB_CAPABILITY, MAX_REQUEST_BYTES, MAX_COMMITS, DEFAULT_COMMITS, SNAPSHOT_ID, MAX_ALIASES,
     type ProjectRequest,
 } from './protocol.ts'
 import { parseRegistry } from './registry.ts'
@@ -573,9 +573,15 @@ describe('parseDomainsArgs', () => {
         assert.deepEqual(parsed.ok && parsed.args.action === 'set-aliases' && parsed.args.aliases, ['www.acme.com'])
     })
 
-    it('refuses a list longer than any project could allow, before the registry is read', () => {
-        const many = Array.from({ length: 21 }, (_, i) => `a${i}.acme.com`)
+    it('refuses a list past the request ceiling, before the registry is read', () => {
+        const many = Array.from({ length: MAX_ALIASES + 1 }, (_, i) => `a${i}.acme.com`)
         assert.equal(parseDomainsArgs({ action: 'set-aliases', environment: 'live', aliases: many, token: 'abc123' }).ok, false)
+    })
+
+    // The admin is not held to maxDomains, so the ceiling has to sit well above any project's cap
+    it('accepts a list longer than any maxDomains, up to the ceiling', () => {
+        const many = Array.from({ length: MAX_ALIASES }, (_, i) => `a${i}.acme.com`)
+        assert.equal(parseDomainsArgs({ action: 'set-aliases', environment: 'live', aliases: many, token: 'abc123' }).ok, true)
     })
 })
 
@@ -879,5 +885,27 @@ describe('deploy-watch', () => {
         assert.equal(refusalOf({ verb: 'deploy-watch', project: '../acme', args: { environment: 'live' } }), 'bad-request: project is malformed')
         assert.equal(refusalOf({ verb: 'deploy-watch', project: 'acme', args: { environment: 'prev' } }), 'bad-request: environment must be an environment name')
         assert.equal(refusalOf({ verb: 'deploy-watch', project: 'acme', args: { environment: 'live', follow: true } }), 'bad-request: deploy-watch takes only environment')
+    })
+})
+
+describe('restore', () => {
+    it('parses a start, a list and a get-run', () => {
+        assert.deepEqual(
+            parsed({ verb: 'restore', project: 'acme', args: { action: 'start', snapshot: '0123abcd', actor: 'koda' } }),
+            { ok: true, request: { verb: 'restore', project: 'acme', args: { action: 'start', snapshot: '0123abcd', actor: 'koda' } } },
+        )
+        assert.deepEqual(parsed({ verb: 'restore', project: 'acme', args: { action: 'list' } }), { ok: true, request: { verb: 'restore', project: 'acme', args: { action: 'list' } } })
+        assert.deepEqual(
+            parsed({ verb: 'restore', project: 'acme', args: { action: 'get-run', run: 'abcdef012345' } }),
+            { ok: true, request: { verb: 'restore', project: 'acme', args: { action: 'get-run', run: 'abcdef012345' } } },
+        )
+    })
+
+    it('refuses a snapshot that is not hex, a bad run id, a bad actor and an extra field', () => {
+        assert.equal(refusalOf({ verb: 'restore', project: 'acme', args: { action: 'start', snapshot: '../x' } }), 'bad-request: a snapshot id must be hex')
+        assert.equal(refusalOf({ verb: 'restore', project: 'acme', args: { action: 'get-run', run: '../x' } }), 'bad-request: get-run needs a run id')
+        assert.equal(refusalOf({ verb: 'restore', project: 'acme', args: { action: 'start', snapshot: '0123abcd', actor: 'a b' } }), 'bad-request: actor is malformed')
+        assert.equal(refusalOf({ verb: 'restore', project: 'acme', args: { action: 'list', environment: 'live' } }), 'bad-request: list takes only action')
+        assert.equal(refusalOf({ verb: 'restore', project: 'acme', args: { action: 'drop' } }), 'bad-request: restore action must be start, list or get-run')
     })
 })
