@@ -153,10 +153,12 @@ enum SitePermission {
   ENVIRONMENTS
   // The Deploys tab: the history and a deploy as it runs, never starting one
   DEPLOYS
-  // The Backups tab: list, make, delete, download and schedule copies of live
+  // The Backups tab: list, make, delete, download and schedule copies of live, never putting one back
   BACKUPS
   // The Environments tab's Env files: read and edit each environment's env files. Only with ENVIRONMENTS.
   ENV_FILES
+  // A Restore button on each copy in the Backups tab, which puts it back over live. Only with BACKUPS.
+  RESTORE_BACKUPS
 }
 
 // One client's access to one site. Many clients may share a site, and a client may have many sites.

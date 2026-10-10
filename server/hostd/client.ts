@@ -34,6 +34,7 @@ export async function hostdRequest<T>(
                 'X-Hostd-User': caller.user,
                 ...(caller.sites !== undefined ? { 'X-Hostd-Sites': caller.sites.join(',') } : {}),
                 ...(caller.envSites !== undefined ? { 'X-Hostd-Env-Sites': caller.envSites.join(',') } : {}),
+                ...(caller.restoreSites !== undefined ? { 'X-Hostd-Restore-Sites': caller.restoreSites.join(',') } : {}),
             },
             cache: 'no-store',
             signal: AbortSignal.timeout(timeoutMs),

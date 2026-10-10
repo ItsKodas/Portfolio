@@ -19,7 +19,7 @@ beforeEach(() => {
 })
 
 function open() {
-    render(<RestoreButton id="asot" name="A State of Trance" snapshot="4f1c2a9b" label="5 Oct, 06:00" block={null} />)
+    render(<RestoreButton id="asot" name="A State of Trance" snapshot="4f1c2a9b" label="5 Oct, 06:00" block={null} isAdmin />)
     fireEvent.click(screen.getByRole('button', { name: 'Restore' }))
 }
 
@@ -56,8 +56,16 @@ describe('the Restore button', () => {
         expect(refresh).not.toHaveBeenCalled()
     })
 
+    it('leaves restic\'s id out for a client', () => {
+        render(<RestoreButton id="asot" name="asot" snapshot="4f1c2a9b" label="5 Oct" block={null} isAdmin={false} />)
+        fireEvent.click(screen.getByRole('button', { name: 'Restore' }))
+
+        expect(screen.getByText(/asot's live site goes back to the copy from 5 Oct/)).toBeInTheDocument()
+        expect(screen.queryByText('4f1c2a9b')).not.toBeInTheDocument()
+    })
+
     it('is off with the reason while something else runs', () => {
-        render(<RestoreButton id="asot" name="asot" snapshot="4f1c2a9b" label="5 Oct" block="A copy is being made right now." />)
+        render(<RestoreButton id="asot" name="asot" snapshot="4f1c2a9b" label="5 Oct" block="A copy is being made right now." isAdmin />)
 
         expect(screen.getByRole('button', { name: 'Restore' })).toBeDisabled()
     })

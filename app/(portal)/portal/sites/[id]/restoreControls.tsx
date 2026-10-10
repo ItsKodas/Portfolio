@@ -1,7 +1,8 @@
 'use client'
 
-// Putting a backup back over live, and watching it happen. The operator's alone: hostd keeps backup-restore
-// among its admin-only verbs, the panel never renders any of this for a client, and both server actions
+// Putting a backup back over live, and watching it happen. The operator's, and a client's given
+// RESTORE_BACKUPS on this site: hostd keeps backup-restore among its admin-only verbs except on the sites the
+// portal names for that client, the panel renders none of this for anyone else, and both server actions
 // re-derive who is asking from the session anyway. The site's name is typed back and sent to hostd as typed,
 // so hostd's own comparison is the confirmation; nothing here decides anything.
 
@@ -47,11 +48,13 @@ type StatusProps = {
     // What the panel read from hostd when the page was drawn
     restores: RestoreRecord[]
     running: boolean
+    // The operator reads restic's ids and hostd's reasons; a client reads what it means for their site
+    isAdmin: boolean
 }
 
 // The latest restore, and while one runs, where it has got to. Polls the restores rather than refreshing
 // the whole page, then refreshes once at the end so the list shows the safety copy it made.
-export function RestoreStatus({ id, restores: initial, running: initiallyRunning }: StatusProps) {
+export function RestoreStatus({ id, restores: initial, running: initiallyRunning, isAdmin }: StatusProps) {
     const router = useRouter()
     const [restores, setRestores] = useState(initial)
     const [running, setRunning] = useState(initiallyRunning)
@@ -105,8 +108,10 @@ export function RestoreStatus({ id, restores: initial, running: initiallyRunning
         return (
             <div className={styles.said}>
                 <Callout tone="good" title="The last restore worked">
-                    {`Copy ${latest.snapshot} was put back over live`}
-                    {latest.safety ? `, after a fresh copy (${latest.safety}) of what was there before.` : '.'}
+                    {isAdmin ? `Copy ${latest.snapshot} was put back over live` : 'The copy was put back over the live site'}
+                    {latest.safety
+                        ? `, after a fresh copy${isAdmin ? ` (${latest.safety})` : ''} of what was there before.`
+                        : '.'}
                 </Callout>
             </div>
         )
@@ -114,8 +119,12 @@ export function RestoreStatus({ id, restores: initial, running: initiallyRunning
     return (
         <div className={styles.said}>
             <Callout tone="crit" title="The last restore did not work">
-                {`Putting ${latest.snapshot} back stopped at "${stepWords(latest.step)}": `}
-                {latest.reason ?? 'no reason was recorded'}
+                {isAdmin
+                    ? `Putting ${latest.snapshot} back stopped at "${stepWords(latest.step)}": ${latest.reason ?? 'no reason was recorded'}`
+                    : `It stopped at "${stepWords(latest.step)}". `
+                        + (latest.safety
+                            ? 'The fresh copy made just before it holds your site as it was, and is in the list below. Koda has the details.'
+                            : 'Nothing on the live site was changed.')}
             </Callout>
         </div>
     )
@@ -130,9 +139,11 @@ type ButtonProps = {
     label: string
     // Why a restore would be refused right now (a copy or another restore running), or null
     block: string | null
+    // restic's id is the operator's detail, as it is in the list
+    isAdmin: boolean
 }
 
-export function RestoreButton({ id, name, snapshot, label, block }: ButtonProps) {
+export function RestoreButton({ id, name, snapshot, label, block, isAdmin }: ButtonProps) {
     const router = useRouter()
     const [asking, setAsking] = useState(false)
     const [typed, setTyped] = useState('')
@@ -186,8 +197,8 @@ export function RestoreButton({ id, name, snapshot, label, block }: ButtonProps)
                 }
             >
                 <p>
-                    {`${name}'s live site goes back to the copy from ${label} `}
-                    (<span className={styles.mono}>{snapshot}</span>).
+                    {`${name}'s live site goes back to the copy from ${label}`}
+                    {isAdmin ? <> (<span className={styles.mono}>{snapshot}</span>).</> : '.'}
                 </p>
                 <ul>
                     <li>A fresh copy of live is made first, so this can be undone by restoring that one.</li>

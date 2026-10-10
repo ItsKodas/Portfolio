@@ -43,6 +43,15 @@ describe('callerFromSession', () => {
         expect(who?.caller.envSites).toEqual(['shared-shop'])
     })
 
+    it('carries the sites whose backups a client may restore', async () => {
+        const who = await callerFromSession(sources({
+            clientSession: async () => ({ client: { id: 'cl_8F2K1ABC' } }),
+            clientSites: async () => ({ sites: ['acme-bakery', 'shared-shop'], envSites: [], restoreSites: ['acme-bakery'] }),
+        }))
+        expect(who?.caller.restoreSites).toEqual(['acme-bakery'])
+        expect(who?.caller.envSites).toBeUndefined()
+    })
+
     it('is nobody when neither session is present', async () => {
         expect(await callerFromSession(sources())).toBeNull()
     })

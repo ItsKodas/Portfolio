@@ -290,7 +290,7 @@ describe('the portal\'s list of sites', () => {
     })
 })
 
-describe('putting a backup back is the operator\'s alone', () => {
+describe('putting a backup back is the operator\'s unless the portal gives it', () => {
     const registry = parseRegistry(`
 projects:
   acme:
@@ -321,5 +321,22 @@ projects:
     it('still needs the backups capability', () => {
         const refused = authorize(registry, admin, 'plain', 'backup-restore')
         assert.equal(!refused.ok && refused.code, 'capability-disabled')
+    })
+    // The one way past it: the portal named this project in the client's restore sites
+    it('lets a client restore a project the portal named in their restore sites, and nothing else of the operator\'s', () => {
+        const restorer: Actor = { kind: 'client', client: 'cl_1', sites: new Set(['acme', 'plain']), restoreSites: new Set(['acme']) }
+        assert.equal(authorize(registry, restorer, 'acme', 'backup-restore').ok, true)
+        assert.equal(authorize(registry, restorer, 'plain', 'backup-restore').ok, false)
+        for (const verb of ['env', 'provision', 'remove', 'deploy', 'domains', 'configure'] as const) {
+            assert.equal(authorize(registry, restorer, 'acme', verb).ok, false, verb)
+        }
+        // Env files given do not open restores
+        const editor: Actor = { kind: 'client', client: 'cl_1', sites: new Set(['acme']), envSites: new Set(['acme']) }
+        assert.equal(authorize(registry, editor, 'acme', 'backup-restore').ok, false)
+    })
+
+    it('refuses a restore site that is not also among the client\'s sites', () => {
+        const stray: Actor = { kind: 'client', client: 'cl_2', sites: new Set(['plain']), restoreSites: new Set(['acme']) }
+        assert.deepEqual(authorize(registry, stray, 'acme', 'backup-restore'), { ok: false, status: 404, code: 'not-found', message: 'no project acme' })
     })
 })

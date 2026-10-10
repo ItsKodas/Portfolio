@@ -21,8 +21,8 @@ export async function sitesOf(clientId: string): Promise<string[]> {
 }
 
 // What hostd is told so it can hold the same line: every project this client has access to, and those of
-// them whose env files they may also read and edit
-export async function hostdSitesOf(clientId: string): Promise<{ sites: string[], envSites: string[] }> {
+// them whose env files they may also read and edit, and whose backups they may restore over live
+export async function hostdSitesOf(clientId: string): Promise<{ sites: string[], envSites: string[], restoreSites: string[] }> {
     const rows = await getDb().siteAccess.findMany({
         where: { clientId },
         select: { permissions: true, site: { select: { projectId: true } } },
@@ -31,5 +31,6 @@ export async function hostdSitesOf(clientId: string): Promise<{ sites: string[],
     return {
         sites: rows.map(row => row.site.projectId),
         envSites: rows.filter(row => row.permissions.includes('ENV_FILES')).map(row => row.site.projectId),
+        restoreSites: rows.filter(row => row.permissions.includes('RESTORE_BACKUPS')).map(row => row.site.projectId),
     }
 }

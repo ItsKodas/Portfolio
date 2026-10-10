@@ -8,6 +8,7 @@ const callerFromSession = vi.fn()
 const listBackups = vi.fn()
 const getSchedule = vi.fn()
 const listRestores = vi.fn()
+const accessOf = vi.fn()
 
 vi.mock('@/server/hostd/session', () => ({ callerFromSession: () => callerFromSession() }))
 vi.mock('@/server/hostd/backups', () => ({
@@ -22,6 +23,7 @@ vi.mock('./actions', () => ({
     restoreBackupAction: async () => ({ ok: true, message: 'ok', run: 'r1' }),
     restoresAction: async () => ({ ok: true, restores: [], running: false }),
 }))
+vi.mock('@/server/sites/access', () => ({ accessOf: (...args: unknown[]) => accessOf(...args) }))
 vi.mock('next/navigation', () => ({ useRouter: () => ({ push: () => {}, refresh: () => {} }) }))
 
 const { BackupPanel } = await import('./backupPanel')
@@ -62,6 +64,7 @@ beforeEach(() => {
     listBackups.mockResolvedValue(listed())
     getSchedule.mockResolvedValue({ ok: true, value: schedule })
     listRestores.mockResolvedValue({ ok: true, value: { restores: [], running: false } })
+    accessOf.mockResolvedValue(['BACKUPS'])
 })
 
 const restore = (over: Record<string, unknown> = {}) => ({
@@ -143,6 +146,32 @@ describe('the backups tab, for a client', () => {
 
         expect(screen.getByText('The schedule could not be read')).toBeInTheDocument()
         expect(screen.getByRole('button', { name: 'Back up now' })).toBeEnabled()
+    })
+})
+
+describe('the backups tab, for a client given Restore backups', () => {
+    beforeEach(() => accessOf.mockResolvedValue(['BACKUPS', 'RESTORE_BACKUPS']))
+
+    it('puts a Restore button on each copy and says how it works', async () => {
+        render(await BackupPanel({ id: 'asot', name: 'A State of Trance' }))
+
+        expect(screen.getByRole('button', { name: 'Restore' })).toBeEnabled()
+        expect(screen.getByText(/a fresh copy of the live site is made first so it can be undone/)).toBeInTheDocument()
+        expect(screen.queryByText(/Ask Koda/)).not.toBeInTheDocument()
+        expect(listRestores).toHaveBeenCalledWith(expect.anything(), client.caller, 'asot')
+    })
+
+    it('says a failed restore stopped, without hostd\'s reason or restic\'s ids', async () => {
+        listRestores.mockResolvedValue({ ok: true, value: {
+            restores: [restore({ outcome: 'failed', step: 'load:db', reason: 'psql exited 3 in /var/www/asot' })], running: false,
+        } })
+
+        render(await BackupPanel({ id: 'asot', name: 'A State of Trance' }))
+
+        expect(screen.getByText('The last restore did not work')).toBeInTheDocument()
+        expect(screen.getByText(/holds your site as it was/)).toBeInTheDocument()
+        expect(screen.queryByText(/psql/)).not.toBeInTheDocument()
+        expect(screen.queryByText(/9e8d7c6b/)).not.toBeInTheDocument()
     })
 })
 
