@@ -104,4 +104,20 @@ describe('authenticate', () => {
         assert.equal(!result.ok && result.status, 400)
         assert.equal(!result.ok && result.message, 'X-Hostd-Env-Sites must be a comma separated list of project ids')
     })
+    it('reads the restore sites the portal gave a client, with or without env sites', () => {
+        const only = authenticate(headers({ 'x-hostd-sites': 'acme,other', 'x-hostd-restore-sites': 'other' }), TOKEN)
+        assert.deepEqual(only.ok && only.caller.actor, {
+            kind: 'client', client: 'cl_1', sites: new Set(['acme', 'other']), restoreSites: new Set(['other']),
+        })
+        const both = authenticate(headers({ 'x-hostd-sites': 'acme', 'x-hostd-env-sites': 'acme', 'x-hostd-restore-sites': 'acme' }), TOKEN)
+        assert.deepEqual(both.ok && both.caller.actor, {
+            kind: 'client', client: 'cl_1', sites: new Set(['acme']), envSites: new Set(['acme']), restoreSites: new Set(['acme']),
+        })
+    })
+
+    it('refuses a malformed restore list with 400', () => {
+        const result = authenticate(headers({ 'x-hostd-sites': 'acme', 'x-hostd-restore-sites': 'ACME' }), TOKEN)
+        assert.equal(!result.ok && result.status, 400)
+        assert.equal(!result.ok && result.message, 'X-Hostd-Restore-Sites must be a comma separated list of project ids')
+    })
 })

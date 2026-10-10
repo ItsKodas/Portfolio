@@ -40,6 +40,15 @@ describe('permissions', () => {
         expect(envFiles).toContain(`ALTER TYPE "SitePermission" ADD VALUE 'ENV_FILES'`)
         expect(envFiles).not.toMatch(/UPDATE|INSERT/i)
     })
+
+    // Using the Backups tab stays making and downloading copies: nobody gains restoring with it
+    it('gives RESTORE_BACKUPS to nobody by itself, new grants included', () => {
+        const read = (name: string) => readFileSync(new URL(`../../prisma/migrations/${name}/migration.sql`, import.meta.url), 'utf8')
+        const restore = read('20261010140000_restore_backups_permission')
+        expect(restore).toContain(`ALTER TYPE "SitePermission" ADD VALUE 'RESTORE_BACKUPS'`)
+        expect(restore).not.toMatch(/UPDATE|INSERT/i)
+        expect(DEFAULT_PERMISSIONS).not.toContain('RESTORE_BACKUPS')
+    })
 })
 
 describe('parsePermissions', () => {
@@ -57,5 +66,10 @@ describe('parsePermissions', () => {
     it('refuses the env files without the Environments tab they live in', () => {
         expect(parsePermissions(['ENV_FILES'])).toBeNull()
         expect(parsePermissions(['ENV_FILES', 'ENVIRONMENTS'])).toEqual(['ENVIRONMENTS', 'ENV_FILES'])
+    })
+
+    it('refuses restoring without the Backups tab it is done from', () => {
+        expect(parsePermissions(['RESTORE_BACKUPS'])).toBeNull()
+        expect(parsePermissions(['RESTORE_BACKUPS', 'BACKUPS'])).toEqual(['BACKUPS', 'RESTORE_BACKUPS'])
     })
 })

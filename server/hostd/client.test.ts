@@ -34,6 +34,14 @@ describe('hostdRequest', () => {
         expect(calls[1].headers['X-Hostd-Sites']).toBe('')
     })
 
+    it('names the sites a client may restore, and sends nothing when there are none', async () => {
+        const { fetchImpl, calls } = fakeFetch(200, { projects: [] })
+        await hostdRequest(config, { actor: 'client:cl_1', user: 'cl_1', sites: ['acme', 'shop'], restoreSites: ['shop'] }, '/projects', {}, fetchImpl)
+        await hostdRequest(config, { actor: 'client:cl_1', user: 'cl_1', sites: ['acme'] }, '/projects', {}, fetchImpl)
+        expect(calls[0].headers['X-Hostd-Restore-Sites']).toBe('shop')
+        expect(calls[1].headers['X-Hostd-Restore-Sites']).toBeUndefined()
+    })
+
     it('returns a refusal rather than throwing', async () => {
         const { fetchImpl } = fakeFetch(403, { code: 'forbidden', message: 'project belongs to another client' })
         const result = await hostdRequest(config, caller, '/projects/acme', {}, fetchImpl)

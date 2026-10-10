@@ -200,7 +200,8 @@ client has been given in the portal), and then that list decides and `client:` i
 Env files are admin-only for a client, except on the projects named in `X-Hostd-Env-Sites`: the part of
 their sites where the portal has also given them Edit env files. Only read alongside `X-Hostd-Sites`, and a
 project must be in both. Add `-H "X-Hostd-Env-Sites: hostd-test"` as well to read and write env files as such
-a client.
+a client. Restoring backups works the same way through `X-Hostd-Restore-Sites`, for the sites where the
+portal gave them Restore backups.
 
 ## Live checks with a throwaway project
 
@@ -1486,9 +1487,10 @@ them to replace it with a real folder or a registered `storage` path, and the ne
 ### Restoring from the portal
 
 The operator can put a backup back from the site's Backups tab: **Restore** on a copy, then the site's
-name typed back. A client sees no Restore button and the api answers them 404 (the `backup-restore` policy
-verb is admin-only), though they keep listing, taking, deleting and downloading their own backups. The
-same thing by hand:
+name typed back. So can a client the portal has given **Restore backups** on that site (off by default, and
+only alongside Backups): the portal names those sites in `X-Hostd-Restore-Sites`, the one way past the
+admin-only `backup-restore` policy verb. Any other client sees no Restore button and the api answers them
+404, though they keep listing, taking, deleting and downloading their own backups. The same thing by hand:
 
 ```bash
 hc -X POST http://hostd-api:8080/projects/<id>/backups/<snapshot>/restore \
