@@ -52,6 +52,15 @@ export function oneLabelBelow(host: string, base: string): boolean {
     return LABEL.test(label)
 }
 
+// The base a site's new environments sit under, from live's primary domain. A primary of www.example.com
+// means the site lives at example.com and only answers on www, so its environments go under example.com
+// (uat.example.com) rather than a label below www. A bare www.com, with nothing but a TLD after it, is
+// left as it is.
+export function siteBase(domain: string): string {
+    const rest = domain.startsWith('www.') ? domain.slice(4) : null
+    return rest !== null && rest.includes('.') ? rest : domain
+}
+
 export function isReserved(host: string, reserved: string[], allowed: string[]): boolean {
     // Exact match only. A subtree exemption would mean exempting one test name also exempted every name
     // below it, which is the hole this key is shaped to avoid.

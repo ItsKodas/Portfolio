@@ -758,6 +758,18 @@ ${NESTED_LIVE_YAML.trim()}
         assert.deepEqual(calls, [])
     })
 
+    // A live primary of www.acme.com puts new environments under acme.com, never under www
+    it('takes the root domain as the base when live answers on www', async () => {
+        const wwwYaml = NESTED_LIVE_YAML.replace('domain: acme.com', 'domain: www.acme.com')
+        const { deps } = nested({ registryYaml: wwwYaml })
+        const accepted = await addEnvironment(project(wwwYaml), args({ environment: 'uat9', domain: 'uat9.acme.com' }), deps)
+        assert.equal(accepted.ok, true)
+
+        const { deps: refusedDeps } = nested({ registryYaml: wwwYaml })
+        const refused = await addEnvironment(project(wwwYaml), args({ environment: 'uat9', domain: 'uat9.www.acme.com' }), refusedDeps)
+        assert.deepEqual(refused, { ok: false, code: 'bad-request', message: 'uat9.www.acme.com must be one label below horizons.gg or acme.com' })
+    })
+
     it('names only horizons.gg when live has no primary domain yet', async () => {
         const noDomainYaml = NESTED_LIVE_YAML.split('\n').filter(line => !line.includes('domain: acme.com')).join('\n')
         const { deps, calls } = nested({ registryYaml: noDomainYaml })

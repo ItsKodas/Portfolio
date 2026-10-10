@@ -25,6 +25,11 @@ describe('addressBases', () => {
         expect(addressBases('acme.com')).toEqual([HORIZONS_BASE, 'acme.com'])
     })
 
+    // A www primary means the site is the domain under it, so environments go on the root domain
+    it('offers the root domain when live answers on www', () => {
+        expect(addressBases('www.acme.com')).toEqual([HORIZONS_BASE, 'acme.com'])
+    })
+
     it('does not offer horizons.gg twice', () => {
         expect(addressBases('horizons.gg')).toEqual([HORIZONS_BASE])
     })
