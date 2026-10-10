@@ -36,6 +36,6 @@ describe('invoice emails', () => {
             overdueEmail(invoice, business, { ...options, notice: 3 }),
             receiptEmail(invoice, business, { ...options, amountCents: 1, paidOn: '2026-10-03', automatic: false }),
         ]
-        for (const email of all) expect(`${email.subject}${email.text}${email.html}`).not.toMatch(/—|&mdash;/)
+        for (const email of all) expect(`${email.subject}${email.text}${email.html}`).not.toMatch(/\u2014|&mdash;/)
     })
 })
