@@ -49,7 +49,7 @@ const projects: { name: string, year?: string, blurb: string, website?: string, 
         year: '2026',
         blurb: 'A third-person team arena shooter: sprint, slide, wall run and jetpack around the arena as a toy robot, and play team deathmatch with friends in lobbies anyone can host.',
         stores: [
-            { name: 'Epic Games Store', icon: EpicGames, href: 'https://store.epicgames.com/p/blastyard' },
+            { name: 'Epic Games Store', icon: EpicGames, href: 'https://store.epicgames.com/p/blastyard-b6300d' },
             { name: 'Steam', icon: Steam },
         ],
     },
