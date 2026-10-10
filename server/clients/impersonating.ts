@@ -9,7 +9,7 @@ import { cookies } from 'next/headers'
 import { isAdminSession } from '../auth/allow'
 import { getDb } from '../db'
 import {
-    IMPERSONATION_MS, impersonationCookieName, impersonationCookieOptions, readImpersonation, signImpersonation,
+    expiredImpersonationCookie, IMPERSONATION_MS, impersonationCookieName, impersonationCookieOptions, readImpersonation, signImpersonation,
 } from './impersonation'
 
 const secure = process.env.NODE_ENV === 'production'
@@ -57,6 +57,6 @@ export async function clearImpersonationCookie(admin: string | null): Promise<st
     const jar = await cookies()
     const name = impersonationCookieName(secure)
     const clientId = admin ? readImpersonation(jar.get(name)?.value, admin, key(), new Date(0)) : null
-    jar.delete(name)
+    jar.set(expiredImpersonationCookie(secure))
     return clientId
 }

@@ -9,7 +9,7 @@ import { redirect } from 'next/navigation'
 
 import { getDb } from '../db'
 import { clientRepo, type ClientRecord, type SessionWithClient } from './repo'
-import { activeExpiry, cookieName, cookieOptions, hashSessionToken, isPending, isUsable, shouldTouch } from './session'
+import { activeExpiry, cookieName, cookieOptions, expiredCookie, hashSessionToken, isPending, isUsable, shouldTouch } from './session'
 
 export const SIGN_IN_PATH = '/portal/sign-in'
 export const CODE_PATH = '/portal/sign-in/code'
@@ -61,5 +61,5 @@ export async function setSessionCookie(token: string, expiresAt: Date): Promise<
 
 export async function clearSessionCookie(): Promise<void> {
     const jar = await cookies()
-    jar.delete(cookieName(secure))
+    jar.set(expiredCookie(secure))
 }
