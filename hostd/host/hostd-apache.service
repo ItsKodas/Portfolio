@@ -1,6 +1,13 @@
 [Unit]
 Description=Apply a hostd Apache request
 After=apache2.service
+# No start rate limit. systemd's default (5 starts in 10 seconds) is far below what the agent sends: a
+# rewrite of several vhosts is several requests a second apart, each one a start of this unit. Hitting the
+# limit fails this unit and, with it, hostd-apache.path ("unit-start-limit-hit"), which then never fires
+# again until someone runs reset-failed by hand. Every request times out meanwhile, so no domain change and
+# no environment delete can finish. Each run is one short script that always exits, so there is nothing a
+# limit protects against here.
+StartLimitIntervalSec=0
 
 [Service]
 Type=oneshot
