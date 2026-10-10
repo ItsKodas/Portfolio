@@ -6,7 +6,7 @@
 // which makes the same checks.
 
 import { useRouter } from 'next/navigation'
-import { useEffect, useState } from 'react'
+import { useEffect, useState, type ReactNode } from 'react'
 
 import { Button } from '@/ui/Button/Button'
 import { Callout } from '@/ui/Callout/Callout'
@@ -112,9 +112,11 @@ type RowProps = {
     snapshot: string
     // When the copy was made, as the list shows it, so the confirmation names the same thing
     label: string
+    // The operator's Restore button (restoreControls.tsx), which a client never gets
+    children?: ReactNode
 }
 
-export function BackupRowActions({ id, snapshot, label }: RowProps) {
+export function BackupRowActions({ id, snapshot, label, children }: RowProps) {
     const router = useRouter()
     const [asking, setAsking] = useState(false)
     const [pending, setPending] = useState(false)
@@ -145,6 +147,7 @@ export function BackupRowActions({ id, snapshot, label }: RowProps) {
             <a className={styles.download} href={`/api/sites/${id}/backups/${snapshot}`} download>
                 Download
             </a>
+            {children}
             <Button size="small" variant="quiet" onClick={() => { setError(null); setAsking(true) }}>
                 Delete
             </Button>

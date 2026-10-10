@@ -19,7 +19,8 @@ import { emptyBackups, type BackupRecord, type Snapshot } from '../shared/backup
 import type { BackupRequest } from './backup-run.ts'
 import type { Restic } from './restic.ts'
 import type { runCopy, CopyFs } from './copy-run.ts'
-import type { CopyRecord } from '../shared/protocol.ts'
+import type { runRestore, RestoreFs } from './restore-run.ts'
+import type { CopyRecord, RestoreRecord } from '../shared/protocol.ts'
 
 const registry = parseRegistry(`
 projects:
@@ -1092,6 +1093,9 @@ function backupsWiring(options: {
             stdout.end()
             return { stdout, exit: Promise.resolve({ exitCode: options.dump?.exitCode ?? 0, stderr: options.dump?.stderr ?? '' }) }
         },
+        paths: async () => ({ ok: true, paths: [] }),
+        restoreSize: async () => ({ ok: true, bytes: 0 }),
+        restore: async () => ({ ok: true }),
     }
     const backups = {
         runner: {
@@ -1100,6 +1104,15 @@ function backupsWiring(options: {
                 return { ok: true as const, started: { run: 'run1', tag: 'manual' as const } }
             },
             isRunning: () => options.running ?? false,
+            // What a restore's safety backup goes through: the same locks, and a run that has already ended
+            begin: (project: ProjectEntry, request: BackupRequest) => {
+                started.push({ id: project.id, request })
+                const record: BackupRecord = {
+                    run: request.run, tag: request.tag, actor: request.actor, startedAt: new Date(0).toISOString(), durationMs: 0,
+                    outcome: 'ok', snapshot: 'fe11a5afe', reason: null, disruptive: false,
+                }
+                return { ok: true as const, done: Promise.resolve(record) }
+            },
         },
         store: {
             get: () => ({ ...emptyBackups(), runs: options.runs ?? [] }),
@@ -2297,5 +2310,153 @@ describe('copying from live', () => {
         assert.deepEqual(backupsStarted, [])
         release()
         await agent.settleCopies()
+    })
+})
+
+describe('putting a backup back over live', () => {
+    const restoreRegistry = parseRegistry(`projects:
+  acme:
+    client: cl_1
+    name: Acme
+    repo: git@github.com:ItsKodas/acme.git
+    services: { web: { role: site }, db: { role: database, engine: postgres } }
+    capabilities: [provision, deploy, backups, domains, env, lifecycle]
+    environments:
+      live: { dir: /var/www/acme/live, branch: main, port: 5010 }
+      uat1: { dir: /var/www/acme/uat1, branch: develop, port: 5011 }
+`)
+    const SNAPSHOT = { id: '0123abcd', at: '2026-10-01T02:00:00.000Z', tag: 'scheduled' as const }
+    const start = (snapshot = '0123abcd'): AgentRequest => ({ verb: 'restore', project: 'acme', args: { action: 'start', snapshot, actor: 'koda' } })
+    const list: AgentRequest = { verb: 'restore', project: 'acme', args: { action: 'list' } }
+    const getRun = (run: string): AgentRequest => ({ verb: 'restore', project: 'acme', args: { action: 'get-run', run } })
+    const busy = (message: string) => ({ ok: false, code: 'busy', message })
+    const restoring = busy('acme is having a backup put back over live; wait until that has finished')
+
+    function restoreSetup(options: { backingUp?: boolean, deploying?: string } = {}) {
+        const records: RestoreRecord[] = []
+        const store = {
+            list: (project: string, environment: string) => records.filter(entry => entry.project === project && entry.environment === environment),
+            get: (project: string, environment: string, run: string) => records.find(entry => entry.project === project && entry.environment === environment && entry.run === run) ?? null,
+            start: async (record: RestoreRecord) => { records.unshift(record) },
+            finish: async (record: RestoreRecord) => { records[records.findIndex(entry => entry.run === record.run)] = record },
+        }
+        // The run itself is restore-run.ts's, tested there: here it is held open, so the block can be watched
+        let release = () => {}
+        const held = new Promise<void>(resolve => { release = resolve })
+        const runs: Array<{ snapshot: string, run: string, actor: string, safety: BackupRecord }> = []
+        const run: typeof runRestore = async (project, request, deps) => {
+            const safety = await request.safety
+            runs.push({ snapshot: request.snapshot, run: request.run, actor: request.actor, safety })
+            const record: RestoreRecord = {
+                project: project.id, environment: 'live', run: request.run, actor: request.actor, startedAt: new Date(0).toISOString(), durationMs: 0,
+                outcome: 'running', step: 'safety', reason: null, services: ['db'], storage: [], snapshot: request.snapshot, safety: null,
+            }
+            await deps.store.start(record)
+            await held
+            const finished = { ...record, outcome: 'ok' as const, step: null }
+            await deps.store.finish(finished)
+            return finished
+        }
+        const blocks: string[] = []
+        const deployed: string[] = []
+        const deploys = {
+            runner: {
+                start: (_project: ProjectEntry, environment: { name: string }) => {
+                    deployed.push(environment.name)
+                    return { ok: true as const, started: { environment: environment.name, trigger: 'manual' as const } }
+                },
+                isRunning: (key: string) => key === options.deploying,
+                block: (key: string) => {
+                    blocks.push(key)
+                    return () => { blocks.push(`released ${key}`) }
+                },
+            },
+            store: { get: () => emptyDeploys(), resume: async () => {} },
+            deps: {},
+        }
+        const { backups, started: backupsStarted } = backupsWiring({ running: options.backingUp ?? false, snapshots: [SNAPSHOT] })
+        let lifecycles = 0
+        const afterLifecycle = async () => { lifecycles += 1 }
+        const context = setup({
+            registry: () => restoreRegistry,
+            deploys: deploys as unknown as AgentDeps['deploys'],
+            backups,
+            envFs: fakeEnvFs(),
+            afterLifecycle,
+            restores: {
+                store, fs: {} as RestoreFs, helper: async () => { throw new Error('the fake run never calls the helper') },
+                newRunId: () => 'abcdef012345', log: () => {}, now: () => 0, run,
+            },
+            copies: {
+                store: { list: () => [], get: () => null, start: async () => {}, finish: async () => {} },
+                fs: {} as CopyFs, helper: async () => { throw new Error('never') }, newRunId: () => 'fedcba987654', log: () => {}, now: () => 0,
+            },
+        })
+        return { ...context, records, runs, blocks, deployed, backupsStarted, release, lifecycles: () => lifecycles }
+    }
+
+    it('takes a safety backup, starts the restore and answers at once with its run id', async () => {
+        const { agent, records, runs, backupsStarted, release, lifecycles } = restoreSetup()
+        assert.deepEqual(replyOf(await agent.handle(start('0123ab'))), { ok: true, run: 'abcdef012345' })
+        assert.deepEqual(backupsStarted.map(entry => ({ id: entry.id, tag: entry.request.tag, actor: entry.request.actor })), [{ id: 'acme', tag: 'manual', actor: 'admin' }])
+        await new Promise(resolve => setImmediate(resolve))
+        // The id the repository lists, not the prefix that was asked for
+        assert.deepEqual(runs.map(entry => ({ snapshot: entry.snapshot, actor: entry.actor, safety: entry.safety.outcome })), [{ snapshot: '0123abcd', actor: 'koda', safety: 'ok' }])
+        assert.deepEqual(replyOf(await agent.handle(getRun('abcdef012345'))), { ok: true, restore: records[0], running: true })
+        release()
+        await agent.settleRestores()
+        const listed = replyOf(await agent.handle(list))
+        assert.ok(listed?.ok && 'restores' in listed)
+        assert.equal(listed.restores[0]!.outcome, 'ok')
+        assert.equal(listed.running, false)
+        assert.equal(lifecycles(), 1)
+    })
+
+    it('refuses a backup that is not in this project\'s repository, and refuses unavailable when nothing wired restores up', async () => {
+        const { agent, runs, backupsStarted, blocks } = restoreSetup()
+        assert.deepEqual(replyOf(await agent.handle(start('deadbeef'))), { ok: false, code: 'bad-request', message: 'no backup deadbeef for acme' })
+        assert.deepEqual(runs, [])
+        assert.deepEqual(backupsStarted, [])
+        assert.deepEqual(blocks, ['acme:live', 'released acme:live'])
+        const bare = setup({ registry: () => restoreRegistry })
+        assert.equal((replyOf(await bare.agent.handle(start())) as { code?: string }).code, 'unavailable')
+    })
+
+    it('refuses a restore while the project backs up or live deploys, and a second restore', async () => {
+        assert.deepEqual(replyOf(await restoreSetup({ backingUp: true }).agent.handle(start())), busy('acme has a backup running; a restore waits until it has finished'))
+        assert.deepEqual(replyOf(await restoreSetup({ deploying: 'acme:live' }).agent.handle(start())), busy('acme live has a deploy running'))
+        const { agent, release } = restoreSetup()
+        replyOf(await agent.handle(start()))
+        assert.deepEqual(replyOf(await agent.handle(start())), busy('acme already has a restore running'))
+        release()
+        await agent.settleRestores()
+    })
+
+    it('holds live\'s deploy block for the whole run and releases it after', async () => {
+        const { agent, blocks, release } = restoreSetup()
+        replyOf(await agent.handle(start()))
+        assert.deepEqual(blocks, ['acme:live'])
+        release()
+        await agent.settleRestores()
+        assert.deepEqual(blocks, ['acme:live', 'released acme:live'])
+    })
+
+    it('refuses everything that touches live or the whole project while it runs', async () => {
+        const { agent, deployed, backupsStarted, release } = restoreSetup()
+        replyOf(await agent.handle(start()))
+        const before = backupsStarted.length
+        assert.deepEqual(replyOf(await agent.handle({ verb: 'deploy', project: 'acme', args: { action: 'deploy', environment: 'live' } })), restoring)
+        assert.deepEqual(deployed, [])
+        assert.deepEqual(replyOf(await agent.handle(lifecycle('acme', 'restart'))), restoring)
+        assert.deepEqual(replyOf(await agent.handle({ verb: 'backup', project: 'acme', args: { action: 'run', tag: 'manual' } })), restoring)
+        assert.equal(backupsStarted.length, before)
+        assert.deepEqual(replyOf(await agent.handle({ verb: 'copy', project: 'acme', args: { action: 'start', environment: 'uat1' } })), restoring)
+        assert.deepEqual(replyOf(await agent.handle({ verb: 'env', project: 'acme', args: { action: 'write', environment: 'live', path: '.env', text: 'A=1' } })), restoring)
+        assert.deepEqual(replyOf(await agent.handle({ verb: 'configure', project: 'acme', args: { capabilities: ['provision'] } })), restoring)
+        // Another environment deploys as ever
+        assert.equal(replyOf(await agent.handle({ verb: 'deploy', project: 'acme', args: { action: 'deploy', environment: 'uat1' } }))?.ok, true)
+        release()
+        await agent.settleRestores()
+        assert.equal(replyOf(await agent.handle({ verb: 'deploy', project: 'acme', args: { action: 'deploy', environment: 'live' } }))?.ok, true)
     })
 })

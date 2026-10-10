@@ -3,7 +3,7 @@ import assert from 'node:assert/strict'
 import { EventEmitter } from 'node:events'
 import { PassThrough } from 'node:stream'
 
-import { backupArgv, createRestic, createResticRunner, dumpArgv, nodeSpawnStream, repoPath, RESTIC_ENV_KEYS, retentionArgv, snapshotsArgv, stagingPath, type SpawnStream } from './restic.ts'
+import { backupArgv, createRestic, createResticRunner, dumpArgv, restoreArgv, restoreSizeArgv, snapshotArgv, nodeSpawnStream, repoPath, RESTIC_ENV_KEYS, retentionArgv, snapshotsArgv, stagingPath, type SpawnStream } from './restic.ts'
 import type { Runner, RunResult } from './compose.ts'
 import { spawn as nodeSpawn } from 'node:child_process'
 
@@ -204,5 +204,31 @@ describe('createResticRunner', () => {
         } finally {
             process.env = original
         }
+    })
+})
+
+describe('what a restore asks restic', () => {
+    it('builds its three commands', () => {
+        assert.deepEqual(snapshotArgv('/backups/acme', '0123abcd'), ['-r', '/backups/acme', 'snapshots', '--json', '0123abcd'])
+        assert.deepEqual(restoreSizeArgv('/backups/acme', '0123abcd'), ['-r', '/backups/acme', 'stats', '--json', '--mode', 'restore-size', '0123abcd'])
+        assert.deepEqual(restoreArgv('/backups/acme', '0123abcd', '/var/www/acme/.restore/abc'), ['-r', '/backups/acme', 'restore', '0123abcd', '--target', '/var/www/acme/.restore/abc'])
+    })
+
+    it('reads the paths a snapshot captured and the size it restores to', async () => {
+        const answers: Record<string, string> = {
+            snapshots: JSON.stringify([{ short_id: '0123abcd', paths: ['/backups/.staging/acme/run1', '/var/www/acme/live/storage'] }]),
+            stats: JSON.stringify({ total_size: 4096, total_file_count: 2 }),
+        }
+        const run: Runner = async (_command, args) => ({ exitCode: 0, stdout: answers[args[2]!] ?? '', stderr: '', timedOut: false })
+        const restic = createRestic(run, (() => { throw new Error('not used') }) as unknown as SpawnStream)
+        assert.deepEqual(await restic.paths('/backups/acme', '0123abcd'), { ok: true, paths: ['/backups/.staging/acme/run1', '/var/www/acme/live/storage'] })
+        assert.deepEqual(await restic.restoreSize('/backups/acme', '0123abcd'), { ok: true, bytes: 4096 })
+    })
+
+    it('says so when restic answers with something it cannot read', async () => {
+        const run: Runner = async () => ({ exitCode: 0, stdout: '[]', stderr: '', timedOut: false })
+        const restic = createRestic(run, (() => { throw new Error('not used') }) as unknown as SpawnStream)
+        assert.equal((await restic.paths('/backups/acme', '0123abcd')).ok, false)
+        assert.equal((await restic.restoreSize('/backups/acme', '0123abcd')).ok, false)
     })
 })

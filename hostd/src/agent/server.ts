@@ -82,6 +82,7 @@ function describe(request: AgentRequest): string {
         case 'ports': return `ports ${request.args.port ?? 'suggest'}`
         case 'port': return `port ${request.project} ${request.args.environment} ${request.args.port}`
         case 'copy': return `copy ${request.args.action} ${request.project} ${request.args.environment}`
+        case 'restore': return `restore ${request.args.action} ${request.project}${request.args.action === 'start' ? ` ${request.args.snapshot}` : ''}`
     }
 }
 

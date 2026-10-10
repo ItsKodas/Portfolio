@@ -103,6 +103,9 @@ export type Route =
     | { verb: 'backup-delete', project: string, snapshot: string }
     | { verb: 'backup-download', project: string, snapshot: string }
     | { verb: 'backup-schedule', project: string, write: boolean }
+    | { verb: 'backup-restore', project: string, snapshot: string }
+    | { verb: 'backup-restores', project: string }
+    | { verb: 'backup-restore-run', project: string, run: string }
     | { verb: 'domains-list', project: string, environment: EnvironmentName }
     | { verb: 'domain-add', project: string, environment: EnvironmentName }
     | { verb: 'domain-remove', project: string, environment: EnvironmentName, hostname: string }
@@ -194,6 +197,7 @@ export function matchRoute(method: string, pathname: string): Route {
                 if (method === 'PUT') return { verb: 'backup-schedule', project, write: true }
                 return { verb: 'method-not-allowed' }
             }
+            if (next === 'restores') return only('GET', { verb: 'backup-restores', project })
             if (!SNAPSHOT_ID.test(next)) return { verb: 'not-found' }
             return only('DELETE', { verb: 'backup-delete', project, snapshot: next })
         }
@@ -203,6 +207,12 @@ export function matchRoute(method: string, pathname: string): Route {
                 if (!RUN_ID.test(run)) return { verb: 'not-found' }
                 return only('GET', { verb: 'backup-run-status', project, run })
             }
+            if (next === 'restores') {
+                const run = parts[4] ?? ''
+                if (!RUN_ID.test(run)) return { verb: 'not-found' }
+                return only('GET', { verb: 'backup-restore-run', project, run })
+            }
+            if (SNAPSHOT_ID.test(next) && parts[4] === 'restore') return only('POST', { verb: 'backup-restore', project, snapshot: next })
             if (!SNAPSHOT_ID.test(next) || parts[4] !== 'download') return { verb: 'not-found' }
             return only('GET', { verb: 'backup-download', project, snapshot: next })
         }
@@ -426,6 +436,14 @@ function parseAddEnvironmentBody(
 // missing or mismatched name refuses before the agent ever hears about it.
 function parseConfirmBody(value: Record<string, unknown>): { ok: true, name: string } | { ok: false, message: string } {
     if (!onlyKeys(value, ['name'])) return { ok: false, message: 'delete takes only name' }
+    if (typeof value.name !== 'string') return { ok: false, message: 'name is malformed' }
+    return { ok: true, name: value.name }
+}
+
+// A restore wants the site's name typed back, as deleting it does: it replaces everything live has saved
+// since the backup was taken.
+function parseRestoreConfirm(value: Record<string, unknown>): { ok: true, name: string } | { ok: false, message: string } {
+    if (!onlyKeys(value, ['name'])) return { ok: false, message: 'a restore takes only name' }
     if (typeof value.name !== 'string') return { ok: false, message: 'name is malformed' }
     return { ok: true, name: value.name }
 }
@@ -1955,6 +1973,54 @@ export function createHandler(deps: ApiDeps): (req: IncomingMessage, res: Server
                     }
                 }
                 return
+            }
+
+            // Putting a backup back over live, on the operator's behalf: admin only (backup-restore), with
+            // the site's name typed back, and audited, refusals included. The user who asked is the
+            // record's actor. Answered once the run has started: the safety backup alone is minutes, and
+            // the outcome lands in the record the portal polls through GET .../backups/restores/:run.
+            case 'backup-restore': {
+                const target = `restore ${route.snapshot}`
+                const entry = await authorizeProject(route.project, 'backup-restore', target)
+                if (!entry) return
+                const body = await readJsonBody(req, MAX_REQUEST_BYTES)
+                if (!body.ok) return refuseRoute(400, 'bad-request', body.message, route.project, 'backup-restore', target)
+                const parsed = parseRestoreConfirm(body.value)
+                if (!parsed.ok) return refuseRoute(400, 'bad-request', parsed.message, route.project, 'backup-restore', target)
+                if (parsed.name !== entry.name) {
+                    return refuseRoute(400, 'bad-request', 'name must match the project name to confirm the restore', route.project, 'backup-restore', target)
+                }
+                const reply = await callAgentAudited(
+                    { verb: 'restore', project: route.project, args: { action: 'start', snapshot: route.snapshot, actor: caller.user } },
+                    route.project, 'backup-restore', target,
+                )
+                if (!reply) return
+                const outcome: AuditOutcome = reply.ok ? 'ok' : reply.code === 'failed' ? 'failed' : 'refused'
+                await audit(who, { project: route.project, verb: 'backup-restore', target, outcome, ...(reply.ok ? {} : { reason: outcome === 'failed' ? reply.message : reply.code }) })
+                if (!reply.ok) return sendJson(res, AGENT_STATUS[reply.code], reply)
+                return sendJson(res, 202, { ok: true, run: 'run' in reply && typeof reply.run === 'string' ? reply.run : '' })
+            }
+
+            // The records are reads, audited only when refused, like the copy records
+            case 'backup-restores': {
+                const target = 'restores'
+                if (!(await decide(route.project, 'backup-restore', target))) return
+                const reply = await callAgent({ verb: 'restore', project: route.project, args: { action: 'list' } })
+                if (!reply) return
+                if (!reply.ok) return refuseRoute(AGENT_STATUS[reply.code], reply.code, reply.message, route.project, 'backup-restore', target)
+                return sendJson(res, 200, reply)
+            }
+
+            case 'backup-restore-run': {
+                const target = `restores ${route.run}`
+                if (!(await decide(route.project, 'backup-restore', target))) return
+                const reply = await callAgent({ verb: 'restore', project: route.project, args: { action: 'get-run', run: route.run } })
+                if (!reply) return
+                if (!reply.ok) return refuseRoute(AGENT_STATUS[reply.code], reply.code, reply.message, route.project, 'backup-restore', target)
+                if (!('restore' in reply) || reply.restore === null) {
+                    return refuseRoute(404, 'not-found', `no restore ${route.run} of ${route.project}`, route.project, 'backup-restore', target)
+                }
+                return sendJson(res, 200, { ok: true, restore: reply.restore, running: reply.running })
             }
 
             case 'backup-schedule': {

@@ -428,7 +428,7 @@ export default async function SitePage({ params, searchParams }: Props) {
                         />
                     )}
 
-                    {selected === 'backups' && canBackups && <BackupPanel id={view.id} />}
+                    {selected === 'backups' && canBackups && <BackupPanel id={view.id} name={view.name} />}
 
                     {selected === 'access' && <SiteAccessPanel projectId={view.id} name={view.name} />}
 

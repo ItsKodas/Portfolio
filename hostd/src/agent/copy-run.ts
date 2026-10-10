@@ -93,7 +93,7 @@ export type CopyDeps = {
     sleep?(ms: number): Promise<void>
 }
 
-type Containers = ReadonlyMap<string, ContainerSummary>
+export type Containers = ReadonlyMap<string, ContainerSummary>
 
 class StepFailed extends Error {}
 function fail(reason: string): never {
@@ -258,7 +258,8 @@ export async function removeInterruptedStaging(
 
 // The environment's state as the copy found it, and what the copy has changed about it so far: what step 6
 // puts back. Filled in as each change is made, so a failure part way puts back exactly what was changed.
-type Changed = {
+// A restore (restore-run.ts) keeps the same account of live while it loads a backup into it.
+export type Changed = {
     // The environment's own compose argv, once prepare has begun
     base: string[] | null
     wasRunning: string[]
@@ -302,7 +303,7 @@ export async function runCopy(project: ProjectEntry, name: string, run: string, 
             if (!isComposeService(entry)) continue
             step = `load:${service}`
             deps.log(`${where}: loading ${service}`)
-            containers = await load(context, service, entry, dumps, containers)
+            containers = await load(context, service, entry, dumps, containers, project.id, databaseNameOf(project, environment!))
         }
         for (const [service, entry] of databasesOf(project)) {
             if (entry.role !== 'database' || entry.engine !== 'sqlite') continue
@@ -352,14 +353,21 @@ export async function runCopy(project: ProjectEntry, name: string, run: string, 
     return finished
 }
 
-type Context = {
+// What preparing an environment and loading a dump into it need: the environment whose databases are
+// loaded, and nothing about where the dump came from. A restore loads into live with the same steps.
+export type LoadDeps = Pick<CopyDeps, 'dockerApi' | 'runner'> & { fs: Pick<CopyFs, 'readStream'> }
+export type LoadContext = {
     project: ProjectEntry
-    live: EnvironmentEntry
     environment: EnvironmentEntry
-    staging: string
-    deps: CopyDeps
+    deps: LoadDeps
     sleep: (ms: number) => Promise<void>
     changed: Changed
+}
+
+type Context = LoadContext & {
+    live: EnvironmentEntry
+    staging: string
+    deps: CopyDeps
 }
 
 // Step 2: each database's dump, as a backup takes it, from live's own running container into staging.
@@ -399,7 +407,7 @@ async function dumpLive(context: Context): Promise<Map<string, string>> {
     return dumps
 }
 
-async function compose(context: Pick<Context, 'deps'>, base: string[], args: string[]): Promise<string | null> {
+async function compose(context: { deps: Pick<CopyDeps, 'runner'> }, base: string[], args: string[]): Promise<string | null> {
     const result = await context.deps.runner('docker', [...base, ...args], COMPOSE_TIMEOUT_MS)
     if (result.timedOut) return `compose ${args.join(' ')} timed out`
     if (result.exitCode !== 0) return `compose ${args.join(' ')} exited with code ${result.exitCode}: ${tail(result.stderr.trim(), 300)}`
@@ -410,7 +418,7 @@ async function compose(context: Pick<Context, 'deps'>, base: string[], args: str
 // and anything else its compose file runs: a queue worker writes to the databases too), so nothing writes to
 // what is being replaced, and its databases running, so there is something to load into. The names come
 // from the environment's own compose config, not the registry, which lists only the services it knows.
-async function prepare(context: Context): Promise<Containers> {
+export async function prepare(context: LoadContext): Promise<Containers> {
     const { project, environment, deps, changed } = context
     const location = { dir: environment.dir, composePaths: environment.composePaths, composeName: environment.composeName }
     const resolved = await resolveCompose(location, deps.runner)
@@ -450,7 +458,7 @@ async function prepare(context: Context): Promise<Containers> {
 
 // Waits for a database's own readiness probe to answer inside its container, as many times in a row as
 // its engine needs (readyPasses), for up to a minute
-async function waitReady(context: Context, service: string, entry: ServiceEntry, id: string): Promise<void> {
+async function waitReady(context: LoadContext, service: string, entry: ServiceEntry, id: string): Promise<void> {
     const probe = readyProbe(service, entry)
     if (probe === null) return
     if (isProblem(probe)) fail(probe.problem)
@@ -472,11 +480,14 @@ async function waitReady(context: Context, service: string, entry: ServiceEntry,
 
 const discard = () => {}
 
-// Step 4: one dump loaded into the environment's own container
-async function load(context: Context, service: string, entry: ServiceEntry, dumps: Map<string, string>, containers: Containers): Promise<Containers> {
-    const { project, environment, deps } = context
-    const to = databaseNameOf(project, environment)
-    const plan = loadPlan(service, entry, project.id, to)
+// Step 4: one dump loaded into the environment's own container, its database named from in the dump and to
+// in the environment. A restore loads live's own dump back into live, so the two are the same and nothing
+// is renamed.
+export async function load(
+    context: LoadContext, service: string, entry: ServiceEntry, dumps: Map<string, string>, containers: Containers, from: string, to: string,
+): Promise<Containers> {
+    const { deps } = context
+    const plan = loadPlan(service, entry, from, to)
     if (plan === null) return containers
     if (isProblem(plan)) return fail(plan.problem)
     const container = containers.get(service)
@@ -497,7 +508,7 @@ async function load(context: Context, service: string, entry: ServiceEntry, dump
     }
 
     const input = deps.fs.readStream(dump)
-    const stdin: Readable = plan.rename === null ? input : pipeline(input, renameStream(plan.rename, project.id, to), discard)
+    const stdin: Readable = plan.rename === null || from === to ? input : pipeline(input, renameStream(plan.rename, from, to), discard)
     const errors = plan.errorFilter === 'postgres' ? postgresErrorCollector() : null
     const result = await deps.dockerApi.exec(container.Id, plan.argv, discard, stdin, errors ? chunk => errors.push(chunk) : undefined)
     if (result.exitCode !== 0) fail(`${service}: the load exited with code ${result.exitCode}: ${tail(result.stderr, 500)}`)
@@ -511,7 +522,7 @@ async function load(context: Context, service: string, entry: ServiceEntry, dump
 // redis loads its rdb file at start, so the file is put where the environment's redis reads it (its dir and
 // dbfilename), with the service stopped (a redis stopping writes its own dataset over that file) and
 // started again after.
-async function loadRedis(context: Context, service: string, entry: ServiceEntry, id: string, dump: string): Promise<void> {
+async function loadRedis(context: LoadContext, service: string, entry: ServiceEntry, id: string, dump: string): Promise<void> {
     const { deps, changed } = context
     const dir = await redisConfig(context, id, 'dir')
     if (dir === null) fail(`${service}: its data directory could not be read`)
@@ -538,7 +549,7 @@ async function loadRedis(context: Context, service: string, entry: ServiceEntry,
 }
 
 // One setting of the environment's redis, or null when it could not be read
-async function redisConfig(context: Context, id: string, key: 'dir' | 'appendonly' | 'dbfilename'): Promise<string | null> {
+async function redisConfig(context: LoadContext, id: string, key: 'dir' | 'appendonly' | 'dbfilename'): Promise<string | null> {
     const chunks: Buffer[] = []
     const asked = await context.deps.dockerApi.exec(id, ['sh', '-c', `redis-cli CONFIG GET ${key}`], chunk => { chunks.push(chunk) })
     if (asked.exitCode !== 0) return null
@@ -756,7 +767,7 @@ async function copyStorage(context: Context, path: string): Promise<void> {
 }
 
 // Step 6: whatever the copy changed about which services run, put back. Answers null, or what failed.
-async function restoreState(changed: Changed, deps: CopyDeps): Promise<string | null> {
+export async function restoreState(changed: Changed, deps: Pick<CopyDeps, 'runner'>): Promise<string | null> {
     if (changed.base === null) return null
     const base = changed.base
     const problems: string[] = []

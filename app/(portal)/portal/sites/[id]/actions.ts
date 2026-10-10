@@ -9,7 +9,7 @@ import { revalidatePath } from 'next/cache'
 import { callerActor, record, type AuditEntry } from '@/server/audit/record'
 import { getDb } from '@/server/db'
 import {
-    deleteBackup, SCHEDULE_MODES, setSchedule, SNAPSHOT_ID, startBackup, type Schedule,
+    deleteBackup, listRestores, restoreBackup, SCHEDULE_MODES, setSchedule, SNAPSHOT_ID, startBackup, type RestoreRecord, type Schedule,
 } from '@/server/hostd/backups'
 import { readHostd, type HostdConfig } from '@/server/hostd/config'
 import { rollback, setBranch, startDeploy } from '@/server/hostd/deploys'
@@ -43,6 +43,10 @@ export type CopyStartResult = { ok: true, message: string, run: string } | { ok:
 
 // What the Settings tab polls while a copy runs
 export type CopyRunsResult = { ok: true, runs: CopyRecord[], running: boolean } | { ok: false, error: string }
+
+// A restore answers the run it started, like a copy, and the Backups tab polls the restores while one runs
+export type RestoreStartResult = { ok: true, message: string, run: string } | { ok: false, error: string }
+export type RestoresResult = { ok: true, restores: RestoreRecord[], running: boolean } | { ok: false, error: string }
 
 const LIFECYCLE = ['start', 'stop', 'restart'] as const
 type LifecycleAction = typeof LIFECYCLE[number]
@@ -685,6 +689,47 @@ export async function deleteBackupAction(id: string, snapshot: string): Promise<
 
     revalidatePath(`/portal/sites/${id}`)
     return { ok: true, message: 'Deleted.' }
+}
+
+// Putting a copy back over live. The operator's alone, even for a client with the Backups permission: it
+// replaces everything live has saved since, and hostd puts it under its admin-only backup-restore verb. The
+// site's name has to be typed back, and is sent to hostd as typed, so hostd's comparison is the
+// confirmation, as it is for deleting the site. hostd takes a fresh copy of live before it changes anything.
+export async function restoreBackupAction(id: string, snapshot: string, confirm: string): Promise<RestoreStartResult> {
+    if (typeof snapshot !== 'string' || !SNAPSHOT_ID.test(snapshot) || typeof confirm !== 'string') {
+        return { ok: false, error: 'That is not something this page can do.' }
+    }
+
+    const allowed = await allow(id, true)
+    if (!allowed.ok) return allowed
+
+    const result = await restoreBackup(allowed.config, allowed.caller, id, snapshot, confirm)
+    if (!result.ok) return refused(`restore of backup ${snapshot} on ${id}`, allowed.isAdmin, result)
+    await done(allowed, id, {
+        kind: 'backup.restore',
+        summary: `Started putting backup ${snapshot} back over live`,
+        target: { type: 'backup', id: snapshot },
+        detail: { run: result.value.run },
+    })
+
+    revalidatePath(`/portal/sites/${id}`)
+    return {
+        ok: true,
+        run: result.value.run,
+        message: 'Restoring. A fresh copy of the live site is made first, then the site is paused while the copy is put back.',
+    }
+}
+
+// Reading only, which the Backups tab polls while a restore runs, so it does not revalidate. Admin only all
+// the same: the records name services and folders, and hostd refuses a client them too.
+export async function restoresAction(id: string): Promise<RestoresResult> {
+    const allowed = await allow(id, true)
+    if (!allowed.ok) return allowed
+
+    const result = await listRestores(allowed.config, allowed.caller, id)
+    if (!result.ok) return refused(`restores of ${id}`, allowed.isAdmin, result)
+
+    return { ok: true, restores: result.value.restores, running: result.value.running }
 }
 
 export type ScheduleSaveResult = { ok: true, message: string, schedule: Schedule } | { ok: false, error: string }
