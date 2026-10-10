@@ -585,8 +585,8 @@ async function main(): Promise<void> {
         },
         domains: domainsDeps,
         // So a stop or start shows on the holding page at once rather than on the next sweep
-        afterLifecycle: async project => {
-            await holdingPages.refresh(project.id, 'live').catch(error => log(`WARN holding page for ${project.id}: ${describeError(error)}`))
+        afterLifecycle: async (project, environment) => {
+            await holdingPages.refresh(project.id, environment).catch(error => log(`WARN holding page for ${project.id}: ${describeError(error)}`))
         },
         // An age, which is what /health compares against its staleness threshold, not the timestamp the
         // rail records: the two are one line apart here and the whole alarm depends on which is which.

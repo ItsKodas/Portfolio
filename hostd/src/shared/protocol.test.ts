@@ -61,6 +61,14 @@ describe('parseAgentRequest', () => {
             { ok: true, request: { verb: 'lifecycle', project: 'acme', args: { action: 'restart' } } },
         )
         assert.deepEqual(
+            parsed({ verb: 'lifecycle', project: 'acme', args: { action: 'stop', environment: 'uat1' } }),
+            { ok: true, request: { verb: 'lifecycle', project: 'acme', args: { action: 'stop', environment: 'uat1' } } },
+        )
+        assert.deepEqual(
+            parsed({ verb: 'status', project: 'acme', args: { environment: 'uat1' } }),
+            { ok: true, request: { verb: 'status', project: 'acme', args: { environment: 'uat1' } } },
+        )
+        assert.deepEqual(
             parsed({ verb: 'logs', project: 'acme', args: { service: 'web', tail: 50, since: 1700000000.5, follow: true } }),
             { ok: true, request: { verb: 'logs', project: 'acme', args: { service: 'web', tail: 50, since: 1700000000.5, follow: true } } },
         )
@@ -112,10 +120,11 @@ describe('parseAgentRequest', () => {
     // such as a compose path.
     it('refuses unknown fields at every level', () => {
         assert.equal(refusalOf({ verb: 'health', project: 'acme' }), 'bad-request: health takes no other fields')
-        assert.equal(refusalOf({ verb: 'status', project: 'acme', compose: '/etc/x.yml' }), 'bad-request: status takes only project')
+        assert.equal(refusalOf({ verb: 'status', project: 'acme', compose: '/etc/x.yml' }), 'bad-request: status takes only project and args')
+        assert.equal(refusalOf({ verb: 'status', project: 'acme', args: { dir: '/' } }), 'bad-request: status takes only args.environment')
         assert.equal(
             refusalOf({ verb: 'lifecycle', project: 'acme', args: { action: 'start', dir: '/' } }),
-            'bad-request: lifecycle takes only args.action',
+            'bad-request: lifecycle takes only args.action and args.environment',
         )
         assert.equal(
             refusalOf({ verb: 'logs', project: 'acme', args: { service: 'web', container: 'abc' } }),
@@ -126,6 +135,7 @@ describe('parseAgentRequest', () => {
     it('refuses malformed values', () => {
         assert.equal(refusalOf({ verb: 'status', project: '../acme' }), 'bad-request: project is malformed')
         assert.equal(refusalOf({ verb: 'lifecycle', project: 'acme', args: { action: 'down' } }), 'bad-request: action must be start, stop or restart')
+        assert.equal(refusalOf({ verb: 'lifecycle', project: 'acme', args: { action: 'stop', environment: '../x' } }), 'bad-request: environment must be an environment name')
         assert.equal(refusalOf({ verb: 'logs', project: 'acme', args: { service: 'a/b' } }), 'bad-request: service is malformed')
         assert.equal(refusalOf({ verb: 'logs', project: 'acme', args: { service: 'web', tail: 5001 } }), 'bad-request: tail must be a whole number from 0 to 5000')
         assert.equal(refusalOf({ verb: 'logs', project: 'acme', args: { service: 'web', since: -1 } }), 'bad-request: since must be a non-negative number of seconds')

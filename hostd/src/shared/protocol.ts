@@ -40,12 +40,15 @@ export type LifecycleAction = typeof LIFECYCLE_ACTIONS[number]
 
 export type LogsArgs = { service: string, tail: number, since: number | null, follow: boolean }
 export type HealthRequest = { verb: 'health' }
-export type StatusRequest = { verb: 'status', project: string }
+// Without args, live's containers, which is every caller from before environments could be read on their own.
+// With an environment, that environment's containers alone.
+export type StatusRequest = { verb: 'status', project: string, args?: { environment: EnvironmentName } }
 // Several projects in one request, so a dashboard showing every site costs one call rather than one per
 // site. It names the projects rather than meaning "all of them": the agent has no idea who is asking, so
 // api is what decides which ones an actor may see, exactly as it does for every other verb.
 export type StatusesRequest = { verb: 'statuses', projects: string[] }
-export type LifecycleRequest = { verb: 'lifecycle', project: string, args: { action: LifecycleAction } }
+// environment is absent for live, exactly as every request sent before other environments had controls
+export type LifecycleRequest = { verb: 'lifecycle', project: string, args: { action: LifecycleAction, environment?: EnvironmentName } }
 export type LogsRequest = { verb: 'logs', project: string, args: LogsArgs }
 
 // Creating a project has nothing to check structurally yet, so it carries no project id: there is no
@@ -1036,10 +1039,14 @@ export function parseAgentRequest(line: string): Parsed {
         }
 
         case 'status': {
-            if (!onlyKeys(raw, ['verb', 'project'])) return refuse('bad-request', 'status takes only project')
+            if (!onlyKeys(raw, ['verb', 'project', 'args'])) return refuse('bad-request', 'status takes only project and args')
             const project = projectOf(raw)
             if (!project) return refuse('bad-request', 'project is malformed')
-            return { ok: true, request: { verb: 'status', project } }
+            if (raw.args === undefined) return { ok: true, request: { verb: 'status', project } }
+            if (!isRecord(raw.args) || !onlyKeys(raw.args, ['environment'])) return refuse('bad-request', 'status takes only args.environment')
+            const environment = raw.args.environment
+            if (!isEnvironmentName(environment)) return refuse('bad-request', 'environment must be an environment name')
+            return { ok: true, request: { verb: 'status', project, args: { environment } } }
         }
 
         case 'statuses': {
@@ -1060,12 +1067,17 @@ export function parseAgentRequest(line: string): Parsed {
             if (!onlyKeys(raw, ['verb', 'project', 'args'])) return refuse('bad-request', 'lifecycle takes only project and args')
             const project = projectOf(raw)
             if (!project) return refuse('bad-request', 'project is malformed')
-            if (!isRecord(raw.args) || !onlyKeys(raw.args, ['action'])) return refuse('bad-request', 'lifecycle takes only args.action')
+            if (!isRecord(raw.args) || !onlyKeys(raw.args, ['action', 'environment'])) {
+                return refuse('bad-request', 'lifecycle takes only args.action and args.environment')
+            }
             const action = raw.args.action
             if (typeof action !== 'string' || !(LIFECYCLE_ACTIONS as readonly string[]).includes(action)) {
                 return refuse('bad-request', 'action must be start, stop or restart')
             }
-            return { ok: true, request: { verb: 'lifecycle', project, args: { action: action as LifecycleAction } } }
+            const environment = raw.args.environment
+            if (environment === undefined) return { ok: true, request: { verb: 'lifecycle', project, args: { action: action as LifecycleAction } } }
+            if (!isEnvironmentName(environment)) return refuse('bad-request', 'environment must be an environment name')
+            return { ok: true, request: { verb: 'lifecycle', project, args: { action: action as LifecycleAction, environment } } }
         }
 
         case 'logs': {
@@ -1225,6 +1237,11 @@ export function checkStructure(
         const service = request.args.service
         const entry = Object.hasOwn(project.services, service) ? project.services[service] : undefined
         if (!entry || !isComposeService(entry)) return refuse('unknown-service', `${service} is not a registered service of ${id}`)
+    }
+    // status and lifecycle name an environment only when it is not live, which every project has
+    if ((request.verb === 'status' || request.verb === 'lifecycle') && request.args?.environment !== undefined
+        && !environmentOf(project, request.args.environment)) {
+        return refuse('unknown-environment', `${id} has no ${request.args.environment} environment`)
     }
     if ((request.verb === 'analytics' || request.verb === 'env' || request.verb === 'deploy' || request.verb === 'deploy-watch' || request.verb === 'port' || request.verb === 'copy') && !environmentOf(project, request.args.environment)) {
         return refuse('unknown-environment', `${id} has no ${request.args.environment} environment`)

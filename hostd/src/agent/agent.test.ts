@@ -222,6 +222,80 @@ describe('lifecycle', () => {
     })
 })
 
+// A nested site with a second environment, which has its own folder and compose project name
+const twoEnvironments = parseRegistry(`
+projects:
+  acme:
+    client: cl_1
+    name: Acme
+    repo: git@github.com:ItsKodas/acme.git
+    services: { web: { role: site } }
+    capabilities: [lifecycle]
+    environments:
+      live: { dir: /var/www/acme/live, branch: main, domain: acme.com, port: 5010 }
+      uat1: { dir: /var/www/acme/uat1, branch: develop, domain: uat1.acme.com, port: 5012 }
+`)
+
+describe('lifecycle on another environment', () => {
+    const onUat = (action: 'start' | 'stop' | 'restart'): AgentRequest => ({ verb: 'lifecycle', project: 'acme', args: { action, environment: 'uat1' } })
+
+    it('runs compose from that environment\'s own folder and project name, and tells the holding page which one', async () => {
+        const told: string[] = []
+        const { agent, runs, rechecked } = setup({
+            registry: () => twoEnvironments,
+            afterLifecycle: async (project, environment) => { told.push(`${project.id}:${environment}`) },
+        })
+        assert.deepEqual(replyOf(await agent.handle(onUat('restart'))), { ok: true, output: 'done' })
+        const uat1 = twoEnvironments.projects.get('acme')!.environments.get('uat1')!
+        assert.deepEqual(runs, [{ command: 'docker', args: lifecycleArgv(uat1, 'restart') }])
+        assert.ok(runs[0]!.args.includes('acme-uat1'))
+        assert.ok(runs[0]!.args.includes('/var/www/acme/uat1'))
+        // The guard reads live's compose file, which a start of uat1 does not touch
+        assert.deepEqual(rechecked, [])
+        assert.deepEqual(told, ['acme:uat1'])
+    })
+
+    it('refuses an environment the project does not have, without touching compose', async () => {
+        const { agent, runs } = setup({ registry: () => twoEnvironments })
+        const reply = replyOf(await agent.handle({ verb: 'lifecycle', project: 'acme', args: { action: 'start', environment: 'staging' } }))
+        assert.deepEqual(reply, { ok: false, code: 'unknown-environment', message: 'acme has no staging environment' })
+        assert.deepEqual(runs, [])
+    })
+
+    it('still runs one lifecycle action per project at a time', async () => {
+        let release: () => void = () => {}
+        const blocked = new Promise<void>(resolve => { release = resolve })
+        const { agent } = setup({
+            registry: () => twoEnvironments,
+            runner: async () => {
+                await blocked
+                return { exitCode: 0, stdout: '', stderr: '', timedOut: false }
+            },
+        })
+        const first = agent.handle(lifecycle('acme', 'stop'))
+        await new Promise(resolve => setImmediate(resolve))
+        assert.deepEqual(replyOf(await agent.handle(onUat('stop'))), { ok: false, code: 'busy', message: 'acme already has a lifecycle action running' })
+        release()
+        assert.equal(replyOf(await first)?.ok, true)
+    })
+
+    it('reads that environment\'s containers by its compose project name', async () => {
+        const asked: string[] = []
+        const docker: DockerApi = {
+            ping: async () => true,
+            listProjectContainers: async name => { asked.push(name); return [] },
+            listAllContainers: async () => [],
+            inspect: async () => inspectWeb,
+            logs: async () => new PassThrough(),
+            exec: async () => ({ exitCode: 0, stderr: '' }),
+        }
+        const { agent } = setup({ registry: () => twoEnvironments, docker })
+        assert.equal(replyOf(await agent.handle({ verb: 'status', project: 'acme', args: { environment: 'uat1' } }))?.ok, true)
+        assert.equal(replyOf(await agent.handle({ verb: 'status', project: 'acme' }))?.ok, true)
+        assert.deepEqual(asked, ['acme-uat1', 'acme'])
+    })
+})
+
 describe('status and health', () => {
     it('reports each registered service', async () => {
         const { agent } = setup()

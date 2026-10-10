@@ -75,7 +75,8 @@ export type Route =
     | { verb: 'credentials' }
     | { verb: 'ports' }
     | { verb: 'status', project: string }
-    | { verb: 'lifecycle', project: string, action: LifecycleAction }
+    | { verb: 'lifecycle', project: string, action: LifecycleAction, environment?: EnvironmentName }
+    | { verb: 'environment-status', project: string, environment: EnvironmentName }
     | { verb: 'logs', project: string }
     | { verb: 'audit', project: string }
     | { verb: 'create' }
@@ -229,6 +230,10 @@ export function matchRoute(method: string, pathname: string): Route {
         if (parts.length === 4) {
             switch (parts[3]) {
                 case 'env': return only('GET', { verb: 'env-list', project, environment })
+                case 'status': return only('GET', { verb: 'environment-status', project, environment })
+                // live's are /projects/:id/start and the rest, as they were before other environments had them
+                case 'start': case 'stop': case 'restart':
+                    return only('POST', { verb: 'lifecycle', project, action: parts[3], environment })
                 case 'deploy':
                     // POST starts one, GET watches the one that is running. Same path on purpose: they
                     // are the same subject, and a second segment would only be a different spelling of
@@ -1188,6 +1193,16 @@ export function createHandler(deps: ApiDeps): (req: IncomingMessage, res: Server
                 return sendJson(res, 200, { ok: true, events: await deps.audit.read({ project: route.project, limit }) })
             }
 
+            case 'environment-status': {
+                // One environment's containers alone, for the controls on that environment. The same
+                // policy as live's status: anyone who may see the site may see what it is running.
+                if (!(await authorizeProject(route.project, 'status', route.environment))) return
+                const reply = await callAgent({ verb: 'status', project: route.project, args: { environment: route.environment } })
+                if (!reply) return
+                if (!reply.ok) return refuseRoute(AGENT_STATUS[reply.code], reply.code, reply.message, route.project, 'status')
+                return sendJson(res, 200, reply)
+            }
+
             case 'status': {
                 // The one page about one site asks here, so the environments ride along with the
                 // services rather than making that page fetch the whole list to find them again. The
@@ -1760,23 +1775,26 @@ export function createHandler(deps: ApiDeps): (req: IncomingMessage, res: Server
 
             case 'lifecycle': {
                 const { project, action } = route
-                if (!(await decide(project, 'lifecycle', action))) return
+                // live is sent without a name and audited as the bare action, exactly as before
+                const environment = route.environment === 'live' ? undefined : route.environment
+                const target = environment === undefined ? action : `${environment} ${action}`
+                if (!(await decide(project, 'lifecycle', target))) return
                 let reply: AgentReply
                 try {
-                    reply = await deps.agent.call({ verb: 'lifecycle', project, args: { action } })
+                    reply = await deps.agent.call({ verb: 'lifecycle', project, args: environment === undefined ? { action } : { action, environment } })
                 } catch (error) {
                     if (!(error instanceof AgentUnavailableError)) throw error
-                    await audit(who, { project, verb: 'lifecycle', target: action, outcome: 'failed', reason: error.message })
+                    await audit(who, { project, verb: 'lifecycle', target, outcome: 'failed', reason: error.message })
                     return sendJson(res, 503, { ok: false, code: 'agent-unavailable', message: error.message })
                 }
                 if (reply.ok) {
                     const output = 'output' in reply ? reply.output : ''
-                    await audit(who, { project, verb: 'lifecycle', target: action, outcome: 'ok', output })
+                    await audit(who, { project, verb: 'lifecycle', target, outcome: 'ok', output })
                     return sendJson(res, 200, { ok: true, output })
                 }
                 const outcome: AuditOutcome = reply.code === 'failed' ? 'failed' : 'refused'
                 await audit(who, {
-                    project, verb: 'lifecycle', target: action, outcome,
+                    project, verb: 'lifecycle', target, outcome,
                     reason: outcome === 'failed' ? reply.message : reply.code,
                     ...(reply.output === undefined ? {} : { output: reply.output }),
                 })

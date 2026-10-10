@@ -230,6 +230,9 @@ describe('matchRoute', () => {
         assert.deepEqual(matchRoute('POST', '/health'), { verb: 'method-not-allowed' })
         assert.deepEqual(matchRoute('GET', '/projects/acme'), { verb: 'status', project: 'acme' })
         assert.deepEqual(matchRoute('POST', '/projects/acme/restart'), { verb: 'lifecycle', project: 'acme', action: 'restart' })
+        assert.deepEqual(matchRoute('POST', '/projects/acme/uat1/stop'), { verb: 'lifecycle', project: 'acme', action: 'stop', environment: 'uat1' })
+        assert.deepEqual(matchRoute('GET', '/projects/acme/uat1/start'), { verb: 'method-not-allowed' })
+        assert.deepEqual(matchRoute('GET', '/projects/acme/uat1/status'), { verb: 'environment-status', project: 'acme', environment: 'uat1' })
         assert.deepEqual(matchRoute('GET', '/projects/acme/logs'), { verb: 'logs', project: 'acme' })
         assert.deepEqual(matchRoute('GET', '/projects/acme/audit'), { verb: 'audit', project: 'acme' })
         assert.deepEqual(matchRoute('GET', '/projects/acme/start'), { verb: 'method-not-allowed' })
@@ -636,6 +639,24 @@ describe('project routes', () => {
             [entry?.actor, entry?.user, entry?.project, entry?.verb, entry?.target, entry?.outcome, entry?.output],
             ['client:cl_1', 'user_1', 'acme', 'lifecycle', 'start', 'ok', 'done'],
         )
+    })
+
+    it('names another environment to the agent and in the audit, and leaves live\'s unnamed', async () => {
+        const response = await request('/projects/acme/uat1/restart', { method: 'POST' })
+        assert.equal(response.status, 200)
+        await request('/projects/acme/live/stop', { method: 'POST' })
+        assert.deepEqual(agent.calls, [
+            { verb: 'lifecycle', project: 'acme', args: { action: 'restart', environment: 'uat1' } },
+            { verb: 'lifecycle', project: 'acme', args: { action: 'stop' } },
+        ])
+        const [last, first] = await audit.read({ limit: 2 })
+        assert.deepEqual([first?.target, last?.target], ['uat1 restart', 'stop'])
+    })
+
+    it('reads one environment\'s containers through the agent', async () => {
+        const response = await request('/projects/acme/uat1/status')
+        assert.equal(response.status, 200)
+        assert.deepEqual(agent.calls, [{ verb: 'status', project: 'acme', args: { environment: 'uat1' } }])
     })
 
     it('passes an agent refusal through with its HTTP status', async () => {

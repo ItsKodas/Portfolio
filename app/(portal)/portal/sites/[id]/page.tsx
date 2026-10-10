@@ -8,7 +8,7 @@ import { listDomains, type Domain } from '@/server/hostd/domains'
 import { LIVE, type EnvironmentName } from '@/server/hostd/env'
 import { listDeletedEnvironments, type DeletedEnvironment } from '@/server/hostd/environments'
 import { forAdmin, forClient } from '@/server/hostd/errors'
-import { getProject, listProjects, type ServiceStatus } from '@/server/hostd/projects'
+import { getEnvironmentStatus, getProject, listProjects, type ServiceStatus } from '@/server/hostd/projects'
 import { callerFromSession, type Who } from '@/server/hostd/session'
 import { accessOf } from '@/server/sites/access'
 import type { Permission } from '@/server/sites/permissions'
@@ -153,6 +153,23 @@ async function readDomains(
     return { domains: result.value, trouble: null }
 }
 
+// What one environment beside live is doing, for its controls on the Environments tab. live's is the page's
+// own reading. Unknown when it could not be read, which holds the controls rather than guessing at which of
+// Start and Stop to offer; the reason is in the console, as every other refused read here is.
+async function readEnvironmentState(id: string, environment: EnvironmentName): Promise<SiteState> {
+    const who = await callerFromSession()
+    if (!who) return 'unknown'
+    const problems: string[] = []
+    const config = readHostd(process.env, problems)
+    if (problems.length) return 'unknown'
+    const result = await getEnvironmentStatus(config, who.caller, id, environment)
+    if (!result.ok) {
+        console.error(`[portal] status of ${environment} on ${id} could not be read: ${forAdmin(result.code, result.message)}`)
+        return 'unknown'
+    }
+    return stateOfServices(result.value)
+}
+
 type Props = {
     params: Promise<{ id: string }>
     searchParams: Promise<Record<string, string | string[] | undefined>>
@@ -253,6 +270,15 @@ export default async function SitePage({ params, searchParams }: Props) {
     // listing is one call for every site and can come back with nothing to say about any of them; this
     // page asked hostd about this project on its own as well, and that answer is the better one.
     const current: SiteState = view.trouble ? 'unknown' : stateOfServices(view.services)
+
+    // The controls on the Environments tab, for whoever may start and stop this site: live's reading is the
+    // one above, and any other environment's is asked for only while the tab is showing it
+    const lifecycle = selected === 'environments' && !adding && may('LIFECYCLE')
+        ? {
+            enabled: view.capabilities.includes('lifecycle'),
+            state: environment === LIVE ? current : await readEnvironmentState(view.id, environment),
+        }
+        : null
 
     // Fetched for the Settings tab once the registry entry itself is known to be readable (the form is not
     // drawn otherwise, so there is nothing for a branch list to fill in), and for the Environments tab's
@@ -411,6 +437,7 @@ export default async function SitePage({ params, searchParams }: Props) {
                             isAdmin={view.isAdmin}
                             canEditEnv={may('ENV_FILES')}
                             selected={environment}
+                            lifecycle={lifecycle}
                             adding={adding}
                             file={one(search.file)}
                             domains={domains}

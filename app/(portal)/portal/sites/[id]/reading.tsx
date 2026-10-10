@@ -44,3 +44,11 @@ export function SiteDot({ state }: { state: SiteState }) {
     if (settling) return <StatusDot state="deploying" label={DOING[settling.action]} bare />
     return <StatusDot state={state} bare />
 }
+
+// One environment's state beside its name on the Environments tab, with the word showing: there is no strip
+// there to say it. The same rule as the dot above while something is being done to it.
+export function EnvironmentState({ state }: { state: SiteState }) {
+    const { settling } = useSettling()
+    if (settling) return <StatusDot state="deploying" label={DOING[settling.action]} />
+    return <StatusDot state={state} />
+}

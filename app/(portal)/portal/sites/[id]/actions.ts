@@ -59,11 +59,19 @@ const SAID: Record<LifecycleAction, string> = {
     restart: 'Restarting. The site is unavailable for a few seconds.',
 }
 
-// The activity log's sentence for each, in the past tense, because the log is read after the fact
-const DID: Record<LifecycleAction, (id: string) => string> = {
-    start: id => `Started ${id}`,
-    stop: id => `Stopped ${id}`,
-    restart: id => `Restarted ${id}`,
+// The same, about an environment other than live, which is not "the site" to whoever is reading
+const SAID_ENVIRONMENT: Record<LifecycleAction, (name: string) => string> = {
+    start: () => 'Starting. It takes a few seconds for the containers to come up.',
+    stop: name => `Stopping. ${name} will show its holding page until it is started again.`,
+    restart: name => `Restarting. ${name} is unavailable for a few seconds.`,
+}
+
+// The activity log's sentence for each, in the past tense, because the log is read after the fact. live's
+// reads as it always has; any other environment is named, since it is the site's and not the site.
+const DID: Record<LifecycleAction, (id: string, environment: EnvironmentName) => string> = {
+    start: (id, environment) => environment === LIVE ? `Started ${id}` : `Started ${environment} of ${id}`,
+    stop: (id, environment) => environment === LIVE ? `Stopped ${id}` : `Stopped ${environment} of ${id}`,
+    restart: (id, environment) => environment === LIVE ? `Restarted ${id}` : `Restarted ${environment} of ${id}`,
 }
 
 const SIGN_IN_AGAIN = 'Your session has expired. Sign in again.'
@@ -129,20 +137,29 @@ function refused(where: string, isAdmin: boolean, result: { code: string, messag
     return { ok: false, error: isAdmin ? forAdmin(result.code, result.message) : forClient(result.code) }
 }
 
-export async function lifecycleAction(id: string, action: string): Promise<SiteActionResult> {
+// Any environment, with the same permission: LIFECYCLE is start, stop and restart on the site, and every
+// environment is part of the site. live needs no list read, since every site has it; any other name is
+// checked against the site's own list first, like every other action about one environment.
+export async function lifecycleAction(id: string, action: string, environment: string = LIVE): Promise<SiteActionResult> {
     // Checked against the list rather than cast to it: this string arrived from a browser.
     if (!(LIFECYCLE as readonly string[]).includes(action)) return { ok: false, error: 'That is not something this page can do.' }
     const asked = action as LifecycleAction
+    const name = environmentOf(environment)
+    if (!name) return { ok: false, error: 'That is not something this page can do.' }
 
-    const allowed = await allow(id, false, 'LIFECYCLE')
+    const allowed = name === LIVE ? await allow(id, false, 'LIFECYCLE') : await allowOn(id, name, false, 'LIFECYCLE')
     if (!allowed.ok) return allowed
 
-    const result = await lifecycle(allowed.config, allowed.caller, id, asked)
-    if (!result.ok) return refused(`lifecycle ${asked} on ${id}`, allowed.isAdmin, result)
-    await done(allowed, id, { kind: `site.${asked}`, summary: DID[asked](id) })
+    const result = await lifecycle(allowed.config, allowed.caller, id, asked, name)
+    if (!result.ok) return refused(`lifecycle ${asked} on ${id}${name === LIVE ? '' : ` ${name}`}`, allowed.isAdmin, result)
+    await done(allowed, id, {
+        kind: `site.${asked}`,
+        summary: DID[asked](id, name),
+        ...(name === LIVE ? {} : { target: { type: 'environment', id: name } }),
+    })
 
     revalidatePath(`/portal/sites/${id}`)
-    return { ok: true, message: SAID[asked] }
+    return { ok: true, message: name === LIVE ? SAID[asked] : SAID_ENVIRONMENT[asked](name) }
 }
 
 // The names an env file sets, for the activity log. A line is NAME=value, optionally behind export; comments

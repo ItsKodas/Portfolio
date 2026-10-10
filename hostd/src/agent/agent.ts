@@ -105,7 +105,7 @@ export type AgentDeps = {
     domains?: DomainsDeps
     // Told after a lifecycle action, so the site's holding page can say "switched off" at once rather than
     // on the main loop's next pass. Optional, so the tests' fakes need not carry it; never throws.
-    afterLifecycle?: (project: ProjectEntry) => Promise<void>
+    afterLifecycle?: (project: ProjectEntry, environment: EnvironmentName) => Promise<void>
     // How long ago the rail last got an answer, read fresh on every health request exactly like system
     // is. An age in milliseconds, never a timestamp: api compares it against a staleness threshold.
     // Required rather than optional, unlike domains itself: health must always answer with a railAge,
@@ -276,7 +276,7 @@ export class Agent {
         if (!checked.ok) return reply(checked)
         switch (request.verb) {
             case 'status':
-                return reply({ ok: true, services: await this.status(checked.project) })
+                return reply({ ok: true, services: await this.status(checked.project, request.args?.environment ?? 'live') })
             case 'analytics': {
                 if (!this.deps.analytics) return reply(refuse('unavailable', 'analytics are not configured'))
                 // checkStructure has already refused an environment the project does not have
@@ -288,7 +288,7 @@ export class Agent {
                 }
             }
             case 'lifecycle':
-                return reply(await this.lifecycle(checked.project, request.args.action))
+                return reply(await this.lifecycle(checked.project, request.args.action, request.args.environment ?? 'live'))
             case 'logs':
                 return this.logs(checked.project, request.args)
             case 'provision':
@@ -376,7 +376,7 @@ export class Agent {
                     unblock?.()
                     this.restoring.delete(project.id)
                     // So the holding page says what live is doing now, rather than on the next sweep
-                    await this.deps.afterLifecycle?.(project)
+                    await this.deps.afterLifecycle?.(project, 'live')
                 })
             this.restoring.set(project.id, done)
             started = true
@@ -1100,8 +1100,12 @@ export class Agent {
         return { ok: true, warnings, invalid, system: await this.deps.system(), railAge: this.deps.railAge() }
     }
 
-    private async status(project: ProjectEntry): Promise<ServiceStatus[]> {
-        return this.statusOf(project, await this.deps.docker.listProjectContainers(project.id))
+    // live's containers are found by the project id, as they always have been. Another environment's are
+    // found by its own compose project name, which is what compose labels them with.
+    private async status(project: ProjectEntry, name: EnvironmentName): Promise<ServiceStatus[]> {
+        // checkStructure has already refused an environment the project does not have
+        const label = name === 'live' ? project.id : environmentOf(project, name)!.composeName
+        return this.statusOf(project, await this.deps.docker.listProjectContainers(label))
     }
 
     // The containers are passed in rather than fetched, so one listing can serve many projects.
@@ -1343,22 +1347,37 @@ export class Agent {
         }
     }
 
-    private async lifecycle(project: ProjectEntry, action: LifecycleAction): Promise<LifecycleReply | Refusal> {
+    // One action per project at a time, whichever environment it is on: lifecycleBusy is what every other
+    // verb checks before it touches the project's containers, and it stays keyed by the project for that.
+    private async lifecycle(project: ProjectEntry, action: LifecycleAction, name: EnvironmentName): Promise<LifecycleReply | Refusal> {
         if (this.lifecycleBusy.has(project.id)) return refuse('busy', `${project.id} already has a lifecycle action running`)
-        // A restore stops live's services and starts them again itself
-        const restoringNow = this.restoringRefusal(project.id)
-        if (restoringNow) return restoringNow
+        // A restore stops live's services and starts them again itself. It touches no other environment.
+        if (name === 'live') {
+            const restoringNow = this.restoringRefusal(project.id)
+            if (restoringNow) return restoringNow
+        } else {
+            // A copy stops and starts the environment it is filling, and a delete or restore is taking it
+            // away or putting it back: either way its containers are somebody else's for now
+            const key = `${project.id}:${name}`
+            if (this.copying.has(key)) return refuse('busy', `${project.id} ${name} has a copy running`)
+            if (this.trashing.has(key)) return refuse('busy', `${project.id} ${name} is being deleted or restored`)
+        }
+        // checkStructure has already refused an environment the project does not have
+        const environment = environmentOf(project, name)!
         this.lifecycleBusy.add(project.id)
         try {
             // Start and restart read the compose file and its mounts, so the guard is re-run first: the
             // operator can edit a compose file without touching the registry. Stop reads no mounts, and a
-            // project whose guard has just failed must still be stoppable.
-            if (action !== 'stop') {
+            // project whose guard has just failed must still be stoppable. The guard reads live's compose
+            // file; another environment is brought up by its deploys with no guard of its own, and a start
+            // here builds nothing and pulls nothing that its last deploy did not already have.
+            if (action !== 'stop' && name === 'live') {
                 const problem = await this.deps.recheck(project)
                 if (problem) return refuse('invalid-project', problem)
             }
-            const result = await runLifecycle(project, action, this.deps.runner)
-            await this.deps.afterLifecycle?.(project)
+            // live's location is the project's own, which the registry mirrors from live's entry
+            const result = await runLifecycle(name === 'live' ? project : environment, action, this.deps.runner)
+            await this.deps.afterLifecycle?.(project, name)
             return result.ok ? { ok: true, output: result.output } : refuse('failed', result.message, result.output)
         } finally {
             this.lifecycleBusy.delete(project.id)

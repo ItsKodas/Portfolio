@@ -145,15 +145,33 @@ export async function listEnvironments(
 // timeout gave up on every such stop and reported hostd as not answering while the stop went on regardless.
 export const LIFECYCLE_TIMEOUT_MS = 180_000
 
+// live's is /projects/:id/<action>, as it was before other environments had controls; any other environment's
+// is /projects/:id/<environment>/<action>. The caller has checked the name against the site's own list.
 export async function lifecycle(
     config: HostdConfig,
     caller: Caller,
     id: string,
     action: 'start' | 'stop' | 'restart',
+    environment: EnvironmentName = 'live',
     fetchImpl: typeof fetch = fetch,
 ): Promise<HostdResult<{ ok: boolean }>> {
     if (!PROJECT_ID.test(id)) return { ok: false, code: 'not-found', message: 'no such project' }
-    return hostdRequest<{ ok: boolean }>(config, caller, `/projects/${id}/${action}`, { method: 'POST' }, fetchImpl, LIFECYCLE_TIMEOUT_MS)
+    const path = environment === 'live' ? `/projects/${id}/${action}` : `/projects/${id}/${encodeURIComponent(environment)}/${action}`
+    return hostdRequest<{ ok: boolean }>(config, caller, path, { method: 'POST' }, fetchImpl, LIFECYCLE_TIMEOUT_MS)
+}
+
+// One environment's containers, for the controls on that environment. getProject answers live's.
+export async function getEnvironmentStatus(
+    config: HostdConfig,
+    caller: Caller,
+    id: string,
+    environment: EnvironmentName,
+    fetchImpl: typeof fetch = fetch,
+): Promise<HostdResult<ServiceStatus[]>> {
+    if (!PROJECT_ID.test(id)) return { ok: false, code: 'not-found', message: 'no such project' }
+    const path = `/projects/${id}/${encodeURIComponent(environment)}/status`
+    const result = await hostdRequest<{ services: ServiceStatus[] }>(config, caller, path, {}, fetchImpl)
+    return result.ok ? { ok: true, value: result.value.services } : result
 }
 
 // The portal's own access check. hostd runs its own, and describes it as a second line of defence against

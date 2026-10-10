@@ -11,6 +11,8 @@
 // seen them, and the Env files only when they were given ENV_FILES on this site. Adding, deleting, restoring
 // and copying are the operator's alone: hostd refuses a client every one of them, and none of them is drawn.
 
+import type { ReactNode } from 'react'
+
 import type { Domain } from '@/server/hostd/domains'
 import { LIVE, type EnvironmentName } from '@/server/hostd/env'
 import type { Environment } from '@/server/hostd/projects'
@@ -19,7 +21,17 @@ import { shortCommit } from './deploys'
 import { DomainsPanel } from './domainsPanel'
 import { EnvPanel } from './env'
 import { AddEnvironment, DeletedEnvironments, EnvironmentsSaid, EnvironmentSummary } from './environments'
+import { Lifecycle } from './lifecycle'
+import { EnvironmentState } from './reading'
+import { SettlingProvider } from './settling'
+import type { SiteState } from '../../siteState'
 import styles from './site.module.css'
+
+// live's wait is the page's own, held around the whole shell so the sidebar's dot moves with it. Any other
+// environment waits on its own reading, which nothing outside this tab draws.
+function Settling({ environment, state, children }: { environment: EnvironmentName, state: SiteState, children: ReactNode }) {
+    return environment === LIVE ? <>{children}</> : <SettlingProvider state={state}>{children}</SettlingProvider>
+}
 
 // The fields of hostd's deleted-environment record the list reads
 type Deleted = { environment: string, deletedAt: string, purgeAt: string, branch: string | null, domain: string | null }
@@ -38,6 +50,9 @@ type Props = {
     canEditEnv: boolean
     // The environment shown, already checked against the site's own, with live the fallback
     selected: EnvironmentName
+    // Start, stop and restart for the environment shown, and what it is doing now. null for a viewer not
+    // given LIFECYCLE, who gets neither the controls nor the reading drawn beside the name.
+    lifecycle?: { enabled: boolean, state: SiteState } | null
     // Whether the add form is open in place of the detail. Only ever drawn for the operator.
     adding: boolean
     // The env file open in the Env files section, from ?file
@@ -52,7 +67,7 @@ type Props = {
     deletedError: string | null
 }
 
-export function EnvironmentsTab({ view, isAdmin, canEditEnv, selected, adding, file, domains, branches, branchesError, deleted, deletedError }: Props) {
+export function EnvironmentsTab({ view, isAdmin, canEditEnv, selected, lifecycle = null, adding, file, domains, branches, branchesError, deleted, deletedError }: Props) {
     const base = `/portal/sites/${view.id}?tab=environments`
     const canDomains = view.capabilities.includes('domains')
     const canEnv = view.capabilities.includes('env')
@@ -123,7 +138,22 @@ export function EnvironmentsTab({ view, isAdmin, canEditEnv, selected, adding, f
                         />
                         : (
                             <>
-                                <h2 className={styles.envTabName}>{selected}</h2>
+                                {lifecycle
+                                    ? (
+                                        <Settling environment={selected} state={lifecycle.state}>
+                                            <div className={styles.envTabHead}>
+                                                <h2 className={styles.envTabName}>{selected}</h2>
+                                                <EnvironmentState state={lifecycle.state} />
+                                            </div>
+                                            <Lifecycle
+                                                id={view.id}
+                                                enabled={lifecycle.enabled}
+                                                state={lifecycle.state}
+                                                environment={selected}
+                                            />
+                                        </Settling>
+                                    )
+                                    : <h2 className={styles.envTabName}>{selected}</h2>}
 
                                 {shown
                                     ? <EnvironmentSummary id={view.id} siteName={view.name} isAdmin={isAdmin} environment={shown} />

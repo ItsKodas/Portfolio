@@ -43,7 +43,7 @@ describe('the lifecycle controls', () => {
 
         await userEvent.click(screen.getByRole('button', { name: 'Start' }))
 
-        expect(lifecycleAction).toHaveBeenCalledWith('asot', 'start')
+        expect(lifecycleAction).toHaveBeenCalledWith('asot', 'start', 'live')
     })
 
     // Stopping is the one control here that leaves the site switched off behind it, and it is one click
@@ -73,9 +73,20 @@ describe('the lifecycle controls', () => {
         await userEvent.click(screen.getByRole('button', { name: 'Stop' }))
         await userEvent.click(screen.getByRole('button', { name: 'Stop the site' }))
 
-        expect(lifecycleAction).toHaveBeenCalledWith('asot', 'stop')
+        expect(lifecycleAction).toHaveBeenCalledWith('asot', 'stop', 'live')
         // The states on the page were read before this, so they are now a guess until it is re-read
         expect(refresh).toHaveBeenCalled()
+    })
+
+    it('names the environment it stops, and sends it with the action', async () => {
+        render(<Lifecycle id="asot" enabled state="up" environment="uat1" />)
+
+        await userEvent.click(screen.getByRole('button', { name: 'Stop' }))
+        expect(screen.getByRole('heading', { name: 'Stop uat1?' })).toBeInTheDocument()
+        expect(screen.getByText(/visitors to uat1 will see the holding page/i)).toBeInTheDocument()
+        await userEvent.click(screen.getByRole('button', { name: 'Stop uat1' }))
+
+        expect(lifecycleAction).toHaveBeenCalledWith('asot', 'stop', 'uat1')
     })
 
     it('acts on nothing while the containers could not be read', () => {

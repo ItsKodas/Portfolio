@@ -17,6 +17,7 @@
 import { useRouter } from 'next/navigation'
 import { useEffect, useRef, useState } from 'react'
 
+import { LIVE } from '@/server/hostd/environmentName'
 import { Button } from '@/ui/Button/Button'
 import { Callout } from '@/ui/Callout/Callout'
 import { Dialog } from '@/ui/Dialog/Dialog'
@@ -32,6 +33,10 @@ const UNREADABLE = 'The containers could not be read, so there is nothing to act
 // behind it: a restart comes back by itself, a stop waits for somebody to come back and start it.
 const STOPPING = 'Visitors will see the holding page until somebody starts it again. Nothing is deleted, '
     + 'and starting it brings the site back as it was.'
+
+// The same, for an environment beside live, which is the site's and not the site
+const stoppingOf = (environment: string) => `Visitors to ${environment} will see the holding page until somebody `
+    + `starts it again. Nothing is deleted, and starting it brings ${environment} back as it was. live is not touched.`
 
 // On the button doing the work, for as long as it is being done. It is the click's own verb rather than
 // the state's, which is the point: halfway through a stop the site reads stopped, and a button that then
@@ -52,7 +57,12 @@ const WORKING: Record<LifecycleAction, string> = {
 const GAVE_UP = 'A minute and a half, and the site still is not where that was taking it. Reload the page. '
     + 'If it still is not there, the agent log on the dedi is the place to look.'
 
-export function Lifecycle({ id, enabled, state }: { id: string, enabled: boolean, state: SiteState }) {
+// environment is live unless it says otherwise, which is how the Overview draws it. The Environments tab
+// draws one of these for whichever environment it is showing, inside that environment's own ./settling.
+type Props = { id: string, enabled: boolean, state: SiteState, environment?: string }
+
+export function Lifecycle({ id, enabled, state, environment = LIVE }: Props) {
+    const isLive = environment === LIVE
     const router = useRouter()
     const [pending, setPending] = useState<LifecycleAction | null>(null)
     const [said, setSaid] = useState<SiteActionResult | null>(null)
@@ -88,7 +98,7 @@ export function Lifecycle({ id, enabled, state }: { id: string, enabled: boolean
         setPending(action)
         setSaid(null)
         try {
-            const result = await lifecycleAction(id, action)
+            const result = await lifecycleAction(id, action, environment)
             setSaid(result)
             // The states on this page were read before the action, so they are now out of date. refresh()
             // re-runs the server component rather than patching a guess in over the top of them, and the
@@ -162,7 +172,7 @@ export function Lifecycle({ id, enabled, state }: { id: string, enabled: boolean
             <Dialog
                 open={asking}
                 onClose={() => setAsking(false)}
-                title="Stop this site?"
+                title={isLive ? 'Stop this site?' : `Stop ${environment}?`}
                 footer={
                     <>
                         <Button onClick={() => setAsking(false)}>Cancel</Button>
@@ -170,12 +180,12 @@ export function Lifecycle({ id, enabled, state }: { id: string, enabled: boolean
                             variant="danger"
                             onClick={() => { setAsking(false); void run('stop') }}
                         >
-                            Stop the site
+                            {isLive ? 'Stop the site' : `Stop ${environment}`}
                         </Button>
                     </>
                 }
             >
-                {STOPPING}
+                {isLive ? STOPPING : stoppingOf(environment)}
             </Dialog>
         </>
     )
