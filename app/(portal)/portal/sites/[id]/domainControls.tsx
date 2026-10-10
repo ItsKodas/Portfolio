@@ -17,7 +17,7 @@ import { Dialog } from '@/ui/Dialog/Dialog'
 import { Field } from '@/ui/Field/Field'
 import {
     adoptAction, adoptPreviewAction, addDomainAction, changePrimaryDomainAction, makePrimaryDomainAction,
-    removeDomainAction, setPrimaryDomainAction, verifyDomainAction, type SiteActionResult,
+    removeDomainAction, setPrimaryDomainAction, setRootDomainAction, verifyDomainAction, type SiteActionResult,
 } from './actions'
 import styles from './site.module.css'
 
@@ -242,6 +242,66 @@ export function PrimaryDomain({ id, environment, current, said: heldSaid, onSaid
                     onChange={event => setTyped(event.target.value)}
                 />
             </Dialog>
+        </section>
+    )
+}
+
+// The site's root domain, chosen from live's own addresses: the base new environments' addresses sit under
+// (uat1.example.com). hostd only takes one of live's addresses, so as an alias it already redirects to
+// live's primary and nothing about what is served changes. Not set falls back to live's primary without a
+// leading www.
+type RootProps = {
+    id: string
+    current: string | null
+    // live's addresses, primary first, which are the only ones on offer
+    hostnames: string[]
+}
+
+export function RootDomain({ id, current, hostnames }: RootProps) {
+    const router = useRouter()
+    const [chosen, setChosen] = useState(current ?? '')
+    const [pending, setPending] = useState(false)
+    const [said, setSaid] = useState<SiteActionResult | null>(null)
+
+    async function save() {
+        setPending(true)
+        setSaid(null)
+        try {
+            const result = await setRootDomainAction(id, chosen === '' ? null : chosen)
+            setSaid(result)
+            if (result.ok) router.refresh()
+        } catch {
+            setSaid({ ok: false, error: BROKE })
+        } finally {
+            setPending(false)
+        }
+    }
+
+    return (
+        <section className={styles.block} aria-labelledby="root-domain">
+            <h4 id="root-domain">Root domain</h4>
+            <div className={styles.addDomain}>
+                <Field
+                    as="select"
+                    label="Root domain"
+                    value={chosen}
+                    hint="New environments get an address one level below this, like uat1.example.com. It redirects to the main address."
+                    onChange={event => setChosen(event.target.value)}
+                >
+                    <option value="">Not set (follow the main address)</option>
+                    {hostnames.map(hostname => <option key={hostname} value={hostname}>{hostname}</option>)}
+                </Field>
+                <div className={styles.addAction}>
+                    <Button
+                        variant="primary"
+                        disabled={pending || chosen === (current ?? '')}
+                        onClick={save}
+                    >
+                        {pending ? 'Saving...' : 'Save'}
+                    </Button>
+                    <Said said={said} />
+                </div>
+            </div>
         </section>
     )
 }

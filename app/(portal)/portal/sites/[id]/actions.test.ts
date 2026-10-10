@@ -42,6 +42,7 @@ vi.mock('@/server/hostd/projects', () => ({
     hasAccess: (...args: unknown[]) => hasAccess(...args),
     lifecycle: (...args: unknown[]) => lifecycle(...args),
     listEnvironments: (...args: unknown[]) => listEnvironments(...args),
+    readRootDomain: async () => ({ ok: true, value: null }),
 }))
 vi.mock('@/server/hostd/deploys', () => ({
     startDeploy: (...args: unknown[]) => startDeploy(...args),
@@ -80,7 +81,7 @@ vi.mock('@/server/hostd/environments', () => ({
 const {
     backupNowAction, deleteBackupAction, saveScheduleAction, restoreBackupAction, restoresAction,
     addDomainAction, addEnvironmentAction, lifecycleAction, copyFromLiveAction, copyRunsAction, deleteEnvironmentAction, restoreEnvironmentAction, changePrimaryDomainAction, deleteSiteAction, deployAction, saveEnvAction, saveSettingsAction,
-    makePrimaryDomainAction, setPortAction, setPrimaryDomainAction,
+    makePrimaryDomainAction, setPortAction, setPrimaryDomainAction, setRootDomainAction,
 } = await import('./actions')
 
 const ADMIN = { caller: { actor: 'admin', user: 'koda@horizons.gg' }, clientId: null }
@@ -336,6 +337,25 @@ describe('setPrimaryDomainAction', () => {
 // Moving an address that already exists is the same request behind a confirmation, and the confirmation
 // is checked here rather than only in the dialog: a server action is a request like any other, so a
 // disabled button proves nothing about what actually arrived.
+describe('setRootDomainAction', () => {
+    it('sends the lowercased hostname, and a null that takes it away', async () => {
+        callerFromSession.mockResolvedValue({ caller: { kind: 'admin' }, clientId: null })
+        writeSettings.mockResolvedValue({ ok: true, data: { ok: true } })
+
+        expect((await setRootDomainAction('acme', ' Acme.com ')).ok).toBe(true)
+        expect(writeSettings).toHaveBeenLastCalledWith(expect.anything(), expect.anything(), 'acme', { rootDomain: 'acme.com' })
+        expect((await setRootDomainAction('acme', null)).ok).toBe(true)
+        expect(writeSettings).toHaveBeenLastCalledWith(expect.anything(), expect.anything(), 'acme', { rootDomain: null })
+    })
+
+    it('refuses something the page could not have sent, and a client', async () => {
+        expect(await setRootDomainAction('acme', 5 as never)).toEqual(CANNOT)
+        callerFromSession.mockResolvedValue({ caller: { kind: 'client' }, clientId: 'cl_1' })
+        expect(await setRootDomainAction('acme', 'acme.com')).toEqual({ ok: false, error: 'This is not set up yet.' })
+        expect(writeSettings).not.toHaveBeenCalled()
+    })
+})
+
 describe('makePrimaryDomainAction', () => {
     it('refuses an environment or a hostname the page could not have sent', async () => {
         expect(await makePrimaryDomainAction('acme', 'uat-1', 'www.acme.com')).toEqual(CANNOT)

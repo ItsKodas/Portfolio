@@ -14,7 +14,7 @@ import { Callout } from '@/ui/Callout/Callout'
 import { DataTable } from '@/ui/DataTable/DataTable'
 import { StatusDot, type State as DotState } from '@/ui/StatusDot/StatusDot'
 import { Tail } from '@/ui/Tail/Tail'
-import { AddDomain, AdoptSite, DomainActions } from './domainControls'
+import { AddDomain, AdoptSite, DomainActions, RootDomain } from './domainControls'
 import { clientSentence, needsYou, sortDomains, stateTone, stateWord } from './domains'
 import { formatWhen } from '../../format'
 import styles from './site.module.css'
@@ -70,6 +70,8 @@ type Props = {
     // hostd makes an adoption name the project back before it will replace a live vhost, and it is the
     // name it asks for rather than the id.
     projectName: string
+    // The site's root domain, one of live's addresses, or null when it names none. Chosen on live alone.
+    rootDomain: string | null
     // Why the list is empty, when it is empty because nobody could read it. hostd's own words for the
     // operator and a plain sentence for a client, decided before it reaches here.
     trouble: string | null
@@ -94,7 +96,7 @@ function MainAddress({ environment, current }: { environment: EnvironmentName, c
     )
 }
 
-export function DomainsPanel({ id, environment, domains, isAdmin, projectName, trouble }: Props) {
+export function DomainsPanel({ id, environment, domains, isAdmin, projectName, rootDomain, trouble }: Props) {
     const ordered = sortDomains(domains)
 
     // A client asked one question: does my website address work. They get the answer to it. No table, no
@@ -128,10 +130,13 @@ export function DomainsPanel({ id, environment, domains, isAdmin, projectName, t
     // registry entry, so no primary row means no domain key on the entry, which is the state every site
     // enrolled by hand is in.
     const primary = ordered.find(domain => domain.primary)?.hostname ?? null
+    // The root domain belongs to live, so it is only marked there. hostd refuses to remove it while it is
+    // the root, so its row offers no Remove.
+    const isRoot = (hostname: string) => environment === LIVE && hostname === rootDomain
 
     const rows = ordered.map(domain => ({
         hostname: <span className={styles.mono}>{domain.hostname}</span>,
-        role: domain.primary ? 'primary' : 'alias',
+        role: `${domain.primary ? 'primary' : 'alias'}${isRoot(domain.hostname) ? ', root' : ''}`,
         state: <StatusDot state={DOTS[stateTone(domain.state)]} label={stateWord(domain.state)} />,
         certificate: CERTIFICATES[domain.certificate ?? ''] ?? 'none set',
         checked: when(domain.checkedAt),
@@ -155,7 +160,7 @@ export function DomainsPanel({ id, environment, domains, isAdmin, projectName, t
         // it over, and that is per environment rather than per name.
         act: domain.state === 'unmanaged'
             ? <AdoptSite id={id} environment={environment} projectName={projectName} />
-            : <DomainActions id={id} environment={environment} hostname={domain.hostname} removable={!domain.primary}
+            : <DomainActions id={id} environment={environment} hostname={domain.hostname} removable={!domain.primary && !isRoot(domain.hostname)}
                 promotable={!domain.primary} primary={primary} />,
     }))
 
@@ -175,6 +180,14 @@ export function DomainsPanel({ id, environment, domains, isAdmin, projectName, t
                         typed for one environment must not be sent to the next. */}
                     <MainAddress environment={environment} current={primary} />
                     <AddDomain key={environment} id={id} environment={environment} />
+                    {environment === LIVE && ordered.length > 0 && (
+                        <RootDomain
+                            key={rootDomain ?? ''}
+                            id={id}
+                            current={rootDomain}
+                            hostnames={ordered.map(domain => domain.hostname)}
+                        />
+                    )}
 
                     <section className={styles.block}>
                         <h4>Addresses</h4>

@@ -24,7 +24,7 @@ import {
 import type { Caller } from '@/server/hostd/actor'
 import { forAdmin, forClient } from '@/server/hostd/errors'
 import { setPort } from '@/server/hostd/ports'
-import { hasAccess, lifecycle, listEnvironments } from '@/server/hostd/projects'
+import { hasAccess, lifecycle, listEnvironments, readRootDomain } from '@/server/hostd/projects'
 import { removeProject } from '@/server/hostd/remove'
 import { callerFromSession } from '@/server/hostd/session'
 import { writeSettings, type SiteSettings } from '@/server/hostd/settings'
@@ -418,6 +418,33 @@ export async function makePrimaryDomainAction(id: string, environment: string, h
     return { ok: true, message: `${wanted} is the main address now, and the old one redirects to it.` }
 }
 
+// The site's root domain: the base new environments' addresses sit under, and one of live's own addresses
+// (hostd refuses any other), so as an alias it already redirects to live's primary. null takes it away,
+// which puts the base back to live's primary without a leading www.
+export async function setRootDomainAction(id: string, hostname: string | null): Promise<SiteActionResult> {
+    if (hostname !== null && typeof hostname !== 'string') return { ok: false, error: 'That is not something this page can do.' }
+
+    const allowed = await allowOn(id, LIVE, true)
+    if (!allowed.ok) return allowed
+
+    const wanted = hostname === null ? null : hostname.trim().toLowerCase()
+    const result = await writeSettings(allowed.config, allowed.caller, id, { rootDomain: wanted })
+    if (!result.ok) return refused(`root domain ${wanted ?? 'cleared'} on ${id}`, allowed.isAdmin, result)
+    await done(allowed, id, {
+        kind: 'site.settings',
+        summary: wanted === null ? `Cleared the root domain of ${id}` : `Set the root domain of ${id} to ${wanted}`,
+        detail: { rootDomain: wanted },
+    })
+
+    revalidatePath(`/portal/sites/${id}`)
+    return {
+        ok: true,
+        message: wanted === null
+            ? 'Cleared. New environments go under the main address again.'
+            : `New environments now go under ${wanted}.`,
+    }
+}
+
 export async function removeDomainAction(id: string, environment: string, hostname: string): Promise<SiteActionResult> {
     const name = environmentOf(environment)
     if (!name || typeof hostname !== 'string') return { ok: false, error: 'That is not something this page can do.' }
@@ -551,7 +578,9 @@ export async function addEnvironmentAction(
     const listed = await listEnvironments(allowed.config, allowed.caller, id)
     if (!listed.ok) return refused(`environments of ${id} for a new address`, allowed.isAdmin, listed)
     const liveDomain = listed.value.find(one => one.name === LIVE)?.domain ?? null
-    const wrong = addressProblem(hostname, liveDomain)
+    const root = await readRootDomain(allowed.config, allowed.caller, id)
+    if (!root.ok) return refused(`root domain of ${id} for a new address`, allowed.isAdmin, root)
+    const wrong = addressProblem(hostname, liveDomain, root.value)
     if (wrong) return { ok: false, error: wrong }
 
     // Only a real true asks for a copy: this arrived from a browser like everything else here

@@ -30,6 +30,10 @@ describe('addressBases', () => {
         expect(addressBases('www.acme.com')).toEqual([HORIZONS_BASE, 'acme.com'])
     })
 
+    it('offers the root domain the site names in place of the primary', () => {
+        expect(addressBases('www.acme.co', 'acme.com')).toEqual([HORIZONS_BASE, 'acme.com'])
+    })
+
     it('does not offer horizons.gg twice', () => {
         expect(addressBases('horizons.gg')).toEqual([HORIZONS_BASE])
     })

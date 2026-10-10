@@ -1082,7 +1082,9 @@ export function createHandler(deps: ApiDeps): (req: IncomingMessage, res: Server
                         // for the URL of a repository they cannot reach, and it is the kind of detail that
                         // belongs to the machine rather than to their site, so it is absent rather than
                         // null, exactly as environmentsFor withholds dir, composePaths and port.
-                        ...(caller.actor.kind === 'admin' ? { repo: project.repo, credential: project.credential } : {}),
+                        // rootDomain rides with them: it only matters to adding an environment, which is the
+                        // operator's alone.
+                        ...(caller.actor.kind === 'admin' ? { repo: project.repo, credential: project.credential, rootDomain: project.rootDomain } : {}),
                         environments: environmentsFor(project, caller.actor),
                         valid: reason === undefined,
                         ...(reason === undefined ? {} : { reason }),

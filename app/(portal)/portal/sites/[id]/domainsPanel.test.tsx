@@ -5,8 +5,8 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { fireEvent, render, screen, within } from '@testing-library/react'
 
-const { adoptPreview, changePrimary, addDomain, makePrimary } = vi.hoisted(() => ({
-    adoptPreview: vi.fn(), changePrimary: vi.fn(), addDomain: vi.fn(), makePrimary: vi.fn(),
+const { adoptPreview, changePrimary, addDomain, makePrimary, setRoot } = vi.hoisted(() => ({
+    adoptPreview: vi.fn(), changePrimary: vi.fn(), addDomain: vi.fn(), makePrimary: vi.fn(), setRoot: vi.fn(),
 }))
 
 // The panel is a server component, but its controls are the client half, and importing those for real
@@ -21,6 +21,7 @@ vi.mock('./actions', () => ({
     setPrimaryDomainAction: async () => ({ ok: true, message: 'ok' }),
     changePrimaryDomainAction: (...args: unknown[]) => changePrimary(...args),
     makePrimaryDomainAction: (...args: unknown[]) => makePrimary(...args),
+    setRootDomainAction: (...args: unknown[]) => setRoot(...args),
 }))
 vi.mock('next/navigation', () => ({ useRouter: () => ({ push: () => {}, refresh: () => {} }) }))
 
@@ -35,7 +36,7 @@ const domain = (over: Partial<Domain> = {}): Domain => ({
 
 const props = {
     id: 'acme', environment: 'live', projectName: 'Acme Bakery',
-    domains: [domain()], isAdmin: true, trouble: null,
+    domains: [domain()], isAdmin: true, trouble: null, rootDomain: null as string | null,
 }
 
 // A hand-written vhost that does more than the two directives hostd's parser reads: the rewrite and the
@@ -72,6 +73,7 @@ beforeEach(() => {
     changePrimary.mockResolvedValue({ ok: true, message: 'ok' })
     addDomain.mockResolvedValue({ ok: true, message: 'ok' })
     makePrimary.mockResolvedValue({ ok: true, message: 'ok' })
+    setRoot.mockResolvedValue({ ok: true, message: 'ok' })
 })
 
 describe('DomainsPanel, for the operator', () => {
@@ -86,6 +88,24 @@ describe('DomainsPanel, for the operator', () => {
     it('marks which one is the primary, since every other name redirects to it', () => {
         render(<DomainsPanel {...props} domains={[domain(), domain({ hostname: 'www.acme.com', primary: false })]} />)
         expect(screen.getByText('primary')).toBeInTheDocument()
+    })
+
+    // The root domain is picked from live's own addresses, marked in the table, and cannot be removed
+    it('picks live\'s root domain from its addresses and marks it, with no Remove on its row', async () => {
+        const both = [domain({ hostname: 'www.acme.com' }), domain({ hostname: 'acme.com', primary: false })]
+        render(<DomainsPanel {...props} rootDomain="acme.com" domains={both} />)
+        expect(screen.getByText('alias, root')).toBeInTheDocument()
+        expect(screen.queryAllByRole('button', { name: 'Remove' })).toHaveLength(0)
+
+        const select = screen.getByRole('combobox', { name: 'Root domain' })
+        fireEvent.change(select, { target: { value: 'www.acme.com' } })
+        fireEvent.click(screen.getByRole('button', { name: 'Save' }))
+        await vi.waitFor(() => expect(setRoot).toHaveBeenCalledWith('acme', 'www.acme.com'))
+    })
+
+    it('offers no root domain on any environment but live', () => {
+        render(<DomainsPanel {...props} environment="uat1" />)
+        expect(screen.queryByRole('combobox', { name: 'Root domain' })).toBeNull()
     })
 
     // The swap: an alias row offers to become the main address, and the main address row does not.

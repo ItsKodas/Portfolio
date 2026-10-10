@@ -22,10 +22,10 @@ export function siteBase(domain: string): string {
     return rest !== null && rest.includes('.') ? rest : domain
 }
 
-// The bases a new environment's address can sit under: horizons.gg always, and the site's own domain when
-// live has a primary
-export function addressBases(liveDomain: string | null): string[] {
-    const base = liveDomain ? siteBase(liveDomain) : null
+// The bases a new environment's address can sit under: horizons.gg always, and the site's own domain: the
+// root domain the site names, or failing that live's primary without a leading www.
+export function addressBases(liveDomain: string | null, rootDomain: string | null = null): string[] {
+    const base = rootDomain ?? (liveDomain ? siteBase(liveDomain) : null)
     return base && base !== HORIZONS_BASE ? [HORIZONS_BASE, base] : [HORIZONS_BASE]
 }
 
@@ -36,11 +36,11 @@ export function prefilledPrefix(name: string, id: string, base: string): string 
     return base === HORIZONS_BASE ? `${name}-${id}` : name
 }
 
-// Why a hostname cannot be a new environment's address, in a sentence, or null when it can. liveDomain is
-// live's primary domain as hostd has it now, never one the browser sent.
-export function addressProblem(hostname: string, liveDomain: string | null): string | null {
+// Why a hostname cannot be a new environment's address, in a sentence, or null when it can. liveDomain and
+// rootDomain are as hostd has them now, never ones the browser sent.
+export function addressProblem(hostname: string, liveDomain: string | null, rootDomain: string | null = null): string | null {
     if (hostname === '') return NEEDS_ADDRESS
-    const bases = addressBases(liveDomain)
+    const bases = addressBases(liveDomain, rootDomain)
     const dot = hostname.indexOf('.')
     const label = dot === -1 ? '' : hostname.slice(0, dot)
     const base = dot === -1 ? '' : hostname.slice(dot + 1)

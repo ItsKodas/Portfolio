@@ -70,6 +70,8 @@ export type Project = {
     repo?: string | null
     // Answered for the operator alone, like repo, so it is absent for a client rather than null
     credential?: string | null
+    // The site's own domain, the base new environments sit under. For the operator alone, like repo.
+    rootDomain?: string | null
     // Live first, then the rest. Absent only from an entry the registry itself could not parse, which is
     // answered with an id and a reason and nothing else: there is no such thing as a valid project with
     // no environments.
@@ -81,6 +83,19 @@ export type Project = {
 
 // What a client may do on one site, from the portal's own database: null for no access at all
 export type FindAccess = (clientId: string, projectId: string) => Promise<readonly Permission[] | null>
+
+// One site's root domain as hostd has it now, for an action to check an address against. The plain listing
+// rather than status=1, so it costs no Docker read. null when the site names none or is not in the list.
+export async function readRootDomain(
+    config: HostdConfig,
+    caller: Caller,
+    id: string,
+    fetchImpl: typeof fetch = fetch,
+): Promise<HostdResult<string | null>> {
+    const result = await hostdRequest<{ projects: Project[] }>(config, caller, '/projects', {}, fetchImpl)
+    if (!result.ok) return result
+    return { ok: true, value: result.value.projects.find(project => project.id === id)?.rootDomain ?? null }
+}
 
 export async function listProjects(
     config: HostdConfig,

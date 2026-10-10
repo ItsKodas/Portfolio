@@ -394,6 +394,19 @@ describe('configure', () => {
         assert.equal(parseRegistry(result.text).projects.get('arbysauto')!.upstream.host, '10.0.0.5')
     })
 
+    it('writes a root domain from live\'s addresses, refuses any other, and takes it away on null', () => {
+        const withAlias = NO_DOMAIN.replace('        domain: acme.com\n', '        domain: www.acme.com\n        aliases: [acme.com]\n')
+        const result = applyChange(withAlias, { kind: 'configure', id: 'acme', rootDomain: 'acme.com' })
+        assert.ok(result.ok)
+        assert.equal(parseRegistry(result.text).projects.get('acme')!.rootDomain, 'acme.com')
+
+        assert.equal(applyChange(withAlias, { kind: 'configure', id: 'acme', rootDomain: 'other.com' }).ok, false)
+
+        const cleared = applyChange(result.text, { kind: 'configure', id: 'acme', rootDomain: null })
+        assert.ok(cleared.ok)
+        assert.equal(parseRegistry(cleared.text).projects.get('acme')!.rootDomain, null)
+    })
+
     it('writes a contact with only the fields that are set, and takes it away on null', () => {
         const result = applyChange(LIVE_ONLY, { kind: 'configure', id: 'arbysauto', contact: { name: "Arby's Auto Glass", email: 'hi@arbysauto.com', phone: null } })
         assert.ok(result.ok)

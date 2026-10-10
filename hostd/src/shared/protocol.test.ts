@@ -394,7 +394,7 @@ describe('parseAgentRequest', () => {
         assert.equal(refusalOf({ verb: 'configure', project: 'acme', args: { capabilities: ['teleport'] } }), 'bad-request: capabilities must be a list of known capabilities')
         assert.equal(refusalOf({ verb: 'configure', project: 'acme', args: { branches: { live: 'a branch' } } }), 'bad-request: live branch must be null or a plain branch name')
         assert.equal(refusalOf({ verb: 'configure', project: 'acme', args: { branches: { next: 'main' } } }), 'bad-request: next is not an environment name')
-        assert.equal(refusalOf({ verb: 'configure', project: 'acme', args: { capabilities: [], extra: true } }), 'bad-request: configure takes only capabilities, repo, credential, branches, domains, websockets, flexibleSsl and contact')
+        assert.equal(refusalOf({ verb: 'configure', project: 'acme', args: { capabilities: [], extra: true } }), 'bad-request: configure takes only capabilities, repo, credential, branches, domains, websockets, flexibleSsl, contact and rootDomain')
     })
 
     it('parses a branches request', () => {
@@ -404,6 +404,14 @@ describe('parseAgentRequest', () => {
     it('refuses a branches request with a malformed project or an extra field', () => {
         assert.equal(refusalOf({ verb: 'branches', project: 'Not An Id' }), 'bad-request: project is malformed')
         assert.equal(refusalOf({ verb: 'branches', project: 'acme', extra: true }), 'bad-request: branches takes only project')
+    })
+})
+
+describe('configure rootDomain', () => {
+    it('takes a hostname, lowercased, and a null that takes it away', () => {
+        assert.deepEqual(parseConfigureArgs({ rootDomain: 'SpotOnDrones.com' }), { rootDomain: 'spotondrones.com' })
+        assert.deepEqual(parseConfigureArgs({ rootDomain: null }), { rootDomain: null })
+        assert.equal((parseConfigureArgs({ rootDomain: 'not a host' }) as { ok?: boolean }).ok, false)
     })
 })
 

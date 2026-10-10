@@ -274,6 +274,9 @@ export type ConfigureArgs = {
     flexibleSsl?: Record<EnvironmentName, boolean>
     // Who the holding page tells a visitor to reach. null takes the contact away.
     contact?: Contact | null
+    // The site's own domain, the base new environments' addresses sit under. One of live's addresses;
+    // null takes it away, which falls back to live's primary without a leading www.
+    rootDomain?: string | null
 }
 export type ConfigureRequest = { verb: 'configure', project: string, args: ConfigureArgs }
 
@@ -877,8 +880,8 @@ export function parseDomainsArgs(args: unknown): { ok: true, args: DomainsArgs }
 // body it could not read is refused in exactly one place. See policy.ts and routes.ts in api for how the
 // route bridges this Refusal shape onto its own parsers' { ok: false, message }.
 export function parseConfigureArgs(raw: unknown): ConfigureArgs | Refusal {
-    if (!isRecord(raw) || !onlyKeys(raw, ['capabilities', 'repo', 'credential', 'branches', 'domains', 'websockets', 'flexibleSsl', 'contact'])) {
-        return refuse('bad-request', 'configure takes only capabilities, repo, credential, branches, domains, websockets, flexibleSsl and contact')
+    if (!isRecord(raw) || !onlyKeys(raw, ['capabilities', 'repo', 'credential', 'branches', 'domains', 'websockets', 'flexibleSsl', 'contact', 'rootDomain'])) {
+        return refuse('bad-request', 'configure takes only capabilities, repo, credential, branches, domains, websockets, flexibleSsl, contact and rootDomain')
     }
 
     let capabilities: Capability[] | undefined
@@ -967,9 +970,21 @@ export function parseConfigureArgs(raw: unknown): ConfigureArgs | Refusal {
         }
     }
 
+    // Whether it is one of live's addresses is parseRegistry's call when the writer re-reads the file
+    let rootDomain: string | null | undefined
+    if (raw.rootDomain !== undefined) {
+        if (raw.rootDomain === null) rootDomain = null
+        else {
+            const host = normaliseHostname(raw.rootDomain)
+            if (host === null) return refuse('bad-request', 'rootDomain must be null or a hostname')
+            rootDomain = host
+        }
+    }
+
     return {
         ...(capabilities !== undefined ? { capabilities } : {}),
         ...(contact !== undefined ? { contact } : {}),
+        ...(rootDomain !== undefined ? { rootDomain } : {}),
         ...(repo !== undefined ? { repo } : {}),
         ...(credential !== undefined ? { credential } : {}),
         ...(branches !== undefined ? { branches } : {}),

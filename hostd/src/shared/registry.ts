@@ -104,6 +104,10 @@ export type ProjectEntry = {
     // Who a visitor should reach when the site is down, shown on its holding page. null when the entry
     // names nobody, and the page then leaves the contact section out rather than inventing one.
     contact: Contact | null
+    // The site's own domain, which new environments' addresses sit one label below (uat1.example.com). It is
+    // one of live's own hostnames, primary or alias, so it is always served: as an alias it redirects to
+    // live's primary like any other. null falls back to live's primary without a leading www.
+    rootDomain: string | null
 }
 
 // Public contact details, published on the holding page to anyone who visits while the site is down. The
@@ -157,7 +161,7 @@ const DEFAULT_RESERVED = [HORIZONS_BASE]
 const TOP_KEYS = new Set(['reserved', 'allowed', 'openSubdomains', 'offsite', 'projects'])
 const PROJECT_KEYS = new Set([
     'client', 'name', 'dir', 'compose', 'upstream', 'services', 'storage', 'capabilities', 'maxDomains', 'backups',
-    'repo', 'credential', 'portEnv', 'limits', 'environments', 'contact',
+    'repo', 'credential', 'portEnv', 'limits', 'environments', 'contact', 'rootDomain',
 ])
 const ENVIRONMENT_KEYS = new Set(['dir', 'compose', 'composeName', 'branch', 'domain', 'aliases', 'port', 'certificate', 'deployed', 'websockets', 'flexibleSsl'])
 const DIR = /^\/var\/www\/[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/
@@ -663,12 +667,24 @@ function parseProject(id: string, raw: unknown, rules: HostRules): ParsedProject
 
     const contact = parseContact(raw.contact, problems)
 
+    // One of live's own addresses and nothing else, so it is always one hostd serves: an alias of live
+    // already redirects to live's primary, which is what the root domain is meant to do.
+    let rootDomain: string | null = null
+    if (raw.rootDomain !== undefined) {
+        const host = normaliseHostname(raw.rootDomain)
+        if (host === null) problems.push('rootDomain must be a lowercase hostname')
+        else if (!live || (live.domain !== host && !live.aliases.includes(host))) {
+            problems.push(`rootDomain ${host} must be one of live's addresses`)
+        }
+        else rootDomain = host
+    }
+
     if (problems.length > 0 || client === undefined || !name || !dir || !upstream || !composePaths || !composeName) return { problems }
     return {
         entry: {
             id, client, name, repo, credential, dir, compose, composePaths, composeName, upstream, portEnv, limits, environments,
             services, storage, capabilities, maxDomains,
-            backups: { maxKeep }, contact,
+            backups: { maxKeep }, contact, rootDomain,
         },
     }
 }

@@ -27,6 +27,9 @@ export type SiteSettings = {
     // Who the site's holding page tells a visitor to reach while it is down; null takes it away. Sent by
     // server/sites/holdingContact.ts, never by the Settings form.
     contact?: { name: string | null, email: string | null, phone: string | null } | null
+    // The site's own domain, the base new environments' addresses sit under. One of live's addresses, which
+    // hostd checks; null takes it away.
+    rootDomain?: string | null
 }
 
 // Matches hostd's registry id rule
@@ -44,7 +47,7 @@ export async function writeSettings(
     fetchImpl: typeof fetch = fetch,
 ): Promise<HostdResult<{ ok: boolean }>> {
     if (!PROJECT_ID.test(id)) return { ok: false, code: 'not-found', message: 'no such project' }
-    for (const domain of Object.values(settings.domains ?? {})) {
+    for (const domain of [...Object.values(settings.domains ?? {}), ...(settings.rootDomain ? [settings.rootDomain] : [])]) {
         if (!HOSTNAME.test(domain)) return { ok: false, code: 'bad-request', message: 'hostname must be a plain domain name' }
     }
     return hostdRequest<{ ok: boolean }>(
