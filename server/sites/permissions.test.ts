@@ -1,0 +1,47 @@
+import { readFileSync } from 'node:fs'
+import { describe, expect, it } from 'vitest'
+
+import { ALL_PERMISSIONS, PERMISSIONS, PERMISSION_LABELS, parsePermissions } from './permissions'
+
+describe('permissions', () => {
+    // The schema's enum is what Postgres holds and this list is what the forms and checks use: they must be
+    // one list, in one order.
+    it('matches the SitePermission enum in prisma/schema.prisma', () => {
+        const schema = readFileSync(new URL('../../prisma/schema.prisma', import.meta.url), 'utf8')
+        const body = schema.match(/enum SitePermission \{([^}]*)\}/)?.[1] ?? ''
+        const values = body.split('\n').map(line => line.trim()).filter(line => line !== '' && !line.startsWith('//'))
+        expect(values).toEqual([...PERMISSIONS])
+    })
+
+    it('labels every permission', () => {
+        expect(Object.keys(PERMISSION_LABELS).sort()).toEqual([...PERMISSIONS].sort())
+    })
+
+    it('starts a new grant with all of them', () => {
+        expect(ALL_PERMISSIONS).toEqual(PERMISSIONS)
+    })
+
+    // Every link from before site access was carried across with what a client could do then, which was the
+    // first four. BACKUPS came later and is added to the enum alone: a grant made before it never gains a
+    // way to download a site's database without the operator ticking it.
+    it('carries old links across with the four that existed, and gives BACKUPS to nobody by itself', () => {
+        const read = (name: string) => readFileSync(new URL(`../../prisma/migrations/${name}/migration.sql`, import.meta.url), 'utf8')
+        expect(read('20261009120000_site_access')).toContain(`ARRAY['LOGS', 'LIFECYCLE', 'ENVIRONMENTS', 'DEPLOYS']::"SitePermission"[]`)
+        const backups = read('20261010040000_backups_permission')
+        expect(backups).toContain(`ALTER TYPE "SitePermission" ADD VALUE 'BACKUPS'`)
+        expect(backups).not.toMatch(/UPDATE|INSERT/i)
+    })
+})
+
+describe('parsePermissions', () => {
+    it('answers a list in the one order, without repeats', () => {
+        expect(parsePermissions(['DEPLOYS', 'LOGS', 'LOGS'])).toEqual(['LOGS', 'DEPLOYS'])
+        expect(parsePermissions([])).toEqual([])
+    })
+
+    it('refuses anything that is not a list of known permissions, whole', () => {
+        for (const input of [null, 'LOGS', ['LOGS', 'ADMIN'], [1], { 0: 'LOGS' }]) {
+            expect(parsePermissions(input)).toBeNull()
+        }
+    })
+})

@@ -1,0 +1,103 @@
+/* Site access, as the client page and a site's Access tab both draw it. Every colour is a token, which is
+   what ui/palette.test.ts asks of a stylesheet: that test walks ui/ and does not reach this file, so the rule
+   is kept here by hand. */
+
+.list {
+    display: grid;
+    gap: 12px;
+    margin-bottom: 16px;
+}
+
+.row {
+    display: grid;
+    gap: 8px;
+    padding: 12px 0;
+    border-bottom: 1px solid var(--rule);
+}
+
+.head {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
+.name {
+    margin: 0;
+    flex: 1;
+    font-size: 13.5px;
+    color: var(--ink);
+}
+
+.sub {
+    font-family: var(--font-mono), monospace;
+    font-size: 12px;
+    color: var(--ink-3);
+    margin-left: 6px;
+}
+
+.link { color: inherit; text-decoration: none; }
+.link:hover { text-decoration: underline; }
+
+.permissions {
+    border: 0;
+    margin: 0;
+    padding: 0;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px 18px;
+}
+
+.permission {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 13px;
+    color: var(--ink);
+    cursor: pointer;
+}
+.permission input { accent-color: var(--lake); width: 15px; height: 15px; cursor: pointer; }
+
+.actions {
+    display: flex;
+    gap: 8px;
+    align-items: center;
+}
+
+.grant {
+    display: grid;
+    gap: 10px;
+    max-width: 520px;
+}
+
+.fields {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 10px;
+    align-items: flex-start;
+}
+
+.note {
+    font-size: 12px;
+    color: var(--ink-3);
+    margin: 0;
+}
+
+.problem { margin-top: 8px; }
+
+.crit {
+    color: var(--soft-red);
+    border-color: color-mix(in srgb, var(--crit) 45%, transparent);
+}
+
+.title {
+    font-size: 14px;
+    font-weight: 600;
+    margin: 22px 0 10px;
+    color: var(--ink);
+}
+
+.empty {
+    font-size: 13px;
+    color: var(--ink-2);
+    margin: 0 0 8px;
+}

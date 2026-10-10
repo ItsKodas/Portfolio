@@ -1,7 +1,7 @@
 import { describe, it } from 'node:test'
 import assert from 'node:assert/strict'
 
-import { declaredServices, environmentServices, missingSiteProblem } from './environment-services.ts'
+import { declaredServices, environmentServices, missingSiteProblem, siteDrift, standInSites } from './environment-services.ts'
 import { parseRegistry } from '../shared/registry.ts'
 import type { Runner } from './compose.ts'
 
@@ -38,6 +38,29 @@ describe('declaredServices', () => {
     // sqlite is a file the site opens, not a compose service, so no compose file ever declares it
     it('keeps a sqlite database whatever the compose file says', () => {
         assert.ok(Object.hasOwn(declaredServices(project, { name: 'acme-uat1', services: {} }), 'files'))
+    })
+})
+
+describe('a renamed site service', () => {
+    it('is checked under its new name when the registry\'s site service is gone', () => {
+        const resolved = { name: 'acme', services: { app: { image: 'acme-app' }, mongo: {} } }
+        assert.deepEqual(standInSites(project, resolved), ['app'])
+        assert.deepEqual(declaredServices(project, resolved).app, { role: 'site' })
+    })
+
+    it('stands nothing in while a registered site service is still declared', () => {
+        assert.deepEqual(standInSites(project, { name: 'acme', services: { web: {}, worker: {} } }), [])
+    })
+
+    // A database guessed from its image is the operator's to register, never a site to health-check.
+    it('never stands a database image in for the site', () => {
+        assert.deepEqual(standInSites(project, { name: 'acme', services: { app: {}, cache: { image: 'redis:7' } } }), ['app'])
+    })
+
+    it('reports what moved, and nothing for an ordinary deploy', () => {
+        const declared = declaredServices(project, { name: 'acme', services: { app: {}, mongo: {} } })
+        assert.deepEqual(siteDrift(project, declared), { removed: ['web'], added: ['app'] })
+        assert.deepEqual(siteDrift(project, declaredServices(project, { name: 'acme', services: { web: {} } })), { removed: [], added: [] })
     })
 })
 

@@ -13,6 +13,7 @@ import { LIVE, type EnvironmentName } from '@/server/hostd/env'
 import { Callout } from '@/ui/Callout/Callout'
 import { DataTable } from '@/ui/DataTable/DataTable'
 import { StatusDot, type State as DotState } from '@/ui/StatusDot/StatusDot'
+import { Tail } from '@/ui/Tail/Tail'
 import { AddDomain, AdoptSite, DomainActions } from './domainControls'
 import { clientSentence, needsYou, sortDomains, stateTone, stateWord } from './domains'
 import { formatWhen } from '../../format'
@@ -144,7 +145,7 @@ export function DomainsPanel({ id, environment, domains, isAdmin, projectName, t
                     {domain.vhost && !domain.vhost.ok && (
                         <details className={styles.outputBlock}>
                             <summary>What Apache said</summary>
-                            <pre>{domain.vhost.output}</pre>
+                            <Tail>{domain.vhost.output}</Tail>
                         </details>
                     )}
                 </>

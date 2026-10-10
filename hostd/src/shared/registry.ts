@@ -81,7 +81,8 @@ export const DEFAULT_PORT_ENV = 'WEB_PORT'
 
 export type ProjectEntry = {
     id: string
-    // null for a site the operator runs for themselves, which no client may see
+    // null for a site the operator runs for themselves. Legacy: read only for a request that carries no
+    // X-Hostd-Sites, which the portal always sends now (api/auth.ts, api/policy.ts)
     client: string | null
     name: string
     repo: string | null

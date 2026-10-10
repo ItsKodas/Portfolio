@@ -10,7 +10,7 @@ function deps(open: unknown, owns = true) {
         config,
         caller: admin,
         clientId: null as string | null,
-        assertOwned: async () => owns,
+        mayWatch: async () => owns,
         openLogStream: open as never,
         openDeployStream: open as never,
     }
@@ -99,7 +99,7 @@ describe('relayBackupDownload', () => {
         config,
         caller: admin,
         clientId,
-        assertOwned: async () => owns,
+        mayWatch: async () => owns,
         openBackupDownload: open as never,
     })
 

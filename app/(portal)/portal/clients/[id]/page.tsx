@@ -10,8 +10,9 @@ import { Chip } from '@/ui/Chip/Chip'
 import { formatWhen } from '../../format'
 import PortalHeader from '../../header'
 import frame from '../../frame.module.css'
+import { AccessRow, GrantSiteForm } from '../../access/controls'
 import {
-    AddSiteForm, ClearLockButton, ClientForm, ClientId, DeleteClientButton, RemoveSiteButton,
+    ClearLockButton, ClientForm, ClientId, DeleteClientButton,
     ResendInviteButton, ResetTwoFactorButton, SendResetButton, SuspendButton,
 } from '../controls'
 import { STATE_TONES, clientState } from '../state'
@@ -35,8 +36,8 @@ export default async function ClientPage({ params }: { params: Promise<{ id: str
     const client = await clients.byId(id)
     if (!client) notFound()
 
-    const [sites, sessions, unusedRecoveryCodes, quotes] = await Promise.all([
-        clients.listSites(id),
+    const [access, sessions, unusedRecoveryCodes, quotes] = await Promise.all([
+        clients.listAccess(id),
         clients.listSessions(id),
         clients.countUnusedRecoveryCodes(id),
         quoteRepo(getDb()).listForClient(id),
@@ -91,14 +92,19 @@ export default async function ClientPage({ params }: { params: Promise<{ id: str
                 <section className={frame.panel}>
                     <h2 className={frame.section}>Sites</h2>
                     <div className={styles.sites}>
-                        {sites.length === 0 ? <p className={frame.empty}>No sites linked yet.</p> : sites.map(site => (
-                            <div key={site.id} className={styles.site}>
-                                <p className={styles.siteName}>{site.name} <span className={frame.mono}>{site.projectId}</span></p>
-                                <RemoveSiteButton clientId={client.id} siteId={site.id} />
-                            </div>
+                        {access.length === 0 ? <p className={frame.empty}>No access to any site yet.</p> : access.map(row => (
+                            <AccessRow
+                                key={row.siteId}
+                                clientId={client.id}
+                                siteId={row.siteId}
+                                title={row.site.name}
+                                subtitle={row.site.projectId}
+                                href={`/portal/sites/${row.site.projectId}`}
+                                permissions={row.permissions}
+                            />
                         ))}
                     </div>
-                    <AddSiteForm clientId={client.id} />
+                    <GrantSiteForm clientId={client.id} />
                 </section>
 
                 <section className={frame.panel}>

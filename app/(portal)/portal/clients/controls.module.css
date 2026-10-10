@@ -41,16 +41,6 @@
     line-height: 1.6;
 }
 
-.addSite {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 10px;
-    align-items: flex-start;
-}
-
-/* The two fields are a grid row of their own, so the button lines up with their controls and not their labels */
-.addSiteButton { margin-top: 23px; }
-
 /* A destructive or cautionary button keeps ui/Button's shape and only takes the tone's colour, the same way
    ui/Chip tints a border rather than repainting the whole control. */
 .warn {

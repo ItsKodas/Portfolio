@@ -5,7 +5,7 @@ const callerFromSession = vi.fn()
 const createProject = vi.fn()
 const startDeploy = vi.fn()
 const listCredentials = vi.fn()
-const clients = { byId: vi.fn(), createSite: vi.fn(), list: vi.fn() }
+const clients = { byId: vi.fn(), grantAccess: vi.fn(), list: vi.fn() }
 
 vi.mock('next/cache', () => ({ revalidatePath: () => {} }))
 vi.mock('@/server/clients/wiring', () => ({ repo: () => clients }))
@@ -55,7 +55,7 @@ describe('createSiteAction', () => {
             domain: 'bakery.com', certificate: 'letsencrypt', dir: 'bakery', compose: ['docker-compose.yml'],
             capabilities: ['lifecycle', 'deploy'], websockets: false, flexibleSsl: true, port: 5012,
         })
-        expect(clients.createSite).not.toHaveBeenCalled()
+        expect(clients.grantAccess).not.toHaveBeenCalled()
         expect(startDeploy).not.toHaveBeenCalled()
     })
 
@@ -64,10 +64,11 @@ describe('createSiteAction', () => {
         expect(createProject.mock.calls[0][2]).toMatchObject({ domain: null, certificate: null })
     })
 
-    it('links the site to the client it was created for, after hostd created it', async () => {
+    it('gives the client it was created for access, after hostd created it, without telling hostd', async () => {
         await createSiteAction({ ...FORM, client: 'cl_2', credential: 'acme' })
-        expect(createProject.mock.calls[0][2]).toMatchObject({ client: 'cl_2', credential: 'acme' })
-        expect(clients.createSite).toHaveBeenCalledWith('cl_2', { projectId: 'bakery', name: 'Bakery' })
+        expect(createProject.mock.calls[0][2]).toMatchObject({ credential: 'acme' })
+        expect(createProject.mock.calls[0][2]).not.toHaveProperty('client')
+        expect(clients.grantAccess).toHaveBeenCalledWith('cl_2', { projectId: 'bakery', name: 'Bakery' }, ['LOGS', 'LIFECYCLE', 'ENVIRONMENTS', 'DEPLOYS', 'BACKUPS'])
     })
 
     it('refuses a client that no longer exists without asking hostd', async () => {
@@ -81,14 +82,14 @@ describe('createSiteAction', () => {
         const result = await createSiteAction({ ...FORM, client: 'cl_2', deploy: true })
         expect(result.ok).toBe(false)
         expect(!result.ok && result.error).toMatch(/already exists/)
-        expect(clients.createSite).not.toHaveBeenCalled()
+        expect(clients.grantAccess).not.toHaveBeenCalled()
         expect(startDeploy).not.toHaveBeenCalled()
     })
 
     it('deploys live only when asked, and reports what did not happen as warnings on a site that exists', async () => {
         createProject.mockResolvedValue({ ok: true, value: { vhost: { ok: false, message: 'bakery.com is already served by x.conf.' } } })
         startDeploy.mockResolvedValue({ ok: false, code: 'busy', message: 'a deploy is already running' })
-        clients.createSite.mockRejectedValue(new Error('Site_projectId_key'))
+        clients.grantAccess.mockRejectedValue(new Error('Site_projectId_key'))
 
         const result = await createSiteAction({ ...FORM, client: 'cl_2', deploy: true })
 

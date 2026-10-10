@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
+import { ALL_PERMISSIONS, type Permission } from '@/server/sites/permissions'
 import { gatherSite } from './site'
 
 const service = (state: string) => ({
@@ -13,7 +14,7 @@ function deps(over: Record<string, unknown> = {}) {
         config: () => ({ ok: true as const, value: { url: 'http://hostd-api:8080', token: 'a'.repeat(32) } }),
         listProjects: async () => ({ ok: true as const, value: [{ id: 'asot', name: 'ASOT', valid: true, capabilities: ['lifecycle', 'logs'] }] }),
         getProject: async () => ({ ok: true as const, value: [service('running')] }),
-        owns: async () => true,
+        access: async (): Promise<readonly Permission[] | null> => ALL_PERMISSIONS,
         ...over,
     }
 }
@@ -33,10 +34,10 @@ describe('gatherSite', () => {
         expect(view.kind).toBe('anonymous')
     })
 
-    it('refuses a site this client does not own, before asking hostd for it', async () => {
+    it('refuses a site this client has no access to, before asking hostd for it', async () => {
         const view = await gatherSite(deps({
             who: async () => ({ caller: { actor: 'client:cl_8F2K1ABC', user: 'cl_8F2K1ABC' }, clientId: 'cl_8F2K1ABC' }),
-            owns: async () => false,
+            access: async () => null,
             getProject: async () => { throw new Error('should not be asked') },
         }), 'asot')
         expect(view.kind).toBe('forbidden')
@@ -206,9 +207,22 @@ describe('gatherSite', () => {
         const missing = await gatherSite(deps({ listProjects: async () => ({ ok: true as const, value: [] }) }), 'asot')
         const forbidden = await gatherSite(deps({
             who: async () => ({ caller: { actor: 'client:cl_X', user: 'cl_X' }, clientId: 'cl_X' }),
-            owns: async () => false,
+            access: async () => null,
         }), 'asot')
         expect(missing.kind === 'missing' || missing.kind === 'forbidden').toBe(true)
         expect(forbidden.kind === 'missing' || forbidden.kind === 'forbidden').toBe(true)
+    })
+
+    it('gives the operator every permission without looking any up', async () => {
+        const view = await gatherSite(deps({ access: async () => { throw new Error('should not be asked') } }), 'asot')
+        expect(view.kind === 'site' && view.permissions).toEqual(['LOGS', 'LIFECYCLE', 'ENVIRONMENTS', 'DEPLOYS', 'BACKUPS'])
+    })
+
+    it('carries the permissions this client was given on this site', async () => {
+        const view = await gatherSite(deps({
+            who: async () => ({ caller: { actor: 'client:cl_X', user: 'cl_X' }, clientId: 'cl_X' }),
+            access: async (clientId: string, projectId: string): Promise<Permission[] | null> => (clientId === 'cl_X' && projectId === 'asot' ? ['LOGS'] : null),
+        }), 'asot')
+        expect(view.kind === 'site' && view.permissions).toEqual(['LOGS'])
     })
 })

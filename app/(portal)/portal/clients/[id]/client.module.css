@@ -31,18 +31,6 @@
     margin-bottom: 16px;
 }
 
-.site {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-}
-
-.siteName {
-    margin: 0;
-    flex: 1;
-    font-size: 13.5px;
-}
-
 .quotes {
     display: grid;
     gap: 8px;

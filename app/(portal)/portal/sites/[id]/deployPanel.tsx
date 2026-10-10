@@ -16,6 +16,7 @@ import { callerFromSession } from '@/server/hostd/session'
 import { Callout } from '@/ui/Callout/Callout'
 import { Chip } from '@/ui/Chip/Chip'
 import { Row } from '@/ui/Row/Row'
+import { Tail } from '@/ui/Tail/Tail'
 import { DeployControls } from './deployControls'
 import { DeployLog } from './deployLog'
 import { formatDuration, outcomeTone, outcomeWord, rollbackTarget, shortCommit, updatesFor } from './deploys'
@@ -58,7 +59,7 @@ function Deploy({ record }: { record: DeployRecord }) {
             {record.output && (
                 <details className={styles.outputBlock}>
                     <summary>Show what it printed</summary>
-                    <pre>{record.output}</pre>
+                    <Tail>{record.output}</Tail>
                 </details>
             )}
         </div>

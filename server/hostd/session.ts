@@ -7,7 +7,7 @@ import 'server-only'
 import { isAdminSession } from '../auth/allow'
 import { callerForAdmin, callerForClient, type Caller } from './actor'
 
-// clientId is null for the operator, who owns every project, and is what the relay checks ownership with
+// clientId is null for the operator, who reaches every project, and is what the relay checks access with
 // for everyone else.
 export type Who = {
     caller: Caller
@@ -18,6 +18,9 @@ export type SessionSources = {
     adminSession: () => Promise<{ user?: { email?: string | null } | null } | null>
     adminEmail: string | undefined
     clientSession: () => Promise<{ client: { id: string } } | null>
+    // The projects a client has been given access to, read on every request so a grant taken away stops
+    // working at once rather than when the session ends
+    clientSites: (clientId: string) => Promise<string[]>
 }
 
 // Imported where they are used rather than at the top of the file: server/auth builds a NextAuth instance on
@@ -33,6 +36,10 @@ const liveSources = (): SessionSources => ({
         const { currentClient } = await import('../clients/auth')
         return currentClient()
     },
+    clientSites: async clientId => {
+        const { sitesOf } = await import('../sites/access')
+        return sitesOf(clientId)
+    },
 })
 
 export async function callerFromSession(sources: SessionSources = liveSources()): Promise<Who | null> {
@@ -43,7 +50,10 @@ export async function callerFromSession(sources: SessionSources = liveSources())
     if (email && isAdminSession(session, sources.adminEmail)) return { caller: callerForAdmin(email), clientId: null }
 
     const client = await sources.clientSession()
-    if (client) return { caller: callerForClient(client.client.id), clientId: client.client.id }
+    if (client) {
+        const sites = await sources.clientSites(client.client.id)
+        return { caller: callerForClient(client.client.id, sites), clientId: client.client.id }
+    }
 
     return null
 }

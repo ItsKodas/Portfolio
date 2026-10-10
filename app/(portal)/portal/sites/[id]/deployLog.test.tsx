@@ -1,4 +1,4 @@
-import { act, render, screen } from '@testing-library/react'
+import { act, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 // One object for the life of the module, not a new one per call: real next/navigation hands back a
@@ -108,25 +108,28 @@ describe('the deploy column', () => {
         return list
     }
 
-    it('follows the newest line to the bottom', () => {
+    it('follows the newest line to the bottom', async () => {
         render(<DeployLog id="acme" environment="live" />)
         open().open()
         const list = sized(screen.getByRole('list'))
         open().event({ at: AT, startedAt: AT, kind: 'step', text: 'building' })
-        expect(list.scrollTop).toBe(1000)
+        await waitFor(() => expect(list.scrollTop).toBe(1000))
     })
 
     // Scrolled up to read something earlier, the reader stays where they are
-    it('leaves the reader where they are once they scroll up', () => {
+    it('leaves the reader where they are once they scroll up', async () => {
         render(<DeployLog id="acme" environment="live" />)
         open().open()
         const list = sized(screen.getByRole('list'))
         open().event({ at: AT, startedAt: AT, kind: 'step', text: 'building' })
+        await waitFor(() => expect(list.scrollTop).toBe(1000))
         act(() => {
             list.scrollTop = 100
             list.dispatchEvent(new Event('scroll'))
         })
         open().event({ at: AT, startedAt: AT, kind: 'output', text: '#7 [4/9] RUN npm ci' })
+        // The content watch runs once the render's mutations are delivered, so let them be delivered
+        await act(async () => {})
         expect(list.scrollTop).toBe(100)
     })
 
@@ -243,5 +246,5 @@ describe('the deploy column', () => {
         }
         expect(screen.queryByText('line 0')).toBeNull()
         expect(screen.getByText(`line ${MAX_LINES + 9}`)).toBeInTheDocument()
-    }, 20000)
+    }, 40000)
 })

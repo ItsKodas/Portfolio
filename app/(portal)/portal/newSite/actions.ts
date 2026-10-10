@@ -7,6 +7,7 @@
 import { revalidatePath } from 'next/cache'
 
 import { repo } from '@/server/clients/wiring'
+import { ALL_PERMISSIONS } from '@/server/sites/permissions'
 import { readHostd, type HostdConfig } from '@/server/hostd/config'
 import type { Caller } from '@/server/hostd/actor'
 import { createProject } from '@/server/hostd/create'
@@ -63,8 +64,8 @@ export async function createSiteAction(input: unknown): Promise<NewSiteResult> {
     const allowed = await allowAdmin()
     if (!allowed.ok) return allowed
 
-    // Before hostd is asked, so a client deleted since the form opened does not leave a site created and
-    // then unlinkable.
+    // Before hostd is asked, so a client deleted since the form opened does not leave a site created with
+    // nobody to give it to.
     if (site.client !== '' && !(await repo().byId(site.client))) {
         return { ok: false, error: 'That client no longer exists. Reopen the form and pick again.' }
     }
@@ -72,7 +73,6 @@ export async function createSiteAction(input: unknown): Promise<NewSiteResult> {
     const result = await createProject(allowed.config, allowed.caller, {
         id: site.id,
         name: site.name,
-        ...(site.client !== '' ? { client: site.client } : {}),
         repo: site.repo,
         ...(site.credential !== '' ? { credential: site.credential } : {}),
         branch: site.branch,
@@ -93,12 +93,14 @@ export async function createSiteAction(input: unknown): Promise<NewSiteResult> {
     const warnings: string[] = []
     if (result.value.vhost && !result.value.vhost.ok) warnings.push(`The vhost was not written: ${result.value.vhost.message}`)
 
+    // The client picked in the form is given the site the way the Access tab gives it, with everything a
+    // client can be given. hostd is not told: access is the portal's record, sent with each request.
     if (site.client !== '') {
         try {
-            await repo().createSite(site.client, { projectId: site.id, name: site.name })
+            await repo().grantAccess(site.client, { projectId: site.id, name: site.name }, ALL_PERMISSIONS)
         } catch (error) {
-            console.error(`[portal] linking ${site.id} to ${site.client} failed: ${String(error)}`)
-            warnings.push('The site was created but not linked to its client. Add it from the client\'s page.')
+            console.error(`[portal] giving ${site.client} access to ${site.id} failed: ${String(error)}`)
+            warnings.push('The site was created but the client was not given access. Give it from the site\'s Access tab.')
         }
     }
 

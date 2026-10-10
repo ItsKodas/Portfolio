@@ -94,6 +94,10 @@ export type Change =
         credential?: string | null
         branches?: Record<EnvironmentName, string | null>
     }
+    // The site services a live deploy found under new names (see agent/environment-services.ts): the
+    // ones the compose file no longer has come out, the ones it has instead go in as role site. Only ever
+    // site entries: a database the registry names is the operator's to rename.
+    | { kind: 'rename-sites', id: string, removed: string[], added: string[] }
     | { kind: 'remove-project', id: string }
     | { kind: 'remove-environment', id: string, environment: EnvironmentName }
     // A deleted environment coming back from the trash: the node it had, as plain data, written back
@@ -349,6 +353,27 @@ function edit(doc: Document, change: Change): EditResult {
             // No grammar checked here on purpose: applyChange re-parses the whole document with
             // parseRegistry below, which is the one place that decides what a capability, a repo and a
             // branch may be. Two copies of that rule would drift.
+            return null
+        }
+        case 'rename-sites': {
+            if (!has(change.id)) return { problem: `${change.id} is not registered` }
+            for (const name of change.removed) {
+                if (doc.getIn(['projects', change.id, 'services', name, 'role']) !== 'site') {
+                    return { problem: `${change.id} has no site service ${name}` }
+                }
+            }
+            for (const name of change.added) {
+                if (doc.hasIn(['projects', change.id, 'services', name])) return { problem: `${change.id} already has a service ${name}` }
+            }
+            // Added first, so the services mapping is never empty in between. Flow style, as the file
+            // writes every service by hand: "mappies: { role: site }".
+            for (const name of change.added) {
+                const node = doc.createNode({ role: 'site' })
+                node.flow = true
+                doc.setIn(['projects', change.id, 'services', name], node)
+            }
+            for (const name of change.removed) doc.deleteIn(['projects', change.id, 'services', name])
+            // parseRegistry below refuses a malformed name and a project left with no site service.
             return null
         }
         case 'remove-project':

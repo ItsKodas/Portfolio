@@ -1,7 +1,6 @@
 import type { Metadata } from 'next'
 import { notFound, redirect } from 'next/navigation'
 
-import { getDb } from '@/server/db'
 import { listBranches } from '@/server/hostd/branches'
 import { readHostd } from '@/server/hostd/config'
 import { listCredentials } from '@/server/hostd/credentials'
@@ -9,12 +8,15 @@ import { listDomains, type Domain } from '@/server/hostd/domains'
 import { LIVE, type EnvironmentName } from '@/server/hostd/env'
 import { listDeletedEnvironments, type DeletedEnvironment } from '@/server/hostd/environments'
 import { forAdmin, forClient } from '@/server/hostd/errors'
-import { assertOwned, getProject, listProjects, type ServiceStatus } from '@/server/hostd/projects'
+import { getProject, listProjects, type ServiceStatus } from '@/server/hostd/projects'
 import { callerFromSession } from '@/server/hostd/session'
+import { accessOf } from '@/server/sites/access'
+import type { Permission } from '@/server/sites/permissions'
 import { Callout } from '@/ui/Callout/Callout'
 import { Shell } from '@/ui/Shell/Shell'
 import { Dashboard } from '@/ui/icons'
 import { StatusDot } from '@/ui/StatusDot/StatusDot'
+import { SiteAccessPanel } from './access'
 import { BackupPanel } from './backupPanel'
 import { DeployPanel } from './deployPanel'
 import { EnvironmentsTab } from './environmentsTab'
@@ -68,7 +70,7 @@ const WAITING: Record<string, { title: string, body: string }> = {
 // printed as 0, and only one of them is true.
 const NOT_AVAILABLE = 'not available'
 
-type TabId = 'overview' | 'logs' | 'environments' | 'deploys' | 'backups' | 'settings'
+type TabId = 'overview' | 'logs' | 'environments' | 'deploys' | 'backups' | 'access' | 'settings'
 type Tab = { id: TabId, label: string, disabled?: boolean }
 
 // The Domains and Environment tabs became sections of the Environments tab. A link to either still lands
@@ -166,12 +168,9 @@ export default async function SitePage({ params, searchParams }: Props) {
         },
         listProjects: (config, caller) => listProjects(config, caller),
         getProject: (config, caller, project) => getProject(config, caller, project),
-        // getDb() is reached for here rather than at the top of the file, so the operator, who owns every
-        // project and is never asked this, never touches the database to read a page.
-        owns: (clientId, projectId) => assertOwned(clientId, projectId, async project => {
-            const db = getDb()
-            return db.site.findUnique({ where: { projectId: project }, select: { projectId: true, clientId: true } })
-        }),
+        // Only ever asked for a client: the operator reaches every project and never touches the database
+        // to read a page.
+        access: (clientId, projectId) => accessOf(clientId, projectId),
     }, id)
 
     if (view.kind === 'anonymous') redirect('/portal/sign-in')
@@ -188,25 +187,33 @@ export default async function SitePage({ params, searchParams }: Props) {
     const canDomains = view.capabilities.includes('domains')
     // And for backups: hostd refuses even the list without it, for the operator and a client alike
     const canBackups = view.capabilities.includes('backups')
+    // What this viewer was given here. Every permission for the operator; for a client, the tabs and controls
+    // below appear only for what their access carries, and the actions and the log relay check the same.
+    const may = (permission: Permission) => view.permissions.includes(permission)
 
     const tabs: Tab[] = [
         { id: 'overview', label: 'Overview' },
-        { id: 'logs', label: 'Logs' },
+        ...(may('LOGS') ? [{ id: 'logs' as const, label: 'Logs' }] : []),
         // Everything about one environment, for both roles. A client reads the list, each one's Summary
         // and its addresses: hostd leaves 'domains-read' out of its admin-only verbs. The env files and
         // every action are the operator's alone, which the tab decides, not this list. Never disabled:
         // the sections whose capability is off say so themselves.
-        { id: 'environments', label: 'Environments' },
+        // Absent rather than disabled for a client not given it: that is the operator's choice, not something
+        // the site cannot do.
+        ...(may('ENVIRONMENTS') ? [{ id: 'environments' as const, label: 'Environments' }] : []),
         // A client may read their own site's deploys: hostd's 'deploy-read' is not among its admin-only
         // verbs, so this tab is theirs too, showing what reached their site rather than every build.
         // Both roles need the project to have the capability at all, which is what disables it.
-        { id: 'deploys', label: 'Deploys', disabled: !canDeploy },
-        // The client's as much as the operator's: hostd's backup and backup-read verbs let an owner list,
-        // make, delete, download and schedule their own site's copies. Disabled without the capability.
-        { id: 'backups', label: 'Backups', disabled: !canBackups },
+        ...(may('DEPLOYS') ? [{ id: 'deploys' as const, label: 'Deploys', disabled: !canDeploy }] : []),
+        // Backups need their own permission for a client: a copy holds the site's whole database, and
+        // downloading one moves it off the dedi. With it a client may list, make, delete, download and
+        // schedule copies, as hostd's backup and backup-read verbs allow. Disabled without the capability.
+        ...(may('BACKUPS') ? [{ id: 'backups' as const, label: 'Backups', disabled: !canBackups }] : []),
         // What a site is allowed to do is the operator's alone to see or change: absent for a client
         // rather than disabled. Last in the list because it is where the switches for the tabs above it
         // live, so it reads as the thing behind them rather than one more of them.
+        // Which clients may reach this site, and what each may do. The operator's alone, like Settings.
+        ...(view.isAdmin ? [{ id: 'access' as const, label: 'Access' }] : []),
         ...(view.isAdmin ? [{ id: 'settings' as const, label: 'Settings' }] : []),
     ]
 
@@ -360,17 +367,24 @@ export default async function SitePage({ params, searchParams }: Props) {
                                 />
                             </div>
 
-                            <Lifecycle id={view.id} enabled={view.capabilities.includes('lifecycle')} state={current} />
+                            {may('LIFECYCLE') && (
+                                <Lifecycle id={view.id} enabled={view.capabilities.includes('lifecycle')} state={current} />
+                            )}
 
                             {/* What the site is doing right now, which is the log, with what it is made of
                                 beside it. The Logs tab is the same view given the whole panel, for when the
-                                thing being read is longer than a glance. */}
-                            <div className={styles.split}>
-                                <div className={styles.splitMain}>
-                                    <SiteLogs id={view.id} services={view.services.map(service => service.service)} />
-                                </div>
-                                <Environment name={LIVE} services={view.services} trouble={view.trouble} />
-                            </div>
+                                thing being read is longer than a glance. A client not given the logs sees
+                                what it is made of alone. */}
+                            {may('LOGS')
+                                ? (
+                                    <div className={styles.split}>
+                                        <div className={styles.splitMain}>
+                                            <SiteLogs id={view.id} services={view.services.map(service => service.service)} />
+                                        </div>
+                                        <Environment name={LIVE} services={view.services} trouble={view.trouble} />
+                                    </div>
+                                )
+                                : <Environment name={LIVE} services={view.services} trouble={view.trouble} />}
                         </>
                     )}
 
@@ -401,6 +415,8 @@ export default async function SitePage({ params, searchParams }: Props) {
                     )}
 
                     {selected === 'backups' && canBackups && <BackupPanel id={view.id} />}
+
+                    {selected === 'access' && <SiteAccessPanel projectId={view.id} name={view.name} />}
 
                     {/* Never drawn over capabilities that were not actually read: an 'unread' or 'invalid'
                         registry entry says why instead, with no form and no Save, rather than showing eight

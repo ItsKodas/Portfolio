@@ -109,7 +109,7 @@ model Client {
   failedSignIns     Int       @default(0)
   lockedUntil       DateTime?
   quotes            Quote[]
-  sites             Site[]
+  siteAccess        SiteAccess[]
   sessions          ClientSession[]
   tokens            ClientToken[]
   recoveryCodes     ClientRecoveryCode[]
@@ -118,16 +118,43 @@ model Client {
   @@index([suspendedAt])
 }
 
+// A website, on its own. It belongs to nobody: the operator reaches every one of them, and a client reaches one
+// only through a SiteAccess row. See docs/superpowers/specs/2026-10-09-site-access-design.md.
 model Site {
-  id        String   @id @default(cuid())
+  id        String       @id @default(cuid())
   // The key in hostd's projects.yaml. hostd is the source of truth; this is a pointer, and a project id the
   // registry doesn't know simply shows as unavailable.
-  projectId String   @unique
+  projectId String       @unique
   name      String
-  createdAt DateTime @default(now())
-  client    Client   @relation(fields: [clientId], references: [id], onDelete: Cascade)
-  clientId  String
+  createdAt DateTime     @default(now())
+  access    SiteAccess[]
+}
 
+// What a client may do on a site beyond seeing its Overview, which any access grants. Each one is a tab or a
+// control a client can reach today; everything else on a site is the operator's alone, whatever is ticked here.
+enum SitePermission {
+  // The Logs tab and the Overview's log
+  LOGS
+  // Start, stop and restart
+  LIFECYCLE
+  // The Environments tab: each environment's summary and its domains
+  ENVIRONMENTS
+  // The Deploys tab: the history and a deploy as it runs, never starting one
+  DEPLOYS
+  // The Backups tab: list, make, delete, download and schedule copies of live
+  BACKUPS
+}
+
+// One client's access to one site. Many clients may share a site, and a client may have many sites.
+model SiteAccess {
+  site        Site             @relation(fields: [siteId], references: [id], onDelete: Cascade)
+  siteId      String
+  client      Client           @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  clientId    String
+  permissions SitePermission[]
+  createdAt   DateTime         @default(now())
+
+  @@id([siteId, clientId])
   @@index([clientId])
 }
 

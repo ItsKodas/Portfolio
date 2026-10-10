@@ -8,6 +8,9 @@
     font-family: var(--font-mono), monospace;
     font-size: 11.5px;
     line-height: 1.75;
+    /* The browser's own scroll anchoring would nudge a pane sitting at the bottom as lines leave the top,
+       which ui/useStickToBottom reads as the reader scrolling up. It does the anchoring itself. */
+    overflow-anchor: none;
 }
 
 /* A pane that takes the height it is handed. Where nothing above it has a definite height (a phone, or a

@@ -1,7 +1,6 @@
 'use client'
 
-import { useEffect, useRef } from 'react'
-
+import { useStickToBottom } from '@/ui/useStickToBottom'
 import styles from './LogPane.module.css'
 
 type Line = {
@@ -16,19 +15,14 @@ type Line = {
 type Props = {
     lines: Line[]
     label: string
-    following?: boolean
     // Take the height left over rather than the fixed box, for a page that has given this pane the room
     fill?: boolean
 }
 
-export function LogPane({ lines, label, following, fill }: Props) {
-    const ref = useRef<HTMLDivElement>(null)
-
-    useEffect(() => {
-        // Newest at the bottom, like every log anyone has ever read
-        const pane = ref.current
-        if (pane && following) pane.scrollTop = pane.scrollHeight
-    }, [lines, following])
+export function LogPane({ lines, label, fill }: Props) {
+    // Newest at the bottom, like every log anyone has ever read, and followed there unless the reader
+    // has scrolled up to read something earlier
+    const ref = useStickToBottom<HTMLDivElement>()
 
     return (
         <div

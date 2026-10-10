@@ -39,7 +39,7 @@ import {
     BUILD_TIMEOUT_MS, SWAP_TIMEOUT_MS, type DeployTrees,
 } from './deploy-compose.ts'
 import { waitForHealthy } from './deploy-health.ts'
-import { environmentServices, missingSiteProblem } from './environment-services.ts'
+import { environmentServices, missingSiteProblem, siteDrift, type EnvironmentServices } from './environment-services.ts'
 import { executeSteps, inspectLayout, resumeSteps, windowSteps, type Step } from './migrate-layout.ts'
 
 // The worst case is a swap that cannot complete, so a deploy refuses to start rather than risk it.
@@ -439,15 +439,38 @@ async function swapBack(
 
 // The health check over the services the tree's own compose file declares, which on a branch other than
 // the one live runs may be fewer than the registry lists (environment-services.ts). Read after the swap,
-// from the tree now in place, so a rollback is checked against the copy it brought back.
+// from the tree now in place, so a rollback is checked against the copy it brought back. Answers the
+// services it checked, which on a commit that renamed the site's service are the new names standing in
+// for the registry's (environment-services.ts).
 async function healthOf(
     project: ProjectEntry, environment: EnvironmentEntry, dir: string, name: string, deps: DeployDeps,
-): Promise<{ ok: true } | { ok: false, problem: string }> {
+): Promise<{ ok: true, services: EnvironmentServices } | { ok: false, problem: string }> {
     const services = await environmentServices(project, { ...locationIn(environment, dir), composeName: name }, deps.runner)
     if (!services.ok) return services
     const noSite = missingSiteProblem(project, services.services)
     if (noSite) return { ok: false, problem: noSite }
-    return waitForHealthy({ ...project, services: services.services }, name, { docker: deps.docker, now: deps.now, sleep: deps.sleep })
+    const drift = siteDrift(project, services.services)
+    if (drift.added.length > 0) {
+        deps.log(`deploy ${project.id} ${environment.name}: the compose file has no ${drift.removed.join(', ')}, so ${drift.added.join(', ')} ${drift.added.length === 1 ? 'is' : 'are'} checked as the site instead`)
+    }
+    const healthy = await waitForHealthy({ ...project, services: services.services }, name, { docker: deps.docker, now: deps.now, sleep: deps.sleep })
+    return healthy.ok ? { ok: true, services: services.services } : healthy
+}
+
+// The registry describes live, so only a live deploy that came up healthy writes the site services it
+// was checked against back into it. Without this the registry would go on naming the old service, which
+// the storage guard, the status view and the next deploy's checks all read. Another environment's branch
+// may rename a service live has not, so its deploy only checks the new name and leaves the registry alone.
+async function recordSites(
+    project: ProjectEntry, environment: EnvironmentEntry, checked: EnvironmentServices, deps: DeployDeps,
+): Promise<{ ok: true } | { ok: false, problem: string }> {
+    if (environment.name !== 'live') return { ok: true }
+    const { removed, added } = siteDrift(project, checked)
+    if (removed.length === 0 && added.length === 0) return { ok: true }
+    const written = await deps.writer.write({ kind: 'rename-sites', id: project.id, removed, added })
+    if (!written.ok) return written
+    deps.log(`deploy ${project.id} ${environment.name}: the registry's site services are now ${Object.keys(checked).filter(name => checked[name]!.role === 'site').join(', ')}`)
+    return { ok: true }
 }
 
 // A swap renames the tree git checked out, and git goes on recording the worktree under the path it
@@ -781,6 +804,7 @@ export async function runDeploy(
         // that comes up is the nested one.
         let live = trees
         let rolledBack: { reason: string, output: string | null } | null = null
+        let checked: EnvironmentServices = project.services
         await deps.fs.setMaintenance(key)
         try {
             deps.log(`deploy ${project.id} ${environment.name} ${commit.slice(0, 7)}: taking the old copy down`)
@@ -830,7 +854,7 @@ export async function runDeploy(
                     `neither copy was started and the storage is split between ${live.prev} and ${live.dir}; see the RUNBOOK`)
             }
 
-            let healthy: { ok: true } | { ok: false, problem: string }
+            let healthy: { ok: true, services: EnvironmentServices } | { ok: false, problem: string }
             let output: string | null = null
             if (!carried.ok) {
                 // Every move was undone, so the data is back in the old tree: an ordinary rollback.
@@ -844,7 +868,8 @@ export async function runDeploy(
                     ? await healthOf(project, environment, live.dir, name, deps)
                     : { ok: false, problem: up.message }
             }
-            if (!healthy.ok) {
+            if (healthy.ok) checked = healthy.services
+            else {
                 const back = await swapBack(project, environment, live, name, carried.ok ? carried.carried : [], deps)
                 deps.log(`deploy ${project.id} ${environment.name} ${commit.slice(0, 7)}: rolled back, ${healthy.problem}`)
                 const reason = back.ok
@@ -878,7 +903,14 @@ export async function runDeploy(
         if (rolledBack) return record(commit, subject, 'rolled-back', rolledBack.reason, rolledBack.output)
 
         // Record. The registry is written last, so `deployed` only ever names a commit this environment
-        // actually served, and the store is refreshed so the next poll compares against it.
+        // actually served, and the store is refreshed so the next poll compares against it. The site
+        // services go first, because a `deployed` written without them would name a commit the registry
+        // still describes with the old service.
+        const sites = await recordSites(project, environment, checked, deps)
+        if (!sites.ok) {
+            deps.log(`deploy ${project.id} ${environment.name}: deployed, but the registry's site services could not be updated: ${sites.problem}`)
+            return record(commit, subject, 'failed', `deployed, but the registry's site services could not be updated: ${sites.problem}`)
+        }
         const written = await deps.writer.write({ kind: 'set-deployed', id: project.id, environment: environment.name, commit })
         if (!written.ok) {
             // The site is up and healthy on the new commit; only the bookkeeping failed. Saying so beats
