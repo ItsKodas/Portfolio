@@ -13,6 +13,7 @@ import Arbys from '../../public/images/clients/arbys-mark.png'
 import ASOT from '../../public/images/clients/asot.svg'
 
 import { SKILLS as skills, SOCIALS } from '../site'
+import { TOOLKIT_LOGOS } from './toolkitLogos'
 
 // Logos as light marks on the night, each sized so they carry about the same visual weight. The single-colour SVGs are
 // turned white here; Spot On Drones and Arby's have prepared white versions (two-tone, and the mark lifted off its
@@ -143,7 +144,7 @@ export default function Landing() {
                     <p className="mb-6 text-lg font-medium text-[#f19bb3]">Fullstack Developer</p>
                     <p className="max-w-xl text-base leading-relaxed text-[#b4c3dc]/80">
                         Building modern digital experiences with clean code and thoughtful design. Specialising in fullstack
-                        web development, from scalable backends to polished, performant frontends.
+                        development, from scalable backends to polished, performant frontends.
                     </p>
                     <QuoteLink className="mt-8" />
                 </div>
@@ -213,11 +214,20 @@ export default function Landing() {
             <section className="mt-32">
                 <SectionTitle eyebrow="Toolkit" title="What I work with" />
                 <div className="flex flex-wrap gap-3">
-                    {skills.map(s => (
-                        <span key={s} className="rounded-2xl border border-[#8fd4f5]/[0.12] bg-[#111a38]/55 px-5 py-3 text-sm font-medium text-[#dbe6f7] backdrop-blur-md transition-colors hover:border-[#8fd4f5]/30 hover:text-white">
-                            {s}
-                        </span>
-                    ))}
+                    {skills.map(s => {
+                        const logo = TOOLKIT_LOGOS[s]
+                        return (
+                            <span key={s} className="group inline-flex items-center gap-2.5 rounded-2xl border border-[#8fd4f5]/[0.12] bg-[#111a38]/55 px-4 py-2.5 text-sm font-medium text-[#dbe6f7] backdrop-blur-md transition-colors hover:border-[#8fd4f5]/30 hover:text-white">
+                                {logo && (
+                                    <svg viewBox={logo.viewBox} fill="currentColor" aria-hidden="true" focusable="false"
+                                        className="h-[18px] w-[18px] shrink-0 text-[#a9e0fc] transition-colors group-hover:text-white">
+                                        <path d={logo.d} />
+                                    </svg>
+                                )}
+                                {s}
+                            </span>
+                        )
+                    })}
                 </div>
             </section>
 
