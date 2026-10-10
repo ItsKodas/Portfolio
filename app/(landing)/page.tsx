@@ -224,7 +224,7 @@ export default function Landing() {
 
             {/* Stack */}
             <section className="mt-32">
-                <SectionTitle eyebrow="Toolkit" title="What I work with" />
+                <SectionTitle eyebrow="Toolkit" title="Tools I've used" />
                 <div className="flex flex-wrap gap-3">
                     {skills.map(s => {
                         const logo = TOOLKIT_LOGOS[s]
