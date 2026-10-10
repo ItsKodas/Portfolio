@@ -1,13 +1,13 @@
 // The invoice as a PDF: what the client downloads from the portal and what the invoice email carries. Drawn
-// with pdf-lib's built-in Helvetica, so there is no font file to ship and no browser to run. A4, black on white,
-// because it is printed and filed far more often than it is looked at on a screen.
+// with pdf-lib's built-in Helvetica, so there is no font file to ship and no browser to run. A4, in the portal's
+// own dark palette (ui/tokens.css), so the invoice reads as the same product as the site that sent it.
 
 import 'server-only'
 
-import { PDFDocument, StandardFonts, rgb, type PDFFont, type PDFPage } from 'pdf-lib'
+import { PDFDocument, StandardFonts, rgb, type PDFFont, type PDFImage, type PDFPage, type RGB } from 'pdf-lib'
 
 import type { Business } from './business'
-import { formatDay, type Day } from './days'
+import { formatDay, formatDayShort, type Day } from './days'
 import { formatMoney, formatQuantity, GST_RATE } from './money'
 import { invoiceNumber, type Standing } from './standing'
 
@@ -33,24 +33,48 @@ export type PdfInvoice = {
 }
 
 const A4 = { width: 595.28, height: 841.89 }
-const MARGIN = 50
+const MARGIN = 44
 const RIGHT = A4.width - MARGIN
-const BOTTOM = 70
+const WIDTH = RIGHT - MARGIN
+const BOTTOM = 76
 
-const INK = rgb(0.1, 0.11, 0.14)
-const MUTED = rgb(0.42, 0.44, 0.49)
-const RULE = rgb(0.85, 0.86, 0.88)
-const ACCENT = rgb(0.18, 0.5, 0.68)
-const STAMP: Partial<Record<Standing, ReturnType<typeof rgb>>> = {
-    paid: rgb(0.2, 0.6, 0.38),
-    void: rgb(0.78, 0.27, 0.23),
-    overdue: rgb(0.78, 0.27, 0.23),
-    draft: MUTED,
+const hex = (value: string) => {
+    const n = parseInt(value.slice(1), 16)
+    return { r: (n >> 16) / 255, g: ((n >> 8) & 255) / 255, b: (n & 255) / 255 }
+}
+const color = (value: string) => {
+    const c = hex(value)
+    return rgb(c.r, c.g, c.b)
+}
+// One colour laid over another at a strength, for tints that pdf-lib cannot do with transparency on every reader
+const mix = (top: string, under: string, strength: number) => {
+    const a = hex(top), b = hex(under)
+    return rgb(b.r + (a.r - b.r) * strength, b.g + (a.g - b.g) * strength, b.b + (a.b - b.b) * strength)
+}
+
+// ui/tokens.css
+const NIGHT = '#0c0d10'
+const PAGE = color(NIGHT)
+const PANEL = color('#14161b')
+const PANEL_HI = color('#1b1e24')
+const RULE = color('#23262d')
+const INK = color('#e8eaee')
+const INK_2 = color('#9ba1ad')
+const INK_3 = color('#6b717d')
+const LAKE = color('#8fd4f5')
+const LAKE_TINT = mix('#8fd4f5', NIGHT, 0.12)
+
+const TONES: Record<Standing, { label: string, ink: RGB, fill: RGB }> = {
+    draft: { label: 'Draft', ink: INK_2, fill: mix('#9ba1ad', NIGHT, 0.14) },
+    due: { label: 'Due', ink: LAKE, fill: mix('#8fd4f5', NIGHT, 0.14) },
+    overdue: { label: 'Overdue', ink: color('#ea6d63'), fill: mix('#e4574c', NIGHT, 0.18) },
+    paid: { label: 'Paid', ink: color('#5fc98d'), fill: mix('#5fc98d', NIGHT, 0.16) },
+    void: { label: 'Void', ink: color('#ea6d63'), fill: mix('#e4574c', NIGHT, 0.18) },
 }
 
 // The columns of the lines table, by their right edge (the description's is its left)
-const COLUMNS = { description: MARGIN, quantity: 360, unit: 460, amount: RIGHT }
-const DESCRIPTION_WIDTH = 290
+const COLUMNS = { description: MARGIN + 14, quantity: 362, unit: 452, amount: RIGHT - 14 }
+const DESCRIPTION_WIDTH = 270
 
 type Fonts = { regular: PDFFont, bold: PDFFont }
 
@@ -96,7 +120,18 @@ function wrap(font: PDFFont, size: number, text: string, width: number): string[
     return lines
 }
 
-export async function invoicePdf(invoice: PdfInvoice, business: Business, options: { payUrl: string }): Promise<Buffer> {
+// Shortened with an ellipsis to fit, for the boxes that have room for one line only
+function fit(font: PDFFont, size: number, text: string, width: number): string {
+    const clean = safe(font, text)
+    if (font.widthOfTextAtSize(clean, size) <= width) return clean
+    let cut = clean.length
+    while (cut > 1 && font.widthOfTextAtSize(`${clean.slice(0, cut)}...`, size) > width) cut--
+    return `${clean.slice(0, cut)}...`
+}
+
+type Style = { size?: number, bold?: boolean, color?: RGB, align?: 'left' | 'right', tracking?: number }
+
+export async function invoicePdf(invoice: PdfInvoice, business: Business, options: { payUrl: string, logo?: Uint8Array | null }): Promise<Buffer> {
     const pdf = await PDFDocument.create()
     const number = invoiceNumber(invoice.number)
     const title = invoice.gst ? 'Tax invoice' : 'Invoice'
@@ -107,153 +142,264 @@ export async function invoicePdf(invoice: PdfInvoice, business: Business, option
     pdf.setProducer(business.name)
 
     const fonts: Fonts = { regular: await pdf.embedFont(StandardFonts.Helvetica), bold: await pdf.embedFont(StandardFonts.HelveticaBold) }
+    let logo: PDFImage | null = null
+    if (options.logo) {
+        try {
+            logo = await pdf.embedPng(options.logo)
+        } catch {
+            logo = null
+        }
+    }
 
-    let page = pdf.addPage([A4.width, A4.height])
-    let y = A4.height - MARGIN
+    let page!: PDFPage
+    let y = 0
 
-    const text = (value: string, x: number, at: number, style: { size?: number, bold?: boolean, color?: ReturnType<typeof rgb>, align?: 'left' | 'right' } = {}) => {
+    const widthOf = (value: string, style: Style = {}) => {
         const font = style.bold ? fonts.bold : fonts.regular
         const size = style.size ?? 10
         const clean = safe(font, value)
-        const left = style.align === 'right' ? x - font.widthOfTextAtSize(clean, size) : x
-        page.drawText(clean, { x: left, y: at, size, font, color: style.color ?? INK })
+        return font.widthOfTextAtSize(clean, size) + (style.tracking ?? 0) * Math.max(0, clean.length - 1)
     }
-    const rule = (at: number, from = MARGIN, to = RIGHT) =>
-        page.drawLine({ start: { x: from, y: at }, end: { x: to, y: at }, thickness: 0.75, color: RULE })
-
-    // The business, top left. No logo: the site's is drawn light for a dark page, and vanishes on paper.
-    text(business.name, MARGIN, y - 20, { size: 16, bold: true })
-    let fromY = y - 48
-    const fromLines = [`ABN ${business.abn}`, ...business.address, business.email, business.website.replace(/^https?:\/\//, '')]
-    for (const line of fromLines) {
-        text(line, MARGIN, fromY, { size: 9, color: MUTED })
-        fromY -= 13
+    // Tracked text is drawn a letter at a time, since pdf-lib has no letter spacing of its own
+    const text = (value: string, x: number, at: number, style: Style = {}) => {
+        const font = style.bold ? fonts.bold : fonts.regular
+        const size = style.size ?? 10
+        const clean = safe(font, value)
+        const left = style.align === 'right' ? x - widthOf(value, style) : x
+        const ink = style.color ?? INK
+        if (!style.tracking) {
+            page.drawText(clean, { x: left, y: at, size, font, color: ink })
+            return
+        }
+        let cursor = left
+        for (const char of clean) {
+            page.drawText(char, { x: cursor, y: at, size, font, color: ink })
+            cursor += font.widthOfTextAtSize(char, size) + style.tracking
+        }
     }
-
-    // The invoice's own facts, top right
-    text(title.toUpperCase(), RIGHT, y - 20, { size: 20, bold: true, color: ACCENT, align: 'right' })
-    const facts: [string, string][] = [
-        ['Number', number],
-        ['Issued', invoice.issuedOn ? formatDay(invoice.issuedOn) : 'Not yet sent'],
-        ['Due', formatDay(invoice.dueOn)],
-    ]
-    let factY = y - 48
-    for (const [label, value] of facts) {
-        text(label, RIGHT - 130, factY, { size: 9, color: MUTED })
-        text(value, RIGHT, factY, { size: 9, bold: true, align: 'right' })
-        factY -= 13
+    const label = (value: string, x: number, at: number, style: Style = {}) =>
+        text(value.toUpperCase(), x, at, { size: 7, bold: true, color: INK_3, tracking: 1.1, ...style })
+    const rule = (at: number, from = MARGIN, to = RIGHT, ink = RULE) =>
+        page.drawLine({ start: { x: from, y: at }, end: { x: to, y: at }, thickness: 0.75, color: ink })
+    // A rounded box, by its bottom left corner
+    const box = (x: number, bottom: number, width: number, height: number, fill: RGB, radius = 8, border?: RGB) => {
+        const r = Math.min(radius, width / 2, height / 2)
+        const path = `M ${r} 0 H ${width - r} A ${r} ${r} 0 0 1 ${width} ${r} V ${height - r} A ${r} ${r} 0 0 1 ${width - r} ${height}`
+            + ` H ${r} A ${r} ${r} 0 0 1 0 ${height - r} V ${r} A ${r} ${r} 0 0 1 ${r} 0 Z`
+        page.drawSvgPath(path, { x, y: bottom + height, color: fill, ...(border && { borderColor: border, borderWidth: 0.75 }) })
     }
-    const stamp = STAMP[invoice.standing]
-    if (stamp) {
-        const word = invoice.standing.toUpperCase()
-        const width = fonts.bold.widthOfTextAtSize(word, 11) + 16
-        page.drawRectangle({ x: RIGHT - width, y: factY - 12, width, height: 20, borderColor: stamp, borderWidth: 1.25 })
-        text(word, RIGHT - 8, factY - 6, { size: 11, bold: true, color: stamp, align: 'right' })
-        factY -= 24
-    }
-
-    y = Math.min(fromY, factY) - 18
-
-    // Who it is for
-    text('BILL TO', MARGIN, y, { size: 8, bold: true, color: MUTED })
-    y -= 15
-    text(invoice.billToName, MARGIN, y, { size: 11, bold: true })
-    y -= 14
-    if (invoice.billToCompany) {
-        text(invoice.billToCompany, MARGIN, y, { size: 10 })
-        y -= 13
-    }
-    text(invoice.billToEmail, MARGIN, y, { size: 10, color: MUTED })
-    y -= 13
-    if (invoice.periodStart && invoice.periodEnd) {
-        y -= 6
-        text(`Service period: ${formatDay(invoice.periodStart)} to ${formatDay(invoice.periodEnd)}`, MARGIN, y, { size: 9, color: MUTED })
-        y -= 13
+    const pill = (standing: Standing, right: number, top: number) => {
+        const tone = TONES[standing]
+        const style: Style = { size: 7.5, bold: true, color: tone.ink, tracking: 1 }
+        const word = tone.label.toUpperCase()
+        const width = widthOf(word, style) + 26
+        box(right - width, top - 17, width, 17, tone.fill, 8.5)
+        page.drawCircle({ x: right - width + 10, y: top - 8.5, size: 2.2, color: tone.ink })
+        text(word, right - 9, top - 11.5, { ...style, align: 'right' })
     }
 
-    y -= 18
-    const tableHead = () => {
-        text('DESCRIPTION', COLUMNS.description, y, { size: 8, bold: true, color: MUTED })
-        text('QTY', COLUMNS.quantity, y, { size: 8, bold: true, color: MUTED, align: 'right' })
-        text('UNIT PRICE', COLUMNS.unit, y, { size: 8, bold: true, color: MUTED, align: 'right' })
-        text('AMOUNT', COLUMNS.amount, y, { size: 8, bold: true, color: MUTED, align: 'right' })
-        y -= 8
-        rule(y)
-        y -= 16
-    }
-    const newPage = () => {
+    const addPage = () => {
         page = pdf.addPage([A4.width, A4.height])
+        page.drawRectangle({ x: 0, y: 0, width: A4.width, height: A4.height, color: PAGE })
+        page.drawRectangle({ x: 0, y: A4.height - 3, width: A4.width, height: 3, color: LAKE })
         y = A4.height - MARGIN
-        text(`${title} ${number} (continued)`, MARGIN, y, { size: 9, color: MUTED })
-        y -= 28
+    }
+    const continued = () => {
+        addPage()
+        label(`${title} ${number}`, MARGIN, y - 6, { color: INK_2 })
+        label('Continued', RIGHT, y - 6, { align: 'right' })
+        y -= 30
+    }
+
+    addPage()
+
+    // The business, top left: the mark, the name set the way the site sets it, and how to reach it
+    const top = y
+    let nameX = MARGIN
+    if (logo) {
+        page.drawImage(logo, { x: MARGIN, y: top - 42, width: 42, height: 42 })
+        nameX = MARGIN + 56
+    }
+    text(business.name.toUpperCase(), nameX, top - 17, { size: 15, bold: true, tracking: 3.2 })
+    text(business.website.replace(/^https?:\/\//, ''), nameX, top - 33, { size: 9, color: INK_2 })
+    text(`ABN ${business.abn}`, nameX, top - 45, { size: 9, color: INK_3 })
+    let fromY = top - 45
+    for (const line of business.address) {
+        fromY -= 12
+        text(line, nameX, fromY, { size: 9, color: INK_3 })
+    }
+
+    // The invoice's own name and number, top right
+    label(title, RIGHT, top - 9, { color: LAKE, size: 8, tracking: 2.2, align: 'right' })
+    text(number, RIGHT, top - 36, { size: 26, bold: true, align: 'right' })
+
+    y = Math.min(top - 66, fromY - 18)
+    rule(y)
+    y -= 18
+
+    // Three boxes: who it is for, when, and how much
+    const gap = 10
+    const cardWidth = (WIDTH - gap * 2) / 3
+    const cardHeight = 96
+    const cardTop = y
+    const cards = [0, 1, 2].map(index => MARGIN + index * (cardWidth + gap))
+    const inner = cardWidth - 28
+    for (const x of cards) box(x, cardTop - cardHeight, cardWidth, cardHeight, PANEL, 9, RULE)
+
+    {
+        const x = cards[0] + 14
+        let at = cardTop - 22
+        label('Billed to', x, at)
+        at -= 19
+        text(fit(fonts.bold, 11, invoice.billToName, inner), x, at, { size: 11, bold: true })
+        at -= 15
+        if (invoice.billToCompany) {
+            text(fit(fonts.regular, 9, invoice.billToCompany, inner), x, at, { size: 9, color: INK_2 })
+            at -= 13
+        }
+        text(fit(fonts.regular, 9, invoice.billToEmail, inner), x, at, { size: 9, color: INK_2 })
+    }
+
+    {
+        const x = cards[1] + 14
+        const right = cards[1] + cardWidth - 14
+        let at = cardTop - 22
+        label('Dates', x, at)
+        at -= 19
+        const rows: [string, string][] = [
+            ['Issued', invoice.issuedOn ? formatDayShort(invoice.issuedOn) : 'Not yet sent'],
+            ['Due', formatDayShort(invoice.dueOn)],
+        ]
+        if (invoice.periodStart && invoice.periodEnd) {
+            // The year once, at the end, when both ends share it: "1 Oct to 31 Oct 2026"
+            const sameYear = invoice.periodStart.slice(0, 4) === invoice.periodEnd.slice(0, 4)
+            const from = formatDayShort(invoice.periodStart)
+            rows.push(['Period', `${sameYear ? from.replace(/\s*\d{4}$/, '') : from} to ${formatDayShort(invoice.periodEnd)}`])
+        }
+        for (const [name, value] of rows) {
+            text(name, x, at, { size: 9, color: INK_3 })
+            text(fit(fonts.bold, 9, value, inner - 40), right, at, { size: 9, bold: true, align: 'right' })
+            at -= 15
+        }
+    }
+
+    const balance = Math.max(0, invoice.totalCents - invoice.paidCents)
+    {
+        const x = cards[2] + 14
+        const right = cards[2] + cardWidth - 14
+        const settled = invoice.standing === 'paid' || invoice.standing === 'void'
+        box(cards[2], cardTop - cardHeight, cardWidth, cardHeight, settled ? PANEL : LAKE_TINT, 9, settled ? RULE : mix('#8fd4f5', NIGHT, 0.3))
+        let at = cardTop - 22
+        label(settled ? 'Total' : 'Amount due', x, at, { color: settled ? INK_3 : LAKE })
+        at -= 30
+        const amount = formatMoney(settled ? invoice.totalCents : balance, invoice.currency)
+        text(fit(fonts.bold, 22, amount, inner), x, at, { size: 22, bold: true, color: settled ? INK : LAKE })
+        at -= 14
+        label(invoice.currency, x, at, { color: INK_3 })
+        pill(invoice.standing, right, cardTop - cardHeight + 26)
+    }
+
+    y = cardTop - cardHeight - 26
+
+    // The lines
+    const tableHead = () => {
+        box(MARGIN, y - 24, WIDTH, 24, PANEL_HI, 6)
+        const at = y - 15
+        label('Description', COLUMNS.description, at)
+        label('Qty', COLUMNS.quantity, at, { align: 'right' })
+        label('Unit price', COLUMNS.unit, at, { align: 'right' })
+        label('Amount', COLUMNS.amount, at, { align: 'right' })
+        y -= 24 + 18
     }
     tableHead()
 
-    for (const line of invoice.lines) {
+    invoice.lines.forEach((line, index) => {
         const wrapped = wrap(fonts.regular, 10, line.description, DESCRIPTION_WIDTH)
-        const height = wrapped.length * 13 + 8
+        const height = wrapped.length * 14 + 12
         if (y - height < BOTTOM + 20) {
-            newPage()
+            continued()
             tableHead()
         }
-        text(formatQuantity(line.quantity), COLUMNS.quantity, y, { align: 'right' })
-        text(formatMoney(line.unitCents, invoice.currency), COLUMNS.unit, y, { align: 'right' })
-        text(formatMoney(line.amountCents, invoice.currency), COLUMNS.amount, y, { align: 'right' })
+        if (index > 0) rule(y + 14, MARGIN + 14, RIGHT - 14)
+        text(formatQuantity(line.quantity), COLUMNS.quantity, y, { color: INK_2, align: 'right' })
+        text(formatMoney(line.unitCents, invoice.currency), COLUMNS.unit, y, { color: INK_2, align: 'right' })
+        text(formatMoney(line.amountCents, invoice.currency), COLUMNS.amount, y, { bold: true, align: 'right' })
         for (const part of wrapped) {
             text(part, COLUMNS.description, y)
-            y -= 13
+            y -= 14
         }
-        y -= 4
-        rule(y + 6)
-        y -= 6
-    }
+        y -= 12
+    })
 
-    // The totals, right aligned under the amounts
-    const balance = Math.max(0, invoice.totalCents - invoice.paidCents)
-    const totals: { label: string, value: string, strong?: boolean }[] = [{ label: 'Subtotal', value: formatMoney(invoice.subtotalCents, invoice.currency) }]
+    // The totals, in a box under the amounts
+    const totals: { label: string, value: string }[] = [{ label: 'Subtotal', value: formatMoney(invoice.subtotalCents, invoice.currency) }]
     if (invoice.gst) totals.push({ label: `GST (${GST_RATE * 100}%)`, value: formatMoney(invoice.gstCents, invoice.currency) })
-    totals.push({ label: `Total (${invoice.currency})`, value: formatMoney(invoice.totalCents, invoice.currency), strong: true })
+    totals.push({ label: `Total (${invoice.currency})`, value: formatMoney(invoice.totalCents, invoice.currency) })
     if (invoice.paidCents > 0) {
-        totals.push({ label: invoice.paidOn ? `Paid ${formatDay(invoice.paidOn)}` : 'Paid', value: `-${formatMoney(invoice.paidCents, invoice.currency)}` })
+        totals.push({ label: invoice.paidOn ? `Paid ${formatDayShort(invoice.paidOn)}` : 'Paid', value: `-${formatMoney(invoice.paidCents, invoice.currency)}` })
     }
-    if (invoice.standing !== 'void') totals.push({ label: 'Balance due', value: formatMoney(balance, invoice.currency), strong: true })
+    const showBalance = invoice.standing !== 'void'
+    const totalsHeight = totals.length * 18 + 14 + (showBalance ? 40 : 0) + (invoice.gst ? 0 : 16)
+    if (y - totalsHeight < BOTTOM + 10) continued()
 
-    if (y - totals.length * 18 - 40 < BOTTOM) newPage()
-    y -= 6
+    const totalsLeft = 322
+    const totalsWidth = RIGHT - totalsLeft
+    y -= 2
+    box(totalsLeft, y - totalsHeight + (invoice.gst ? 0 : 16), totalsWidth, totalsHeight - (invoice.gst ? 0 : 16), PANEL, 9, RULE)
+    y -= 22
     for (const row of totals) {
-        text(row.label, COLUMNS.unit, y, { size: row.strong ? 11 : 10, bold: row.strong, color: row.strong ? INK : MUTED, align: 'right' })
-        text(row.value, COLUMNS.amount, y, { size: row.strong ? 11 : 10, bold: row.strong, align: 'right' })
+        text(row.label, totalsLeft + 14, y, { size: 9.5, color: INK_2 })
+        text(row.value, RIGHT - 14, y, { size: 9.5, align: 'right' })
         y -= 18
+    }
+    if (showBalance) {
+        const paid = balance === 0
+        const tone = paid ? TONES.paid : invoice.standing === 'overdue' ? TONES.overdue : TONES.due
+        box(totalsLeft + 6, y - 22, totalsWidth - 12, 32, tone.fill, 7)
+        text(paid ? 'Paid in full' : 'Balance due', totalsLeft + 14, y - 10, { size: 10.5, bold: true, color: tone.ink })
+        text(formatMoney(balance, invoice.currency), RIGHT - 14, y - 11, { size: 14, bold: true, color: tone.ink, align: 'right' })
+        y -= 40
+    } else {
+        y += 4
     }
     if (!invoice.gst) {
-        text('No GST has been charged.', COLUMNS.amount, y, { size: 8, color: MUTED, align: 'right' })
-        y -= 14
+        text('No GST has been charged.', RIGHT - 4, y - 8, { size: 8, color: INK_3, align: 'right' })
+        y -= 16
     }
 
-    const block = (heading: string, body: string) => {
-        const lines = wrap(fonts.regular, 9.5, body, RIGHT - MARGIN)
-        if (y - 30 - lines.length * 13 < BOTTOM) newPage()
+    // Notes and how to pay, each a box with a stripe of colour down its edge
+    const block = (heading: string, body: string, accent: RGB, link?: string) => {
+        const lines = wrap(fonts.regular, 9.5, body, WIDTH - 36)
+        const height = 38 + lines.length * 13.5 + (link ? 16 : 0)
+        if (y - 18 - height < BOTTOM) continued()
         y -= 18
-        text(heading, MARGIN, y, { size: 8, bold: true, color: MUTED })
-        y -= 15
+        box(MARGIN, y - height, WIDTH, height, PANEL, 9, RULE)
+        page.drawRectangle({ x: MARGIN, y: y - height + 9, width: 3, height: height - 18, color: accent })
+        let at = y - 21
+        label(heading, MARGIN + 20, at, { color: accent })
+        at -= 17
         for (const line of lines) {
-            text(line, MARGIN, y, { size: 9.5 })
-            y -= 13
+            text(line, MARGIN + 20, at, { size: 9.5, color: INK_2 })
+            at -= 13.5
         }
+        if (link) text(link, MARGIN + 20, at - 2, { size: 9.5, bold: true, color: LAKE })
+        y -= height
     }
 
-    if (invoice.notes) block('NOTES', invoice.notes)
+    if (invoice.notes) block('Notes', invoice.notes, INK_3)
     if (invoice.standing === 'due' || invoice.standing === 'overdue') {
-        block('HOW TO PAY', `Pay online with PayPal or a card at ${options.payUrl}. Please pay by ${formatDay(invoice.dueOn)}, and quote ${number} with any other kind of payment.`)
+        block('How to pay', `Pay online with PayPal or a card by ${formatDay(invoice.dueOn)}. For any other kind of payment, please quote ${number}.`, LAKE, options.payUrl)
     }
+
+    if (y - 34 > BOTTOM) text('Thank you for your business.', MARGIN, y - 34, { size: 9.5, color: INK_2 })
 
     // A footer on every page, numbered now that the count is known
     const pages = pdf.getPages()
     pages.forEach((each, index) => {
         page = each
         rule(BOTTOM - 22)
-        text(`${business.name}  ·  ABN ${business.abn}  ·  ${business.email}`, MARGIN, BOTTOM - 36, { size: 8, color: MUTED })
-        text(`${number}  ·  Page ${index + 1} of ${pages.length}`, RIGHT, BOTTOM - 36, { size: 8, color: MUTED, align: 'right' })
+        text(`${business.name}  ·  ABN ${business.abn}  ·  ${business.email}`, MARGIN, BOTTOM - 38, { size: 8, color: INK_3 })
+        text(`${number}  ·  Page ${index + 1} of ${pages.length}`, RIGHT, BOTTOM - 38, { size: 8, color: INK_3, align: 'right' })
     })
 
     return Buffer.from(await pdf.save())

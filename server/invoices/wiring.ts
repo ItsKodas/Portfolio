@@ -3,6 +3,9 @@
 
 import 'server-only'
 
+import { readFile } from 'node:fs/promises'
+import path from 'node:path'
+
 import { record } from '../audit/record'
 import { getDb } from '../db'
 import { clientMailConfig } from '../env'
@@ -41,9 +44,16 @@ export function paypal(): Paypal | null {
 // The mode PayPal is set up in, or null when it is not, so nothing is ever counted against a mode that is not running
 export const paypalMode = () => (readPaypal().ok ? modeOf() : null)
 
+// The site's mark, drawn white for a dark ground, as the invoice is. An invoice without it beats no invoice.
+let logo: Promise<Uint8Array | null> | null = null
+const logoBytes = () => (logo ??= readFile(path.join(process.cwd(), 'public/images/logo.png')).catch(error => {
+    log('Reading the logo for invoices failed', error)
+    return null
+}))
+
 export async function drawPdf(invoice: PdfInvoice): Promise<Buffer> {
     const business = businessDetails()
-    return invoicePdf(invoice, business, { payUrl: `${business.website.replace(/^https?:\/\//, '')}/portal/billing` })
+    return invoicePdf(invoice, business, { payUrl: `${business.website.replace(/^https?:\/\//, '')}/portal/billing`, logo: await logoBytes() })
 }
 
 export function billing() {
