@@ -48,7 +48,8 @@ projects:
       media: { path: uploads, mode: rw }         # rw | ro | hidden (backed up, never shown)
     capabilities: [lifecycle, logs]              # lifecycle | logs | files | backups | domains | provision | env
     # Optional. Who a visitor should reach while the site is down, shown on its holding page to anyone
-    # who visits, so only details meant to be public. At least one of email or phone.
+    # who visits, so only details meant to be public. At least one of email or phone. The portal writes
+    # this from the client account listed on the site, and replaces anything written here by hand.
     contact:
       name: Acme Bakery
       email: hello@acmebakery.com.au

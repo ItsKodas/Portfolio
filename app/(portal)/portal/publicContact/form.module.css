@@ -1,0 +1,34 @@
+/* The public contact form. Every colour is a token, as ui/palette.test.ts asks of a stylesheet. */
+
+.intro {
+    margin: 0 0 14px;
+    font-size: 13.5px;
+    color: var(--ink-2);
+}
+
+.fields {
+    display: grid;
+    gap: 12px;
+    margin-bottom: 14px;
+}
+
+.listed {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-bottom: 14px;
+    font-size: 13.5px;
+    color: var(--ink);
+    cursor: pointer;
+}
+.listed input { accent-color: var(--lake); width: 15px; height: 15px; cursor: pointer; }
+
+.note {
+    margin: 0 0 14px;
+    font-size: 13px;
+    color: var(--ink-3);
+}
+
+.message {
+    margin-top: 12px;
+}

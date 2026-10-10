@@ -20,6 +20,10 @@ const client = (overrides: Record<string, unknown> = {}) => ({
     lastSignInAt: null,
     failedSignIns: 0,
     lockedUntil: null,
+    publicName: null,
+    publicEmail: null,
+    publicPhone: null,
+    publicContactListed: false,
     ...overrides,
 })
 

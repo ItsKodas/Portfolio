@@ -9,6 +9,8 @@ import { formatWhen } from '../format'
 import PortalHeader from '../header'
 import frame from '../frame.module.css'
 import { ChangePasswordForm, RegenerateCodesForm, SignOutElsewhereButton } from '../forms'
+import { saveMyPublicContactAction } from '../actions'
+import { PublicContactForm } from '../publicContact/form'
 import styles from './account.module.css'
 
 export const metadata: Metadata = { title: 'Account' }
@@ -27,6 +29,16 @@ export default async function PortalAccountPage() {
                 <div className={frame.head}>
                     <h1 className={frame.title}>Account</h1>
                 </div>
+
+                <section className={frame.panel}>
+                    <h2 className={frame.section}>Contact details for visitors</h2>
+                    <PublicContactForm
+                        intro="If one of your sites is ever down, its holding page can show visitors how to reach your business. Use your business name and business details, not personal ones."
+                        initial={{ name: client.publicName, email: client.publicEmail, phone: client.publicPhone }}
+                        listed={{ value: client.publicContactListed, editable: false }}
+                        save={saveMyPublicContactAction}
+                    />
+                </section>
 
                 <section className={frame.panel}>
                     <h2 className={frame.section}>Password</h2>
