@@ -20,8 +20,8 @@ export type LifecycleAction = 'start' | 'stop' | 'restart'
 
 export type Settling = {
     action: LifecycleAction
-    // The state the page is waiting to read. Reaching it is the only thing that ends this normally.
-    target: SiteState
+    // The states the page is waiting to read. Reaching one is the only thing that ends this normally.
+    target: readonly SiteState[]
     // When it was asked for, which the floor below is measured from
     since: number
 }
@@ -46,9 +46,16 @@ const FLOOR_MS = 8000
 // going to, and a page that spins for ever is worse than one that admits it does not know.
 const GIVE_UP_MS = 90000
 
-// Where each of them ends. A start and a restart both finish with the site up; a stop finishes stopped,
-// which is why this is a map and not a constant.
-const TARGET: Record<LifecycleAction, SiteState> = { start: 'up', stop: 'stopped', restart: 'up' }
+// Where each of them ends. A start and a restart both finish with the site up; a stop finishes with nothing
+// running, which is why this is a map and not a constant. A stop can read as either stopped or down:
+// compose stop leaves its containers exited, and ../../siteState reads an exited container as down, since
+// Docker does not say whether it was asked to stop or fell over. Waiting for stopped alone sat out the
+// whole minute and a half after every stop, with the controls held and the strip saying "stopping".
+const TARGET: Record<LifecycleAction, readonly SiteState[]> = {
+    start: ['up'],
+    stop: ['stopped', 'down'],
+    restart: ['up'],
+}
 
 // The word for what is happening, where a state would otherwise be printed. Lower case, because it
 // stands in the same place as up, down and stopped.
@@ -102,7 +109,7 @@ export function SettlingProvider({ state, children }: { state: SiteState, childr
     useEffect(() => {
         if (!settling) return
         if (Date.now() - settling.since < FLOOR_MS) return
-        if (state === settling.target) setSettling(null)
+        if (settling.target.includes(state)) setSettling(null)
     }, [settling, state, tick])
 
     const begin = useCallback((action: LifecycleAction) => {
