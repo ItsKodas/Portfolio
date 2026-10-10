@@ -4,7 +4,7 @@ import { redirect } from 'next/navigation'
 import { readHostd } from '@/server/hostd/config'
 import { getHealth, type Health, type SystemUsage } from '@/server/hostd/health'
 import { getProject, listProjects, type Project } from '@/server/hostd/projects'
-import { callerFromSession } from '@/server/hostd/session'
+import { callerFromSession, type Who } from '@/server/hostd/session'
 import { Callout } from '@/ui/Callout/Callout'
 import { KeyValue } from '@/ui/KeyValue/KeyValue'
 import { Meter } from '@/ui/Meter/Meter'
@@ -19,6 +19,8 @@ import { NewSiteButton } from './newSite/NewSite'
 import { stateOf, summarise } from './siteState'
 import { SignOut } from './header'
 import PortalTabs from './tabs'
+import { ViewingAsBanner } from './viewAs/banner'
+import { viewingAsName } from './viewAs/who'
 import styles from './portal.module.css'
 
 export const metadata: Metadata = { title: 'Portal' }
@@ -189,8 +191,10 @@ function Rail({ view }: { view: HomeView }) {
 }
 
 export default async function PortalHome() {
+    // Kept as well as handed over, so the bar can tell the operator viewing as a client from the client
+    const seen: { who: Who | null } = { who: null }
     const view = await gatherHome({
-        who: callerFromSession,
+        who: async () => (seen.who = await callerFromSession()),
         config: () => {
             const problems: string[] = []
             const value = readHostd(process.env, problems)
@@ -204,6 +208,7 @@ export default async function PortalHome() {
     if (view.kind === 'anonymous') redirect('/portal/sign-in')
 
     const isAdmin = view.kind === 'admin'
+    const viewingAs = viewingAsName(seen.who)
     const states = view.sites.map(stateOf)
     const down = states.filter(state => state === 'down')
 
@@ -227,7 +232,14 @@ export default async function PortalHome() {
     )
 
     return (
-        <Shell brand={<Brand />} tabs={<PortalTabs admin={isAdmin} />} bar={<SignOut admin={isAdmin} />} nav={nav} rail={<Rail view={view} />}>
+        <Shell
+            brand={<Brand />}
+            tabs={<PortalTabs admin={isAdmin} />}
+            bar={<SignOut admin={isAdmin || !!viewingAs} />}
+            notice={viewingAs ? <ViewingAsBanner name={viewingAs} /> : undefined}
+            nav={nav}
+            rail={<Rail view={view} />}
+        >
             <div className={styles.hello}>
                 <h1>{isAdmin ? 'Your sites' : 'Your site'}</h1>
                 <p>

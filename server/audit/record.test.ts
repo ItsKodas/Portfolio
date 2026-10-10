@@ -72,4 +72,11 @@ describe('callerActor', () => {
         expect(callerActor({ actor: 'admin', user: 'koda@horizons.gg' })).toEqual({ type: 'ADMIN', id: 'koda@horizons.gg' })
         expect(callerActor({ actor: 'client:cl_1', user: 'cl_1', sites: [] })).toEqual({ type: 'CLIENT', id: 'cl_1' })
     })
+
+    // Viewing as a client carries the client's actor and the operator's email: the log names the operator
+    it('records the operator viewing as a client as the operator', () => {
+        expect(callerActor({ actor: 'client:cl_1', user: 'koda@horizons.gg', sites: [] })).toEqual({
+            type: 'ADMIN', id: 'koda@horizons.gg', name: 'koda@horizons.gg, viewing as cl_1',
+        })
+    })
 })

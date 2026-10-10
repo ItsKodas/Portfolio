@@ -10,6 +10,7 @@ function sources(overrides: Partial<SessionSources> = {}): SessionSources {
         adminEmail: ADMIN_EMAIL,
         clientSession: async () => null,
         clientSites: async () => [],
+        impersonating: async () => null,
         ...overrides,
     }
 }
@@ -66,5 +67,55 @@ describe('callerFromSession', () => {
         }))
         expect(who?.caller.actor).toBe('admin')
         expect(readClient).toBe(false)
+    })
+
+    describe('viewing as a client', () => {
+        const admin = { adminSession: async () => ({ user: { email: ADMIN_EMAIL } }) }
+
+        // Everything the portal and hostd check is the client's: their id, so the page reads their grants,
+        // and their sites, so hostd holds their line. Only the audit user is the operator.
+        it('makes the operator that client, and keeps the operator as the one asking', async () => {
+            const who = await callerFromSession(sources({
+                ...admin,
+                impersonating: async email => (email === ADMIN_EMAIL ? { id: 'cl_8F2K1ABC', name: 'Acme Bakery' } : null),
+                clientSites: async clientId => (clientId === 'cl_8F2K1ABC' ? ['acme-bakery'] : ['someone-else']),
+            }))
+            expect(who).toEqual({
+                caller: { actor: 'client:cl_8F2K1ABC', user: ADMIN_EMAIL, sites: ['acme-bakery'] },
+                clientId: 'cl_8F2K1ABC',
+                impersonatedBy: ADMIN_EMAIL,
+                clientName: 'Acme Bakery',
+            })
+        })
+
+        // The cookie is a choice the operator made, not a session: without the operator it is nobody
+        it('is never asked without the admin session', async () => {
+            let asked = false
+            const who = await callerFromSession(sources({
+                impersonating: async () => {
+                    asked = true
+                    return { id: 'cl_8F2K1ABC', name: 'Acme Bakery' }
+                },
+            }))
+            expect(who).toBeNull()
+            expect(asked).toBe(false)
+        })
+
+        it('is never asked for a signed-in account that is not the admin', async () => {
+            let asked = false
+            await callerFromSession(sources({
+                adminSession: async () => ({ user: { email: 'someone@gmail.com' } }),
+                impersonating: async () => {
+                    asked = true
+                    return { id: 'cl_8F2K1ABC', name: 'Acme Bakery' }
+                },
+            }))
+            expect(asked).toBe(false)
+        })
+
+        it('leaves the operator as themselves when they are not viewing as anyone', async () => {
+            const who = await callerFromSession(sources(admin))
+            expect(who).toEqual({ caller: { actor: 'admin', user: ADMIN_EMAIL }, clientId: null })
+        })
     })
 })
