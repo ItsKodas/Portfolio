@@ -46,6 +46,7 @@ import { removeInterruptedStaging, type CopyFs } from './copy-run.ts'
 import { removeInterruptedRestoreStaging } from './restore-run.ts'
 import type { RestoreRecord } from '../shared/protocol.ts'
 import { HoldingPages } from './holding-pages.ts'
+import { Analytics } from './analytics.ts'
 
 const REGISTRY_FILE = process.env.HOSTD_REGISTRY_FILE ?? '/etc/hostd/registry/projects.yaml'
 const SOCKET_PATH = process.env.HOSTD_AGENT_SOCKET ?? '/run/hostd/agent.sock'
@@ -95,6 +96,14 @@ const ACME_WEBROOT = process.env.HOSTD_ACME_WEBROOT ?? '/var/www/hostd-acme'
 // flag files a deploy writes and clears, this one holds the page Apache actually serves while a flag is
 // up. Crossing them makes the holding page silently never appear during a deploy.
 const MAINTENANCE_ROOT = process.env.HOSTD_MAINTENANCE_ROOT ?? '/var/www/hostd-maintenance'
+// Apache's own log directory, where each vhost hostd writes logs its requests for the portal's analytics.
+// The same path inside as outside, because the vhost names it and the agent reads it back.
+const ACCESS_LOG_DIR = process.env.HOSTD_ACCESS_LOG_DIR ?? '/var/log/apache2'
+// The record of each environment's finished days, which outlives the fortnight logrotate keeps
+const ANALYTICS_DIR = process.env.HOSTD_ANALYTICS_DIR ?? '/var/lib/hostd/analytics'
+// Where a day starts and ends for the analytics panel. The portal prints times in Brisbane, so a day of
+// visits is a Brisbane day too, rather than one that turns over at ten in the morning.
+const ANALYTICS_TIMEZONE = process.env.HOSTD_ANALYTICS_TIMEZONE ?? 'Australia/Brisbane'
 const WWW = '/var/www'
 const POLL_MS = 10_000
 // Once a week per repository. Prunes are expensive and take the repository lock, so they are worth
@@ -490,6 +499,7 @@ async function main(): Promise<void> {
         // one is up, are two different directories (see MAINTENANCE_DIR and MAINTENANCE_ROOT above).
         maintenanceFlagDir: MAINTENANCE_DIR,
         maintenancePageDir: MAINTENANCE_ROOT,
+        accessLogDir: ACCESS_LOG_DIR,
     }
     const domainsDeps: DomainsDeps = {
         rail,
@@ -539,9 +549,10 @@ async function main(): Promise<void> {
             [...store.current().projects.values()].flatMap(project => [...project.environments.values()].flatMap(hostnamesOf)),
         )),
         ...(fetcherProblem ? [fetcherProblem] : []),
-        // A vhost still serving the shared fallback page rather than its own, and why it could not be moved
-        // over. Said here because the visitor-facing symptom (every site's page saying "back shortly"
-        // whatever the reason) gives the operator nothing to go on.
+        // A vhost still on an older template (the shared fallback page rather than its own, or no access
+        // log for analytics), and why it could not be rewritten. Said here because the visitor-facing
+        // symptoms (every site's page saying "back shortly" whatever the reason, or an analytics panel
+        // that never fills) give the operator nothing to go on.
         ...vhostPageProblems,
     ]
 
@@ -580,6 +591,7 @@ async function main(): Promise<void> {
         // An age, which is what /health compares against its staleness threshold, not the timestamp the
         // rail records: the two are one line apart here and the whole alarm depends on which is which.
         railAge: () => rail.ageOfLastSuccess(),
+        analytics: new Analytics({ logDir: ACCESS_LOG_DIR, stateDir: ANALYTICS_DIR, timeZone: ANALYTICS_TIMEZONE }),
         // The same client provision and deploy already hold: branches needs nothing else from it, so it
         // is never gated behind fetcherProblem/'unavailable' any more than configure is behind the
         // registry writer above.
@@ -613,19 +625,19 @@ async function main(): Promise<void> {
         },
     })
 
-    // Points every vhost hostd wrote before per-site holding pages at its own page (see the agent's
-    // pointVhostsAtHoldingPages). Never awaited, and never two at once: each rewrite waits on the host's
+    // Brings every vhost hostd wrote with an older template up to date (see the agent's
+    // refreshStaleVhosts). Never awaited, and never two at once: each rewrite waits on the host's
     // rail, which can take its full timeout, and the main loop must not wait behind it.
     let pointingVhosts = false
     const pointVhosts = () => {
         if (pointingVhosts) return
         pointingVhosts = true
-        agent.pointVhostsAtHoldingPages()
+        agent.refreshStaleVhosts()
             .then(problems => {
                 if (problems.join('\n') !== vhostPageProblems.join('\n')) for (const problem of problems) log(`WARN ${problem}`)
-                vhostPageProblems = problems.map(problem => `a vhost still serves the shared holding page: ${problem}`)
+                vhostPageProblems = problems.map(problem => `a vhost could not be brought up to date: ${problem}`)
             })
-            .catch(error => { vhostPageProblems = [`the vhosts could not be pointed at their holding pages: ${describeError(error)}`] })
+            .catch(error => { vhostPageProblems = [`the vhosts could not be brought up to date: ${describeError(error)}`] })
             .finally(() => { pointingVhosts = false })
     }
 

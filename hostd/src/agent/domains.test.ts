@@ -56,6 +56,7 @@ function setup(options: { railOk?: boolean, existing?: string | null } = {}) {
             acmeWebroot: '/var/www/hostd-acme',
             maintenanceFlagDir: '/run/hostd/maintenance',
             maintenancePageDir: '/var/www/hostd-maintenance',
+            accessLogDir: '/var/log/apache2',
         },
     }
     const registry = parseRegistry(REGISTRY)

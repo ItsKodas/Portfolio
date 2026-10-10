@@ -20,6 +20,9 @@ export const TOKENS: Record<string, string> = {
     'lake-hi': '#a8ddf7',
     'blush': '#f19bb3',
 
+    'chart-1': '#2f97cf',
+    'chart-2': '#d0608a',
+
     'good': '#5fc98d',
     'warn': '#e0a84e',
     'crit': '#e4574c',

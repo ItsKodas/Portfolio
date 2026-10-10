@@ -1,0 +1,141 @@
+/* The Overview body and its analytics. Every colour is a token or a neutral overlay, the rule ui/palette.test.ts
+   keeps for ui/ and site.module.css keeps by hand. The two series are --chart-1 (visits) and --chart-2
+   (unique visitors), always in that order. */
+
+/* The Overview's body. Chart and log down the main column, the lists and the containers in a column beside
+   them. On a desktop the frame fixes the height (ui/Shell's fill) and this takes what is left of it, so
+   the log grows into the space and nothing scrolls; the side column never pushes the page longer, and
+   scrolls inside itself instead. */
+.overview {
+    margin-top: 18px;
+    flex: 1 0 auto;
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) 272px;
+    grid-template-rows: minmax(0, 1fr);
+    gap: 22px;
+}
+
+.main { display: flex; flex-direction: column; gap: 16px; min-width: 0; }
+/* The log's own header and pane, the pane taking the height the chart leaves */
+.logs { display: flex; flex-direction: column; flex: 1 1 auto; min-width: 0; min-height: 0; }
+
+/* Height 0 and at least the row: it adds nothing to the row's height, then fills it */
+.side {
+    border-left: 1px solid var(--rule);
+    padding-left: 16px;
+    min-width: 0;
+    height: 0;
+    min-height: 100%;
+    overflow-y: auto;
+    display: flex;
+    flex-direction: column;
+    gap: 18px;
+}
+
+/* Where ui/Shell fixes the frame to the window, site.module.css fixes the panel to the height left under the
+   tab strip, and the Overview takes exactly that rather than at least its content's, the way the Deploys
+   tab does. The log is what gives way, down to its own minimum. */
+@media (min-width: 1081px) {
+    .overview { flex: 1 1 0; min-height: 0; }
+    .main { min-height: 0; }
+}
+
+/* Narrow enough that the side column would squeeze the log, so it goes under, and the page scrolls */
+@media (max-width: 900px) {
+    .overview { grid-template-columns: minmax(0, 1fr); grid-template-rows: auto; }
+    .side { height: auto; min-height: 0; overflow: visible; border-left: 0; padding-left: 0; }
+}
+
+.visits { flex: none; }
+
+.head { display: flex; align-items: baseline; justify-content: space-between; gap: 6px 18px; flex-wrap: wrap; margin-bottom: 6px; }
+.head h2 { font-size: 13px; margin: 0; }
+.note { color: var(--ink-3); font-size: 11.5px; font-weight: 400; }
+
+.totals { display: flex; flex-wrap: wrap; gap: 4px 18px; margin: 0; font-size: 11.5px; }
+.totals div { display: flex; align-items: baseline; gap: 6px; }
+.totals dt { color: var(--ink-3); display: flex; align-items: center; gap: 5px; }
+.totals dd { margin: 0; font-family: var(--font-mono), monospace; font-variant-numeric: tabular-nums; color: var(--ink); font-size: 13px; }
+
+.keyViews, .keyVisitors {
+    display: inline-block;
+    width: 12px;
+    height: 2px;
+    border-radius: 1px;
+    flex: none;
+}
+.keyViews { background: var(--chart-1); }
+.keyVisitors { background: var(--chart-2); }
+
+/* The chart takes the panel's width; the component measures it and draws to fit */
+.chart { position: relative; width: 100%; min-width: 0; }
+.chart svg { display: block; touch-action: pan-y; }
+.chart svg:focus-visible { outline: 2px solid var(--lake); outline-offset: 2px; border-radius: var(--radius-chip); }
+
+.grid { stroke: var(--rule); stroke-width: 1; }
+.axis {
+    fill: var(--ink-3);
+    font-size: 10px;
+    font-family: var(--font-mono), monospace;
+    font-variant-numeric: tabular-nums;
+}
+
+.area { fill: var(--chart-1); opacity: .08; }
+.views, .visitors { fill: none; stroke-width: 2; stroke-linejoin: round; stroke-linecap: round; }
+.views { stroke: var(--chart-1); }
+.visitors { stroke: var(--chart-2); }
+
+.cross { stroke: var(--ink-3); stroke-width: 1; stroke-dasharray: 2 3; }
+/* The ring in the panel's colour keeps a dot apart from the line it sits on and from the other dot */
+.dotViews, .dotVisitors { stroke: var(--panel); stroke-width: 2; }
+.dotViews { fill: var(--chart-1); }
+.dotVisitors { fill: var(--chart-2); }
+
+.tip {
+    position: absolute;
+    top: 0;
+    pointer-events: none;
+    background: var(--panel-hi);
+    border: 1px solid var(--rule-hi);
+    border-radius: var(--radius-control);
+    padding: 7px 10px;
+    font-size: 11.5px;
+    white-space: nowrap;
+}
+.tipDate { margin: 0 0 4px; color: var(--ink-2); }
+.tipRow { margin: 2px 0 0; display: flex; align-items: center; gap: 6px; color: var(--ink-2); }
+.tipRow b { margin-left: auto; padding-left: 12px; color: var(--ink); font-weight: 500; font-family: var(--font-mono), monospace; }
+
+.table { font-size: 12px; }
+.table summary { cursor: pointer; color: var(--ink-3); font-size: 11px; padding: 2px 0; width: max-content; }
+.table summary:hover { color: var(--ink-2); }
+.table[open] { max-height: 260px; overflow-y: auto; }
+
+.top h3 { font-size: 12px; margin: 0 0 6px; color: var(--ink-2); font-weight: 500; }
+.topList { list-style: none; margin: 0; padding: 0; }
+.topRow {
+    position: relative;
+    display: flex;
+    gap: 10px;
+    align-items: baseline;
+    padding: 3px 6px;
+    font-size: 11.5px;
+}
+/* Its share of the list's top row, as a faint bar behind the row */
+.topBar {
+    position: absolute;
+    inset: 1px auto 1px 0;
+    background: rgba(255, 255, 255, .045);
+    border-radius: var(--radius-chip);
+}
+.topKey {
+    position: relative;
+    flex: 1;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-family: var(--font-mono), monospace;
+    color: var(--ink);
+}
+.topCount { position: relative; font-family: var(--font-mono), monospace; font-variant-numeric: tabular-nums; color: var(--ink-3); }

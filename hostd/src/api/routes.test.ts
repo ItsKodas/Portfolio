@@ -1367,6 +1367,41 @@ projects:
 
 const WRITTEN: AgentReply = { ok: true, written: { hostnames: ['acme.example'], path: '/etc/apache2/hostd/acme-live.conf' } }
 
+describe('GET /projects/:id/:env/analytics', () => {
+    const report = { ok: true as const, environment: 'live', days: [], pages: [], referrers: [], countries: [], since: null, logging: true }
+
+    it('matches under an environment, GET only', () => {
+        assert.deepEqual(matchRoute('GET', '/projects/acme/live/analytics'), { verb: 'analytics', project: 'acme', environment: 'live' })
+        assert.deepEqual(matchRoute('POST', '/projects/acme/live/analytics'), { verb: 'method-not-allowed' })
+    })
+
+    // Like status, it needs no capability: a site with none switched on still has visitors
+    it('lets a client read their own site\'s analytics, with no capability, for 30 days by default', async () => {
+        agent.reply = () => report
+        const response = await request('/projects/quiet/live/analytics')
+        assert.equal(response.status, 200)
+        assert.deepEqual(await response.json(), report)
+        assert.deepEqual(agent.calls, [{ verb: 'analytics', project: 'quiet', args: { environment: 'live', days: 30 } }])
+    })
+
+    it('passes a window through and refuses one out of range', async () => {
+        agent.reply = () => report
+        await request('/projects/acme/live/analytics?days=7')
+        assert.deepEqual(agent.calls[0], { verb: 'analytics', project: 'acme', args: { environment: 'live', days: 7 } })
+        for (const query of ['?days=0', '?days=91', '?days=all']) {
+            const response = await request(`/projects/acme/live/analytics${query}`)
+            assert.equal(response.status, 400, query)
+        }
+        assert.equal(agent.calls.length, 1)
+    })
+
+    it('refuses another client\'s site with a 404', async () => {
+        const response = await request('/projects/other/live/analytics')
+        assert.equal(response.status, 404)
+        assert.deepEqual(agent.calls, [])
+    })
+})
+
 describe('GET /projects/:id/:env/domains', () => {
     it('answers the primary first, with the environment\'s certificate mode joined on', async () => {
         await seedDomains([

@@ -14,6 +14,7 @@ import type { Commit } from './fetch-protocol.ts'
 import type { DeployDetails, DeployRecord, DeployTrigger } from './deploys.ts'
 import type { EnvFileList } from './envfiles.ts'
 import type { SystemUsage } from './system.ts'
+import { MAX_ANALYTICS_DAYS, type AnalyticsReply } from './analytics.ts'
 import { BACKUP_ACTORS, BACKUP_TAGS, type BackupActor, type BackupRecord, type BackupTag, type Snapshot } from './backups.ts'
 
 export const MAX_REQUEST_BYTES = 64 * 1024
@@ -297,8 +298,11 @@ export type PortsRequest = { verb: 'ports', args: PortsArgs }
 // Moving one environment to another port. Admin only, by api's policy (configure).
 export type PortRequest = { verb: 'port', project: string, args: { environment: EnvironmentName, port: number } }
 
+// One environment's page views and visitors, read out of its access log. days is the window, ending today.
+export type AnalyticsRequest = { verb: 'analytics', project: string, args: { environment: EnvironmentName, days: number } }
+
 export type ProjectRequest =
-    | StatusRequest | LifecycleRequest | LogsRequest | ProvisionOnProjectRequest | EnvRequest | DeployRequest | DeployWatchRequest
+    | AnalyticsRequest | StatusRequest | LifecycleRequest | LogsRequest | ProvisionOnProjectRequest | EnvRequest | DeployRequest | DeployWatchRequest
     | BackupRequest | DomainsRequest | ConfigureRequest | BranchesRequest | PortRequest | CopyRequest | RestoreRequest
 export type AgentRequest = HealthRequest | StatusesRequest | ProvisionCreateRequest | CredentialsRequest | PortsRequest | ProjectRequest
 export type Verb = AgentRequest['verb']
@@ -390,7 +394,7 @@ export type AgentReply =
     | DeployStartedReply | DeployHistoryReply | DeployCommitsReply | BranchesReply | CredentialsReply | PortsReply | ConfigureReply
     | BackupStartedReply | BackupListReply | BackupRunReply | DeletedEnvironmentsReply | RestoreEnvironmentReply
     | CopyStartedReply | CopyListReply | CopyRunReply | RestoreListReply | RestoreRunReply
-    | DomainsWritten | AdoptPreview | Refusal
+    | DomainsWritten | AdoptPreview | AnalyticsReply | Refusal
 export type LogLine = { stream: 'stdout' | 'stderr', ts: string | null, text: string, truncated: boolean }
 
 // Status is visible to anyone who may see the project at all; everything else needs its capability.
@@ -398,6 +402,8 @@ export const VERB_CAPABILITY: Record<Verb, Capability | null> = {
     health: null,
     status: null,
     statuses: null,
+    // Null, like status: how many people visited a site is something anyone who may see the site may see
+    analytics: null,
     lifecycle: 'lifecycle',
     logs: 'logs',
     provision: 'provision',
@@ -1132,6 +1138,19 @@ export function parseAgentRequest(line: string): Parsed {
             return { ok: true, request: { verb: 'configure', project, args } }
         }
 
+        case 'analytics': {
+            if (!onlyKeys(raw, ['verb', 'project', 'args'])) return refuse('bad-request', 'analytics takes only project and args')
+            const project = projectOf(raw)
+            if (!project) return refuse('bad-request', 'project is malformed')
+            if (!isRecord(raw.args) || !onlyKeys(raw.args, ['environment', 'days'])) return refuse('bad-request', 'analytics takes only args.environment and args.days')
+            const { environment, days } = raw.args
+            if (!isEnvironmentName(environment)) return refuse('bad-request', 'environment must be an environment name')
+            if (typeof days !== 'number' || !Number.isInteger(days) || days < 1 || days > MAX_ANALYTICS_DAYS) {
+                return refuse('bad-request', `days must be a whole number from 1 to ${MAX_ANALYTICS_DAYS}`)
+            }
+            return { ok: true, request: { verb: 'analytics', project, args: { environment, days } } }
+        }
+
         case 'branches': {
             if (!onlyKeys(raw, ['verb', 'project'])) return refuse('bad-request', 'branches takes only project')
             const project = projectOf(raw)
@@ -1207,7 +1226,7 @@ export function checkStructure(
         const entry = Object.hasOwn(project.services, service) ? project.services[service] : undefined
         if (!entry || !isComposeService(entry)) return refuse('unknown-service', `${service} is not a registered service of ${id}`)
     }
-    if ((request.verb === 'env' || request.verb === 'deploy' || request.verb === 'deploy-watch' || request.verb === 'port' || request.verb === 'copy') && !environmentOf(project, request.args.environment)) {
+    if ((request.verb === 'analytics' || request.verb === 'env' || request.verb === 'deploy' || request.verb === 'deploy-watch' || request.verb === 'port' || request.verb === 'copy') && !environmentOf(project, request.args.environment)) {
         return refuse('unknown-environment', `${id} has no ${request.args.environment} environment`)
     }
     return { ok: true, project }
