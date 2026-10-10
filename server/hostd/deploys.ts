@@ -35,6 +35,18 @@ export type DeployRecord = {
     // The tail of whatever command failed, so a broken build is readable from here. hostd guarantees this
     // never holds an env file's contents.
     output: string | null
+    // What the commit changed, which hostd reads from the repository when the history is asked for
+    // rather than storing with the record. Null when the commit could not be read, and absent from a
+    // hostd older than the field.
+    details?: DeployDetails | null
+}
+
+// hostd/src/shared/deploys.ts's DeployDetails. body is the rest of the deployed commit's message after
+// its subject; changes are, for a merge commit, the commits it brought in, newest first, and empty for
+// an ordinary commit. Both have git trailers (Co-Authored-By and the like) taken off already.
+export type DeployDetails = {
+    body: string
+    changes: Array<{ subject: string, body: string }>
 }
 
 export type DeployHistory = {

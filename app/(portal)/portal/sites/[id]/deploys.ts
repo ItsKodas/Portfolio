@@ -50,3 +50,31 @@ export function shortCommit(commit: string): string {
 export function updatesFor(history: DeployHistory): DeployRecord[] {
     return history.deploys.filter(record => record.outcome === 'ok')
 }
+
+// What one deploy reads as to someone who wants to know what changed: a headline, the description under
+// it, and for a merge, the commits it brought in.
+export type UpdateNotes = {
+    headline: string | null
+    description: string
+    changes: Array<{ subject: string, body: string }>
+}
+
+// The subject a merge commit is given by the forge rather than by a person. GitHub's says only which
+// branch it came from and puts the pull request's title on the next line; GitLab's says the same and
+// puts the merge request's title, then its description, under it.
+const MERGE_SUBJECT = /^Merge (pull request|branch|remote-tracking branch) /
+
+export function notesFor(record: DeployRecord): UpdateNotes {
+    const details = record.details ?? null
+    const body = details?.body ?? ''
+    if (record.subject && MERGE_SUBJECT.test(record.subject) && body) {
+        const [title = '', ...rest] = body.split('\n')
+        return { headline: title.trim(), description: rest.join('\n').trim(), changes: details?.changes ?? [] }
+    }
+    return { headline: record.subject, description: body, changes: details?.changes ?? [] }
+}
+
+// Whether a deploy has anything to open: a row that expands into nothing is a promise it cannot keep.
+export function hasNotes(notes: UpdateNotes): boolean {
+    return notes.description !== '' || notes.changes.length > 0
+}

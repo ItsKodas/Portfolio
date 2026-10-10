@@ -4,7 +4,7 @@
 // treats a trailing `--` as one more thing to echo (see tipArgv).
 
 import { tail, type Runner } from '../agent/compose.ts'
-import type { Commit, FetchReply, FetchRequest } from '../shared/fetch-protocol.ts'
+import type { Commit, CommitMessage, FetchReply, FetchRequest } from '../shared/fetch-protocol.ts'
 import { credentialArgs } from './credentials.ts'
 
 // Everything except the credentials verb, which answers from the fetcher's own list and never runs git.
@@ -44,6 +44,12 @@ export const repairArgv = (dir: string, worktree: string) =>
     ['-C', dir, 'worktree', 'repair', '--', worktree]
 export const logArgv = (dir: string, branch: string, limit: number) =>
     ['-C', dir, 'log', `--max-count=${limit}`, `--format=%h${FIELD}%s${FIELD}%an${FIELD}%aI${RECORD}`, `origin/${branch}`, '--']
+// The commit and what it brought in: `<commit>^1..<commit>` is the commit alone for an ordinary one, and
+// for a merge it is the merge plus every commit it merged. A root commit has no ^1 and fails, which the
+// caller treats like any other commit it could not describe. The commit is a validated sha (GIT_COMMIT),
+// so it can never read as an option, and `--end-of-options` says so anyway.
+export const changesArgv = (dir: string, commit: string, limit: number) =>
+    ['-C', dir, 'log', `--max-count=${limit}`, `--format=%H${FIELD}%P${FIELD}%s${FIELD}%b${RECORD}`, '--end-of-options', `${commit}^1..${commit}`, '--']
 // The two rev-parse reads, and the one place in this file where a trailing `--` is wrong. rev-parse
 // echoes back every argument it does not consume as a revision, so `git rev-parse origin/main --` answers
 // two lines: the sha, then `--`. That second line rode out of here inside the commit, and the checkout
@@ -63,6 +69,20 @@ export function parseLog(stdout: string): Commit[] {
     return stdout.split(RECORD).map(record => record.trim()).filter(Boolean).map(record => {
         const [commit, subject, author, at] = record.split(FIELD)
         return { commit: commit ?? '', subject: subject ?? '', author: author ?? '', at: at ?? '' }
+    })
+}
+
+// A body is free text and can hold anything but the two separators, which a commit message has no
+// reason to contain. Leading and trailing blank lines are git's formatting, not the message.
+export function parseChanges(stdout: string): CommitMessage[] {
+    return stdout.split(RECORD).filter(record => record.trim()).map(record => {
+        const [commit, parents, subject, body] = record.split(FIELD)
+        return {
+            commit: (commit ?? '').trim(),
+            merge: (parents ?? '').trim().split(/\s+/).filter(Boolean).length > 1,
+            subject: subject ?? '',
+            body: (body ?? '').trim(),
+        }
     })
 }
 
@@ -95,6 +115,7 @@ function argvFor(request: GitRequest): string[] {
         case 'checkout': return checkoutArgv(request.dir, request.worktree, request.commit)
         case 'repair': return repairArgv(request.dir, request.worktree)
         case 'log': return logArgv(request.dir, request.branch, request.limit)
+        case 'changes': return changesArgv(request.dir, request.commit, request.limit)
         case 'tip': return tipArgv(request.dir, request.branch)
         case 'branches': return branchesArgv(request.repo)
     }
@@ -118,7 +139,7 @@ function argvFor(request: GitRequest): string[] {
 // (`git ls-remote`) never touches a local directory at all.
 function safeDirectoryArgs(request: GitRequest): string[] {
     switch (request.verb) {
-        case 'fetch': case 'checkout': case 'repair': case 'log': case 'tip':
+        case 'fetch': case 'checkout': case 'repair': case 'log': case 'changes': case 'tip':
             return ['-c', `safe.directory=${request.dir}`]
         case 'clone': case 'branches':
             return []
@@ -155,6 +176,8 @@ export async function runGit(request: FetchRequest, run: Runner, names: readonly
             return { ok: true, commit: result.stdout.trim() }
         case 'log':
             return { ok: true, commits: parseLog(result.stdout) }
+        case 'changes':
+            return { ok: true, changes: parseChanges(result.stdout) }
         case 'fetch': case 'repair':
             return { ok: true }
         case 'branches':

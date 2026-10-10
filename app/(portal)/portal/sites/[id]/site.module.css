@@ -297,6 +297,46 @@
 .outputBlock summary:hover { color: var(--ink-2); }
 .outputBlock summary:focus-visible { outline: 2px solid var(--lake); outline-offset: 2px; }
 
+/* A client's updates. Each one is a details element styled to read as one of ui/Row's rows, so an update
+   with something to open and one without sit in the same list without looking like two kinds of thing. */
+.update { border-bottom: 1px solid var(--rule); }
+.update summary {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 9px 0 9px 11px;
+    border-left: 2px solid transparent;
+    font-size: 13.5px;
+    cursor: pointer;
+    list-style: none;
+}
+.update summary::-webkit-details-marker { display: none; }
+.update summary::before {
+    content: '';
+    flex: none;
+    width: 6px;
+    height: 6px;
+    border-right: 1.5px solid var(--ink-3);
+    border-bottom: 1.5px solid var(--ink-3);
+    transform: rotate(-45deg);
+    transition: transform .15s;
+}
+.update[open] summary::before { transform: rotate(45deg); }
+.update summary:hover { background: rgba(255, 255, 255, .025); }
+.update summary:focus-visible { outline: 2px solid var(--lake); outline-offset: -2px; }
+.updateHeadline { flex: 1 1 auto; min-width: 0; font-weight: 500; }
+.updateDay { flex: none; font-size: 12.5px; color: var(--ink-2); }
+.update .notes { padding: 0 12px 14px 29px; }
+
+.notes { font-size: 12.5px; color: var(--ink-2); line-height: 1.7; }
+.outputBlock .notes { margin-top: 8px; }
+.notesText { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; }
+.changes { list-style: none; margin: 10px 0 0; padding: 0; display: grid; gap: 10px; }
+.notesText + .changes { margin-top: 14px; }
+.changes li { padding-left: 10px; border-left: 2px solid var(--rule); }
+.changeSubject { display: block; color: var(--ink); font-weight: 500; }
+.changes .notesText { margin-top: 2px; }
+
 .outputBlock pre {
     margin: 8px 0 0;
     padding: 10px 12px;

@@ -2,7 +2,7 @@ import { describe, it } from 'node:test'
 import assert from 'node:assert/strict'
 
 import {
-    emptyDeploys, recordDeploy, lastHealthyCommit, deployKey, maintenanceKey,
+    detailsOf, emptyDeploys, recordDeploy, withoutTrailers, lastHealthyCommit, deployKey, maintenanceKey,
     MAX_DEPLOY_RECORDS, PAUSE_AFTER_FAILURES, MAX_WATCH_BYTES, type DeployOutcome, type DeployRecord,
 } from './deploys.ts'
 
@@ -67,5 +67,52 @@ describe('deploy watch bounds', () => {
     // they must not drift together.
     it('bounds a watched deploy well above a single record tail', () => {
         assert.ok(MAX_WATCH_BYTES >= 64 * 1024, String(MAX_WATCH_BYTES))
+    })
+})
+
+describe('what a deploy changed', () => {
+    const merge = { commit: 'aaa1111', merge: true, subject: 'Merge pull request #7 from acme/booking', body: 'Fix the booking form' }
+    const inner = { commit: 'bbb2222', merge: false, subject: 'Check the date', body: 'It took any date.\n\nSigned-off-by: K <k@k>' }
+
+    it('is the merge message and the commits it brought in, without their trailers', () => {
+        assert.deepEqual(detailsOf('aaa1111', [inner, merge]), {
+            body: 'Fix the booking form',
+            changes: [{ subject: 'Check the date', body: 'It took any date.' }],
+        })
+    })
+
+    it('is only the commit\'s own body for an ordinary commit', () => {
+        assert.deepEqual(detailsOf('bbb2222', [inner]), { body: 'It took any date.', changes: [] })
+    })
+
+    it('finds a commit recorded in full among a log of full shas, and a short one by its prefix', () => {
+        const full = { ...inner, commit: 'bbb2222' + '0'.repeat(33) }
+        assert.notEqual(detailsOf('bbb2222', [full]), null)
+        assert.notEqual(detailsOf(full.commit, [full]), null)
+    })
+
+    it('is nothing when the log does not hold the commit at all', () => {
+        assert.equal(detailsOf('ccc3333', [inner]), null)
+        assert.equal(detailsOf('', [inner]), null)
+    })
+
+    it('leaves out merges of the base branch that rode along', () => {
+        const back = { commit: 'ddd4444', merge: true, subject: 'Merge branch main into booking', body: '' }
+        assert.deepEqual(detailsOf('aaa1111', [merge, back, inner])!.changes.map(change => change.subject), ['Check the date'])
+    })
+})
+
+describe('trailers', () => {
+    it('drops a final paragraph of Key: value lines', () => {
+        assert.equal(withoutTrailers('Did a thing.\n\nCo-Authored-By: A <a@a>\nClaude-Session: https://x'), 'Did a thing.')
+    })
+
+    it('keeps a final paragraph that is prose, even with a colon in it', () => {
+        assert.equal(withoutTrailers('Did a thing.\n\nNote: this also fixes the footer, which was off.\nAnd more.'),
+            'Did a thing.\n\nNote: this also fixes the footer, which was off.\nAnd more.')
+    })
+
+    it('is empty for a body that was only trailers', () => {
+        assert.equal(withoutTrailers('Signed-off-by: K <k@k>'), '')
     })
 })
