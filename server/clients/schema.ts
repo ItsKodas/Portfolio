@@ -35,6 +35,24 @@ export const clientDetailsSchema = z.object({
 
 export type ClientDetails = z.infer<typeof clientDetailsSchema>
 
+// hostd's own rule for a holding page phone number (hostd/src/shared/registry.ts), so nothing saved here is
+// one hostd would refuse when the portal sends it
+const PUBLIC_PHONE = /^\+?[0-9][0-9 ()-]{3,30}$/
+
+// What a visitor is shown while one of the client's sites is down. Every field may be blank; a contact with
+// neither an email nor a phone is simply never sent to hostd (see server/sites/holdingContact.ts).
+export const publicContactSchema = z.object({
+    name: singleLine(100).transform(value => value || null).nullable(),
+    email: z.string().trim().max(254).transform(value => value.toLowerCase())
+        .pipe(z.union([z.literal(''), z.string().email('Enter a valid email address.')]))
+        .transform(value => value || null).nullable(),
+    phone: singleLine(32)
+        .refine(value => value === '' || PUBLIC_PHONE.test(value), 'Use digits, spaces, brackets and dashes, with a + in front if you like.')
+        .transform(value => value || null).nullable(),
+})
+
+export type PublicContact = z.infer<typeof publicContactSchema>
+
 // Copied verbatim from hostd/src/shared/formats.ts, so the portal can never store an id hostd would refuse
 const PROJECT_ID = /^[a-z0-9][a-z0-9-]{1,30}$/
 export const RESERVED_PROJECT_IDS = ['hostd', 'mail', 'horizons'] as const

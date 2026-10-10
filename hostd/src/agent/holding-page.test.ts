@@ -30,17 +30,17 @@ describe('renderHoldingPage', () => {
     it('escapes everything that came from the registry', () => {
         const page = renderHoldingPage(input({
             name: '<script>alert(1)</script>',
-            contact: { name: 'Jo "the owner"', email: 'jo@example.com', phone: null, url: 'https://example.com/?a=1&b=<2>' },
+            contact: { name: 'Jo "the owner"', email: 'jo+<b>@example.com', phone: null },
         }))
         assert.ok(!page.includes('<script>alert(1)</script>'))
         assert.match(page, /&lt;script&gt;alert\(1\)&lt;\/script&gt;/)
         assert.match(page, /Need to reach Jo &quot;the owner&quot;\?/)
-        assert.match(page, /href="https:\/\/example\.com\/\?a=1&amp;b=&lt;2&gt;"/)
+        assert.match(page, /href="mailto:jo\+&lt;b&gt;@example\.com"/)
     })
 
     it('leaves the contact section out when the site names nobody, and links each way to reach them when it does', () => {
         assert.ok(!renderHoldingPage(input()).includes('class="contact"'))
-        const page = renderHoldingPage(input({ contact: { name: null, email: 'jo@example.com', phone: '+61 (0)400 123-456', url: null } }))
+        const page = renderHoldingPage(input({ contact: { name: null, email: 'jo@example.com', phone: '+61 (0)400 123-456' } }))
         assert.match(page, /Need to reach the site owner\?/)
         assert.match(page, /href="mailto:jo@example\.com"/)
         assert.match(page, /href="tel:\+610400123456"/)
@@ -76,7 +76,7 @@ describe('renderHoldingPage', () => {
     // CLAUDE.md: no em dashes in anything a visitor reads
     it('uses no em dashes in any state', () => {
         for (const state of HOLDING_STATES) {
-            const page = renderHoldingPage(input({ state, contact: { name: 'Jo', email: 'jo@example.com', phone: null, url: null } }))
+            const page = renderHoldingPage(input({ state, contact: { name: 'Jo', email: 'jo@example.com', phone: null } }))
             assert.ok(!page.includes('\u2014') && !page.includes('&mdash;'), state)
         }
     })

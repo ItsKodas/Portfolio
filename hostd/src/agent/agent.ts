@@ -721,6 +721,7 @@ export class Agent {
             ...(args.repo === undefined ? {} : { repo: args.repo }),
             ...(args.credential === undefined ? {} : { credential: args.credential }),
             ...(args.branches === undefined ? {} : { branches: args.branches }),
+            ...(args.contact === undefined ? {} : { contact: args.contact }),
         })
         // The writer's problem is the registry validator's own words about what the operator asked for, so
         // it is bad-request rather than failed, exactly as the set-branch case above answers the same

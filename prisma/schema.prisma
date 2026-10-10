@@ -106,6 +106,14 @@ model Client {
   totpConfirmedAt   DateTime?
   suspendedAt       DateTime?
   lastSignInAt      DateTime?
+  // Who a visitor should reach while one of this client's sites is down, shown on that site's holding page.
+  // The business's name and business details, never the person's own. The client edits them on their
+  // account page and the operator on theirs, but they only reach a site while publicContactListed is on,
+  // which only the operator can turn on (server/sites/holdingContact.ts sends them to hostd).
+  publicName          String?
+  publicEmail         String?
+  publicPhone         String?
+  publicContactListed Boolean   @default(false)
   failedSignIns     Int       @default(0)
   lockedUntil       DateTime?
   quotes            Quote[]

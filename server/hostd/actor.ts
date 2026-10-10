@@ -23,6 +23,13 @@ export function callerForAdmin(email: string): Caller {
     return { actor: 'admin', user: email }
 }
 
+// The portal acting on its own account rather than for whoever is signed in: sending a site's holding page
+// contact after a client edited theirs, which hostd only takes from an admin. hostd's audit log names the
+// user as portal, so it is never mistaken for the operator having done it.
+export function callerForPortal(): Caller {
+    return { actor: 'admin', user: 'portal' }
+}
+
 // hostd's project id grammar (hostd/src/shared/formats.ts), which X-Hostd-Sites is refused whole without
 const PROJECT_ID = /^[a-z0-9][a-z0-9-]{1,30}$/
 

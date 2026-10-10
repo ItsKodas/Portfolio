@@ -73,6 +73,7 @@ export const KINDS = {
     'client.unsuspend': 'Client restored',
     'client.unlock': 'Lock cleared',
     'client.delete': 'Client deleted',
+    'client.publicContact': 'Public contact changed',
 
     'quote.submit': 'Quote received',
     'quote.status': 'Quote status changed',

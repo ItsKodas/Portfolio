@@ -5,7 +5,7 @@
 import { CLIENT_ID, DIR_NAME, PROJECT_ID, SERVICE_NAME, USER_ID, isEnvironmentName, isRecord, relativePathProblem } from './formats.ts'
 import {
     isComposeService, environmentOf, ENVIRONMENT_FLAGS, CAPABILITIES, CERTIFICATE_MODES, GIT_REF, CREDENTIAL_NAME, MAX_COMPOSE_FILES, PORT_OVERRIDE_FILE,
-    type Capability, type CertificateMode, type EnvironmentFlag, type EnvironmentName, type Keep, type ProjectEntry, type Registry,
+    type Capability, type CertificateMode, type Contact, type EnvironmentFlag, type EnvironmentName, type Keep, type ProjectEntry, type Registry,
 } from './registry.ts'
 import { normaliseHostname } from './hostnames.ts'
 import { PORT_RANGE, type OwnPort } from './ports.ts'
@@ -254,6 +254,8 @@ export type ConfigureArgs = {
     // Whether each environment's origin serves the site on port 80 for a CDN in Flexible mode, rather than
     // redirecting it to https. Rewrites the vhost exactly as websockets does.
     flexibleSsl?: Record<EnvironmentName, boolean>
+    // Who the holding page tells a visitor to reach. null takes the contact away.
+    contact?: Contact | null
 }
 export type ConfigureRequest = { verb: 'configure', project: string, args: ConfigureArgs }
 
@@ -837,8 +839,8 @@ export function parseDomainsArgs(args: unknown): { ok: true, args: DomainsArgs }
 // body it could not read is refused in exactly one place. See policy.ts and routes.ts in api for how the
 // route bridges this Refusal shape onto its own parsers' { ok: false, message }.
 export function parseConfigureArgs(raw: unknown): ConfigureArgs | Refusal {
-    if (!isRecord(raw) || !onlyKeys(raw, ['capabilities', 'repo', 'credential', 'branches', 'domains', 'websockets', 'flexibleSsl'])) {
-        return refuse('bad-request', 'configure takes only capabilities, repo, credential, branches, domains, websockets and flexibleSsl')
+    if (!isRecord(raw) || !onlyKeys(raw, ['capabilities', 'repo', 'credential', 'branches', 'domains', 'websockets', 'flexibleSsl', 'contact'])) {
+        return refuse('bad-request', 'configure takes only capabilities, repo, credential, branches, domains, websockets, flexibleSsl and contact')
     }
 
     let capabilities: Capability[] | undefined
@@ -909,8 +911,27 @@ export function parseConfigureArgs(raw: unknown): ConfigureArgs | Refusal {
         flags[key] = parsed
     }
 
+    // The shape only. What an email or a phone number may be is parseRegistry's call when the writer
+    // re-reads the file, the same way a repo or a capability is left to it.
+    let contact: Contact | null | undefined
+    if (raw.contact !== undefined) {
+        const value = raw.contact
+        if (value !== null) {
+            if (!isRecord(value) || !onlyKeys(value, ['name', 'email', 'phone'])
+                || !['name', 'email', 'phone'].every(key => value[key] === undefined || value[key] === null || typeof value[key] === 'string')) {
+                return refuse('bad-request', 'contact must be null or name, email and phone, each a string or null')
+            }
+        }
+        contact = value === null ? null : {
+            name: (value.name as string | null | undefined) ?? null,
+            email: (value.email as string | null | undefined) ?? null,
+            phone: (value.phone as string | null | undefined) ?? null,
+        }
+    }
+
     return {
         ...(capabilities !== undefined ? { capabilities } : {}),
+        ...(contact !== undefined ? { contact } : {}),
         ...(repo !== undefined ? { repo } : {}),
         ...(credential !== undefined ? { credential } : {}),
         ...(branches !== undefined ? { branches } : {}),

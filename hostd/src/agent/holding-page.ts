@@ -134,16 +134,10 @@ function scene(): string {
     return `${svg}${campfire()}</svg>`
 }
 
-// A URL shown without its scheme or a trailing slash, the way a person would read it out
-function displayUrl(url: string): string {
-    return url.replace(/^https?:\/\//, '').replace(/\/$/, '')
-}
-
 function contactSection(contact: Contact): string {
     const links: string[] = []
     if (contact.email) links.push(`<a href="mailto:${escapeHtml(contact.email)}"><span>Email</span>${escapeHtml(contact.email)}</a>`)
     if (contact.phone) links.push(`<a href="tel:${escapeHtml(contact.phone.replace(/[^0-9+]/g, ''))}"><span>Phone</span>${escapeHtml(contact.phone)}</a>`)
-    if (contact.url) links.push(`<a href="${escapeHtml(contact.url)}" rel="noopener noreferrer"><span>Website</span>${escapeHtml(displayUrl(contact.url))}</a>`)
     const who = contact.name ? escapeHtml(contact.name) : 'the site owner'
     return `<section class="contact">
 <h2>Need to reach ${who}?</h2>
