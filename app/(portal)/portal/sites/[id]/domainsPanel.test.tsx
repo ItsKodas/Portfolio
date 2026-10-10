@@ -5,8 +5,8 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { fireEvent, render, screen, within } from '@testing-library/react'
 
-const { adoptPreview, changePrimary, addDomain, makePrimary, setRoot } = vi.hoisted(() => ({
-    adoptPreview: vi.fn(), changePrimary: vi.fn(), addDomain: vi.fn(), makePrimary: vi.fn(), setRoot: vi.fn(),
+const { adoptPreview, addDomain, makePrimary, saveSettings } = vi.hoisted(() => ({
+    adoptPreview: vi.fn(), addDomain: vi.fn(), makePrimary: vi.fn(), saveSettings: vi.fn(),
 }))
 
 // The panel is a server component, but its controls are the client half, and importing those for real
@@ -18,15 +18,13 @@ vi.mock('./actions', () => ({
     verifyDomainAction: async () => ({ ok: true, message: 'ok' }),
     adoptAction: async () => ({ ok: true, message: 'ok' }),
     adoptPreviewAction: (...args: unknown[]) => adoptPreview(...args),
-    setPrimaryDomainAction: async () => ({ ok: true, message: 'ok' }),
-    changePrimaryDomainAction: (...args: unknown[]) => changePrimary(...args),
     makePrimaryDomainAction: (...args: unknown[]) => makePrimary(...args),
-    setRootDomainAction: (...args: unknown[]) => setRoot(...args),
+    setRootDomainAction: async () => ({ ok: true, message: 'ok' }),
+    saveSettingsAction: (...args: unknown[]) => saveSettings(...args),
 }))
 vi.mock('next/navigation', () => ({ useRouter: () => ({ push: () => {}, refresh: () => {} }) }))
 
 import type { AdoptPreview, Domain } from '@/server/hostd/domains'
-import { PrimaryDomain } from './domainControls'
 import { DomainsPanel } from './domainsPanel'
 
 const domain = (over: Partial<Domain> = {}): Domain => ({
@@ -70,10 +68,9 @@ const preview = (over: Partial<AdoptPreview> = {}): AdoptPreview => ({
 beforeEach(() => {
     vi.clearAllMocks()
     adoptPreview.mockResolvedValue({ ok: true, preview: preview() })
-    changePrimary.mockResolvedValue({ ok: true, message: 'ok' })
     addDomain.mockResolvedValue({ ok: true, message: 'ok' })
     makePrimary.mockResolvedValue({ ok: true, message: 'ok' })
-    setRoot.mockResolvedValue({ ok: true, message: 'ok' })
+    saveSettings.mockResolvedValue({ ok: true, message: 'ok' })
 })
 
 describe('DomainsPanel, for the operator', () => {
@@ -90,22 +87,28 @@ describe('DomainsPanel, for the operator', () => {
         expect(screen.getByText('primary')).toBeInTheDocument()
     })
 
-    // The root domain is picked from live's own addresses, marked in the table, and cannot be removed
-    it('picks live\'s root domain from its addresses and marks it, with no Remove on its row', async () => {
+    // The root domain is set from Settings; here it is marked and its row offers no Remove
+    it('marks live\'s root domain, with no Remove on its row', () => {
         const both = [domain({ hostname: 'www.acme.com' }), domain({ hostname: 'acme.com', primary: false })]
         render(<DomainsPanel {...props} rootDomain="acme.com" domains={both} />)
         expect(screen.getByText('alias, root')).toBeInTheDocument()
         expect(screen.queryAllByRole('button', { name: 'Remove' })).toHaveLength(0)
-
-        const select = screen.getByRole('combobox', { name: 'Root domain' })
-        fireEvent.change(select, { target: { value: 'www.acme.com' } })
-        fireEvent.click(screen.getByRole('button', { name: 'Save' }))
-        await vi.waitFor(() => expect(setRoot).toHaveBeenCalledWith('acme', 'www.acme.com'))
+        expect(screen.getByText(/root domain is acme\.com/)).toBeInTheDocument()
     })
 
-    it('offers no root domain on any environment but live', () => {
-        render(<DomainsPanel {...props} environment="uat1" />)
-        expect(screen.queryByRole('combobox', { name: 'Root domain' })).toBeNull()
+    // The switches belong to the environment, so they sit on the main address's row alone
+    it('draws the WebSockets and Flexible switches on the main address\'s row and flips one', async () => {
+        render(<DomainsPanel {...props} flexibleSsl domains={[domain(), domain({ hostname: 'www.acme.com', primary: false })]} />)
+        const flexible = screen.getByRole('switch', { name: 'live Cloudflare Flexible SSL' })
+        expect(flexible).toHaveAttribute('aria-checked', 'true')
+        const sockets = screen.getByRole('switch', { name: 'live WebSockets' })
+        expect(sockets).toHaveAttribute('aria-checked', 'false')
+        expect(screen.getAllByRole('switch')).toHaveLength(2)
+        expect(screen.getByText('redirects to acme.com')).toBeInTheDocument()
+
+        fireEvent.click(sockets)
+        await vi.waitFor(() => expect(saveSettings).toHaveBeenCalledWith('acme', { websockets: { live: true } }))
+        expect(sockets).toHaveAttribute('aria-checked', 'true')
     })
 
     // The swap: an alias row offers to become the main address, and the main address row does not.
@@ -276,57 +279,6 @@ describe('DomainsPanel, for the operator', () => {
     it('draws no environment dropdown of its own', () => {
         render(<DomainsPanel {...props} />)
         expect(screen.queryByRole('combobox', { name: 'Environment' })).toBeNull()
-    })
-})
-
-// The main address control, which the Domains tab used to draw for every environment. It is kept for
-// Settings to draw for live.
-describe('PrimaryDomain', () => {
-    it('offers to set the address when there is none, and says what that does', () => {
-        render(<PrimaryDomain id="acme" environment="live" current={null} />)
-        expect(screen.getByRole('button', { name: /set the address/i })).toBeInTheDocument()
-        expect(screen.getByText(/adopted/i)).toBeInTheDocument()
-    })
-
-    it('offers to change the address once there is one', () => {
-        render(<PrimaryDomain id="acme" environment="live" current="acme.com" />)
-        expect(screen.getByRole('button', { name: /change the address/i })).toBeInTheDocument()
-        expect(screen.getByLabelText(/new address/i)).toBeInTheDocument()
-    })
-
-    // Moving a live site off the address it answers on. The dialog has to name what follows and take the
-    // new hostname back, the same ceremony adoption uses for the other change a live site notices.
-    it('will not change the address until the new hostname is typed back', async () => {
-        render(<PrimaryDomain id="acme" environment="live" current="acme.com" />)
-
-        fireEvent.change(screen.getByLabelText(/new address/i), { target: { value: 'shop.acme.com' } })
-        fireEvent.click(screen.getByRole('button', { name: /change the address/i }))
-
-        const confirm = await screen.findByLabelText(/type shop\.acme\.com to confirm/i)
-        const go = screen.getByRole('button', { name: /^change it$/i })
-        expect(go).toBeDisabled()
-
-        fireEvent.change(confirm, { target: { value: 'shop.acme.co' } })
-        expect(go).toBeDisabled()
-
-        fireEvent.change(confirm, { target: { value: 'shop.acme.com' } })
-        expect(go).toBeEnabled()
-        fireEvent.click(go)
-        expect(changePrimary).toHaveBeenCalledWith('acme', 'live', 'shop.acme.com', 'shop.acme.com')
-    })
-
-    // The four things that follow, in the operator's own words. Without them the dialog is a speed bump
-    // rather than a decision.
-    it('names what a change does before it happens', async () => {
-        render(<PrimaryDomain id="acme" environment="live" current="acme.com" />)
-        fireEvent.change(screen.getByLabelText(/new address/i), { target: { value: 'shop.acme.com' } })
-        fireEvent.click(screen.getByRole('button', { name: /change the address/i }))
-
-        await screen.findByLabelText(/to confirm/i)
-        expect(screen.getByText(/stops being served here/i)).toBeInTheDocument()
-        expect(screen.getByText(/starts unverified/i)).toBeInTheDocument()
-        expect(screen.getByText(/redirecting to the new address/i)).toBeInTheDocument()
-        expect(screen.getByText(/rewritten and reloaded/i)).toBeInTheDocument()
     })
 })
 

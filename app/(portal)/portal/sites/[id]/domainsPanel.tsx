@@ -14,7 +14,7 @@ import { Callout } from '@/ui/Callout/Callout'
 import { DataTable } from '@/ui/DataTable/DataTable'
 import { StatusDot, type State as DotState } from '@/ui/StatusDot/StatusDot'
 import { Tail } from '@/ui/Tail/Tail'
-import { AddDomain, AdoptSite, DomainActions, RootDomain } from './domainControls'
+import { AddDomain, AdoptSite, DomainActions, RowSwitch } from './domainControls'
 import { clientSentence, needsYou, sortDomains, stateTone, stateWord } from './domains'
 import { formatWhen } from '../../format'
 import styles from './site.module.css'
@@ -57,6 +57,7 @@ const COLUMNS = [
     { key: 'state', head: 'state' },
     { key: 'certificate', head: 'certificate' },
     { key: 'checked', head: 'last checked' },
+    { key: 'switches', head: 'serving' },
     { key: 'reason', head: 'needs you' },
     { key: 'act', head: 'change it' },
 ]
@@ -72,15 +73,18 @@ type Props = {
     projectName: string
     // The site's root domain, one of live's addresses, or null when it names none. Chosen on live alone.
     rootDomain: string | null
+    // The environment's render-only switches, drawn on its main address's row. Absent reads as off.
+    websockets?: boolean
+    flexibleSsl?: boolean
     // Why the list is empty, when it is empty because nobody could read it. hostd's own words for the
     // operator and a plain sentence for a client, decided before it reaches here.
     trouble: string | null
 }
 
-// The environment's main address, shown and not typed in here. live's is changed from Settings, where a
-// change to the address the site answers on sits beside the site's other settings. Any other environment's
-// is given when it is created. On any environment, an alias in the table below can be swapped in.
-function MainAddress({ environment, current }: { environment: EnvironmentName, current: string | null }) {
+// The environment's main address, shown and not typed in here: the first address added becomes it, and an
+// alias in the table below can be swapped in with Make primary. On live the site's root domain is named
+// too, which is set from Settings.
+function MainAddress({ environment, current, rootDomain }: { environment: EnvironmentName, current: string | null, rootDomain: string | null }) {
     return (
         <section className={styles.block} aria-labelledby="main-address">
             <h4 id="main-address">Main address</h4>
@@ -90,13 +94,17 @@ function MainAddress({ environment, current }: { environment: EnvironmentName, c
                     This environment has no main address yet. The first address added below becomes it.
                 </p>}
             {environment === LIVE && (
-                <p className={styles.note}>live&apos;s main address is set and changed from this site&apos;s Settings tab, or by making one of its aliases primary below.</p>
+                <p className={styles.note}>
+                    {rootDomain
+                        ? `The site's root domain is ${rootDomain}, set from the Settings tab. New environments go under it.`
+                        : "The site has no root domain set. It is set from the Settings tab, and new environments go under it."}
+                </p>
             )}
         </section>
     )
 }
 
-export function DomainsPanel({ id, environment, domains, isAdmin, projectName, rootDomain, trouble }: Props) {
+export function DomainsPanel({ id, environment, domains, isAdmin, projectName, rootDomain, websockets = false, flexibleSsl = false, trouble }: Props) {
     const ordered = sortDomains(domains)
 
     // A client asked one question: does my website address work. They get the answer to it. No table, no
@@ -140,6 +148,15 @@ export function DomainsPanel({ id, environment, domains, isAdmin, projectName, r
         state: <StatusDot state={DOTS[stateTone(domain.state)]} label={stateWord(domain.state)} />,
         certificate: CERTIFICATES[domain.certificate ?? ''] ?? 'none set',
         checked: when(domain.checkedAt),
+        // Keyed on the saved value, so a refresh after a flip starts the switch from what hostd now has
+        switches: domain.primary
+            ? (
+                <span className={styles.rowActions}>
+                    <RowSwitch key={`ws:${websockets}`} id={id} environment={environment} flag="websockets" on={websockets} />
+                    <RowSwitch key={`fx:${flexibleSsl}`} id={id} environment={environment} flag="flexibleSsl" on={flexibleSsl} />
+                </span>
+            )
+            : <span className={styles.note}>{`redirects to ${primary ?? 'the main address'}`}</span>,
         reason: needsYou(domain)
             ? (
                 <>
@@ -178,16 +195,8 @@ export function DomainsPanel({ id, environment, domains, isAdmin, projectName, r
                         open with or without one. Keyed on the environment: the list switches it by
                         navigating to this same route, which rerenders rather than remounts, and a hostname
                         typed for one environment must not be sent to the next. */}
-                    <MainAddress environment={environment} current={primary} />
+                    <MainAddress environment={environment} current={primary} rootDomain={rootDomain} />
                     <AddDomain key={environment} id={id} environment={environment} />
-                    {environment === LIVE && ordered.length > 0 && (
-                        <RootDomain
-                            key={rootDomain ?? ''}
-                            id={id}
-                            current={rootDomain}
-                            hostnames={ordered.map(domain => domain.hostname)}
-                        />
-                    )}
 
                     <section className={styles.block}>
                         <h4>Addresses</h4>

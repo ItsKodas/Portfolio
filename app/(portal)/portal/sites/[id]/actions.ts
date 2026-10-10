@@ -227,7 +227,7 @@ export async function rollbackAction(id: string, environment: string): Promise<S
 // other action here makes of its own arguments, mirroring hostd's parseConfigureArgs (which checks it
 // again, and has the last word on what a capability, a repo and a branch may actually be).
 // domains is deliberately not among the keys accepted here: the Settings form never sends one, and the
-// only thing allowed to set an address is setPrimaryDomainAction below, which builds its own object.
+// only thing allowed to set an address is makePrimaryDomainAction below, which builds its own object.
 function isSettings(value: unknown): value is SiteSettings {
     if (typeof value !== 'object' || value === null) return false
     const { capabilities, repo, credential, branches, websockets, flexibleSsl, ...rest } = value as Record<string, unknown>
@@ -331,71 +331,6 @@ export async function addDomainAction(id: string, environment: string, hostname:
     return { ok: true, message: `${wanted} is added. hostd checks its DNS before it starts serving it.` }
 }
 
-// The site's own address, which until now could only be given at provision time: every site enrolled by
-// hand has none, so this is the first thing the tab needs to be able to do. It goes through configure
-// rather than the domains verb, because it edits the registry entry, and hostd is the one that decides
-// whether that edit also has to reach Apache.
-//
-// This one is for an environment with NO address. Moving an existing one is changePrimaryDomainAction
-// below, which is the same request behind a confirmation, because the two are nothing like as dangerous
-// as each other.
-export async function setPrimaryDomainAction(id: string, environment: string, hostname: string): Promise<SiteActionResult> {
-    const name = environmentOf(environment)
-    if (!name || typeof hostname !== 'string') return { ok: false, error: 'That is not something this page can do.' }
-
-    const allowed = await allowOn(id, name, true)
-    if (!allowed.ok) return allowed
-
-    // Lowercased here for the same reason the domain actions below do it: the grammar it is checked
-    // against has no capital letters in it and a pasted hostname often does.
-    const wanted = hostname.trim().toLowerCase()
-    const result = await writeSettings(allowed.config, allowed.caller, id, { domains: { [name]: wanted } })
-    if (!result.ok) return refused(`set primary domain ${wanted} on ${id}`, allowed.isAdmin, result)
-    await done(allowed, id, { kind: 'domain.primary', summary: `Set ${name}'s address to ${wanted}`, target: { type: 'domain', id: wanted } })
-
-    revalidatePath(`/portal/sites/${id}`)
-    return {
-        ok: true,
-        message: `${wanted} is this site's address now. Nothing is served from it until ${name} is adopted. `
-            + `Adopt it from ${name}'s Domains section on the Environments tab.`,
-    }
-}
-
-// Moving an address that already exists. The same configure request as above, and deliberately not the
-// same action: the old name stops being served, the new one starts from unverified and hostd rewrites
-// the Apache configuration behind it, so the operator names the new hostname back before any of it
-// happens. That ceremony is the whole reason this is separate.
-//
-// The confirmation is checked here and not only in the dialog. A server action is a request like any
-// other: a disabled button proves nothing about what actually arrived, and this is the one action on
-// the tab that takes a live site off its own address.
-export async function changePrimaryDomainAction(
-    id: string, environment: string, hostname: string, confirm: string,
-): Promise<SiteActionResult> {
-    const name = environmentOf(environment)
-    if (!name || typeof hostname !== 'string' || typeof confirm !== 'string') {
-        return { ok: false, error: 'That is not something this page can do.' }
-    }
-
-    const allowed = await allowOn(id, name, true)
-    if (!allowed.ok) return allowed
-
-    const wanted = hostname.trim().toLowerCase()
-    if (confirm.trim().toLowerCase() !== wanted) {
-        return { ok: false, error: 'Type the new address back exactly to confirm the change.' }
-    }
-
-    const result = await writeSettings(allowed.config, allowed.caller, id, { domains: { [name]: wanted } })
-    if (!result.ok) return refused(`change primary domain to ${wanted} on ${id}`, allowed.isAdmin, result)
-    await done(allowed, id, { kind: 'domain.primary', summary: `Moved ${name}'s address to ${wanted}`, target: { type: 'domain', id: wanted } })
-
-    revalidatePath(`/portal/sites/${id}`)
-    return {
-        ok: true,
-        message: `${wanted} is this site's address now. If hostd serves this site, its configuration has been rewritten.`,
-    }
-}
-
 // Promoting one of the environment's aliases to be its main address. The same configure request again,
 // and hostd treats an alias given as the new domain as a swap: the old main address becomes an alias, so
 // both names keep being served and only the redirect between them turns round. Nothing stops answering,
@@ -418,16 +353,32 @@ export async function makePrimaryDomainAction(id: string, environment: string, h
     return { ok: true, message: `${wanted} is the main address now, and the old one redirects to it.` }
 }
 
-// The site's root domain: the base new environments' addresses sit under, and one of live's own addresses
-// (hostd refuses any other), so as an alias it already redirects to live's primary. null takes it away,
-// which puts the base back to live's primary without a leading www.
+// The site's root domain, set from Settings: the base new environments' addresses sit under, and one of
+// live's own addresses (hostd refuses any other), so as an alias it redirects to live's main address. A
+// name live does not answer to yet is added to live first, through the same request the Domains section's
+// add uses: as an alias, or as live's main address if it has none. null takes the root away, which puts
+// the base back to live's main address without a leading www.
 export async function setRootDomainAction(id: string, hostname: string | null): Promise<SiteActionResult> {
     if (hostname !== null && typeof hostname !== 'string') return { ok: false, error: 'That is not something this page can do.' }
 
     const allowed = await allowOn(id, LIVE, true)
     if (!allowed.ok) return allowed
 
-    const wanted = hostname === null ? null : hostname.trim().toLowerCase()
+    const wanted = hostname === null || hostname.trim() === '' ? null : hostname.trim().toLowerCase()
+    let added = false
+    if (wanted !== null) {
+        const listed = await listEnvironments(allowed.config, allowed.caller, id)
+        if (!listed.ok) return refused(`environments of ${id} for a root domain`, allowed.isAdmin, listed)
+        const live = listed.value.find(one => one.name === LIVE)
+        const has = live !== undefined && (live.domain === wanted || (live.aliases ?? []).includes(wanted))
+        if (!has) {
+            const result = await addDomain(allowed.config, allowed.caller, id, LIVE, wanted)
+            if (!result.ok) return refused(`add domain ${wanted} on ${id} for its root domain`, allowed.isAdmin, result)
+            await done(allowed, id, { kind: 'domain.add', summary: `Added ${wanted} to ${LIVE}`, target: { type: 'domain', id: wanted } })
+            added = true
+        }
+    }
+
     const result = await writeSettings(allowed.config, allowed.caller, id, { rootDomain: wanted })
     if (!result.ok) return refused(`root domain ${wanted ?? 'cleared'} on ${id}`, allowed.isAdmin, result)
     await done(allowed, id, {
@@ -437,11 +388,11 @@ export async function setRootDomainAction(id: string, hostname: string | null): 
     })
 
     revalidatePath(`/portal/sites/${id}`)
+    if (wanted === null) return { ok: true, message: "Cleared. New environments go under live's main address again." }
     return {
         ok: true,
-        message: wanted === null
-            ? 'Cleared. New environments go under the main address again.'
-            : `New environments now go under ${wanted}.`,
+        message: `New environments now go under ${wanted}.`
+            + (added ? ` It was added to live as well, and hostd checks its DNS before it starts serving it.` : ''),
     }
 }
 

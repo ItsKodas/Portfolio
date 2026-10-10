@@ -621,3 +621,17 @@
     .deployLog { min-height: 0; }
     .deployLogLines { flex: 1 1 0; min-height: 0; max-height: none; }
 }
+
+/* An environment's render-only switches on its main address's row, drawn like Cloudflare's proxy cloud:
+   amber and filled when on, grey and hollow when off. */
+.cloudSwitch {
+    display: inline-flex; align-items: center; gap: 5px;
+    padding: 2px 8px; border: 1px solid var(--rule); border-radius: var(--radius-chip);
+    background: transparent; color: var(--ink-3); font: inherit; font-size: 12px; cursor: pointer;
+}
+.cloudSwitch:hover { border-color: var(--rule-hi); color: var(--ink-2); }
+.cloudSwitch:disabled { cursor: progress; opacity: 0.7; }
+.cloudIcon { width: 18px; height: 12px; fill: none; stroke: currentColor; stroke-width: 1.6; }
+.cloudSwitchOn { color: var(--warn); border-color: var(--warn); }
+.cloudSwitchOn:hover { color: var(--warn); border-color: var(--warn); }
+.cloudSwitchOn .cloudIcon { fill: var(--warn); }
