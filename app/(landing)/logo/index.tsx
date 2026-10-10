@@ -23,12 +23,40 @@ const SUBTITLE_TUCK = 16 // the subtitle is pulled up into the space below the t
 // subtitle is in, the capitals' top lines up with the icon's top and the subtitle's baseline with its bottom
 const TITLE_ALONE_Y = 12.7
 const TITLE_WITH_SUBTITLE_Y = -12
+const TITLE_TRACKING = 10
+// The subtitle's tracking before it has been fitted to the title (see fitSubtitle)
+const SUBTITLE_TRACKING = 11
+
+// The subtitle is spread to the title's exact width, so its first and last letters line up with the title's.
+// Measured from the letters' ink rather than their boxes (letter-spacing also adds a trailing gap, and each letter
+// carries its own side bearings), so the edges match by eye. Both lines are drawn at the row's natural size and only
+// scaled afterwards, so one fit holds at every screen size.
+function fitSubtitle(title: HTMLElement, subtitle: HTMLElement) {
+    const ctx = document.createElement('canvas').getContext('2d')
+    if (!ctx) return null
+    const ink = (el: HTMLElement) => {
+        const style = getComputedStyle(el)
+        ctx.font = `${style.fontStyle} ${style.fontWeight} ${style.fontSize} ${style.fontFamily}`
+        const text = el.textContent ?? ''
+        const m = ctx.measureText(text)
+        return { left: -m.actualBoundingBoxLeft, width: m.actualBoundingBoxLeft + m.actualBoundingBoxRight, gaps: [...text].length - 1 }
+    }
+    const t = ink(title), s = ink(subtitle)
+    if (s.gaps < 1) return null
+    return {
+        tracking: (t.width + TITLE_TRACKING * t.gaps - s.width) / s.gaps,
+        indent: t.left - s.left,
+    }
+}
 
 export default function AnimatedLogo() {
     const slotRef = useRef<HTMLDivElement>(null)
     const rowRef = useRef<HTMLDivElement>(null)
     const [scale, setScale] = useState(1)
     const [rowHeight, setRowHeight] = useState(0)
+    const titleRef = useRef<HTMLParagraphElement>(null)
+    const subtitleRef = useRef<HTMLParagraphElement>(null)
+    const [fit, setFit] = useState<{ tracking: number, indent: number } | null>(null)
 
 
     // The slot is positioned and sized in the art's own coordinates (see logo.module.css); scale the logo to fill it
@@ -41,6 +69,17 @@ export default function AnimatedLogo() {
         })
         observer.observe(slot)
         return () => observer.disconnect()
+    }, [])
+
+    // Fitted once the typeface has loaded (measuring the fallback font would give the wrong widths). The subtitle is
+    // still hidden under the title by then, so the change is never seen.
+    useEffect(() => {
+        let cancelled = false
+        document.fonts.ready.then(() => {
+            if (cancelled || !titleRef.current || !subtitleRef.current) return
+            setFit(fitSubtitle(titleRef.current, subtitleRef.current))
+        })
+        return () => { cancelled = true }
     }, [])
 
 
@@ -110,7 +149,7 @@ export default function AnimatedLogo() {
                         }}>
                             {/* Was Typography variant h1 as a p: its size, spacing and weight were already
                                 given here, so only the line height and the reset margin come from the variant */}
-                            <p className="text-nowrap" style={{ fontSize: '8rem', letterSpacing: '10px', fontWeight: 700, lineHeight: 1.167, margin: 0 }}>{SITE.name.toUpperCase()}</p>
+                            <p ref={titleRef} className="text-nowrap" style={{ fontSize: '8rem', letterSpacing: TITLE_TRACKING, fontWeight: 700, lineHeight: 1.167, margin: 0 }}>{SITE.name.toUpperCase()}</p>
                         </animated.div>
                         {/* Hidden above its own top edge (tucked under the title) and slides down into place */}
                         <div className="overflow-hidden" style={{ marginTop: -SUBTITLE_TUCK }}>
@@ -120,7 +159,7 @@ export default function AnimatedLogo() {
                             }}>
                                 {/* Was Typography variant h2 as a p. The weight is the variant's own light,
                                     which nothing here overrode, so it is written out rather than lost. */}
-                                <p className="pl-2 subtitle text-nowrap" style={{ fontSize: '2.25rem', letterSpacing: '11px', fontWeight: 300, lineHeight: 1.2, margin: 0 }}>{SITE.tagline}</p>
+                                <p ref={subtitleRef} className="subtitle text-nowrap" style={{ fontSize: '2.25rem', letterSpacing: fit?.tracking ?? SUBTITLE_TRACKING, paddingLeft: fit?.indent ?? 8, fontWeight: 300, lineHeight: 1.2, margin: 0 }}>{SITE.tagline}</p>
                             </animated.div>
                         </div>
                     </animated.div>
