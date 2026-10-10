@@ -32,4 +32,13 @@ export const SOCIALS = [
     { label: 'Instagram', href: 'https://www.instagram.com/itskodas' },
 ] as const
 
-export const SKILLS = ['Next.js', 'React', 'TypeScript', 'Node.js', 'Tailwind CSS', 'PostgreSQL', 'MongoDB', 'Docker', 'Prisma', 'MUI', 'Git']
+// Everything in use across Dakoda's repositories, roughly from the web stack outwards: languages, frameworks, data,
+// tooling and infrastructure, then apps, bots and games
+export const SKILLS = [
+    'TypeScript', 'JavaScript', 'React', 'Next.js', 'Tailwind CSS', 'MUI', 'Vite',
+    'Node.js', 'Deno', 'Express', 'Socket.IO', 'Payload CMS',
+    'PostgreSQL', 'MongoDB', 'Prisma',
+    'Vitest', 'Playwright', 'Docker', 'Caddy', 'GitHub Actions', 'Git',
+    'React Native', 'Expo', 'Discord.js', 'Three.js', 'Leaflet',
+    'C#', '.NET', 'C++', 'Python', 'Unreal Engine', 'Godot', 'Arma 3 (SQF)',
+]
