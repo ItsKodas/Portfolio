@@ -15,7 +15,7 @@ const input = (over: Partial<HoldingPageInput> = {}): HoldingPageInput => ({
 describe('renderHoldingPage', () => {
     it('says why the site is down, in each state', () => {
         assert.match(renderHoldingPage(input({ state: 'upgrading' })), /A new version of Mappies is being put in place/)
-        assert.match(renderHoldingPage(input({ state: 'stopped' })), /Mappies has been switched off for now/)
+        assert.match(renderHoldingPage(input({ state: 'stopped' })), /Mappies has been intentionally switched off/)
         assert.match(renderHoldingPage(input({ state: 'crashed' })), /Mappies has run into a problem and could not restart itself/)
         assert.match(renderHoldingPage(input({ state: 'unavailable' })), /Mappies is not answering right now/)
     })
@@ -59,7 +59,8 @@ describe('renderHoldingPage', () => {
     it('renders the shared fallback without a site, leaving the address to the script', () => {
         const page = renderHoldingPage(input({ name: null, hostname: null, environment: null }))
         assert.match(page, /<span data-host>This site<\/span>/)
-        assert.match(page, /This site is not answering right now/)
+        assert.match(page, /This site is not available right now/)
+        assert.ok(!page.includes('Back shortly'))
     })
 
     it('carries the scene and its campfire, and loads nothing from anywhere', () => {

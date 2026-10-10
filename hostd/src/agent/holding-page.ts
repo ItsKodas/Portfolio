@@ -43,8 +43,10 @@ const STATE_COPY: Record<HoldingState, { label: string, lead: (name: string) => 
     },
     stopped: {
         label: 'Switched off',
-        lead: name => `${name} has been switched off for now.`,
-        body: contact => `The site's owner has taken it offline on purpose, so nothing is broken. It will be back when they switch it on again.${contact ? ' If you were not expecting this, you can reach them below.' : ''}`,
+        lead: name => `${name} has been intentionally switched off.`,
+        // No promise of when: a stopped site may be back in five minutes, in weeks or never, and only its
+        // owner knows which
+        body: contact => `The site's owner has taken it offline on purpose, so nothing is broken. There is no set time for it to come back, so please check back later.${contact ? ' If you need something in the meantime, you can reach them below.' : ''}`,
     },
     crashed: {
         label: 'Having trouble',
@@ -56,6 +58,14 @@ const STATE_COPY: Record<HoldingState, { label: string, lead: (name: string) => 
         lead: name => `${name} is not answering right now.`,
         body: () => 'It should be back shortly. This page checks again by itself and will take you to the site as soon as it answers.',
     },
+}
+
+// The shared fallback stands in for every site and knows nothing about any of them, so it says nothing
+// about why or for how long: "back shortly" would be a promise it has no grounds for
+const FALLBACK_COPY = {
+    label: 'Unavailable',
+    lead: () => 'This site is not available right now.',
+    body: () => 'Please check back later. This page checks again by itself and will take you to the site once it is back.',
 }
 
 // Each state's accent, taken from the landing page's palette: the lake's blue, the sky's lilac, the
@@ -146,7 +156,7 @@ function contactSection(contact: Contact): string {
 }
 
 export function renderHoldingPage(input: HoldingPageInput): string {
-    const copy = STATE_COPY[input.state]
+    const copy = input.name === null ? FALLBACK_COPY : STATE_COPY[input.state]
     const name = input.name === null ? null : escapeHtml(input.name)
     const hostname = input.hostname === null ? null : escapeHtml(input.hostname)
     // The fallback page knows no site, so it says "This site" and lets the script put the address in
