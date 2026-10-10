@@ -19,7 +19,9 @@ import { Row } from '@/ui/Row/Row'
 import { Tail } from '@/ui/Tail/Tail'
 import { DeployControls } from './deployControls'
 import { DeployLog } from './deployLog'
-import { formatDuration, outcomeTone, outcomeWord, rollbackTarget, shortCommit, updatesFor } from './deploys'
+import {
+    formatDuration, hasNotes, notesFor, outcomeTone, outcomeWord, rollbackTarget, shortCommit, updatesFor, type UpdateNotes,
+} from './deploys'
 import { EnvSwitcher } from './envSwitcher'
 import { formatDay, formatWhen } from '../../format'
 import styles from './site.module.css'
@@ -38,6 +40,45 @@ function day(iso: string): string {
     return Number.isNaN(at.getTime()) ? iso : formatDay(at)
 }
 
+// What a deploy changed, as prose: the description, then each commit a merge brought in. Plain text kept
+// as it was written (line breaks and all), because these are commit messages and pull request
+// descriptions, and nothing here should interpret what somebody typed into one.
+function Notes({ notes }: { notes: UpdateNotes }) {
+    return (
+        <div className={styles.notes}>
+            {notes.description && <p className={styles.notesText}>{notes.description}</p>}
+            {notes.changes.length > 0 && (
+                <ul className={styles.changes}>
+                    {notes.changes.map((change, index) => (
+                        <li key={index}>
+                            <span className={styles.changeSubject}>{change.subject}</span>
+                            {change.body && <p className={styles.notesText}>{change.body}</p>}
+                        </li>
+                    ))}
+                </ul>
+            )}
+        </div>
+    )
+}
+
+// One update as a client sees it: what it was called and the day it went live, opening into what it
+// changed when there is anything to read. One with nothing more to say is a plain row, not a toggle that
+// opens onto nothing.
+function Update({ record }: { record: DeployRecord }) {
+    const notes = notesFor(record)
+    const headline = notes.headline || 'An update to your site'
+    if (!hasNotes(notes)) return <Row title={headline} aside={day(record.startedAt)} />
+    return (
+        <details className={styles.update}>
+            <summary>
+                <span className={styles.updateHeadline}>{headline}</span>
+                <span className={styles.updateDay}>{day(record.startedAt)}</span>
+            </summary>
+            <Notes notes={notes} />
+        </details>
+    )
+}
+
 // One row of the operator's history. The reason and the output hang under the row rather than inside it:
 // a build that failed is the one row anybody opens, and a summary that has to be clicked is better than
 // six lines of build output in a list of twenty deploys.
@@ -45,6 +86,7 @@ function Deploy({ record }: { record: DeployRecord }) {
     // ui/Row's meta column is 58px of tabular figures, which a duration fits and a date does not, so the
     // date goes in the wider aside beside it.
     const by = record.actor === BY_HOSTD ? `${record.trigger}, by hostd` : `${record.trigger}, by hand`
+    const notes = notesFor(record)
     return (
         <div className={styles.deploy}>
             <Row
@@ -56,6 +98,12 @@ function Deploy({ record }: { record: DeployRecord }) {
                 meta={formatDuration(record.durationMs)}
             />
             {record.reason && <p className={styles.note}>{record.reason}</p>}
+            {hasNotes(notes) && (
+                <details className={styles.outputBlock}>
+                    <summary>Show what changed</summary>
+                    <Notes notes={notes} />
+                </details>
+            )}
             {record.output && (
                 <details className={styles.outputBlock}>
                     <summary>Show what it printed</summary>
@@ -103,8 +151,9 @@ export async function DeployPanel({ id, environments, environment, enabled }: Pr
     const view = history.value
 
     // A client is shown what reached their site and stayed there, and in days rather than minutes. No
-    // commits, no branch, no failures: a build that fell over is our problem, and from outside the
-    // machine it never happened. The operator's list below it has all three outcomes.
+    // commit hashes, no branch, no failures: a build that fell over is our problem, and from outside the
+    // machine it never happened. What each update changed is theirs to read, in the words of the commit
+    // or pull request that made it. The operator's list below it has all three outcomes.
     if (!isAdmin) {
         const updates = updatesFor(view)
         return (
@@ -112,12 +161,9 @@ export async function DeployPanel({ id, environments, environment, enabled }: Pr
                 <h2>Recent updates</h2>
                 {updates.length === 0
                     ? <p className={styles.empty}>Nothing has been updated yet.</p>
-                    : updates.map(update => (
-                        <Row key={`${update.commit}-${update.startedAt}`} title={day(update.startedAt)} />
-                    ))}
+                    : updates.map(update => <Update key={`${update.commit}-${update.startedAt}`} record={update} />)}
                 <p className={styles.note}>
-                    Each of these is a change that went live on your site. Ask Koda if you want to know
-                    what was in one of them.
+                    Each of these is a change that went live on your site. Open one to read what it changed.
                 </p>
             </section>
         )

@@ -97,6 +97,20 @@ describe('waiting for a site to settle', () => {
         expect(screen.getByText('idle')).toBeInTheDocument()
     })
 
+    // compose stop leaves the containers exited, which reads as down. That is where a stop ends too, or
+    // the page sat out the whole wait after every stop with the controls held.
+    it('ends a stop on down as well, because a stopped container reads as exited', () => {
+        const { rerender } = render(<Probe state="up" />)
+
+        fireEvent.click(screen.getByRole('button', { name: 'ask stop' }))
+        wait(9000)
+        rerender(<Probe state="down" />)
+        wait(3000)
+
+        expect(screen.getByText('idle')).toBeInTheDocument()
+        expect(screen.queryByText('gave up')).not.toBeInTheDocument()
+    })
+
     // A state nobody could read is the middle of the operation, not the end of it: hostd refusing a
     // status read while the containers are swapping is exactly when this is waiting.
     it('keeps waiting while the containers cannot be read', () => {

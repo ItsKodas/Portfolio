@@ -165,16 +165,58 @@ describe('the deploy history, for the operator', () => {
 describe('the same tab, for the client whose site it is', () => {
     beforeEach(() => callerFromSession.mockResolvedValue(client))
 
-    it('shows the days their site was updated, and nothing else', async () => {
+    it('shows what each update was and the day it went live, and nothing that failed', async () => {
         listDeploys.mockResolvedValue(history({
             deploys: [record(), record({ commit: 'bbbbbbb', outcome: 'failed', subject: 'Broken build' })],
         }))
 
         render(await panel())
 
+        expect(screen.getByText('Fix the booking form')).toBeInTheDocument()
         expect(screen.getByText('21 September 2026')).toBeInTheDocument()
         expect(screen.queryByText('Broken build')).toBeNull()
         expect(screen.queryByText('5f0ac31')).toBeNull()
+    })
+
+    it('opens a merged pull request into its title, description and the commits it brought in', async () => {
+        listDeploys.mockResolvedValue(history({
+            deploys: [record({
+                subject: 'Merge pull request #12 from acme/booking',
+                details: {
+                    body: 'Make booking work on phones',
+                    changes: [{ subject: 'Check the date', body: 'It took any date, including ones in the past.' }],
+                },
+            })],
+        }))
+
+        const { container } = render(await panel())
+
+        // The pull request's title, not the line GitHub writes about which branch it came from
+        expect(screen.getByText('Make booking work on phones')).toBeInTheDocument()
+        expect(screen.queryByText(/Merge pull request/)).toBeNull()
+        expect(container.querySelector('details summary')).toHaveTextContent('Make booking work on phones')
+        expect(screen.getByText('Check the date')).toBeInTheDocument()
+        expect(screen.getByText('It took any date, including ones in the past.')).toBeInTheDocument()
+    })
+
+    it('opens an ordinary commit into the rest of its message', async () => {
+        listDeploys.mockResolvedValue(history({
+            deploys: [record({ details: { body: 'The form now refuses a date in the past.', changes: [] } })],
+        }))
+
+        const { container } = render(await panel())
+
+        expect(container.querySelector('details summary')).toHaveTextContent('Fix the booking form')
+        expect(screen.getByText('The form now refuses a date in the past.')).toBeInTheDocument()
+    })
+
+    it('does not make an update with nothing more to say into something to open', async () => {
+        listDeploys.mockResolvedValue(history({ deploys: [record({ details: null })] }))
+
+        const { container } = render(await panel())
+
+        expect(screen.getByText('Fix the booking form')).toBeInTheDocument()
+        expect(container.querySelector('details')).toBeNull()
     })
 
     it('gives them nothing to press: deploying is not theirs to do', async () => {

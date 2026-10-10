@@ -1,7 +1,7 @@
 import { describe, it } from 'node:test'
 import assert from 'node:assert/strict'
 
-import { branchesArgv, cloneArgv, checkoutArgv, fetchArgv, parseBranches, parseLog, repairArgv, runGit, tipArgv, MAX_BRANCHES } from './git.ts'
+import { branchesArgv, changesArgv, cloneArgv, checkoutArgv, fetchArgv, parseBranches, parseChanges, parseLog, repairArgv, runGit, tipArgv, MAX_BRANCHES } from './git.ts'
 import { GIT_COMMIT } from '../shared/registry.ts'
 import type { Runner, RunResult } from '../agent/compose.ts'
 
@@ -140,6 +140,28 @@ describe('parseLog', () => {
 
     it('returns nothing for empty output', () => {
         assert.deepEqual(parseLog(''), [])
+    })
+})
+
+describe('changes', () => {
+    it('asks for the commit and what it merged, never anything reachable from its first parent', () => {
+        assert.deepEqual(changesArgv('/var/www/b', 'a1b2c3d', 31), [
+            '-C', '/var/www/b', 'log', '--max-count=31', '--format=%H\x1f%P\x1f%s\x1f%b\x1e', '--end-of-options', 'a1b2c3d^1..a1b2c3d', '--',
+        ])
+    })
+
+    it('reads each commit back with its whole body, and tells a merge by its parents', () => {
+        const stdout = 'aaa\x1fp1 p2\x1fMerge pull request #7\x1fFix the form\n\x1e\nbbb\x1fp1\x1fCheck the date\x1fIt took any date.\n\nMore.\n\x1e\n'
+        assert.deepEqual(parseChanges(stdout), [
+            { commit: 'aaa', merge: true, subject: 'Merge pull request #7', body: 'Fix the form' },
+            { commit: 'bbb', merge: false, subject: 'Check the date', body: 'It took any date.\n\nMore.' },
+        ])
+    })
+
+    it('runs through runGit and answers the parsed list', async () => {
+        const { run } = recorder([{ ...ok, stdout: 'aaa\x1fp1\x1fOne\x1f\x1e' }])
+        const reply = await runGit({ verb: 'changes', dir: '/var/www/b', commit: 'aaa1234', limit: 5 }, run, [])
+        assert.deepEqual(reply, { ok: true, changes: [{ commit: 'aaa', merge: false, subject: 'One', body: '' }] })
     })
 })
 

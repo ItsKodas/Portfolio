@@ -4,7 +4,7 @@
 // Deliberately no 'server-only' import: the admin forms draw the same list the server checks.
 
 // prisma/schema.prisma's SitePermission enum, in its order. A test keeps the two in step.
-export const PERMISSIONS = ['LOGS', 'LIFECYCLE', 'ENVIRONMENTS', 'DEPLOYS'] as const
+export const PERMISSIONS = ['LOGS', 'LIFECYCLE', 'ENVIRONMENTS', 'DEPLOYS', 'BACKUPS'] as const
 export type Permission = typeof PERMISSIONS[number]
 
 export const PERMISSION_LABELS: Record<Permission, { label: string, note: string }> = {
@@ -12,10 +12,11 @@ export const PERMISSION_LABELS: Record<Permission, { label: string, note: string
     LIFECYCLE: { label: 'Start and stop', note: 'Start, stop and restart the site.' },
     ENVIRONMENTS: { label: 'Environments', note: 'See each environment and its domains, without changing them.' },
     DEPLOYS: { label: 'Deploys', note: 'See what was deployed and watch a deploy run, without starting one.' },
+    BACKUPS: { label: 'Backups', note: 'Make, download, delete and schedule copies of the site\'s data.' },
 }
 
-// What a new grant starts with, and what every link from before site access was carried across with: the
-// whole of what a client could do then.
+// What a new grant starts with. Links from before site access were carried across with the four that existed
+// then; BACKUPS came after, and a grant made before it does not gain it by itself (see its migration).
 export const ALL_PERMISSIONS: readonly Permission[] = PERMISSIONS
 
 export function isPermission(value: unknown): value is Permission {

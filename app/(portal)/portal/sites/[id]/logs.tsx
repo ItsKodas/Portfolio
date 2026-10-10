@@ -30,13 +30,21 @@ type Feed = {
 // timestamp for the line, which is not the same as a line with no time.
 type HostdLine = { stream: 'stdout' | 'stderr', ts: string | null, text: string, truncated: boolean }
 
-type Status = 'connecting' | 'live' | 'reconnecting' | 'refused'
+// ended is a follow stream that closed again without a single new line, which is what hostd does for a
+// container that is not running: it sends the tail and stops, because there is nothing to follow.
+type Status = 'connecting' | 'live' | 'reconnecting' | 'ended' | 'refused'
 
 // A browser tab holding an unbounded array of log lines is a browser tab that eventually stops responding.
 // hostd's own tail default is 200, so this is a generous ceiling on top of a live stream.
 const MAX_LINES = 2000
 const TAIL = 200
 const RETRY_MS = 3000
+// How far apart the tries get for a container that keeps answering with nothing new. A stopped site is
+// asked again now and then rather than every three seconds for as long as the tab is open, and pressing
+// Start brings the next try forward rather than waiting this out.
+const QUIET_MAX_MS = 30000
+// A follow stream that ends this soon after opening was never following anything
+const ENDED_WITHIN_MS = 10000
 
 // How far back an arriving line may be slotted in. Each stream sends its tail in one burst when it opens,
 // so two containers' first two hundred lines arrive as one container's block and then the other's. Placed
@@ -94,7 +102,12 @@ export function place(lines: Feed[], line: Feed): Feed[] {
 export function summarise(states: Status[]): { text: string, bad: boolean } {
     if (!states.length) return { text: 'Choose a container to follow.', bad: true }
     const live = states.filter(state => state === 'live').length
+    const ended = states.filter(state => state === 'ended').length
     if (live === states.length) return { text: 'Streaming. Newest at the bottom.', bad: false }
+    // A container that is not running has nothing to stream, which is a fact about the site rather than
+    // a fault in the log. The page above already says whether that is a problem.
+    if (ended === states.length) return { text: 'Not running. These are its last lines.', bad: false }
+    if (live + ended === states.length) return { text: `Streaming ${live} of ${states.length}. The rest are not running.`, bad: false }
     if (live) return { text: `Streaming ${live} of ${states.length}.`, bad: true }
     if (states.some(state => state === 'refused')) return { text: 'Not streaming.', bad: true }
     if (states.some(state => state === 'reconnecting')) return { text: 'The stream closed. Picking it up again in a moment.', bad: true }
@@ -120,8 +133,12 @@ export function SiteLogs({ id, services }: { id: string, services: string[] }) {
     // put it in that effect's dependencies, and the streams would be torn down and the pane emptied the
     // moment somebody pressed Restart, which is the one moment the log is worth reading.
     const settlingRef = useRef(false)
+    // A stream waiting out a long gap before asking again, by container. Something starting is the moment
+    // to stop waiting: the container it was waiting on is on its way back.
+    const wakers = useRef(new Set<() => void>())
     useEffect(() => {
         settlingRef.current = settling !== null
+        if (settling) for (const wake of wakers.current) wake()
     }, [settling])
 
     // The containers can change underneath this: starting a stopped site gives it the containers it had
@@ -152,12 +169,63 @@ export function SiteLogs({ id, services }: { id: string, services: string[] }) {
         let stopped = false
         const sources: EventSource[] = []
         const timers: Array<ReturnType<typeof setTimeout>> = []
+        const cleanups: Array<() => void> = []
 
         function follow(service: string) {
             // hostd closes a follow stream after an hour and expects the reconnect to carry since. Per
             // stream, because the streams do not close together.
             let since: string | null = null
             let opened = false
+
+            // What has already been drawn at the newest instant this stream has reached. hostd's since
+            // is inclusive, and Docker's nanoseconds are cut to milliseconds on the way there, so every
+            // reconnect hands back at least the last line again. A stopped container ends its follow
+            // stream the moment it opens, and reconnecting every few seconds repeated its last lines
+            // down the pane for as long as the tab stayed open.
+            let edge: number | null = null
+            let atEdge = new Map<string, number>()
+            // The same, for the connection that is open now: whatever of it has not been seen again yet
+            let replay = new Map<string, number>()
+            let replaying = false
+            // Whether this connection brought anything new, and how many in a row have not
+            let fresh = false
+            let began = 0
+            let quiet = 0
+            let timer: ReturnType<typeof setTimeout> | null = null
+
+            function wake() {
+                if (stopped || timer === null) return
+                clearTimeout(timer)
+                timer = null
+                quiet = 0
+                open()
+            }
+            wakers.current.add(wake)
+            cleanups.push(() => wakers.current.delete(wake))
+
+            // True for a line this stream has already drawn, which only a reconnect sends
+            function seen(at: number | null, key: string): boolean {
+                if (!replaying || at === null || edge === null) return false
+                if (at < edge) return true
+                const left = at === edge ? replay.get(key) ?? 0 : 0
+                if (left > 0) {
+                    replay.set(key, left - 1)
+                    return true
+                }
+                // The first line past what was already there, and everything after it is new
+                replaying = false
+                return false
+            }
+
+            function remember(at: number | null, key: string) {
+                if (at === null) return
+                if (edge === null || at > edge) {
+                    edge = at
+                    atEdge = new Map([[key, 1]])
+                } else if (at === edge) {
+                    atEdge.set(key, (atEdge.get(key) ?? 0) + 1)
+                }
+            }
 
             function say(status: Status) {
                 if (!stopped) setStates(previous => ({ ...previous, [service]: status }))
@@ -181,14 +249,24 @@ export function SiteLogs({ id, services }: { id: string, services: string[] }) {
                 }
             }
 
-            function later() {
+            function later(status: Status = 'reconnecting') {
                 if (stopped) return
-                say('reconnecting')
-                timers.push(setTimeout(open, RETRY_MS))
+                say(status)
+                // Mid-operation the container is expected back any moment, so it is asked for promptly
+                const wait = settlingRef.current ? RETRY_MS : Math.min(RETRY_MS * 2 ** quiet, QUIET_MAX_MS)
+                timer = setTimeout(() => {
+                    timer = null
+                    open()
+                }, wait)
+                timers.push(timer)
             }
 
             function open() {
                 if (stopped) return
+                fresh = false
+                began = Date.now()
+                replaying = edge !== null
+                replay = new Map(atEdge)
                 const params = new URLSearchParams({ service, follow: '1', tail: String(TAIL) })
                 // Only what arrived after the last line we already have, so a reconnect does not repeat
                 // the screen. The relay passes it through and hostd takes Unix seconds or RFC 3339.
@@ -211,6 +289,11 @@ export function SiteLogs({ id, services }: { id: string, services: string[] }) {
                 stream.addEventListener('line', event => {
                     const raw: unknown = JSON.parse((event as MessageEvent<string>).data)
                     if (!isHostdLine(raw)) return
+                    const at = instant(raw.ts)
+                    const key = `${raw.stream}\u0000${raw.text}`
+                    if (seen(at, key)) return
+                    remember(at, key)
+                    fresh = true
                     if (raw.ts) since = raw.ts
                     if (stopped) return
                     setLines(previous => {
@@ -220,7 +303,7 @@ export function SiteLogs({ id, services }: { id: string, services: string[] }) {
                             stream: raw.stream === 'stderr' ? 'err' : 'out',
                             // Only worth a column when there is more than one of them
                             source: wanted.length > 1 ? service : undefined,
-                            at: instant(raw.ts),
+                            at,
                         })
                         return next.length > MAX_LINES ? next.slice(next.length - MAX_LINES) : next
                     })
@@ -228,9 +311,14 @@ export function SiteLogs({ id, services }: { id: string, services: string[] }) {
 
                 // hostd's own end event: the stream finished, which for a follow stream means the hour is
                 // up. Reopening from the last timestamp is what it expects.
+                // One that ends straight away with nothing new is a container that is not running, which
+                // gets asked again less and less often rather than every few seconds. A quiet hour on a
+                // running one ends with nothing new as well, and is only the hour being up.
                 stream.addEventListener('end', () => {
                     stream.close()
-                    later()
+                    const idle = !fresh && Date.now() - began < ENDED_WITHIN_MS
+                    quiet = idle ? quiet + 1 : 0
+                    later(idle ? 'ended' : 'reconnecting')
                 })
 
                 // Two different things arrive here. hostd sends a named error event, which is a message
@@ -277,6 +365,7 @@ export function SiteLogs({ id, services }: { id: string, services: string[] }) {
             stopped = true
             for (const timer of timers) clearTimeout(timer)
             for (const source of sources) source.close()
+            for (const cleanup of cleanups) cleanup()
         }
     }, [id, key, attempt])
 

@@ -57,6 +57,9 @@ vi.mock('@/server/hostd/credentials', () => ({ listCredentials: (...args: unknow
 const listDeletedEnvironments = vi.fn()
 vi.mock('@/server/hostd/environments', () => ({ listDeletedEnvironments: (...args: unknown[]) => listDeletedEnvironments(...args) }))
 
+// An async server component like the deploy panel; backupPanel.test.tsx renders it on its own
+vi.mock('./backupPanel', () => ({ BackupPanel: ({ id }: { id: string }) => <p>{`backups of ${id}`}</p> }))
+
 const { default: SitePage } = await import('./page')
 
 const service = (state: string) => ({
@@ -161,7 +164,7 @@ describe('the site page', () => {
         render(await page({ tab: 'backups' }))
 
         expect(screen.getByRole('tab', { name: 'Backups' })).toHaveAttribute('aria-selected', 'true')
-        expect(screen.getByText(/ask for a copy/)).toBeInTheDocument()
+        expect(screen.getByText(/Backups are not switched on for this site/)).toBeInTheDocument()
     })
 
     it('says a restart count it could not read is not available, rather than zero', async () => {
@@ -333,6 +336,23 @@ describe('the deploys tab', () => {
     })
 })
 
+describe('the backups tab', () => {
+    it('opens the backups panel once the project has the capability, for a client given it as well', async () => {
+        callerFromSession.mockResolvedValue(client)
+        accessOf.mockResolvedValue(['BACKUPS'])
+        listProjects.mockResolvedValue({
+            ok: true,
+            value: [{ id: 'asot', name: 'ASOT', valid: true, capabilities: ['lifecycle', 'logs', 'backups'] }],
+        })
+
+        render(await page({ tab: 'backups' }))
+
+        expect(screen.getByRole('tab', { name: 'Backups' })).not.toHaveAttribute('aria-disabled')
+        expect(screen.getByText('backups of asot')).toBeInTheDocument()
+        expect(screen.queryByText(/not switched on/)).not.toBeInTheDocument()
+    })
+})
+
 describe('the environments tab', () => {
     const withEnvironments = (capabilities: string[] = ['lifecycle', 'domains', 'env']) => listProjects.mockResolvedValue({ ok: true, value: [{
         id: 'asot', name: 'ASOT', valid: true, capabilities,
@@ -350,6 +370,7 @@ describe('the environments tab', () => {
 
     it('gives a client with every permission the same but Access and Settings', async () => {
         callerFromSession.mockResolvedValue(client)
+        accessOf.mockResolvedValue(['LOGS', 'LIFECYCLE', 'ENVIRONMENTS', 'DEPLOYS', 'BACKUPS'])
         render(await page())
         expect(tabNames()).toEqual(['Overview', 'Logs', 'Environments', 'Deploys', 'Backups'])
     })
@@ -486,11 +507,11 @@ describe('the environments tab', () => {
 describe('a client\'s permissions', () => {
     const tabNames = () => screen.getAllByRole('tab').map(tab => tab.textContent)
 
-    it('shows a client with nothing but access the Overview and Backups, with no log or controls', async () => {
+    it('shows a client with nothing but access the Overview, with no log or controls', async () => {
         callerFromSession.mockResolvedValue(client)
         accessOf.mockResolvedValue([])
         render(await page())
-        expect(tabNames()).toEqual(['Overview', 'Backups'])
+        expect(tabNames()).toEqual(['Overview'])
         expect(screen.queryByRole('button', { name: /restart/i })).toBeNull()
         expect(screen.queryByRole('button', { name: 'asot-web' })).toBeNull()
         // What the site is made of is still there
@@ -501,7 +522,24 @@ describe('a client\'s permissions', () => {
         callerFromSession.mockResolvedValue(client)
         accessOf.mockResolvedValue(['LOGS', 'DEPLOYS'])
         render(await page())
-        expect(tabNames()).toEqual(['Overview', 'Logs', 'Deploys', 'Backups'])
+        expect(tabNames()).toEqual(['Overview', 'Logs', 'Deploys'])
+    })
+
+    // A copy is the site's whole database, so the tab is a permission of its own and never comes with access
+    it('shows Backups only to a client given it, and lands one without it on Overview', async () => {
+        callerFromSession.mockResolvedValue(client)
+        listProjects.mockResolvedValue({ ok: true, value: [{ id: 'asot', name: 'ASOT', valid: true, capabilities: ['backups'] }] })
+
+        accessOf.mockResolvedValue(['LOGS'])
+        const { unmount } = render(await page({ tab: 'backups' }))
+        expect(tabNames()).not.toContain('Backups')
+        expect(screen.getByRole('tab', { name: 'Overview' })).toHaveAttribute('aria-selected', 'true')
+        expect(screen.queryByText('backups of asot')).toBeNull()
+        unmount()
+
+        accessOf.mockResolvedValue(['BACKUPS'])
+        render(await page({ tab: 'backups' }))
+        expect(screen.getByText('backups of asot')).toBeInTheDocument()
     })
 
     it('lands a client asking for a tab they were not given on Overview', async () => {

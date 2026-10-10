@@ -12,7 +12,9 @@ import {
 } from '../shared/protocol.ts'
 import { environmentOf, ENVIRONMENT_FLAGS, type EnvironmentFlag, type EnvironmentName, type ProjectEntry, type Registry } from '../shared/registry.ts'
 import { describeError } from '../shared/formats.ts'
-import { deployKey, lastHealthyCommit, MAX_WATCH_BYTES, type DeployEvent } from '../shared/deploys.ts'
+import {
+    deployKey, detailsOf, lastHealthyCommit, MAX_DEPLOY_CHANGES, MAX_WATCH_BYTES, type DeployDetails, type DeployEvent, type DeployRecord,
+} from '../shared/deploys.ts'
 import { diskProblem, manualProblem } from '../shared/backups.ts'
 import type { RegistryWriter } from '../shared/registry-write.ts'
 import type { DiskUsage, SystemUsage } from '../shared/system.ts'
@@ -151,8 +153,18 @@ export type Outcome =
 
 const reply = (value: AgentReply): Outcome => ({ kind: 'reply', reply: value })
 
+// How many commits' details the agent remembers. A commit never changes, so a remembered answer is never
+// stale; this only bounds the memory, at a few pages of history for every site on the machine.
+const MAX_REMEMBERED_DETAILS = 2000
+// How long a history waits for one commit's details before answering without them (see withDetails)
+const DETAILS_WAIT_MS = 3000
+
 export class Agent {
     private readonly lifecycleBusy = new Set<string>()
+    // What each deployed commit changed, keyed <project>:<commit>. Read from the repository the first
+    // time a history shows it and kept, so a history is one git call per new commit, not per page load.
+    // Only a successful read is kept: a fetcher that was briefly unavailable is asked again next time.
+    private readonly details = new Map<string, DeployDetails | null>()
     private readonly follows = new Map<string, number>()
     // Keyed <project>:<environment>, exactly like lifecycleBusy, so two writes to the same env file
     // never race through this process even though writeEnvFile's own temp-file dance is otherwise safe.
@@ -508,6 +520,33 @@ export class Agent {
         return { ok: true, suggested: suggested.port, problem: verdict.problem }
     }
 
+    // Best effort, like a record's subject: a commit that cannot be read (a root commit, one the
+    // repository no longer has, a fetcher that is down) is shown without details, never refused over.
+    private async withDetails(
+        id: string, dir: string, record: DeployRecord, deps: Pick<DeployDeps, 'fetcher'>,
+    ): Promise<DeployRecord & { details: DeployDetails | null }> {
+        if (!record.commit) return { ...record, details: null }
+        const key = `${id}:${record.commit}`
+        if (this.details.has(key)) return { ...record, details: this.details.get(key) ?? null }
+        try {
+            // One more than the changes kept, for the commit itself
+            const asked = deps.fetcher.call({ verb: 'changes', dir, commit: record.commit, limit: MAX_DEPLOY_CHANGES + 1 })
+            // The fetcher runs one git command per repository at a time, so a deploy's fetch can hold
+            // this up for as long as the fetch takes. The history answers without details rather than
+            // wait: the next page load asks again, and by then the repository is free.
+            let timer: ReturnType<typeof setTimeout> | undefined
+            const late = new Promise<null>(resolve => { timer = setTimeout(() => resolve(null), DETAILS_WAIT_MS) })
+            const reply = await Promise.race([asked, late]).finally(() => clearTimeout(timer))
+            if (!reply?.ok) return { ...record, details: null }
+            const details = detailsOf(record.commit, reply.changes ?? [])
+            if (this.details.size >= MAX_REMEMBERED_DETAILS) this.details.clear()
+            this.details.set(key, details)
+            return { ...record, details }
+        } catch {
+            return { ...record, details: null }
+        }
+    }
+
     private async deploy(project: ProjectEntry, args: DeployArgs): Promise<AgentReply> {
         if (!this.deps.deploys) return refuse('unavailable', 'deploys are not configured')
         const { runner, store, deps } = this.deps.deploys
@@ -517,9 +556,13 @@ export class Agent {
 
         if (args.action === 'history') {
             const state = store.get(key)
+            const trees = deployTrees(environment.dir)
+            // Where the repository is, the same question commits asks below
+            const dir = (await deps.fs.exists(repositoryIn(trees))) ? trees.repo : environment.dir
+            const detailed = await Promise.all(state.deploys.map(record => this.withDetails(project.id, dir, record, deps)))
             return {
                 ok: true, environment: environment.name, branch: environment.branch, deployed: environment.deployed,
-                paused: state.paused, consecutiveFailures: state.consecutiveFailures, deploys: state.deploys,
+                paused: state.paused, consecutiveFailures: state.consecutiveFailures, deploys: detailed,
             }
         }
 

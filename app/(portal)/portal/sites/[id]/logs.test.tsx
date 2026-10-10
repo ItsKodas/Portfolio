@@ -259,3 +259,87 @@ describe('the site log when nothing is happening to the site', () => {
         expect(screen.getByRole('button', { name: 'Try again' })).toBeInTheDocument()
     })
 })
+
+// A container that has exited still has a log, and hostd answers a follow for it with the tail and an end
+// straight after, because there is nothing to follow. Every reconnect asked again from the last line's
+// time, hostd's since is inclusive, and the last lines were drawn again each time: a stopped site's pane
+// filled with the same few lines over and over.
+describe('the site log of a container that is not running', () => {
+    const LAST = [
+        ['Mappies running on http://localhost:3000', '2026-10-09T18:40:16.123456789Z'],
+        ['imagery: auto', '2026-10-09T18:40:16.123456789Z'],
+    ] as const
+
+    function exitedTail(source: FakeSource) {
+        source.open()
+        for (const [text, ts] of LAST) source.line(text, ts)
+        source.send('end', {})
+    }
+
+    function count(text: string): number {
+        return within(screen.getByRole('region')).queryAllByText(text).length
+    }
+
+    beforeEach(() => {
+        vi.useFakeTimers()
+    })
+
+    afterEach(() => {
+        vi.useRealTimers()
+    })
+
+    it('does not draw the same last lines again on every reconnect', () => {
+        render(<SiteLogs id="asot" services={['web']} />)
+        exitedTail(sourceFor('web'))
+
+        for (let round = 0; round < 4; round++) {
+            act(() => { vi.advanceTimersByTime(QUIET_MAX) })
+            // What hostd sends back for since equal to the last line: that line, again
+            exitedTail(sourceFor('web'))
+        }
+
+        expect(count(LAST[0][0])).toBe(1)
+        expect(count(LAST[1][0])).toBe(1)
+    })
+
+    it('still draws a line that is new, even at the same instant as the last one', () => {
+        render(<SiteLogs id="asot" services={['web']} />)
+        exitedTail(sourceFor('web'))
+
+        act(() => { vi.advanceTimersByTime(3000) })
+        const again = sourceFor('web')
+        again.open()
+        for (const [text, ts] of LAST) again.line(text, ts)
+        again.line('port: 3000', LAST[1][1])
+        again.line('later on', '2026-10-09T18:41:00.000Z')
+
+        expect(count(LAST[0][0])).toBe(1)
+        expect(count('port: 3000')).toBe(1)
+        expect(count('later on')).toBe(1)
+    })
+
+    it('says the container is not running rather than that the stream keeps closing', () => {
+        render(<SiteLogs id="asot" services={['web']} />)
+        exitedTail(sourceFor('web'))
+        act(() => { vi.advanceTimersByTime(3000) })
+        exitedTail(sourceFor('web'))
+
+        expect(screen.getByText(/not running/i)).toBeInTheDocument()
+        expect(screen.queryByText(/picking it up again/i)).toBeNull()
+    })
+
+    it('asks less and less often while nothing new arrives', () => {
+        render(<SiteLogs id="asot" services={['web']} />)
+        exitedTail(sourceFor('web'))
+        act(() => { vi.advanceTimersByTime(3000) })
+        exitedTail(sourceFor('web'))
+        const before = FakeSource.made.length
+
+        // Three seconds was the old interval, and is no longer enough to be asked again
+        act(() => { vi.advanceTimersByTime(3000) })
+
+        expect(FakeSource.made.length).toBe(before)
+    })
+})
+
+const QUIET_MAX = 30000

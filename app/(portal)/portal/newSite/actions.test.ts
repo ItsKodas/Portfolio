@@ -68,7 +68,7 @@ describe('createSiteAction', () => {
         await createSiteAction({ ...FORM, client: 'cl_2', credential: 'acme' })
         expect(createProject.mock.calls[0][2]).toMatchObject({ credential: 'acme' })
         expect(createProject.mock.calls[0][2]).not.toHaveProperty('client')
-        expect(clients.grantAccess).toHaveBeenCalledWith('cl_2', { projectId: 'bakery', name: 'Bakery' }, ['LOGS', 'LIFECYCLE', 'ENVIRONMENTS', 'DEPLOYS'])
+        expect(clients.grantAccess).toHaveBeenCalledWith('cl_2', { projectId: 'bakery', name: 'Bakery' }, ['LOGS', 'LIFECYCLE', 'ENVIRONMENTS', 'DEPLOYS', 'BACKUPS'])
     })
 
     it('refuses a client that no longer exists without asking hostd', async () => {

@@ -17,10 +17,19 @@ describe('permissions', () => {
         expect(Object.keys(PERMISSION_LABELS).sort()).toEqual([...PERMISSIONS].sort())
     })
 
-    it('starts a grant with all of them, which is what every link from before was carried across with', () => {
+    it('starts a new grant with all of them', () => {
         expect(ALL_PERMISSIONS).toEqual(PERMISSIONS)
-        const migration = readFileSync(new URL('../../prisma/migrations/20261009120000_site_access/migration.sql', import.meta.url), 'utf8')
-        expect(migration).toContain(`ARRAY[${PERMISSIONS.map(p => `'${p}'`).join(', ')}]::"SitePermission"[]`)
+    })
+
+    // Every link from before site access was carried across with what a client could do then, which was the
+    // first four. BACKUPS came later and is added to the enum alone: a grant made before it never gains a
+    // way to download a site's database without the operator ticking it.
+    it('carries old links across with the four that existed, and gives BACKUPS to nobody by itself', () => {
+        const read = (name: string) => readFileSync(new URL(`../../prisma/migrations/${name}/migration.sql`, import.meta.url), 'utf8')
+        expect(read('20261009120000_site_access')).toContain(`ARRAY['LOGS', 'LIFECYCLE', 'ENVIRONMENTS', 'DEPLOYS']::"SitePermission"[]`)
+        const backups = read('20261010040000_backups_permission')
+        expect(backups).toContain(`ALTER TYPE "SitePermission" ADD VALUE 'BACKUPS'`)
+        expect(backups).not.toMatch(/UPDATE|INSERT/i)
     })
 })
 

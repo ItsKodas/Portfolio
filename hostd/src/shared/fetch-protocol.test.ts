@@ -14,6 +14,15 @@ describe('parseFetchRequest', () => {
         assert.deepEqual(result, { ok: true, request: { verb: 'clone', repo: 'git@github.com:a/b.git', dir: '/var/www/b', branch: 'main', credential: null } })
     })
 
+    it('reads a changes request, and refuses a commit that is not a sha', () => {
+        assert.deepEqual(parseFetchRequest(JSON.stringify({ verb: 'changes', dir: '/var/www/b.git', commit: 'a1b2c3d', limit: 31 })),
+            { ok: true, request: { verb: 'changes', dir: '/var/www/b.git', commit: 'a1b2c3d', limit: 31 } })
+        assert.match(refusalOf({ verb: 'changes', dir: '/var/www/b', commit: '--all', limit: 5 })!, /commit/)
+        assert.match(refusalOf({ verb: 'changes', dir: '/var/www/b', commit: 'HEAD~1..HEAD', limit: 5 })!, /commit/)
+        assert.match(refusalOf({ verb: 'changes', dir: '/var/www/b', commit: 'a1b2c3d', limit: 0 })!, /limit/)
+        assert.match(refusalOf({ verb: 'changes', dir: '/var/www/b', commit: 'a1b2c3d', limit: 5, branch: 'main' })!, /only/)
+    })
+
     it('refuses an unknown verb and unknown fields', () => {
         assert.equal(refusalOf({ verb: 'push', dir: '/var/www/b' }), 'unknown verb')
         assert.equal(refusalOf({ verb: 'fetch', dir: '/var/www/b', remote: 'evil' }), 'fetch takes only dir, branch and credential')

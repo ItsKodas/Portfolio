@@ -888,8 +888,52 @@ describe('the deploy verb', () => {
         const reply = replyOf(await agent.handle(deploy({ action: 'history', environment: 'live' })))
         assert.deepEqual(reply, {
             ok: true, environment: 'live', branch: 'main', deployed: 'abc1234',
-            paused: true, consecutiveFailures: 2, deploys: [deployRecord('abc1234', 'ok')],
+            paused: true, consecutiveFailures: 2, deploys: [{ ...deployRecord('abc1234', 'ok'), details: null }],
         })
+    })
+
+    it('gives each deploy what its commit changed, read from the repository', async () => {
+        const merge = 'abc1234' + '0'.repeat(33)
+        const context = fakeDeploys({
+            state: { deploys: [deployRecord(merge, 'ok')], consecutiveFailures: 0, paused: false },
+            logReply: {
+                ok: true,
+                changes: [
+                    { commit: merge, merge: true, subject: 'Merge pull request #7 from acme/booking', body: 'Fix the booking form' },
+                    { commit: 'def5678' + '0'.repeat(33), merge: false, subject: 'Check the date', body: 'It took any date.\n\nCo-Authored-By: Someone <a@b.c>' },
+                ],
+            },
+        })
+        const { agent } = setup({ registry: () => deployRegistry, deploys: context.deploys })
+        const reply = replyOf(await agent.handle(deploy({ action: 'history', environment: 'live' })))
+        assert.deepEqual(reply?.ok && 'deploys' in reply && reply.deploys[0]!.details, {
+            body: 'Fix the booking form',
+            changes: [{ subject: 'Check the date', body: 'It took any date.' }],
+        })
+        assert.deepEqual(context.fetched[0], { verb: 'changes', dir: '/var/www/acme.git', commit: merge, limit: 31 })
+    })
+
+    it('reads a commit once, however often the history is asked for', async () => {
+        const context = fakeDeploys({
+            state: { deploys: [deployRecord('abc1234', 'ok')], consecutiveFailures: 0, paused: false },
+            logReply: { ok: true, changes: [{ commit: 'abc1234', merge: false, subject: 'One', body: '' }] },
+        })
+        const { agent } = setup({ registry: () => deployRegistry, deploys: context.deploys })
+        await agent.handle(deploy({ action: 'history', environment: 'live' }))
+        await agent.handle(deploy({ action: 'history', environment: 'live' }))
+        assert.equal(context.fetched.length, 1)
+    })
+
+    it('still answers the history when a commit cannot be read, and asks again next time', async () => {
+        const context = fakeDeploys({
+            state: { deploys: [deployRecord('abc1234', 'ok')], consecutiveFailures: 0, paused: false },
+            logReply: { ok: false, code: 'failed', message: 'bad revision' },
+        })
+        const { agent } = setup({ registry: () => deployRegistry, deploys: context.deploys })
+        const reply = replyOf(await agent.handle(deploy({ action: 'history', environment: 'live' })))
+        assert.equal(reply?.ok && 'deploys' in reply && reply.deploys[0]!.details, null)
+        await agent.handle(deploy({ action: 'history', environment: 'live' }))
+        assert.equal(context.fetched.length, 2)
     })
 
     it('reads the commit list from the repository once a deploy has moved it out of the tree', async () => {
