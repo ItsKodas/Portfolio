@@ -33,6 +33,7 @@ export async function hostdRequest<T>(
                 'X-Hostd-Actor': caller.actor,
                 'X-Hostd-User': caller.user,
                 ...(caller.sites !== undefined ? { 'X-Hostd-Sites': caller.sites.join(',') } : {}),
+                ...(caller.envSites !== undefined ? { 'X-Hostd-Env-Sites': caller.envSites.join(',') } : {}),
             },
             cache: 'no-store',
             signal: AbortSignal.timeout(timeoutMs),

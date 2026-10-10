@@ -21,6 +21,8 @@ describe('callerForClient', () => {
     // hostd refuses the whole header over one bad id, which would lock the client out of every site
     it('leaves out a site id hostd would never accept', () => {
         expect(callerForClient('cl_8F2K1ABC', ['acme-bakery', 'Not An Id', 'a,b']).sites).toEqual(['acme-bakery'])
+        // Env sites are only ever a part of the sites, however they arrive
+        expect(callerForClient('cl_8F2K1ABC', ['acme-bakery', 'other'], 'cl_8F2K1ABC', ['other', 'not-theirs']).envSites).toEqual(['other'])
     })
 
     it('refuses anything that is not one of our client ids', () => {

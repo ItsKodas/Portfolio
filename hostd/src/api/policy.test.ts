@@ -267,6 +267,22 @@ describe('the portal\'s list of sites', () => {
         assert.equal(authorize(registry, shared, 'acme', 'env').ok, false)
     })
 
+    // Env files are the one admin-only verb the portal can hand a client, one project at a time
+    it('lets a client at the env files of a project the portal named in their env sites', () => {
+        const editor: Actor = { ...shared, envSites: new Set(['acme']) }
+        assert.equal(authorize(registry, editor, 'acme', 'env').ok, true)
+        // Only that project, and only env: the rest of the operator's verbs stay theirs
+        assert.deepEqual(authorize(registry, editor, 'other', 'env'), { ok: false, status: 404, code: 'not-found', message: 'no project other' })
+        for (const verb of ['provision', 'remove', 'deploy', 'domains', 'configure'] as const) {
+            assert.equal(authorize(registry, editor, 'acme', verb).ok, false, verb)
+        }
+    })
+
+    it('refuses env on a project named in env sites but not among the client\'s sites', () => {
+        const stray: Actor = { kind: 'client', client: 'cl_2', sites: new Set(['other']), envSites: new Set(['acme']) }
+        assert.deepEqual(authorize(registry, stray, 'acme', 'env'), { ok: false, status: 404, code: 'not-found', message: 'no project acme' })
+    })
+
     it('lists exactly the sites on the list', () => {
         assert.deepEqual(visibleProjects(registry, shared).map(p => p.id), ['acme', 'other'])
         assert.deepEqual(visibleProjects(registry, revoked).map(p => p.id), ['quiet'])

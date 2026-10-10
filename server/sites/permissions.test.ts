@@ -1,7 +1,7 @@
 import { readFileSync } from 'node:fs'
 import { describe, expect, it } from 'vitest'
 
-import { ALL_PERMISSIONS, PERMISSIONS, PERMISSION_LABELS, parsePermissions } from './permissions'
+import { ALL_PERMISSIONS, DEFAULT_PERMISSIONS, PERMISSIONS, PERMISSION_LABELS, parsePermissions } from './permissions'
 
 describe('permissions', () => {
     // The schema's enum is what Postgres holds and this list is what the forms and checks use: they must be
@@ -17,8 +17,9 @@ describe('permissions', () => {
         expect(Object.keys(PERMISSION_LABELS).sort()).toEqual([...PERMISSIONS].sort())
     })
 
-    it('starts a new grant with all of them', () => {
+    it('gives the operator all of them, and starts a new grant with all but the env files', () => {
         expect(ALL_PERMISSIONS).toEqual(PERMISSIONS)
+        expect(DEFAULT_PERMISSIONS).toEqual(['LOGS', 'LIFECYCLE', 'ENVIRONMENTS', 'DEPLOYS', 'BACKUPS'])
     })
 
     // Every link from before site access was carried across with what a client could do then, which was the
@@ -30,6 +31,14 @@ describe('permissions', () => {
         const backups = read('20261010040000_backups_permission')
         expect(backups).toContain(`ALTER TYPE "SitePermission" ADD VALUE 'BACKUPS'`)
         expect(backups).not.toMatch(/UPDATE|INSERT/i)
+    })
+
+    // Viewing environments stays viewing: no grant that has ENVIRONMENTS gains the env files with it
+    it('gives ENV_FILES to nobody by itself', () => {
+        const read = (name: string) => readFileSync(new URL(`../../prisma/migrations/${name}/migration.sql`, import.meta.url), 'utf8')
+        const envFiles = read('20261010080000_env_files_permission')
+        expect(envFiles).toContain(`ALTER TYPE "SitePermission" ADD VALUE 'ENV_FILES'`)
+        expect(envFiles).not.toMatch(/UPDATE|INSERT/i)
     })
 })
 
@@ -43,5 +52,10 @@ describe('parsePermissions', () => {
         for (const input of [null, 'LOGS', ['LOGS', 'ADMIN'], [1], { 0: 'LOGS' }]) {
             expect(parsePermissions(input)).toBeNull()
         }
+    })
+
+    it('refuses the env files without the Environments tab they live in', () => {
+        expect(parsePermissions(['ENV_FILES'])).toBeNull()
+        expect(parsePermissions(['ENV_FILES', 'ENVIRONMENTS'])).toEqual(['ENVIRONMENTS', 'ENV_FILES'])
     })
 })

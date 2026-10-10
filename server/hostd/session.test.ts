@@ -9,7 +9,7 @@ function sources(overrides: Partial<SessionSources> = {}): SessionSources {
         adminSession: async () => null,
         adminEmail: ADMIN_EMAIL,
         clientSession: async () => null,
-        clientSites: async () => [],
+        clientSites: async () => ({ sites: [], envSites: [] }),
         impersonating: async () => null,
         ...overrides,
     }
@@ -26,12 +26,21 @@ describe('callerFromSession', () => {
     it('turns a client session into that client, with their sites, and reports the id the relay checks access with', async () => {
         const who = await callerFromSession(sources({
             clientSession: async () => ({ client: { id: 'cl_8F2K1ABC' } }),
-            clientSites: async clientId => (clientId === 'cl_8F2K1ABC' ? ['acme-bakery', 'shared-shop'] : []),
+            clientSites: async clientId => ({ sites: clientId === 'cl_8F2K1ABC' ? ['acme-bakery', 'shared-shop'] : [], envSites: [] }),
         }))
         expect(who).toEqual({
             caller: { actor: 'client:cl_8F2K1ABC', user: 'cl_8F2K1ABC', sites: ['acme-bakery', 'shared-shop'] },
             clientId: 'cl_8F2K1ABC',
         })
+    })
+
+    // The sites whose env files they were given ride along, so hostd lets them at those and no others
+    it('carries the sites whose env files a client may edit', async () => {
+        const who = await callerFromSession(sources({
+            clientSession: async () => ({ client: { id: 'cl_8F2K1ABC' } }),
+            clientSites: async () => ({ sites: ['acme-bakery', 'shared-shop'], envSites: ['shared-shop'] }),
+        }))
+        expect(who?.caller.envSites).toEqual(['shared-shop'])
     })
 
     it('is nobody when neither session is present', async () => {
@@ -78,7 +87,7 @@ describe('callerFromSession', () => {
             const who = await callerFromSession(sources({
                 ...admin,
                 impersonating: async email => (email === ADMIN_EMAIL ? { id: 'cl_8F2K1ABC', name: 'Acme Bakery' } : null),
-                clientSites: async clientId => (clientId === 'cl_8F2K1ABC' ? ['acme-bakery'] : ['someone-else']),
+                clientSites: async clientId => ({ sites: clientId === 'cl_8F2K1ABC' ? ['acme-bakery'] : ['someone-else'], envSites: [] }),
             }))
             expect(who).toEqual({
                 caller: { actor: 'client:cl_8F2K1ABC', user: ADMIN_EMAIL, sites: ['acme-bakery'] },

@@ -94,8 +94,10 @@ async function allow(id: string, adminOnly: boolean, permission?: Permission): P
 // The gate for an action about one environment: allow() first, then the site's own list of environments,
 // read from hostd. A site can have any number of them, so a well formed name is not enough; one this site
 // does not have is refused here rather than sent on for hostd to refuse.
-async function allowOn(id: string, environment: EnvironmentName, adminOnly: boolean): Promise<Allowed | { ok: false, error: string }> {
-    const allowed = await allow(id, adminOnly)
+async function allowOn(
+    id: string, environment: EnvironmentName, adminOnly: boolean, permission?: Permission,
+): Promise<Allowed | { ok: false, error: string }> {
+    const allowed = await allow(id, adminOnly, permission)
     if (!allowed.ok) return allowed
 
     const listed = await listEnvironments(allowed.config, allowed.caller, id)
@@ -152,9 +154,10 @@ export async function saveEnvAction(id: string, environment: string, path: strin
     const name = environmentOf(environment)
     if (!name || typeof path !== 'string' || typeof text !== 'string') return { ok: false, error: 'That is not something this page can do.' }
 
-    // Editing env files is the operator's alone. hostd refuses a client outright (hostd/src/api/policy.ts
-    // puts that check ahead of ownership), and this is the same rule applied a step earlier.
-    const allowed = await allowOn(id, name, true)
+    // The operator, or a client given ENV_FILES on this site. hostd holds the same line: it refuses env to
+    // every client except on the sites the portal names in X-Hostd-Env-Sites (hostd/src/api/policy.ts),
+    // which are read from the same grants this checks.
+    const allowed = await allowOn(id, name, false, 'ENV_FILES')
     if (!allowed.ok) return allowed
 
     const result = await writeEnvFile(allowed.config, allowed.caller, id, name, path, text)

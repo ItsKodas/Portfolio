@@ -403,7 +403,7 @@ async function recordAccess(
 }
 
 const permissionWords = (permissions: readonly string[]) =>
-    permissions.length === 0 ? 'overview only' : permissions.map(one => one.toLowerCase()).join(', ')
+    permissions.length === 0 ? 'overview only' : permissions.map(one => one.toLowerCase().replace('_', ' ')).join(', ')
 
 // Which fields an edit changed, by name. The values are on the client's page; the log says what moved.
 function changedFields(before: Record<string, unknown>, after: Record<string, unknown>): string[] {

@@ -5,6 +5,7 @@ import { fireEvent, render, screen } from '@testing-library/react'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 const callerFromSession = vi.fn()
+const accessOf = vi.fn()
 const listEnvFiles = vi.fn()
 const readEnvFile = vi.fn()
 const saveEnvAction = vi.fn()
@@ -15,6 +16,7 @@ vi.mock('@/server/hostd/env', async importOriginal => ({
     listEnvFiles: (...args: unknown[]) => listEnvFiles(...args),
     readEnvFile: (...args: unknown[]) => readEnvFile(...args),
 }))
+vi.mock('@/server/sites/access', () => ({ accessOf: (...args: unknown[]) => accessOf(...args) }))
 vi.mock('./actions', () => ({ saveEnvAction: (...args: unknown[]) => saveEnvAction(...args) }))
 vi.mock('next/navigation', () => ({ useRouter: () => ({ push: () => {}, refresh: () => {} }) }))
 
@@ -54,10 +56,22 @@ describe('the Env files section', () => {
         expect(screen.queryByRole('combobox', { name: 'Environment' })).toBeNull()
     })
 
-    it('draws nothing for a client', async () => {
+    it('draws nothing for a client not given the env files', async () => {
         callerFromSession.mockResolvedValue({ caller: { actor: 'client:c1', user: 'c1' }, clientId: 'c1' })
+        accessOf.mockResolvedValue(['ENVIRONMENTS'])
         expect(await EnvPanel({ id: 'acme', file: null, environment: 'uat1' })).toBeNull()
         expect(listEnvFiles).not.toHaveBeenCalled()
+    })
+
+    it('lets a client given the env files read and save them', async () => {
+        callerFromSession.mockResolvedValue({ caller: { actor: 'client:c1', user: 'c1' }, clientId: 'c1' })
+        accessOf.mockResolvedValue(['ENVIRONMENTS', 'ENV_FILES'])
+        render(await EnvPanel({ id: 'acme', file: '.env', environment: 'live' }))
+
+        expect(accessOf).toHaveBeenCalledWith('c1', 'acme')
+        fireEvent.change(screen.getByLabelText('.env'), { target: { value: 'A=2\n' } })
+        fireEvent.click(screen.getByRole('button', { name: /save and restart/i }))
+        expect(saveEnvAction).toHaveBeenCalledWith('acme', 'live', '.env', 'A=2\n')
     })
 
     // The Environments tab names the environment over all of its sections, so this does not again

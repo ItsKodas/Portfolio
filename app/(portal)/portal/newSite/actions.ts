@@ -8,7 +8,7 @@ import { revalidatePath } from 'next/cache'
 
 import { callerActor, record } from '@/server/audit/record'
 import { repo } from '@/server/clients/wiring'
-import { ALL_PERMISSIONS } from '@/server/sites/permissions'
+import { DEFAULT_PERMISSIONS } from '@/server/sites/permissions'
 import { readHostd, type HostdConfig } from '@/server/hostd/config'
 import type { Caller } from '@/server/hostd/actor'
 import { createProject } from '@/server/hostd/create'
@@ -106,10 +106,10 @@ export async function createSiteAction(input: unknown): Promise<NewSiteResult> {
     if (result.value.vhost && !result.value.vhost.ok) warnings.push(`The vhost was not written: ${result.value.vhost.message}`)
 
     // The client picked in the form is given the site the way the Access tab gives it, with everything a
-    // client can be given. hostd is not told: access is the portal's record, sent with each request.
+    // new grant starts with (all but the env files). hostd is not told: access is the portal's record, sent with each request.
     if (site.client !== '') {
         try {
-            await repo().grantAccess(site.client, { projectId: site.id, name: site.name }, ALL_PERMISSIONS)
+            await repo().grantAccess(site.client, { projectId: site.id, name: site.name }, DEFAULT_PERMISSIONS)
         } catch (error) {
             console.error(`[portal] giving ${site.client} access to ${site.id} failed: ${String(error)}`)
             warnings.push('The site was created but the client was not given access. Give it from the site\'s Access tab.')

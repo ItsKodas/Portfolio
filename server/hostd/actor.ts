@@ -16,6 +16,9 @@ export type Caller = {
     // A client's sites, from the portal's database, sent as X-Hostd-Sites so hostd checks access against
     // the same list the portal does. Absent for the operator, who reaches every site.
     sites?: string[]
+    // The part of sites where the client may also read and edit env files, sent as X-Hostd-Env-Sites, which
+    // is the one way past hostd's admin-only env verb. Absent when there are none.
+    envSites?: string[]
 }
 
 export function callerForAdmin(email: string): Caller {
@@ -35,10 +38,13 @@ const PROJECT_ID = /^[a-z0-9][a-z0-9-]{1,30}$/
 
 // user is who hostd's audit line names. It is the client themselves, except when the operator is viewing as
 // them: then hostd holds the client's line on access and still records the operator as the one asking.
-export function callerForClient(clientId: string, sites: string[], user: string = clientId): Caller {
+export function callerForClient(clientId: string, sites: string[], user: string = clientId, envSites: string[] = []): Caller {
     if (!CLIENT_ID_PATTERN.test(clientId)) throw new Error('hostd: not one of our client ids')
     if (!USER_ID.test(user)) throw new Error('hostd: not a usable user id')
     // A site the portal holds under an id hostd would never accept cannot be one hostd serves, so it is left
     // out rather than allowed to make hostd refuse every request this client makes.
-    return { actor: `client:${clientId}`, user, sites: sites.filter(site => PROJECT_ID.test(site)) }
+    const usable = sites.filter(site => PROJECT_ID.test(site))
+    // Only ever a part of their sites, whatever the caller passed
+    const env = envSites.filter(site => usable.includes(site))
+    return { actor: `client:${clientId}`, user, sites: usable, ...(env.length ? { envSites: env } : {}) }
 }

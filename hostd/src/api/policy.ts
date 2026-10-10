@@ -50,8 +50,15 @@ const POLICY_CAPABILITY: Record<PolicyVerb, Capability | null> = {
     configure: null,
 }
 
-// What only the admin may ever do, whatever the registry says and whoever owns the project.
+// What only the admin may ever do, whatever the registry says and whoever owns the project. env has one way
+// past it, below: a client the portal has given that one project's env files (X-Hostd-Env-Sites).
 const ADMIN_ONLY: PolicyVerb[] = ['provision', 'remove', 'env', 'deploy', 'domains', 'configure']
+
+// Whether the portal has given this client the env files of this project. Ownership is still checked after,
+// so a project named here that is not also among their sites is refused like any other.
+function mayEditEnv(actor: Actor, projectId: string): boolean {
+    return actor.kind === 'client' && actor.envSites !== undefined && actor.envSites.has(projectId)
+}
 // Whether a client may reach this project at all. The portal's list when it sent one: a site is shared by
 // as many clients as the operator gives it to, and the registry's single client field cannot say that. The
 // registry's field only when the portal sent no list, which is a portal from before site access existed.
@@ -69,11 +76,12 @@ export function authorize(registry: Registry, actor: Actor, projectId: string, v
     if (invalid !== undefined && actor.kind === 'admin') {
         return { ok: false, status: 409, code: 'invalid-project', message: `${projectId} is invalid: ${invalid}` }
     }
-    // Provisioning and env editing are admin-only, full stop. This has to be its own check ahead of
+    // Provisioning and the rest are admin-only, full stop. This has to be its own check ahead of
     // ownership: a client who owns the project, even one where the registry happens to list the
     // provision or env capability, must see exactly the same 404 as for a project that is not theirs,
-    // so neither ownership nor a stray capability entry can ever grant either one.
-    if (ADMIN_ONLY.includes(verb) && actor.kind !== 'admin') {
+    // so neither ownership nor a stray capability entry can ever grant any of them. Env files are the one
+    // exception, and only where the portal named this project in the client's env sites.
+    if (ADMIN_ONLY.includes(verb) && actor.kind !== 'admin' && !(verb === 'env' && mayEditEnv(actor, projectId))) {
         return { ok: false, status: 404, code: 'not-found', message: `no project ${projectId}` }
     }
     const project = registry.projects.get(projectId)

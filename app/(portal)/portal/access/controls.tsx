@@ -7,7 +7,7 @@
 import { useState } from 'react'
 
 import { siteSchema } from '@/server/clients/schema'
-import { ALL_PERMISSIONS, PERMISSIONS, PERMISSION_LABELS, type Permission } from '@/server/sites/permissions'
+import { DEFAULT_PERMISSIONS, NEEDS, PERMISSIONS, PERMISSION_LABELS, type Permission } from '@/server/sites/permissions'
 import { Button } from '@/ui/Button/Button'
 import { Callout } from '@/ui/Callout/Callout'
 import { Field } from '@/ui/Field/Field'
@@ -57,8 +57,17 @@ export function PermissionPicker({ value, onChange, legend }: {
                         checked={chosen.has(permission)}
                         onChange={event => {
                             const next = new Set(chosen)
-                            if (event.target.checked) next.add(permission)
-                            else next.delete(permission)
+                            // A level above another brings it along when ticked, and goes with it when that
+                            // one is unticked: editing env files without the Environments tab means nothing.
+                            const above = PERMISSIONS.filter(other => NEEDS[other] === permission)
+                            const below = NEEDS[permission]
+                            if (event.target.checked) {
+                                next.add(permission)
+                                if (below) next.add(below)
+                            } else {
+                                next.delete(permission)
+                                above.forEach(other => next.delete(other))
+                            }
                             onChange(ordered(next))
                         }}
                     />
@@ -115,15 +124,15 @@ export function AccessRow({ clientId, siteId, title, subtitle, href, permissions
     )
 }
 
-const SEES = 'Any access shows the site and its Overview. Settings, env files, deploying and changing domains '
-    + 'stay yours whatever is ticked.'
+const SEES = 'Any access shows the site and its Overview. Settings, deploying and changing domains stay yours '
+    + 'whatever is ticked. Env files are theirs to read and edit only with Edit env files, which a new grant leaves off.'
 
 // From a client's page: any site, named by its project id in hostd's registry
 export function GrantSiteForm({ clientId }: { clientId: string }) {
     const { pending, error, run } = useAction()
     const [projectId, setProjectId] = useState('')
     const [name, setName] = useState('')
-    const [permissions, setPermissions] = useState<Permission[]>([...ALL_PERMISSIONS])
+    const [permissions, setPermissions] = useState<Permission[]>([...DEFAULT_PERMISSIONS])
     const valid = siteSchema.safeParse({ projectId, name }).success
 
     return (
@@ -132,7 +141,7 @@ export function GrantSiteForm({ clientId }: { clientId: string }) {
             run(() => grantSiteAction(clientId, { projectId, name }, permissions), () => {
                 setProjectId('')
                 setName('')
-                setPermissions([...ALL_PERMISSIONS])
+                setPermissions([...DEFAULT_PERMISSIONS])
             })
         }}>
             <div className={styles.fields}>
@@ -155,7 +164,7 @@ export function GrantClientForm({ projectId, name, clients }: {
 }) {
     const { pending, error, run } = useAction()
     const [clientId, setClientId] = useState('')
-    const [permissions, setPermissions] = useState<Permission[]>([...ALL_PERMISSIONS])
+    const [permissions, setPermissions] = useState<Permission[]>([...DEFAULT_PERMISSIONS])
 
     if (clients.length === 0) return <p className={styles.note}>Every client already has access to this site.</p>
 
@@ -164,7 +173,7 @@ export function GrantClientForm({ projectId, name, clients }: {
             event.preventDefault()
             run(() => grantSiteAction(clientId, { projectId, name }, permissions), () => {
                 setClientId('')
-                setPermissions([...ALL_PERMISSIONS])
+                setPermissions([...DEFAULT_PERMISSIONS])
             })
         }}>
             <Field as="select" label="Client" value={clientId} onChange={event => setClientId(event.target.value)}>

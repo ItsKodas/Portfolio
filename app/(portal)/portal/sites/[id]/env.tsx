@@ -1,15 +1,17 @@
-// The env files, the Environments tab's Env files section, for the operator only. A server component:
-// hostd is asked here, the caller is worked out from the session here, and which file is open is part of
-// the URL rather than client state, so the panel reloads and can be linked to.
+// The env files, the Environments tab's Env files section, for the operator and for a client given ENV_FILES
+// on this site. A server component: hostd is asked here, the caller is worked out from the session here, and
+// which file is open is part of the URL rather than client state, so the panel reloads and can be linked to.
 //
-// It re-derives the caller and re-checks the operator rather than trusting the page that rendered it.
-// hostd puts the same check ahead of ownership (hostd/src/api/policy.ts), and a check that exists in one
-// place only is a check one refactor away from not existing.
+// It re-derives the caller and re-checks the grant rather than trusting the page that rendered it. hostd
+// holds the same line (hostd/src/api/policy.ts), and a check that exists in one place only is a check one
+// refactor away from not existing.
 
 import { readHostd } from '@/server/hostd/config'
 import { listEnvFiles, readEnvFile, type EnvFile, type EnvironmentName } from '@/server/hostd/env'
-import { forAdmin } from '@/server/hostd/errors'
+import { forAdmin, forClient } from '@/server/hostd/errors'
+import { hasAccess } from '@/server/hostd/projects'
 import { callerFromSession } from '@/server/hostd/session'
+import { accessOf } from '@/server/sites/access'
 import { Callout } from '@/ui/Callout/Callout'
 import { EnvForm } from './envForm'
 import styles from './site.module.css'
@@ -48,17 +50,23 @@ type Props = {
 
 export async function EnvPanel({ id, file, environment }: Props) {
     const who = await callerFromSession()
-    if (!who || who.clientId !== null) return null
+    if (!who) return null
+    const isAdmin = who.clientId === null
+    if (who.clientId !== null && !(await hasAccess(who.clientId, id, accessOf, 'ENV_FILES'))) return null
+    // hostd's own words are the operator's; a client is told what it means for them
+    const said = (result: { code: string, message: string }) => (isAdmin ? forAdmin(result.code, result.message) : forClient(result.code))
 
     const problems: string[] = []
     const config = readHostd(process.env, problems)
     if (problems.length) {
-        return <Callout tone="warn" title="hostd is not configured">{problems.join('; ')}</Callout>
+        return isAdmin
+            ? <Callout tone="warn" title="hostd is not configured">{problems.join('; ')}</Callout>
+            : <Callout tone="warn" title="The env files could not be listed">{forClient('unavailable')}</Callout>
     }
 
     const files = await listEnvFiles(config, who.caller, id, environment)
     if (!files.ok) {
-        return <Callout tone="warn" title="The env files could not be listed">{forAdmin(files.code, files.message)}</Callout>
+        return <Callout tone="warn" title="The env files could not be listed">{said(files)}</Callout>
     }
 
     // Only a path hostd itself just listed. A path from the address bar never reaches a request, which is
@@ -73,8 +81,11 @@ export async function EnvPanel({ id, file, environment }: Props) {
             {/* No tone, so it is not announced as a problem: it is how the thing works, not something
                 that went wrong. */}
             <Callout title="Where this file lives">
-                An env file is kept out of every backup, it is not among the files a client can download,
-                and it never leaves the dedi. Nothing here is written down anywhere else.
+                {isAdmin
+                    ? 'An env file is kept out of every backup, it is not among the files a client can download, '
+                        + 'and it never leaves the dedi. Nothing here is written down anywhere else.'
+                    : 'An env file is kept out of every backup and never leaves the server. Nothing here is '
+                        + 'written down anywhere else.'}
             </Callout>
 
             {/* No heading of its own: the Environments tab names the environment over all its sections */}
@@ -84,7 +95,7 @@ export async function EnvPanel({ id, file, environment }: Props) {
                 {!chosen && <p className={styles.empty}>Choose a file to read or edit it.</p>}
 
                 {chosen && text && !text.ok && (
-                    <Callout tone="warn" title="That file could not be read">{forAdmin(text.code, text.message)}</Callout>
+                    <Callout tone="warn" title="That file could not be read">{said(text)}</Callout>
                 )}
 
                 {chosen && text && text.ok && (

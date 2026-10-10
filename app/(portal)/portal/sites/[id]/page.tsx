@@ -201,8 +201,9 @@ export default async function SitePage({ params, searchParams }: Props) {
         { id: 'overview', label: 'Overview' },
         ...(may('LOGS') ? [{ id: 'logs' as const, label: 'Logs' }] : []),
         // Everything about one environment, for both roles. A client reads the list, each one's Summary
-        // and its addresses: hostd leaves 'domains-read' out of its admin-only verbs. The env files and
-        // every action are the operator's alone, which the tab decides, not this list. Never disabled:
+        // and its addresses: hostd leaves 'domains-read' out of its admin-only verbs. The env files are
+        // theirs too with ENV_FILES; every other action is the operator's alone, which the tab decides, not
+        // this list. Never disabled:
         // the sections whose capability is off say so themselves.
         // Absent rather than disabled for a client not given it: that is the operator's choice, not something
         // the site cannot do.
@@ -408,6 +409,7 @@ export default async function SitePage({ params, searchParams }: Props) {
                         <EnvironmentsTab
                             view={view}
                             isAdmin={view.isAdmin}
+                            canEditEnv={may('ENV_FILES')}
                             selected={environment}
                             adding={adding}
                             file={one(search.file)}
