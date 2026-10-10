@@ -137,7 +137,7 @@ export default function Landing() {
 
             {/* Clients */}
             <section>
-                <p className="mb-8 text-center text-xs font-semibold uppercase tracking-[0.3em] text-[#8fd4f5]/50">Trusted by</p>
+                <p className="mb-8 text-center text-xs font-semibold uppercase tracking-[0.3em] text-[#8fd4f5]/50">Worked with</p>
                 <div className="flex flex-wrap items-center justify-center gap-x-14 gap-y-8">
                     {clients.map(c => {
                         const logo = <Image src={c.src} alt={c.name} fill className="object-contain" style={c.style} />
