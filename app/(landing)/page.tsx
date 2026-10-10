@@ -5,7 +5,7 @@
 
 import Link from 'next/link'
 import Image from 'next/image'
-import { GitHub, LinkedIn, YouTube, Instagram, NorthEast, ArrowForward } from '@/ui/icons'
+import { GitHub, LinkedIn, YouTube, Instagram, NorthEast, ArrowForward, EpicGames, Steam } from '@/ui/icons'
 
 import PMPC_Group from '../../public/images/clients/pmpc.svg'
 import SpotOnDrones from '../../public/images/clients/spotondrones-mono.png'
@@ -40,8 +40,19 @@ function QuoteLink({ className = '' }: { className?: string }) {
 const ICONS = { GitHub, LinkedIn, YouTube, Instagram }
 const socials = SOCIALS.map(s => ({ ...s, icon: ICONS[s.label] }))
 
-// Projects, each with a short blurb and links to where it lives: the live site and/or the code (either can be left out)
-const projects: { name: string, year?: string, blurb: string, website?: string, github?: string }[] = [
+// Projects, each with a short blurb and links to where it lives: the live site and/or the code (either can be left out),
+// and for a game the stores it's on. A store without an href is shown greyed out as coming soon.
+type Store = { name: string, icon: typeof EpicGames, href?: string }
+const projects: { name: string, year?: string, blurb: string, website?: string, github?: string, stores?: Store[] }[] = [
+    {
+        name: 'Blastyard',
+        year: '2026',
+        blurb: 'A third-person team arena shooter: sprint, slide, wall run and jetpack around the arena as a toy robot, and play team deathmatch with friends in lobbies anyone can host.',
+        stores: [
+            { name: 'Epic Games Store', icon: EpicGames, href: 'https://store.epicgames.com/p/blastyard' },
+            { name: 'Steam', icon: Steam },
+        ],
+    },
     {
         name: 'The Back Room',
         year: '2026',
@@ -164,6 +175,21 @@ export default function Landing() {
                             </div>
                             <p className="mb-6 text-sm leading-relaxed text-[#b4c3dc]/75">{p.blurb}</p>
                             <div className="mt-auto flex flex-wrap gap-2">
+                                {p.stores?.map(({ name, icon: Icon, href }) => href
+                                    ? (
+                                        <Link key={name} href={href} target="_blank" rel="noopener noreferrer"
+                                            className="group inline-flex items-center gap-2 rounded-full border border-[#8fd4f5]/20 bg-[#8fd4f5]/[0.06] px-4 py-2 text-sm font-medium text-[#bfe6fb] transition-colors hover:border-[#8fd4f5]/45 hover:text-white">
+                                            <Icon size={16} /> {name}
+                                            <NorthEast size={14} className="opacity-60 transition-transform group-hover:-translate-y-0.5 group-hover:translate-x-0.5" />
+                                        </Link>
+                                    )
+                                    : (
+                                        <span key={name} aria-disabled="true" title={`${name}: coming soon`}
+                                            className="inline-flex cursor-not-allowed items-center gap-2 rounded-full border border-white/10 bg-white/[0.03] px-4 py-2 text-sm font-medium text-[#8fa3c7]/70">
+                                            <Icon size={16} /> {name}
+                                            <span className="text-xs uppercase tracking-wider text-[#8fa3c7]/60">Coming soon</span>
+                                        </span>
+                                    ))}
                                 {p.website && (
                                     <Link href={p.website} target="_blank" rel="noopener noreferrer"
                                         className="group inline-flex items-center gap-1.5 rounded-full border border-[#8fd4f5]/20 bg-[#8fd4f5]/[0.06] px-4 py-2 text-sm font-medium text-[#bfe6fb] transition-colors hover:border-[#8fd4f5]/45 hover:text-white">
