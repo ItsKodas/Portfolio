@@ -7,12 +7,14 @@ const ADMIN: Place[] = [
     { label: 'Sites', href: '/portal', owns: SITES },
     { label: 'Quotes', href: '/portal/quotes', owns: ['/portal/quotes'] },
     { label: 'Clients', href: '/portal/clients', owns: ['/portal/clients'] },
+    { label: 'Invoices', href: '/portal/invoices', owns: ['/portal/invoices'] },
     { label: 'Logs', href: '/portal/logs', owns: ['/portal/logs'] },
 ]
 
-// A client has one site and their own account, and nothing else in the portal is theirs to open
+// A client has their sites, their invoices and their own account, and nothing else in the portal is theirs to open
 const CLIENT: Place[] = [
     { label: 'Overview', href: '/portal', owns: SITES },
+    { label: 'Billing', href: '/portal/billing', owns: ['/portal/billing'] },
     { label: 'Account', href: '/portal/account', owns: ['/portal/account'] },
 ]
 

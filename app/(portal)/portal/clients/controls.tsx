@@ -248,7 +248,7 @@ export function DeleteClientButton({ clientId }: { clientId: string }) {
                 }
             >
                 <p className={styles.dialogText}>
-                    This removes the client, their access to every site, their sessions and recovery codes entirely. The sites themselves stay. It can&apos;t be
+                    This removes the client, their access to every site, their plans, their sessions and recovery codes entirely, and cancels any automatic PayPal payment. The sites and their invoices stay. It can&apos;t be
                     undone from here.
                 </p>
             </Dialog>

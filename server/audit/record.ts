@@ -17,6 +17,8 @@ export type Actor =
     | { type: 'ADMIN', id: string, name?: string | null }
     | { type: 'CLIENT', id: string, name?: string | null }
     | { type: 'VISITOR', id?: null, name?: string | null }
+    // The billing run, or PayPal telling us something: what happened without anyone doing it just then
+    | { type: 'SYSTEM', id: string, name?: string | null }
 
 export type AuditEntry = {
     kind: Kind
@@ -30,6 +32,8 @@ export type AuditEntry = {
 }
 
 export const VISITOR: Actor = { type: 'VISITOR' }
+export const BILLING_RUN: Actor = { type: 'SYSTEM', id: 'billing', name: 'Billing run' }
+export const PAYPAL: Actor = { type: 'SYSTEM', id: 'paypal', name: 'PayPal' }
 
 export const adminActor = (session: Session): Actor => ({
     type: 'ADMIN',

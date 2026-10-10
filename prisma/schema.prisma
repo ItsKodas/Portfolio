@@ -126,6 +126,8 @@ model Client {
   tokens            ClientToken[]
   recoveryCodes     ClientRecoveryCode[]
   totpUses          ClientTotpUse[]
+  invoices          Invoice[]
+  plans             BillingPlan[]
 
   @@index([suspendedAt])
 }
@@ -140,6 +142,7 @@ model Site {
   name      String
   createdAt DateTime     @default(now())
   access    SiteAccess[]
+  plans     BillingPlan[]
 }
 
 // What a client may do on a site beyond seeing its Overview, which any access grants. Each one is a tab or a
@@ -250,6 +253,9 @@ enum AuditActor {
   CLIENT
   // Somebody not signed in: a quote, a sign-in that failed, a reset asked for
   VISITOR
+  // Nobody at all: the billing run raising a plan's invoice or sending a reminder, or PayPal telling us a
+  // payment arrived
+  SYSTEM
 }
 
 // One thing somebody did. The kind is a dotted name from server/audit/kinds.ts rather than an enum, so adding a
@@ -296,4 +302,155 @@ model SentEmail {
 
   @@index([createdAt])
   @@index([to, createdAt])
+}
+
+// The invoicing feature's tables. See docs/superpowers/specs/2026-10-10-invoicing-design.md. Every amount is
+// whole cents, so nothing is ever rounded twice.
+
+enum InvoiceStatus {
+  // Being written. Only the operator sees it, and it has no number yet.
+  DRAFT
+  // Sent and waiting to be paid. Due or overdue is read from dueOn when it is shown, never stored.
+  OPEN
+  PAID
+  // Cancelled after it was sent. Kept, number and all, because a sent invoice never disappears.
+  VOID
+}
+
+enum BillingInterval {
+  MONTHLY
+  YEARLY
+}
+
+enum PaymentMethod {
+  // Paid once, through PayPal's checkout
+  PAYPAL
+  // Taken by a PayPal subscription the client set up
+  PAYPAL_AUTOPAY
+  // Marked paid by the operator: a bank transfer, cash, anything outside PayPal
+  MANUAL
+}
+
+model Invoice {
+  id                  String         @id @default(cuid())
+  // Given when it is sent, from InvoiceCounter, so a deleted draft never leaves a gap in the numbers
+  number              Int?           @unique
+  createdAt           DateTime       @default(now())
+  updatedAt           DateTime       @updatedAt
+  status              InvoiceStatus  @default(DRAFT)
+  // SetNull, not Cascade: an invoice is a record of money and outlives the account it was sent to
+  client              Client?        @relation(fields: [clientId], references: [id], onDelete: SetNull)
+  clientId            String?
+  // Who it is addressed to, copied from the client while it is a draft and frozen once it is sent, so a
+  // renamed or deleted client never changes an invoice they have already been given
+  billToName          String
+  billToCompany       String?
+  billToEmail         String
+  currency            String         @default("AUD")
+  // Calendar days, in Brisbane. issuedOn is set when it is sent.
+  issuedOn            DateTime?      @db.Date
+  dueOn               DateTime       @db.Date
+  notes               String?
+  // Whether GST was charged, kept per invoice so registering for GST later never rewrites an old one
+  gst                 Boolean        @default(false)
+  // Kept in step with the lines by server/invoices/repo.ts, so a list never adds them up again
+  subtotalCents       Int            @default(0)
+  gstCents            Int            @default(0)
+  totalCents          Int            @default(0)
+  // The plan and period it bills, when a plan raised it
+  plan                BillingPlan?   @relation(fields: [planId], references: [id], onDelete: SetNull)
+  planId              String?
+  periodStart         DateTime?      @db.Date
+  periodEnd           DateTime?      @db.Date
+  sentAt              DateTime?
+  paidAt              DateTime?
+  voidedAt            DateTime?
+  // The reminder a few days before it is due, and the notices after
+  reminderSentAt      DateTime?
+  overdueNotices      Int            @default(0)
+  lastOverdueNoticeAt DateTime?
+  lines               InvoiceLine[]
+  payments            InvoicePayment[]
+
+  @@index([status, dueOn])
+  @@index([clientId, createdAt])
+  @@index([planId])
+}
+
+model InvoiceLine {
+  id          String  @id @default(cuid())
+  invoice     Invoice @relation(fields: [invoiceId], references: [id], onDelete: Cascade)
+  invoiceId   String
+  position    Int
+  description String
+  // A float because an hour and a half is 1.5. The schema allows two decimal places at most, and the
+  // amount is rounded to whole cents once, here, so the float never reaches a total.
+  quantity    Float
+  unitCents   Int
+  amountCents Int
+
+  @@index([invoiceId, position])
+}
+
+model InvoicePayment {
+  id          String        @id @default(cuid())
+  createdAt   DateTime      @default(now())
+  invoice     Invoice       @relation(fields: [invoiceId], references: [id], onDelete: Cascade)
+  invoiceId   String
+  method      PaymentMethod
+  amountCents Int
+  // PayPal's id for the money that moved: a capture for a checkout, a sale for a subscription. Unique, so a
+  // payment PayPal tells us about twice (the return from checkout and the webhook both) is kept once.
+  paypalId    String?       @unique
+  // live or sandbox, so a test payment is never mistaken for money
+  paypalMode  String?
+  note        String?
+  refundedAt  DateTime?
+
+  @@index([invoiceId])
+}
+
+// The next invoice number. One row, taken and advanced in the same statement when an invoice is sent.
+model InvoiceCounter {
+  id   Int @id @default(1)
+  next Int
+}
+
+// A recurring charge, such as monthly hosting. Each period raises an invoice on its own, unless the client
+// pays it automatically through PayPal, when each payment raises one already paid.
+model BillingPlan {
+  id                 String          @id @default(cuid())
+  createdAt          DateTime        @default(now())
+  updatedAt          DateTime        @updatedAt
+  client             Client          @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  clientId           String
+  // The site it is for, when it is for one. Only a label: nothing about the site depends on it.
+  site               Site?           @relation(fields: [siteId], references: [id], onDelete: SetNull)
+  siteId             String?
+  // The line on each invoice, such as "Website hosting"
+  description        String
+  // Zero is a plan that is not charged: listed, and never invoiced
+  amountCents        Int
+  interval           BillingInterval @default(MONTHLY)
+  startsOn           DateTime        @db.Date
+  // How many periods have been billed, by invoice or by automatic payment. The next is period number
+  // this, counted from startsOn, which is how a plan started on the 31st still bills on the last day of
+  // a short month without drifting to the 28th for ever after.
+  periodsBilled      Int             @default(0)
+  dueDays            Int             @default(14)
+  endedAt            DateTime?
+  // PayPal's side of automatic payment, made the first time the client asks for it. All of it belongs to
+  // the PayPal mode in paypalMode: a sandbox plan means nothing to live PayPal.
+  paypalMode         String?
+  paypalProductId    String?
+  paypalPlanId       String?
+  // The price the PayPal plan carries, so a change here knows to update it there
+  paypalPlanCents    Int?
+  subscriptionId     String?         @unique
+  // PayPal's own word for it: APPROVAL_PENDING, APPROVED, ACTIVE, SUSPENDED, CANCELLED or EXPIRED
+  subscriptionStatus String?
+  invoices           Invoice[]
+
+  @@index([clientId])
+  @@index([endedAt])
 }

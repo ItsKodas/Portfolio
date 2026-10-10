@@ -9,7 +9,11 @@ import 'server-only'
 
 import { TOKENS } from '../../ui/tokens'
 
-export type Email = { from: string, to: string, replyTo: string, subject: string, text: string, html: string }
+export type Attachment = { filename: string, content: Buffer, contentType: string }
+
+// attachments is the invoice PDF, for now the only email that carries one. The sent-mail log keeps the text
+// and the HTML, not the file, which can always be drawn again from the invoice.
+export type Email = { from: string, to: string, replyTo: string, subject: string, text: string, html: string, attachments?: Attachment[] }
 
 export const escapeHtml = (text: string) => text
     .replace(/&/g, '&amp;')
