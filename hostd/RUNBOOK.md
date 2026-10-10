@@ -1764,13 +1764,15 @@ directory (`HOSTD_APACHE_SITES_ENABLED` or `HOSTD_APACHE_ADOPTED_DIR`) somewhere
 every future adoption's undo becomes a dangling symlink nobody notices until Apache next fails a
 configtest; the agent's boot gate below refuses to start rather than let that happen quietly.
 
-`/var/www/hostd-maintenance/index.html` needs a minimal placeholder now so `ErrorDocument 503` has
-something to serve; its real contents (styling, per-client branding, whatever the holding page should
-actually say) belong to the provisioning design, not to this task:
-
-```bash
-echo '<!doctype html><title>Maintenance</title><p>Back shortly.</p>' | sudo tee /var/www/hostd-maintenance/index.html >/dev/null
-```
+`/var/www/hostd-maintenance` holds the holding page Apache serves for every 503, and the agent writes
+everything in it (the agent mounts `/var/www`, so nothing more is needed than the directory itself):
+`sites/<id>-<env>.html` for each environment with a domain, which its vhost serves, and `index.html`, a
+fallback that names no site. Each site's page says why it is down, read off Docker on every pass of the
+agent's loop: upgrading while a deploy holds the maintenance flag, switched off for a container `docker
+stop` took down, having trouble for one in a restart loop or one that died and stayed down, and back
+shortly for anything else. It also shows the registry entry's `contact`, when it has one (see
+`registry/projects.example.yaml`), so a visitor knows who to reach. Vhosts written before per-site pages
+existed are pointed at their own page once, the first time the agent boots with this in place.
 
 Put the Cloudflare Origin CA certificate at `/etc/ssl/hostd/origin.pem` and its key at
 `/etc/ssl/hostd/origin.key`. This is an install step, not a check: do not assume the dedi already has one

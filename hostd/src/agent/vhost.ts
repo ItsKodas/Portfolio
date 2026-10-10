@@ -19,6 +19,9 @@ export type VhostInput = {
     certificate: { chain: string, key: string }
     maintenanceDir: string
     maintenanceFlag: string
+    // The file served as this environment's holding page: its own, written by holding-pages.ts, so the
+    // page can name the site and say why it is down
+    holdingPage: string
     acmeWebroot: string
 }
 
@@ -162,7 +165,7 @@ function servingBody(input: VhostInput, unproxied: string[]): string {
     </Location>
 
     DocumentRoot "${input.maintenanceDir}"
-    Alias "${HOLDING_PAGE}" "${input.maintenanceDir}/index.html"
+    Alias "${HOLDING_PAGE}" "${input.holdingPage}"
     ErrorDocument 503 ${HOLDING_PAGE}
     Header always set Retry-After "120" "expr=%{REQUEST_STATUS} == 503"
 

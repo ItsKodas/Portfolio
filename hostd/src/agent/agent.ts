@@ -35,6 +35,7 @@ import type { BackupRunner } from './backup-runner.ts'
 import type { BackupStore } from './backup-state.ts'
 import { repoPath, type Restic } from './restic.ts'
 import { tokenFromVhost, vhostPath } from './vhost.ts'
+import { holdingPagePath } from './holding-pages.ts'
 import { copyRefusal, runCopy, type CopyFs } from './copy-run.ts'
 import type { IoHelper } from './io-helper.ts'
 import type { CopyStore } from './copy-store.ts'
@@ -98,6 +99,9 @@ export type AgentDeps = {
     // configuration: the domains verb then refuses unavailable instead of crashing, exactly like
     // provision and deploy do.
     domains?: DomainsDeps
+    // Told after a lifecycle action, so the site's holding page can say "switched off" at once rather than
+    // on the main loop's next pass. Optional, so the tests' fakes need not carry it; never throws.
+    afterLifecycle?: (project: ProjectEntry) => Promise<void>
     // How long ago the rail last got an answer, read fresh on every health request exactly like system
     // is. An age in milliseconds, never a timestamp: api compares it against a staleness threshold.
     // Required rather than optional, unlike domains itself: health must always answer with a railAge,
@@ -799,6 +803,33 @@ export class Agent {
         }
     }
 
+    // Brings every vhost hostd wrote before per-site holding pages existed up to date, so it serves its own
+    // page rather than the shared fallback. Run once at boot; a vhost that already names its page is left
+    // alone, so after the first boot of this version it changes nothing. Each rewrite goes through
+    // rewriteMovedVhost, which keeps the file's own token and puts the old file back if Apache refuses.
+    async pointVhostsAtHoldingPages(): Promise<string[]> {
+        if (!this.deps.domains) return []
+        const domains = this.deps.domains
+        const problems: string[] = []
+        for (const project of this.deps.registry().projects.values()) {
+            for (const environment of project.environments.values()) {
+                if (environment.domain === null) continue
+                const path = vhostPath(domains.config.includeDir, project.id, environment.name)
+                let text: string | null
+                try {
+                    text = await domains.readFile(path)
+                } catch (error) {
+                    problems.push(`${path} could not be read: ${describeError(error)}.`)
+                    continue
+                }
+                if (text === null || text.includes(holdingPagePath(domains.config.maintenancePageDir, project.id, environment.name))) continue
+                const result = await this.rewriteMovedVhost(project.id, environment.name)
+                if (result.problem !== null) problems.push(result.problem)
+            }
+        }
+        return problems
+    }
+
     // Whether hostd wrote the vhost for this environment, read off the same file rewriteMovedVhost reads.
     // With no rail wired up hostd has never written one, so an environment with an address is served by
     // hand. A read that throws is left to the caller, which refuses rather than guessing.
@@ -1139,6 +1170,7 @@ export class Agent {
                 if (problem) return refuse('invalid-project', problem)
             }
             const result = await runLifecycle(project, action, this.deps.runner)
+            await this.deps.afterLifecycle?.(project)
             return result.ok ? { ok: true, output: result.output } : refuse('failed', result.message, result.output)
         } finally {
             this.lifecycleBusy.delete(project.id)

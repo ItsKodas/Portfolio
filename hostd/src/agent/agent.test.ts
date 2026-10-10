@@ -1530,6 +1530,26 @@ projects:
         }])
     })
 
+    // A vhost written before per-site holding pages names the shared index.html; booting this version
+    // points it at its own page, with the token it already carries, and leaves an up to date one alone
+    it('points a vhost written before per-site holding pages at its own page, once', async () => {
+        const context = fakeDomains(moved('acme.com'))
+        let current = EXISTING_VHOST
+        const { agent } = setup({
+            registry: () => moved('acme.com'),
+            domains: { ...context.domains, readFile: async () => current },
+        })
+        assert.deepEqual(await agent.pointVhostsAtHoldingPages(), [])
+        assert.equal(context.sent.length, 1)
+        const text = context.sent[0]?.write?.text ?? ''
+        assert.match(text, /\/var\/www\/hostd-maintenance\/sites\/acme-live\.html/)
+        assert.match(text, /\/\.well-known\/hostd\/abc123def456/)
+
+        current = text
+        assert.deepEqual(await agent.pointVhostsAtHoldingPages(), [])
+        assert.equal(context.sent.length, 1)
+    })
+
     // Switching WebSockets changes nothing but the vhost, so it has to reach Apache the same way a moved
     // address does, with the same token, and without making any hostname prove itself again.
     it('rewrites the vhost with upgrade=websocket when WebSockets is switched on', async () => {

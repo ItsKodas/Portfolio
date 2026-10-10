@@ -101,7 +101,14 @@ export type ProjectEntry = {
     capabilities: Set<Capability>
     maxDomains: number
     backups: { maxKeep: Keep }
+    // Who a visitor should reach when the site is down, shown on its holding page. null when the entry
+    // names nobody, and the page then leaves the contact section out rather than inventing one.
+    contact: Contact | null
 }
+
+// Public contact details, published on the holding page to anyone who visits while the site is down, so
+// they are whatever the operator chose to put here and never read out of a client's portal account.
+export type Contact = { name: string | null, email: string | null, phone: string | null, url: string | null }
 
 export type Registry = {
     reserved: string[]
@@ -148,13 +155,16 @@ const DEFAULT_RESERVED = [HORIZONS_BASE]
 const TOP_KEYS = new Set(['reserved', 'allowed', 'openSubdomains', 'offsite', 'projects'])
 const PROJECT_KEYS = new Set([
     'client', 'name', 'dir', 'compose', 'upstream', 'services', 'storage', 'capabilities', 'maxDomains', 'backups',
-    'repo', 'credential', 'portEnv', 'limits', 'environments',
+    'repo', 'credential', 'portEnv', 'limits', 'environments', 'contact',
 ])
 const ENVIRONMENT_KEYS = new Set(['dir', 'compose', 'composeName', 'branch', 'domain', 'aliases', 'port', 'certificate', 'deployed', 'websockets', 'flexibleSsl'])
 const DIR = /^\/var\/www\/[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/
 const UPSTREAM = /^(localhost|\d{1,3}(?:\.\d{1,3}){3}):(\d{1,5})$/
 const MEMORY_LIMIT = /^[0-9]+(b|k|m|g)$/i
 const CPU_LIMIT = /^[0-9]+(\.[0-9]+)?$/
+const CONTACT_EMAIL = /^[^\s@<>"]{1,64}@[A-Za-z0-9.-]{1,189}\.[A-Za-z]{2,63}$/
+const CONTACT_PHONE = /^\+?[0-9][0-9 ()-]{3,30}$/
+const CONTACT_URL = /^https?:\/\/[^\s<>"]{1,200}$/
 
 function wholeNumber(value: unknown, min: number, max: number): number | null {
     return typeof value === 'number' && Number.isInteger(value) && value >= min && value <= max ? value : null
@@ -181,6 +191,35 @@ function parseKeep(raw: unknown, fallback: Keep, where: string, problems: string
         else keep[key] = count
     }
     return keep
+}
+
+// Every field optional, but at least one way to reach somebody: a name alone gives a visitor nothing to
+// do with it. Each value lands in HTML, which holding-page.ts escapes; the shapes here are only what keeps
+// a typo from publishing a mailto: or tel: link that goes nowhere.
+function parseContact(raw: unknown, problems: string[]): Contact | null {
+    if (raw === undefined) return null
+    if (!isRecord(raw) || !onlyKeys(raw, ['name', 'email', 'phone', 'url'])) {
+        problems.push('contact may only contain name, email, phone and url')
+        return null
+    }
+    const field = (key: string, valid: (value: string) => boolean, rule: string): string | null => {
+        const value = raw[key]
+        if (value === undefined) return null
+        if (typeof value === 'string' && valid(value)) return value
+        problems.push(`contact.${key} must be ${rule}`)
+        return null
+    }
+    const contact: Contact = {
+        name: field('name', value => value.trim().length >= 1 && value.length <= 100, '1 to 100 characters'),
+        email: field('email', value => CONTACT_EMAIL.test(value), 'an email address'),
+        phone: field('phone', value => CONTACT_PHONE.test(value), 'a phone number of digits, spaces, brackets and dashes'),
+        url: field('url', value => CONTACT_URL.test(value), 'an http or https address'),
+    }
+    if (contact.email === null && contact.phone === null && contact.url === null) {
+        problems.push('contact needs at least one of email, phone or url')
+        return null
+    }
+    return contact
 }
 
 function parseUpstream(raw: unknown, problems: string[]): { host: string, port: number } | null {
@@ -625,12 +664,14 @@ function parseProject(id: string, raw: unknown, rules: HostRules): ParsedProject
         else maxKeep = parseKeep(raw.backups.maxKeep, DEFAULT_MAX_KEEP, 'backups.maxKeep', problems)
     }
 
+    const contact = parseContact(raw.contact, problems)
+
     if (problems.length > 0 || client === undefined || !name || !dir || !upstream || !composePaths || !composeName) return { problems }
     return {
         entry: {
             id, client, name, repo, credential, dir, compose, composePaths, composeName, upstream, portEnv, limits, environments,
             services, storage, capabilities, maxDomains,
-            backups: { maxKeep },
+            backups: { maxKeep }, contact,
         },
     }
 }

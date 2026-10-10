@@ -84,6 +84,25 @@ projects:
 }
 
 describe('writeVhost', () => {
+    // The vhost names the environment's own page, so the page has to be on disk before Apache loads it
+    it('writes the holding page before the vhost that serves it, and names that page', async () => {
+        const { deps, sent, project, environment } = setup()
+        const order: string[] = []
+        deps.refreshHoldingPage = async () => { order.push(`page (${sent.length} sent)`) }
+        const result = await writeVhost(deps, project, environment, 'abc123')
+        assert.equal(result.ok, true)
+        assert.deepEqual(order, ['page (0 sent)'])
+        assert.match(sent[0]?.write?.text ?? '', /Alias "\/\.hostd-maintenance" "\/var\/www\/hostd-maintenance\/sites\/acme-live\.html"/)
+    })
+
+    it('writes the vhost even when its holding page could not be written', async () => {
+        const { deps, sent, project, environment } = setup()
+        deps.refreshHoldingPage = async () => { throw new Error('EACCES') }
+        const result = await writeVhost(deps, project, environment, 'abc123')
+        assert.equal(result.ok, true)
+        assert.equal(sent.length, 1)
+    })
+
     it('sends one reload carrying the rendered file', async () => {
         const { deps, sent, project, environment } = setup()
         const result = await writeVhost(deps, project, environment, 'abc123')

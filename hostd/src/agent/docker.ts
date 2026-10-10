@@ -18,7 +18,9 @@ const CONTAINER_ID = /^[a-f0-9]{12,64}$/
 const NEVER = '0001-01-01T00:00:00Z'
 
 export type PortBinding = { IP?: string, PrivatePort: number, PublicPort?: number, Type: string }
-export type ContainerSummary = { Id: string, State: string, Labels?: Record<string, string>, Ports?: PortBinding[] }
+// Status is Docker's own sentence about the container ("Exited (137) 2 hours ago"), the only place a
+// listing carries an exit code; holding-pages.ts reads it to tell a site switched off from one that died.
+export type ContainerSummary = { Id: string, State: string, Status?: string, Labels?: Record<string, string>, Ports?: PortBinding[] }
 export type ContainerInspect = {
     Id: string
     RestartCount: number
