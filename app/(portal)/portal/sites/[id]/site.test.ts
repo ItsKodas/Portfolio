@@ -215,7 +215,7 @@ describe('gatherSite', () => {
 
     it('gives the operator every permission without looking any up', async () => {
         const view = await gatherSite(deps({ access: async () => { throw new Error('should not be asked') } }), 'asot')
-        expect(view.kind === 'site' && view.permissions).toEqual(['LOGS', 'LIFECYCLE', 'ENVIRONMENTS', 'DEPLOYS'])
+        expect(view.kind === 'site' && view.permissions).toEqual(['LOGS', 'LIFECYCLE', 'ENVIRONMENTS', 'DEPLOYS', 'BACKUPS'])
     })
 
     it('carries the permissions this client was given on this site', async () => {

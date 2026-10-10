@@ -17,6 +17,9 @@ const deleteEnvironment = vi.fn()
 const restoreEnvironment = vi.fn()
 const copyFromLive = vi.fn()
 const copyRuns = vi.fn()
+const startBackup = vi.fn()
+const deleteBackup = vi.fn()
+const setSchedule = vi.fn()
 const hasAccess = vi.fn()
 const lifecycle = vi.fn()
 
@@ -50,6 +53,13 @@ vi.mock('@/server/hostd/domains', () => ({
     verifyDomain: vi.fn(),
 }))
 
+vi.mock('@/server/hostd/backups', async importOriginal => ({
+    ...(await importOriginal<typeof import('@/server/hostd/backups')>()),
+    startBackup: (...args: unknown[]) => startBackup(...args),
+    deleteBackup: (...args: unknown[]) => deleteBackup(...args),
+    setSchedule: (...args: unknown[]) => setSchedule(...args),
+}))
+
 vi.mock('@/server/hostd/environments', () => ({
     addEnvironment: (...args: unknown[]) => addEnvironment(...args),
     deleteEnvironment: (...args: unknown[]) => deleteEnvironment(...args),
@@ -59,6 +69,7 @@ vi.mock('@/server/hostd/environments', () => ({
 }))
 
 const {
+    backupNowAction, deleteBackupAction, saveScheduleAction,
     addDomainAction, addEnvironmentAction, lifecycleAction, copyFromLiveAction, copyRunsAction, deleteEnvironmentAction, restoreEnvironmentAction, changePrimaryDomainAction, deleteSiteAction, deployAction, saveEnvAction, saveSettingsAction,
     setPortAction, setPrimaryDomainAction,
 } = await import('./actions')
@@ -735,6 +746,86 @@ describe('copyRunsAction', () => {
 
         const result = await copyRunsAction('acme', 'uat1')
         expect(result.ok).toBe(false)
+    })
+})
+
+// Backups are a client's as well as the operator's, so unlike deploys these let a client through, with
+// the BACKUPS permission
+describe('the backup actions', () => {
+    const schedule = { mode: 'daily', hour: 2, minute: 0, weekday: 0, keep: { daily: 7, weekly: 4, monthly: 3 } }
+
+    it('lets a client back up their own site', async () => {
+        callerFromSession.mockResolvedValue(CLIENT)
+        startBackup.mockResolvedValue({ ok: true, value: { run: 'feedfacecafebeef' } })
+
+        expect(await backupNowAction('asot')).toMatchObject({ ok: true })
+        expect(startBackup).toHaveBeenCalledWith(expect.anything(), CLIENT.caller, 'asot')
+        expect(hasAccess.mock.calls[0][3]).toBe('BACKUPS')
+    })
+
+    it('refuses a client without the backups permission, before hostd is asked', async () => {
+        callerFromSession.mockResolvedValue(CLIENT)
+        hasAccess.mockResolvedValue(false)
+
+        expect(await backupNowAction('asot')).toEqual({ ok: false, error: 'This is not set up yet.' })
+        expect(await deleteBackupAction('asot', '4f1c2a9b')).toEqual({ ok: false, error: 'This is not set up yet.' })
+        expect(await saveScheduleAction('asot', schedule)).toEqual({ ok: false, error: 'This is not set up yet.' })
+        expect(startBackup).not.toHaveBeenCalled()
+        expect(deleteBackup).not.toHaveBeenCalled()
+        expect(setSchedule).not.toHaveBeenCalled()
+    })
+
+    it('tells a client why a run was refused, in their words rather than hostd\'s', async () => {
+        callerFromSession.mockResolvedValue(CLIENT)
+        startBackup.mockResolvedValue({ ok: false, code: 'bad-request', message: 'there are already five manual backups; delete one before taking another' })
+        vi.spyOn(console, 'error').mockImplementation(() => {})
+
+        const result = await backupNowAction('asot')
+        expect(result).toMatchObject({ ok: false })
+        expect(result.ok ? '' : result.error).toMatch(/five copies/)
+        expect(result.ok ? '' : result.error).not.toMatch(/manual backups/)
+    })
+
+    it('refuses to delete something that is not a snapshot id, before the session is read', async () => {
+        for (const bad of ['schedule', '../x', 42, null]) {
+            expect(await deleteBackupAction('asot', bad as never)).toEqual(CANNOT)
+        }
+        expect(callerFromSession).not.toHaveBeenCalled()
+        expect(deleteBackup).not.toHaveBeenCalled()
+    })
+
+    it('deletes a copy for its owner', async () => {
+        callerFromSession.mockResolvedValue(CLIENT)
+        deleteBackup.mockResolvedValue({ ok: true, value: null })
+
+        expect(await deleteBackupAction('asot', '4f1c2a9b')).toEqual({ ok: true, message: 'Deleted.' })
+        expect(deleteBackup).toHaveBeenCalledWith(expect.anything(), CLIENT.caller, 'asot', '4f1c2a9b')
+    })
+
+    it('refuses a malformed schedule before the session is read', async () => {
+        for (const bad of [
+            null,
+            { ...schedule, mode: 'hourly' },
+            { ...schedule, hour: 24 },
+            { ...schedule, minute: 1.5 },
+            { ...schedule, keep: { daily: -1, weekly: 4, monthly: 3 } },
+            { ...schedule, keep: null },
+        ]) {
+            expect(await saveScheduleAction('asot', bad)).toEqual(CANNOT)
+        }
+        expect(callerFromSession).not.toHaveBeenCalled()
+    })
+
+    it('sends only the fields hostd reads, and says when it kept fewer than asked', async () => {
+        callerFromSession.mockResolvedValue(CLIENT)
+        const clamped = { ...schedule, keep: { daily: 7, weekly: 4, monthly: 1 } }
+        setSchedule.mockResolvedValue({ ok: true, value: clamped })
+
+        const result = await saveScheduleAction('asot', { ...schedule, extra: 'ignored' })
+
+        expect(setSchedule).toHaveBeenCalledWith(expect.anything(), CLIENT.caller, 'asot', schedule)
+        expect(result).toMatchObject({ ok: true, schedule: clamped })
+        expect(result.ok ? result.message : '').toMatch(/fewer copies kept/)
     })
 })
 

@@ -542,6 +542,26 @@
 /* More air per deploy than ui/Row's default: each one is two lines and a chip, and at 9px they ran together */
 .history .deploy > div { padding-top: 13px; padding-bottom: 13px; }
 
+/* The Backups tab. Each copy is a row with its Download and Delete beside it rather than inside it: ui/Row's
+   aside is sized for a date, and two controls would crowd the title out of it. */
+.backup { border-bottom: 1px solid var(--rule); }
+.backup:last-of-type { border-bottom: 0; }
+.backup .note { margin: 0 0 8px 11px; }
+.backupRow { display: flex; align-items: center; gap: 10px; }
+.backupRow > :first-child { flex: 1 1 auto; min-width: 0; border-bottom: 0; }
+.download { color: var(--lake); font-size: 12px; text-decoration: none; }
+.download:hover { text-decoration: underline; }
+.download:focus-visible { outline: 2px solid var(--lake); outline-offset: 2px; }
+
+.schedule { display: flex; flex-wrap: wrap; align-items: flex-start; gap: 12px; margin-top: 12px; }
+.schedule > * { flex: 1 1 160px; max-width: 220px; }
+
+/* Narrow: the actions drop under the copy they belong to rather than squeezing it */
+@media (max-width: 560px) {
+    .backupRow { flex-wrap: wrap; }
+    .backupRow > .rowActions { margin: 0 0 10px 11px; }
+}
+
 /* No tab is taller than the window. Where ui/Shell fixes the frame to the window (the same 1081px it uses),
    the panel takes exactly the height left under the tab strip instead of at least its content's, and the
    long parts of a tab scroll inside themselves: the deploy history, the deploy log and the site log. A tab
