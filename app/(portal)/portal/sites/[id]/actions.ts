@@ -389,6 +389,28 @@ export async function changePrimaryDomainAction(
     }
 }
 
+// Promoting one of the environment's aliases to be its main address. The same configure request again,
+// and hostd treats an alias given as the new domain as a swap: the old main address becomes an alias, so
+// both names keep being served and only the redirect between them turns round. Nothing stops answering,
+// which is why this sits behind a plain confirmation rather than the typed one above.
+export async function makePrimaryDomainAction(id: string, environment: string, hostname: string): Promise<SiteActionResult> {
+    const name = environmentOf(environment)
+    if (!name || typeof hostname !== 'string') return { ok: false, error: 'That is not something this page can do.' }
+
+    const allowed = await allowOn(id, name, true)
+    if (!allowed.ok) return allowed
+
+    const wanted = hostname.trim().toLowerCase()
+    const result = await writeSettings(allowed.config, allowed.caller, id, { domains: { [name]: wanted } })
+    if (!result.ok) return refused(`make ${wanted} the primary domain on ${id}`, allowed.isAdmin, result)
+    await done(allowed, id, {
+        kind: 'domain.primary', summary: `Made ${wanted} ${name}'s main address`, target: { type: 'domain', id: wanted },
+    })
+
+    revalidatePath(`/portal/sites/${id}`)
+    return { ok: true, message: `${wanted} is the main address now, and the old one redirects to it.` }
+}
+
 export async function removeDomainAction(id: string, environment: string, hostname: string): Promise<SiteActionResult> {
     const name = environmentOf(environment)
     if (!name || typeof hostname !== 'string') return { ok: false, error: 'That is not something this page can do.' }

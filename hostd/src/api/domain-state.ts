@@ -97,7 +97,7 @@ export class DomainStore {
     // Brings the store level with the registry: a record for every hostname the registry names, and none
     // for a hostname it no longer does.
     //
-    // An existing record is never touched, and that is the whole point. The registry is re-read every ten
+    // An existing record is never touched beyond its primary flag, and that is the whole point. The registry is re-read every ten
     // seconds, so anything this wrote to a live record would be written six times a minute: a pending
     // domain would have its clock reset before it could ever reach 72 hours, and an active one would
     // forget it had been checked.
@@ -119,9 +119,17 @@ export class DomainStore {
 
         let changed = false
         for (const [key, fresh] of wanted) {
-            if (this.records.has(key)) continue
-            this.records.set(key, fresh)
-            changed = true
+            const existing = this.records.get(key)
+            if (existing === undefined) {
+                this.records.set(key, fresh)
+                changed = true
+            } else if (existing.primary !== fresh.primary) {
+                // The one field that does follow the registry: an alias promoted to primary (and the old
+                // primary it swapped with) keeps its record, its clock and its verification, and only
+                // which of the two is the primary changes. Nothing else of the record is touched.
+                this.records.set(key, { ...existing, primary: fresh.primary })
+                changed = true
+            }
         }
         for (const key of [...this.records.keys()]) {
             if (wanted.has(key)) continue

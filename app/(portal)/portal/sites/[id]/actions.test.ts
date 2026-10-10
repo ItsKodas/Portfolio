@@ -76,7 +76,7 @@ vi.mock('@/server/hostd/environments', () => ({
 const {
     backupNowAction, deleteBackupAction, saveScheduleAction,
     addDomainAction, addEnvironmentAction, lifecycleAction, copyFromLiveAction, copyRunsAction, deleteEnvironmentAction, restoreEnvironmentAction, changePrimaryDomainAction, deleteSiteAction, deployAction, saveEnvAction, saveSettingsAction,
-    setPortAction, setPrimaryDomainAction,
+    makePrimaryDomainAction, setPortAction, setPrimaryDomainAction,
 } = await import('./actions')
 
 const ADMIN = { caller: { actor: 'admin', user: 'koda@horizons.gg' }, clientId: null }
@@ -317,6 +317,35 @@ describe('setPrimaryDomainAction', () => {
 // Moving an address that already exists is the same request behind a confirmation, and the confirmation
 // is checked here rather than only in the dialog: a server action is a request like any other, so a
 // disabled button proves nothing about what actually arrived.
+describe('makePrimaryDomainAction', () => {
+    it('refuses an environment or a hostname the page could not have sent', async () => {
+        expect(await makePrimaryDomainAction('acme', 'uat-1', 'www.acme.com')).toEqual(CANNOT)
+        expect(await makePrimaryDomainAction('acme', 'live', 5 as never)).toEqual(CANNOT)
+        expect(writeSettings).not.toHaveBeenCalled()
+    })
+
+    // hostd turns an alias given as the new domain into a swap, so this is the same configure request
+    it('sends the alias as the environment\'s new domain', async () => {
+        callerFromSession.mockResolvedValue({ caller: { kind: 'admin' }, clientId: null })
+        writeSettings.mockResolvedValue({ ok: true, data: { ok: true } })
+
+        const result = await makePrimaryDomainAction('acme', 'live', ' WWW.acme.com ')
+
+        expect(result.ok).toBe(true)
+        expect(writeSettings).toHaveBeenCalledWith(
+            expect.anything(), expect.anything(), 'acme', { domains: { live: 'www.acme.com' } },
+        )
+    })
+
+    it('refuses a client outright', async () => {
+        callerFromSession.mockResolvedValue({ caller: { kind: 'client' }, clientId: 'cl_1' })
+
+        expect(await makePrimaryDomainAction('acme', 'live', 'www.acme.com'))
+            .toEqual({ ok: false, error: 'This is not set up yet.' })
+        expect(writeSettings).not.toHaveBeenCalled()
+    })
+})
+
 describe('changePrimaryDomainAction', () => {
     it('refuses an environment, a hostname or a confirmation the page could not have sent', async () => {
         expect(await changePrimaryDomainAction('acme', 'uat-1', 'acme.com', 'acme.com')).toEqual(CANNOT)
