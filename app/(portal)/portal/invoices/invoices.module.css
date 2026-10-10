@@ -220,6 +220,8 @@
 
 .problem { margin-top: 10px; }
 
+.payChoices { display: flex; flex-wrap: wrap; gap: 8px; }
+
 .dialogText {
     margin: 0 0 12px;
     color: var(--ink-2);

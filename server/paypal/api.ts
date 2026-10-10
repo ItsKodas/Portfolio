@@ -6,6 +6,9 @@ import 'server-only'
 
 import type { PaypalConfig } from './config'
 
+// How the client chose to pay: signed in to PayPal, or with a card on PayPal's own page and no account needed
+export type PayMethod = 'paypal' | 'card'
+
 export type Fetch = typeof fetch
 
 export class PaypalError extends Error {
@@ -111,7 +114,7 @@ export function createPaypal(config: PaypalConfig, fetchImpl: Fetch = fetch, now
         // it; invoice_id is the number the client sees, and PayPal refuses a second capture against it.
         createOrder: async (input: {
             invoiceId: string, invoiceNumber: string, description: string, value: string, currency: string,
-            returnUrl: string, cancelUrl: string, requestId: string,
+            returnUrl: string, cancelUrl: string, requestId: string, method?: PayMethod,
         }): Promise<{ id: string, approveUrl: string }> => {
             const order = await call<Order>('POST', '/v2/checkout/orders', {
                 intent: 'CAPTURE',
@@ -123,7 +126,14 @@ export function createPaypal(config: PaypalConfig, fetchImpl: Fetch = fetch, now
                     amount: { currency_code: input.currency, value: input.value },
                 }],
                 payment_source: {
-                    paypal: { experience_context: { ...experience(input.returnUrl, input.cancelUrl), user_action: 'PAY_NOW' } },
+                    paypal: {
+                        experience_context: {
+                            ...experience(input.returnUrl, input.cancelUrl),
+                            user_action: 'PAY_NOW',
+                            // GUEST_ONLY opens straight on PayPal's card form, for a client with no PayPal account
+                            landing_page: input.method === 'card' ? 'GUEST_ONLY' : 'LOGIN',
+                        },
+                    },
                 },
             }, input.requestId)
             const approveUrl = linkOf(order.links, 'payer-action', 'approve')
@@ -170,7 +180,7 @@ export function createPaypal(config: PaypalConfig, fetchImpl: Fetch = fetch, now
         // invoice they were looking at when they set it up
         createSubscription: async (input: {
             planId: string, customId: string, subscriber: { name: string, email: string },
-            returnUrl: string, cancelUrl: string, requestId: string,
+            returnUrl: string, cancelUrl: string, requestId: string, method?: PayMethod,
         }): Promise<{ id: string, approveUrl: string }> => {
             const [given, ...rest] = input.subscriber.name.trim().split(/\s+/)
             const subscription = await call<Subscription>('POST', '/v1/billing/subscriptions', {
@@ -180,7 +190,12 @@ export function createPaypal(config: PaypalConfig, fetchImpl: Fetch = fetch, now
                     name: { given_name: (given || input.subscriber.name).slice(0, 140), ...(rest.length && { surname: rest.join(' ').slice(0, 140) }) },
                     email_address: input.subscriber.email,
                 },
-                application_context: { ...experience(input.returnUrl, input.cancelUrl), user_action: 'SUBSCRIBE_NOW' },
+                // BILLING opens on the card form. PayPal keeps the card to charge it each period.
+                application_context: {
+                    ...experience(input.returnUrl, input.cancelUrl),
+                    user_action: 'SUBSCRIBE_NOW',
+                    landing_page: input.method === 'card' ? 'BILLING' : 'LOGIN',
+                },
             }, input.requestId)
             const approveUrl = linkOf(subscription.links, 'approve')
             if (!approveUrl) throw new PaypalError('PayPal did not say where to send the client to approve', 502, null, null)

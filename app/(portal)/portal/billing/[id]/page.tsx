@@ -73,7 +73,7 @@ export default async function ClientInvoicePage({ params, searchParams }: {
                             {automatic
                                 ? 'This plan pays automatically, so PayPal will settle this invoice for you.'
                                 : online
-                                    ? 'Pay with your PayPal account, or with a debit or credit card through PayPal without an account.'
+                                    ? 'Pay by debit or credit card with no PayPal account needed, or sign in to PayPal. Either way PayPal takes the payment securely.'
                                     : 'Online payment is not available right now. Reply to the invoice email and I will help.'}
                             {invoice.plan && !automatic && online && ' This plan can also pay itself each time, from the Billing page.'}
                         </p>
