@@ -9,7 +9,7 @@ import { LIVE, type EnvironmentName } from '@/server/hostd/env'
 import { listDeletedEnvironments, type DeletedEnvironment } from '@/server/hostd/environments'
 import { forAdmin, forClient } from '@/server/hostd/errors'
 import { getProject, listProjects, type ServiceStatus } from '@/server/hostd/projects'
-import { callerFromSession } from '@/server/hostd/session'
+import { callerFromSession, type Who } from '@/server/hostd/session'
 import { accessOf } from '@/server/sites/access'
 import type { Permission } from '@/server/sites/permissions'
 import { Callout } from '@/ui/Callout/Callout'
@@ -32,6 +32,8 @@ import { NewSiteButton } from '../../newSite/NewSite'
 import { serviceDot, stateOf, stateOfServices, type SiteState } from '../../siteState'
 import nav from '../../portal.module.css'
 import { SignOut } from '../../header'
+import { ViewingAsBanner } from '../../viewAs/banner'
+import { viewingAsName } from '../../viewAs/who'
 import PortalTabs from '../../tabs'
 import styles from './site.module.css'
 
@@ -159,8 +161,10 @@ export default async function SitePage({ params, searchParams }: Props) {
     const { id } = await params
     const search = await searchParams
 
+    // Kept as well as handed over, so the bar can tell the operator viewing as a client from the client
+    const seen: { who: Who | null } = { who: null }
     const view = await gatherSite({
-        who: callerFromSession,
+        who: async () => (seen.who = await callerFromSession()),
         config: () => {
             const problems: string[] = []
             const value = readHostd(process.env, problems)
@@ -174,6 +178,8 @@ export default async function SitePage({ params, searchParams }: Props) {
     }, id)
 
     if (view.kind === 'anonymous') redirect('/portal/sign-in')
+    // The name of the client the operator is viewing as, when they are
+    const viewingAs = viewingAsName(seen.who)
 
     // Both of these are notFound(), and that is the point. Answering "no such site" to a client asking
     // about somebody else's project confirms it does not exist; answering "not yours" confirms it does.
@@ -331,7 +337,15 @@ export default async function SitePage({ params, searchParams }: Props) {
         // Around the whole shell rather than around the panel: the sidebar draws this site's dot too, and
         // a restart that calms the strip and leaves a red dot beside the name has only moved the alarm.
         <SettlingProvider state={current}>
-            <Shell brand={<Brand />} tabs={<PortalTabs admin={view.isAdmin} />} bar={<SignOut admin={view.isAdmin} />} nav={navigation} rail={null} fill>
+            <Shell
+                brand={<Brand />}
+                tabs={<PortalTabs admin={view.isAdmin} />}
+                bar={<SignOut admin={view.isAdmin || !!viewingAs} />}
+                notice={viewingAs ? <ViewingAsBanner name={viewingAs} /> : undefined}
+                nav={navigation}
+                rail={null}
+                fill
+            >
                 <div className={styles.hello}>
                     <h1>{view.name}</h1>
                     <p className={styles.mono}>{view.id}</p>

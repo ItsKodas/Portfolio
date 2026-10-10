@@ -167,4 +167,27 @@ describe('the portal home', () => {
         // Asking for it at all would only earn a refusal to throw away, so the page does not
         expect(getHealth).not.toHaveBeenCalled()
     })
+
+    // The operator viewing as a client gets the client's page, with the banner that says so and the way back
+    it('shows the client\'s page and the banner while the operator is viewing as a client', async () => {
+        callerFromSession.mockResolvedValue({
+            caller: { actor: 'client:cl_8F2K1ABC', user: 'koda@horizons.gg', sites: [] },
+            clientId: 'cl_8F2K1ABC',
+            impersonatedBy: 'koda@horizons.gg',
+            clientName: 'Acme Bakery',
+        })
+
+        render(await PortalHome())
+
+        expect(screen.getByRole('status')).toHaveTextContent('Viewing as Acme Bakery')
+        expect(screen.getByRole('button', { name: 'Stop viewing as client' })).toBeInTheDocument()
+        expect(screen.getByRole('heading', { level: 1 })).toHaveTextContent('Your site')
+        expect(screen.queryByRole('link', { name: 'Clients' })).toBeNull()
+        expect(getHealth).not.toHaveBeenCalled()
+    })
+
+    it('has no banner for the operator as themselves', async () => {
+        render(await PortalHome())
+        expect(screen.queryByText(/Viewing as/)).toBeNull()
+    })
 })
