@@ -1,3 +1,4 @@
+import { callerActor, record } from '@/server/audit/record'
 import { openBackupDownload } from '@/server/hostd/backups'
 import { readHostd } from '@/server/hostd/config'
 import { hasAccess } from '@/server/hostd/projects'
@@ -21,7 +22,7 @@ export async function GET(_request: Request, { params }: { params: Promise<{ id:
         return Response.json({ code: 'unavailable', message: 'This is temporarily unavailable.' }, { status: 503 })
     }
 
-    return relayBackupDownload(
+    const response = await relayBackupDownload(
         {
             config,
             caller: who.caller,
@@ -32,4 +33,12 @@ export async function GET(_request: Request, { params }: { params: Promise<{ id:
         id,
         snapshot,
     )
+    // Recorded once hostd has agreed to hand it over, which is as close to "downloaded" as this side can see
+    if (response.ok) {
+        await record({
+            kind: 'backup.download', actor: callerActor(who.caller), site: id,
+            summary: `Downloaded backup ${snapshot}`, target: { type: 'backup', id: snapshot },
+        })
+    }
+    return response
 }

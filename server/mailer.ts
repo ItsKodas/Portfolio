@@ -4,6 +4,7 @@ import 'server-only'
 
 import nodemailer from 'nodemailer'
 
+import { recordEmail } from './audit/record'
 import type { SmtpConfig } from './env'
 import type { Email } from './emails/layout'
 
@@ -22,7 +23,15 @@ export function createMailer(config: SmtpConfig): SendEmail {
         greetingTimeout: 10_000,
         socketTimeout: 20_000,
     })
+    // Every email the site sends comes through here, so this is where the Logs page's copy of each one is
+    // written: after the relay has answered, with its refusal when it refused.
     return async email => {
-        await transport.sendMail(email)
+        try {
+            await transport.sendMail(email)
+        } catch (error) {
+            await recordEmail(email, error)
+            throw error
+        }
+        await recordEmail(email, null)
     }
 }

@@ -6,6 +6,7 @@
 
 import { revalidatePath } from 'next/cache'
 
+import { callerActor, record } from '@/server/audit/record'
 import { repo } from '@/server/clients/wiring'
 import { ALL_PERMISSIONS } from '@/server/sites/permissions'
 import { readHostd, type HostdConfig } from '@/server/hostd/config'
@@ -89,6 +90,17 @@ export async function createSiteAction(input: unknown): Promise<NewSiteResult> {
         console.error(`[portal] creating ${site.id} failed: ${forAdmin(result.code, result.message)}`)
         return { ok: false, error: forAdmin(result.code, result.message) }
     }
+
+    await record({
+        kind: 'site.create',
+        actor: callerActor(allowed.caller),
+        site: site.id,
+        summary: `Created ${site.name} (${site.id}) from ${site.repo}`,
+        detail: {
+            repo: site.repo, branch: site.branch, domain: site.domain || null, capabilities: site.capabilities,
+            port: site.port, client: site.client || null, deploy: site.deploy,
+        },
+    })
 
     const warnings: string[] = []
     if (result.value.vhost && !result.value.vhost.ok) warnings.push(`The vhost was not written: ${result.value.vhost.message}`)

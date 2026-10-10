@@ -18,6 +18,7 @@ const input = (over: Partial<VhostInput> = {}): VhostInput => ({
     certificate: { chain: '/etc/ssl/hostd/origin.pem', key: '/etc/ssl/hostd/origin.key' },
     maintenanceDir: '/var/www/hostd-maintenance',
     maintenanceFlag: '/run/hostd/maintenance/acme-live',
+    holdingPage: '/var/www/hostd-maintenance/sites/acme-live.html',
     acmeWebroot: '/var/www/hostd-acme',
     ...over,
 })
@@ -224,7 +225,7 @@ describe('renderVhost under Flexible SSL', () => {
         const primaryBlock = blocksOf(renderVhost(input()), 443)[0] ?? ''
         const holding = primaryBlock.match(/ErrorDocument 503 (\S+)/)?.[1] ?? ''
         assert.notEqual(holding, '')
-        assert.ok(primaryBlock.includes(`Alias "${holding}" "/var/www/hostd-maintenance/index.html"`), primaryBlock)
+        assert.ok(primaryBlock.includes(`Alias "${holding}" "/var/www/hostd-maintenance/sites/acme-live.html"`), primaryBlock)
         const excluded = primaryBlock.indexOf(`ProxyPass ${holding} !`)
         const proxied = primaryBlock.indexOf('ProxyPass / http://')
         assert.ok(excluded >= 0 && proxied > excluded, 'the holding page must be excluded before the general ProxyPass')

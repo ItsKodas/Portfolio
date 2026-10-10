@@ -22,8 +22,13 @@ const deleteBackup = vi.fn()
 const setSchedule = vi.fn()
 const hasAccess = vi.fn()
 const lifecycle = vi.fn()
+const record = vi.fn()
 
 vi.mock('next/cache', () => ({ revalidatePath: () => {} }))
+vi.mock('@/server/audit/record', async importOriginal => ({
+    ...(await importOriginal<typeof import('@/server/audit/record')>()),
+    record: (...args: unknown[]) => record(...args),
+}))
 vi.mock('@/server/db', () => ({ getDb: () => ({ site: { deleteMany: (...args: unknown[]) => deleteSites(...args) } }) }))
 vi.mock('@/server/hostd/remove', () => ({ removeProject: (...args: unknown[]) => removeProject(...args) }))
 vi.mock('@/server/hostd/config', () => ({ readHostd: () => ({ url: 'http://hostd', token: 't' }) }))
@@ -102,6 +107,20 @@ describe('an action naming an environment', () => {
         expect(startDeploy).toHaveBeenCalledWith(expect.anything(), expect.anything(), 'acme', 'uat1')
     })
 
+    it('writes the deploy to the activity log once hostd has started it, and nothing when it refuses', async () => {
+        callerFromSession.mockResolvedValue(ADMIN)
+        startDeploy.mockResolvedValue({ ok: true, value: { environment: 'live', trigger: 'manual' } })
+        await deployAction('acme', 'live')
+        expect(record).toHaveBeenCalledWith(expect.objectContaining({
+            kind: 'deploy.start', site: 'acme', actor: { type: 'ADMIN', id: 'koda@horizons.gg' },
+        }))
+
+        record.mockClear()
+        startDeploy.mockResolvedValue({ ok: false, code: 'busy', message: 'a deploy is running' })
+        await deployAction('acme', 'live')
+        expect(record).not.toHaveBeenCalled()
+    })
+
     it('refuses a well formed name the site does not have, without asking hostd to act', async () => {
         callerFromSession.mockResolvedValue(ADMIN)
 
@@ -128,6 +147,18 @@ describe('an action naming an environment', () => {
 })
 
 describe('saveEnvAction', () => {
+    it('logs the variable names it saved, never their values', async () => {
+        callerFromSession.mockResolvedValue(ADMIN)
+        writeEnvFile.mockResolvedValue({ ok: true, value: { output: 'written' } })
+
+        await saveEnvAction('acme', 'live', '.env', '# comment\nexport API_KEY=hunter2\nDB_URL = postgres://secret\n\n')
+
+        const entry = record.mock.calls[0][0]
+        expect(entry.detail).toEqual({ path: '.env', variables: ['API_KEY', 'DB_URL'] })
+        expect(JSON.stringify(entry)).not.toContain('hunter2')
+        expect(JSON.stringify(entry)).not.toContain('secret')
+    })
+
     it('writes to the environment it was given, not always live', async () => {
         callerFromSession.mockResolvedValue(ADMIN)
         listEnvironments.mockResolvedValue({ ok: true, value: [env('live'), env('uat1')] })

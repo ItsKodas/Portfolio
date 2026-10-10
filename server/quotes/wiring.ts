@@ -5,6 +5,7 @@ import 'server-only'
 
 import { after } from 'next/server'
 
+import { record } from '../audit/record'
 import { getDb } from '../db'
 import { ipHashKey, quoteMailConfig, turnstileSecret } from '../env'
 import { createMailer } from '../mailer'
@@ -40,7 +41,17 @@ export function submitDeps(): SubmitDeps {
         verifyTurnstile: (token, ip) => verifyTurnstile(token, ip, turnstileSecret()),
         hashIp: ip => hashIp(ip, ipHashKey()),
         countRecent: repo.countRecent,
-        save: repo.create,
+        save: async (input, ipHash) => {
+            const saved = await repo.create(input, ipHash)
+            await record({
+                kind: 'quote.submit',
+                actor: { type: 'VISITOR', name: input.name },
+                target: { type: 'quote', id: saved.id, name: input.name },
+                summary: `${input.name}${input.company ? ` (${input.company})` : ''} sent a quote request`,
+                detail: { email: input.email },
+            })
+            return saved
+        },
         afterResponse: task => after(task),
         deliver: async id => {
             await deliverById(id)
