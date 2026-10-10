@@ -90,4 +90,18 @@ describe('authenticate', () => {
             assert.equal(!result.ok && result.message, 'X-Hostd-Sites must be a comma separated list of project ids')
         }
     })
+
+    // The sites whose env files the portal gave a client, read beside their sites the same way
+    it('reads the env sites the portal gave a client', () => {
+        const result = authenticate(headers({ 'x-hostd-sites': 'acme,other', 'x-hostd-env-sites': 'acme' }), TOKEN)
+        assert.deepEqual(result.ok && result.caller.actor, {
+            kind: 'client', client: 'cl_1', sites: new Set(['acme', 'other']), envSites: new Set(['acme']),
+        })
+    })
+
+    it('refuses a malformed env list with 400', () => {
+        const result = authenticate(headers({ 'x-hostd-sites': 'acme', 'x-hostd-env-sites': 'acme,' }), TOKEN)
+        assert.equal(!result.ok && result.status, 400)
+        assert.equal(!result.ok && result.message, 'X-Hostd-Env-Sites must be a comma separated list of project ids')
+    })
 })

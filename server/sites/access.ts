@@ -15,12 +15,21 @@ export async function accessOf(clientId: string, projectId: string): Promise<Per
     return row ? row.permissions : null
 }
 
-// Every project this client has access to, which is what hostd is told so it can hold the same line
+// Every project this client has access to
 export async function sitesOf(clientId: string): Promise<string[]> {
+    return (await hostdSitesOf(clientId)).sites
+}
+
+// What hostd is told so it can hold the same line: every project this client has access to, and those of
+// them whose env files they may also read and edit
+export async function hostdSitesOf(clientId: string): Promise<{ sites: string[], envSites: string[] }> {
     const rows = await getDb().siteAccess.findMany({
         where: { clientId },
-        select: { site: { select: { projectId: true } } },
+        select: { permissions: true, site: { select: { projectId: true } } },
         orderBy: { site: { projectId: 'asc' } },
     })
-    return rows.map(row => row.site.projectId)
+    return {
+        sites: rows.map(row => row.site.projectId),
+        envSites: rows.filter(row => row.permissions.includes('ENV_FILES')).map(row => row.site.projectId),
+    }
 }

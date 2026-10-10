@@ -197,6 +197,11 @@ what the checks below rely on. The portal always sends `X-Hostd-Sites` (the comm
 client has been given in the portal), and then that list decides and `client:` is not read at all. Add
 `-H "X-Hostd-Sites: hostd-test"` to a call to act as the portal does.
 
+Env files are admin-only for a client, except on the projects named in `X-Hostd-Env-Sites`: the part of
+their sites where the portal has also given them Edit env files. Only read alongside `X-Hostd-Sites`, and a
+project must be in both. Add `-H "X-Hostd-Env-Sites: hostd-test"` as well to read and write env files as such
+a client.
+
 ## Live checks with a throwaway project
 
 These prove phase 1 end to end. Do them once after the first deploy, and again after any change to

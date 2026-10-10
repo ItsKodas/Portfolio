@@ -179,11 +179,26 @@ describe('saveEnvAction', () => {
         expect(writeEnvFile).not.toHaveBeenCalled()
     })
 
-    it('refuses a client outright', async () => {
+    it('refuses a client not given ENV_FILES on the site', async () => {
         callerFromSession.mockResolvedValue({ caller: { kind: 'client' }, clientId: 'cl_1' })
+        hasAccess.mockResolvedValue(false)
 
         expect(await saveEnvAction('acme', 'live', '.env', 'A=1')).toEqual({ ok: false, error: 'This is not set up yet.' })
+        expect(hasAccess.mock.calls[0][3]).toBe('ENV_FILES')
         expect(writeEnvFile).not.toHaveBeenCalled()
+    })
+
+    // The edit lands in the activity log under the client who made it
+    it('lets a client given ENV_FILES save, and logs it as theirs', async () => {
+        callerFromSession.mockResolvedValue({ caller: { actor: 'client:cl_1', user: 'cl_1', sites: ['acme'], envSites: ['acme'] }, clientId: 'cl_1' })
+        writeEnvFile.mockResolvedValue({ ok: true, value: { output: 'written' } })
+
+        expect((await saveEnvAction('acme', 'live', '.env', 'API_KEY=1')).ok).toBe(true)
+        expect(hasAccess.mock.calls[0][3]).toBe('ENV_FILES')
+        const entry = record.mock.calls[0][0]
+        expect(entry.kind).toBe('env.file')
+        expect(entry.actor).toEqual({ type: 'CLIENT', id: 'cl_1' })
+        expect(entry.detail).toEqual({ path: '.env', variables: ['API_KEY'] })
     })
 })
 

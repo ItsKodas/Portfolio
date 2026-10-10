@@ -53,6 +53,7 @@ const domain = (hostname: string) => ({
 const props = {
     view,
     isAdmin: true,
+    canEditEnv: true,
     selected: 'live',
     adding: false,
     file: null,
@@ -240,7 +241,7 @@ describe('the detail, for the operator', () => {
 })
 
 describe('the detail, for a client', () => {
-    const client = { isAdmin: false }
+    const client = { isAdmin: false, canEditEnv: false }
 
     it('shows the Summary without a port and the Domains as a client sees them, but no Env files', () => {
         tab({ ...client, selected: 'uat1', domains: { domains: [domain('uat1.acme.com')], trouble: null } })
@@ -250,6 +251,11 @@ describe('the detail, for a client', () => {
         expect(within(region('Domains')!).getByText('Your website address')).toBeInTheDocument()
         expect(region('Env files')).toBeNull()
         expect(screen.queryByText(/env files of/)).toBeNull()
+    })
+
+    it('shows a client given ENV_FILES the Env files too', () => {
+        tab({ isAdmin: false, canEditEnv: true, selected: 'uat1', file: '.env' })
+        expect(within(region('Env files')!).getByText('env files of uat1 at .env')).toBeInTheDocument()
     })
 
     it('heads the sections under the environment name for a client too', () => {

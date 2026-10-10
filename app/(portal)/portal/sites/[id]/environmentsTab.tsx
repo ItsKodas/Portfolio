@@ -8,8 +8,8 @@
 // has, and read what the sections need.
 //
 // A client sees the list, the Summary without the port or any action, and the Domains as they have always
-// seen them. The Env files, adding, deleting, restoring and copying are the operator's alone: hostd refuses
-// a client every one of them, and none of them is drawn.
+// seen them, and the Env files only when they were given ENV_FILES on this site. Adding, deleting, restoring
+// and copying are the operator's alone: hostd refuses a client every one of them, and none of them is drawn.
 
 import type { Domain } from '@/server/hostd/domains'
 import { LIVE, type EnvironmentName } from '@/server/hostd/env'
@@ -32,6 +32,8 @@ type Props = {
         environments: Environment[]
     }
     isAdmin: boolean
+    // Whether the Env files section is drawn: the operator, or a client given ENV_FILES
+    canEditEnv: boolean
     // The environment shown, already checked against the site's own, with live the fallback
     selected: EnvironmentName
     // Whether the add form is open in place of the detail. Only ever drawn for the operator.
@@ -48,7 +50,7 @@ type Props = {
     deletedError: string | null
 }
 
-export function EnvironmentsTab({ view, isAdmin, selected, adding, file, domains, branches, branchesError, deleted, deletedError }: Props) {
+export function EnvironmentsTab({ view, isAdmin, canEditEnv, selected, adding, file, domains, branches, branchesError, deleted, deletedError }: Props) {
     const base = `/portal/sites/${view.id}?tab=environments`
     const canDomains = view.capabilities.includes('domains')
     const canEnv = view.capabilities.includes('env')
@@ -146,15 +148,15 @@ export function EnvironmentsTab({ view, isAdmin, selected, adding, file, domains
                                         </Callout>}
                                 </section>
 
-                                {/* Not drawn for a client at all: hostd refuses them env outright */}
-                                {isAdmin && (
+                                {/* Not drawn for a client not given ENV_FILES: hostd refuses them env too */}
+                                {canEditEnv && (
                                     <section className={styles.envSection} aria-labelledby="env-files">
                                         <h3 id="env-files" className={styles.envSectionHead}>Env files</h3>
                                         {canEnv
                                             ? <EnvPanel id={view.id} file={file} environment={selected} />
                                             : <Callout title="Not switched on for this site">
-                                                Environment files are not switched on for this site yet. Turn it on
-                                                from this site&apos;s Settings tab.
+                                                Environment files are not switched on for this site yet.
+                                                {isAdmin && <> Turn it on from this site&apos;s Settings tab.</>}
                                             </Callout>}
                                     </section>
                                 )}

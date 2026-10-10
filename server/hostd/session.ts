@@ -22,9 +22,9 @@ export type SessionSources = {
     adminSession: () => Promise<{ user?: { email?: string | null } | null } | null>
     adminEmail: string | undefined
     clientSession: () => Promise<{ client: { id: string } } | null>
-    // The projects a client has been given access to, read on every request so a grant taken away stops
-    // working at once rather than when the session ends
-    clientSites: (clientId: string) => Promise<string[]>
+    // The projects a client has been given access to, and those of them whose env files they may edit, read
+    // on every request so a grant taken away stops working at once rather than when the session ends
+    clientSites: (clientId: string) => Promise<{ sites: string[], envSites: string[] }>
     // The client the operator has chosen to view as, if any. Only ever asked once the admin session has
     // been checked, so on its own the cookie behind it makes nobody anybody.
     impersonating: (adminEmail: string) => Promise<{ id: string, name: string } | null>
@@ -44,8 +44,8 @@ const liveSources = (): SessionSources => ({
         return currentClient()
     },
     clientSites: async clientId => {
-        const { sitesOf } = await import('../sites/access')
-        return sitesOf(clientId)
+        const { hostdSitesOf } = await import('../sites/access')
+        return hostdSitesOf(clientId)
     },
     impersonating: async adminEmail => {
         const { impersonatedClient } = await import('../clients/impersonating')
@@ -64,9 +64,9 @@ export async function callerFromSession(sources: SessionSources = liveSources())
         // Only hostd's audit line still names the operator.
         const viewing = await sources.impersonating(email)
         if (viewing) {
-            const sites = await sources.clientSites(viewing.id)
+            const { sites, envSites } = await sources.clientSites(viewing.id)
             return {
-                caller: callerForClient(viewing.id, sites, email),
+                caller: callerForClient(viewing.id, sites, email, envSites),
                 clientId: viewing.id,
                 impersonatedBy: email,
                 clientName: viewing.name,
@@ -77,8 +77,8 @@ export async function callerFromSession(sources: SessionSources = liveSources())
 
     const client = await sources.clientSession()
     if (client) {
-        const sites = await sources.clientSites(client.client.id)
-        return { caller: callerForClient(client.client.id, sites), clientId: client.client.id }
+        const { sites, envSites } = await sources.clientSites(client.client.id)
+        return { caller: callerForClient(client.client.id, sites, client.client.id, envSites), clientId: client.client.id }
     }
 
     return null

@@ -5,14 +5,18 @@
 // For a client, X-Hostd-Sites says which projects the portal has given them access to, read from its own
 // database for this one request. It is trusted exactly as far as the actor header is, and for the same reason.
 // Absent means a portal from before site access existed, and the registry's own client field decides instead.
+//
+// X-Hostd-Env-Sites is the part of that list where the portal has also given the client their env files to
+// read and edit. It is read, and trusted, the same way, and policy.ts still asks for ownership on top of it.
 
 import { createHash, timingSafeEqual } from 'node:crypto'
 import type { IncomingHttpHeaders } from 'node:http'
 import { CLIENT_ID, PROJECT_ID, USER_ID } from '../shared/formats.ts'
 
 // sites is the projects the portal says this client may reach. Optional rather than nullable so an actor
-// built without it reads as the older portal it stands for (see policy.ts, ownsProject).
-export type Actor = { kind: 'admin' } | { kind: 'client', client: string, sites?: ReadonlySet<string> }
+// built without it reads as the older portal it stands for (see policy.ts, ownsProject). envSites is the
+// projects whose env files they may read and edit; absent is none, which is what every client had before it.
+export type Actor = { kind: 'admin' } | { kind: 'client', client: string, sites?: ReadonlySet<string>, envSites?: ReadonlySet<string> }
 export type Caller = { actor: Actor, user: string }
 export type AuthFailure = {
     ok: false
@@ -83,7 +87,13 @@ export function authenticate(headers: IncomingHttpHeaders, token: string): { ok:
         if (!sites) {
             return { ok: false, status: 400, code: 'bad-request', message: 'X-Hostd-Sites must be a comma separated list of project ids', label: actorLabel(actor), user: userLabel }
         }
-        return { ok: true, caller: { actor: { ...actor, sites }, user: userHeader } }
+        const envHeader = headers['x-hostd-env-sites']
+        if (envHeader === undefined) return { ok: true, caller: { actor: { ...actor, sites }, user: userHeader } }
+        const envSites = typeof envHeader === 'string' ? parseSites(envHeader) : null
+        if (!envSites) {
+            return { ok: false, status: 400, code: 'bad-request', message: 'X-Hostd-Env-Sites must be a comma separated list of project ids', label: actorLabel(actor), user: userLabel }
+        }
+        return { ok: true, caller: { actor: { ...actor, sites, envSites }, user: userHeader } }
     }
     return { ok: true, caller: { actor, user: userHeader } }
 }
