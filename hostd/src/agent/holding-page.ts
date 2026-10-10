@@ -42,16 +42,16 @@ const STATE_COPY: Record<HoldingState, { label: string, lead: (name: string) => 
         body: () => 'This usually only takes a minute or two. There is nothing you need to do: this page will take you back to the site as soon as it is ready.',
     },
     stopped: {
-        label: 'Switched off',
-        lead: name => `${name} has been intentionally switched off.`,
-        // No promise of when: a stopped site may be back in five minutes, in weeks or never, and only its
-        // owner knows which
-        body: contact => `The site's owner has taken it offline on purpose, so nothing is broken. There is no set time for it to come back, so please check back later.${contact ? ' If you need something in the meantime, you can reach them below.' : ''}`,
+        label: 'Offline for now',
+        lead: name => `${name} is offline for now.`,
+        // Honest that it was taken down on purpose, without a promise of when it returns (only its owner
+        // knows) and without wording that would put a visitor off coming back
+        body: contact => `The site's owner has taken it offline for the time being, so nothing has gone wrong. Please check back later.${contact ? ' Need something in the meantime? You can reach them below.' : ''}`,
     },
     crashed: {
         label: 'Having trouble',
-        lead: name => `${name} has run into a problem and could not restart itself.`,
-        body: contact => `The site keeps stopping unexpectedly, so it has not been able to recover on its own.${contact ? ' If you need it urgently, the site\'s owner can help.' : ' The site\'s owner will need to look into it.'}`,
+        lead: name => `${name} is having some trouble right now.`,
+        body: contact => `It has run into a technical problem and is not available at the moment.${contact ? ' If you need something urgently, you can reach the site\'s owner below.' : ' Please check back later.'}`,
     },
     unavailable: {
         label: 'Back shortly',

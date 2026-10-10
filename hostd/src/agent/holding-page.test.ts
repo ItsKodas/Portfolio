@@ -15,8 +15,8 @@ const input = (over: Partial<HoldingPageInput> = {}): HoldingPageInput => ({
 describe('renderHoldingPage', () => {
     it('says why the site is down, in each state', () => {
         assert.match(renderHoldingPage(input({ state: 'upgrading' })), /A new version of Mappies is being put in place/)
-        assert.match(renderHoldingPage(input({ state: 'stopped' })), /Mappies has been intentionally switched off/)
-        assert.match(renderHoldingPage(input({ state: 'crashed' })), /Mappies has run into a problem and could not restart itself/)
+        assert.match(renderHoldingPage(input({ state: 'stopped' })), /Mappies is offline for now/)
+        assert.match(renderHoldingPage(input({ state: 'crashed' })), /Mappies is having some trouble right now/)
         assert.match(renderHoldingPage(input({ state: 'unavailable' })), /Mappies is not answering right now/)
     })
 
