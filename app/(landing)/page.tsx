@@ -141,9 +141,9 @@ export default function Landing() {
             <section className="mt-28 grid items-start gap-10 md:grid-cols-[1.4fr_1fr]">
                 <div>
                     <h1 className="mb-3 text-4xl font-bold tracking-tight text-white sm:text-5xl">Dakoda Lancelot</h1>
-                    <p className="mb-6 text-lg font-medium text-[#f19bb3]">Full-Stack Developer</p>
+                    <p className="mb-6 text-lg font-medium text-[#f19bb3]">Fullstack Developer</p>
                     <p className="max-w-xl text-base leading-relaxed text-[#b4c3dc]/80">
-                        Building modern digital experiences with clean code and thoughtful design. Specialising in full-stack
+                        Building modern digital experiences with clean code and thoughtful design. Specialising in fullstack
                         development, from scalable backends to polished, performant frontends.
                     </p>
                     <QuoteLink className="mt-8" />
