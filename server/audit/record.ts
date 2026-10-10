@@ -43,9 +43,14 @@ export const clientActor = (client: { id: string, name: string, company?: string
     name: client.company ? `${client.name} (${client.company})` : client.name,
 })
 
-// A hostd caller says who it is in the same terms: the operator by email, a client by id
-export const callerActor = (caller: Caller): Actor =>
-    caller.actor === 'admin' ? { type: 'ADMIN', id: caller.user } : { type: 'CLIENT', id: caller.user }
+// A hostd caller says who it is in the same terms: the operator by email, a client by id. The operator viewing
+// as a client carries the client's actor but their own email as the user, and is recorded as themselves.
+export function callerActor(caller: Caller): Actor {
+    if (caller.actor === 'admin') return { type: 'ADMIN', id: caller.user }
+    const client = caller.actor?.startsWith('client:') ? caller.actor.slice('client:'.length) : null
+    if (client && caller.user !== client) return { type: 'ADMIN', id: caller.user, name: `${caller.user}, viewing as ${client}` }
+    return { type: 'CLIENT', id: caller.user }
+}
 
 const log = (message: string, error: unknown) => console.error(`[audit] ${message}`, error)
 

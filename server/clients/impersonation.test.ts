@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
-import { IMPERSONATION_MS, readImpersonation, recordImpersonation, signImpersonation } from './impersonation'
+import { IMPERSONATION_MS, impersonationEntry, readImpersonation, signImpersonation } from './impersonation'
 
 const KEY = 'a-test-secret-that-is-long-enough'
 const ADMIN = 'koda@horizons.gg'
@@ -54,14 +54,17 @@ describe('the view-as cookie', () => {
     })
 })
 
-describe('recordImpersonation', () => {
-    it('names the operator, the client and what happened', () => {
-        const lines: string[] = []
-        recordImpersonation({ kind: 'start', admin: ADMIN, clientId: 'cl_8F2K1ABC', at: NOW }, line => lines.push(line))
-        recordImpersonation({ kind: 'stop', admin: ADMIN, clientId: 'cl_8F2K1ABC', at: NOW }, line => lines.push(line))
-        expect(lines).toEqual([
-            `[admin] ${ADMIN} started viewing as client cl_8F2K1ABC at 2026-10-10T04:00:00.000Z`,
-            `[admin] ${ADMIN} stopped viewing as client cl_8F2K1ABC at 2026-10-10T04:00:00.000Z`,
-        ])
+describe('impersonationEntry', () => {
+    it('records the operator as the one acting, and the client as what it was done to', () => {
+        expect(impersonationEntry({ kind: 'start', admin: ADMIN, client: { id: 'cl_8F2K1ABC', name: 'Acme Bakery' } })).toEqual({
+            kind: 'client.viewAsStart',
+            actor: { type: 'ADMIN', id: ADMIN },
+            target: { type: 'client', id: 'cl_8F2K1ABC', name: 'Acme Bakery' },
+            summary: 'Started viewing the portal as Acme Bakery (cl_8F2K1ABC)',
+        })
+        expect(impersonationEntry({ kind: 'stop', admin: ADMIN, client: { id: 'cl_8F2K1ABC' } })).toMatchObject({
+            kind: 'client.viewAsStop',
+            summary: 'Stopped viewing the portal as cl_8F2K1ABC',
+        })
     })
 })

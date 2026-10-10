@@ -10,6 +10,7 @@ import 'server-only'
 
 import { createHmac, timingSafeEqual } from 'node:crypto'
 
+import type { AuditEntry } from '../audit/record'
 import { CLIENT_ID_PATTERN } from './ids'
 
 // Long enough to click through a client's sites, short enough that a forgotten one does not outlive the day
@@ -52,11 +53,15 @@ export function readImpersonation(value: string | undefined, admin: string, key:
     return clientId
 }
 
-export type ImpersonationEvent = { kind: 'start' | 'stop', admin: string, clientId: string, at: Date }
+export type ImpersonationEvent = { kind: 'start' | 'stop', admin: string, client: { id: string, name?: string | null } }
 
-// The hook for the admin activity log. Nothing records admin actions in the database yet, so this writes one
-// structured line to the server log, which is where `docker compose logs` finds it. When the activity log
-// exists, this is the one place to send these events to it.
-export function recordImpersonation(event: ImpersonationEvent, write: (line: string) => void = console.info): void {
-    write(`[admin] ${event.admin} ${event.kind === 'start' ? 'started' : 'stopped'} viewing as client ${event.clientId} at ${event.at.toISOString()}`)
+// Every start and stop goes to the activity log, as the operator, with the client as what it was done to
+export function impersonationEntry(event: ImpersonationEvent): AuditEntry {
+    const who = event.client.name ? `${event.client.name} (${event.client.id})` : event.client.id
+    return {
+        kind: event.kind === 'start' ? 'client.viewAsStart' : 'client.viewAsStop',
+        actor: { type: 'ADMIN', id: event.admin },
+        target: { type: 'client', id: event.client.id, name: event.client.name ?? null },
+        summary: `${event.kind === 'start' ? 'Started' : 'Stopped'} viewing the portal as ${who}`,
+    }
 }

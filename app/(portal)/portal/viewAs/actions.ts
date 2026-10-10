@@ -8,7 +8,8 @@ import { z } from 'zod'
 
 import { requireAdmin } from '@/server/auth'
 import { CLIENT_ID_PATTERN } from '@/server/clients/ids'
-import { recordImpersonation } from '@/server/clients/impersonation'
+import { record } from '@/server/audit/record'
+import { impersonationEntry } from '@/server/clients/impersonation'
 import { clearImpersonationCookie, setImpersonationCookie } from '@/server/clients/impersonating'
 import { repo } from '@/server/clients/wiring'
 
@@ -24,7 +25,7 @@ export async function startViewingAsAction(id: string): Promise<void> {
     if (!client || client.suspendedAt) redirect(`/portal/clients/${encodeURIComponent(id)}`)
 
     await setImpersonationCookie(client.id, admin)
-    recordImpersonation({ kind: 'start', admin, clientId: client.id, at: new Date() })
+    await record(impersonationEntry({ kind: 'start', admin, client }))
     redirect('/portal')
 }
 
@@ -32,7 +33,11 @@ export async function stopViewingAsAction(): Promise<void> {
     const session = await requireAdmin()
     const admin = session.user?.email ?? null
     const stopped = await clearImpersonationCookie(admin)
-    if (admin && stopped) recordImpersonation({ kind: 'stop', admin, clientId: stopped, at: new Date() })
+    if (admin && stopped) {
+        // Named if they are still there; a client deleted while being viewed is recorded by id alone
+        const client = await repo().byId(stopped).catch(() => null)
+        await record(impersonationEntry({ kind: 'stop', admin, client: { id: stopped, name: client?.name ?? null } }))
+    }
     // Back to where it started, so the next change to their access is one click away
     redirect(stopped ? `/portal/clients/${stopped}` : '/portal/clients')
 }

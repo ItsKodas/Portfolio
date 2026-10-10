@@ -22,7 +22,7 @@ export default async function PortalAccountPage() {
     if (viewing) {
         return (
             <>
-                <PortalHeader admin={false} name={viewing.client.name} />
+                <PortalHeader admin={false} name={viewing.client.name} viewingAs={viewing.client.name} />
                 <div className={[frame.page, frame.md].join(' ')}>
                     <div className={frame.head}>
                         <h1 className={frame.title}>Account</h1>

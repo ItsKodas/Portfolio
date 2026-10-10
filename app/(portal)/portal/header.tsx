@@ -1,5 +1,5 @@
 import { signOut } from '@/server/auth'
-import { clearImpersonationCookie, currentImpersonation } from '@/server/clients/impersonating'
+import { clearImpersonationCookie } from '@/server/clients/impersonating'
 import { Button } from '@/ui/Button/Button'
 import { ShellBar } from '@/ui/Shell/Shell'
 import { signOutAction } from './actions'
@@ -30,16 +30,16 @@ export function SignOut({ admin, name }: { admin: boolean, name?: string }) {
 }
 
 // ui/Shell's own bar, for the pages that have no site list under it. Drawing the same element rather than
-// a lookalike is what keeps the bar from shifting between the dashboard and the quotes inbox. It looks up
-// "View as client" itself, so every one of those pages carries the banner without each having to ask.
-export default async function PortalHeader({ admin, name }: { admin: boolean, name?: string }) {
-    const viewing = await currentImpersonation()
+// a lookalike is what keeps the bar from shifting between the dashboard and the quotes inbox. viewingAs is
+// the client's name while the operator is viewing as them, which only the client's own pages (Account) can
+// be: the operator's pages are theirs alone and look it, so they carry no banner.
+export default function PortalHeader({ admin, name, viewingAs }: { admin: boolean, name?: string, viewingAs?: string }) {
     return (
         <ShellBar
             brand={<Brand />}
             tabs={<PortalTabs admin={admin} />}
-            bar={<SignOut admin={admin || !!viewing} name={name} />}
-            notice={viewing ? <ViewingAsBanner name={viewing.client.name} /> : undefined}
+            bar={<SignOut admin={admin || !!viewingAs} name={name} />}
+            notice={viewingAs ? <ViewingAsBanner name={viewingAs} /> : undefined}
         />
     )
 }
