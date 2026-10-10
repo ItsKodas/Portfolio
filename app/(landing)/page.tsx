@@ -61,6 +61,12 @@ const projects: { name: string, year?: string, blurb: string, website?: string, 
         github: 'https://github.com/ItsKodas/the-back-room',
     },
     {
+        name: '1st CANZUK Brigade',
+        year: '2026',
+        blurb: 'Website and staff area for a Hell Let Loose community unit, with Discord sign-in, an enlistment form that fills in from Steam, ORBAT role sync to Discord and a scheduled importer for the unit\'s spreadsheets.',
+        website: 'https://1stcanzukbrigade.com/',
+    },
+    {
         name: 'ASOT Milsim',
         year: '2024',
         blurb: 'Community platform for a military simulation unit, with real-time collaborative briefings, automated MILPAC generation, Discord role permissions and 3D terrain visualisation.',
