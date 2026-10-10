@@ -6,6 +6,7 @@
 import { redirect } from 'next/navigation'
 import { revalidatePath } from 'next/cache'
 
+import { clientActor, record, VISITOR } from '@/server/audit/record'
 import { CODE_PATH, PORTAL_HOME, SETUP_PATH, SIGN_IN_PATH, clearSessionCookie, readSession, requireClient, requirePendingSession, setSessionCookie } from '@/server/clients/auth'
 import { EnvError } from '@/server/env'
 import { codeSchema, emailSchema, passwordSchema } from '@/server/clients/schema'
@@ -44,7 +45,15 @@ export async function signInAction(email: string, password: string): Promise<Por
             { email: parsed.data, password, userAgent: await requestUserAgent() },
             passwordStepDeps(await requestIpHash()),
         )
-        if (!result.ok) return result
+        if (!result.ok) {
+            // Every refusal, whatever its reason, with the address that was typed. The answer the visitor gets
+            // stays the same either way; this is the operator's view of who is knocking.
+            await record({
+                kind: 'auth.signInRefused', actor: VISITOR,
+                summary: `Sign-in refused for ${parsed.data}`, detail: { email: parsed.data, reason: result.error },
+            })
+            return result
+        }
         await setSessionCookie(result.token, result.expiresAt)
         redirect(result.next === 'code' ? CODE_PATH : SETUP_PATH)
     } catch (error) {
@@ -64,7 +73,14 @@ export async function codeAction(code: string): Promise<PortalResult> {
     if (!session.client.totpConfirmedAt) return INVALID
     try {
         const result = await codeStep({ session, code: parsed.data }, codeStepDeps(await requestIpHash()))
-        if (!result.ok) return result
+        if (!result.ok) {
+            await record({
+                kind: 'auth.codeRefused', actor: clientActor(session.client),
+                summary: `Second factor refused for ${session.client.name}`, detail: { reason: result.error },
+            })
+            return result
+        }
+        await record({ kind: 'auth.signIn', actor: clientActor(session.client), summary: `${session.client.name} signed in` })
         redirect(PORTAL_HOME)
     } catch (error) {
         if (error && typeof error === 'object' && 'digest' in error) throw error
@@ -90,6 +106,10 @@ export async function acknowledgeCodesAction(): Promise<PortalResult> {
     if (!session.client.totpConfirmedAt) return INVALID
     try {
         await acknowledgeRecoveryCodes(session, acknowledgeDeps())
+        await record({
+            kind: 'auth.enrolled', actor: clientActor(session.client),
+            summary: `${session.client.name} set up their authenticator and signed in`,
+        })
         redirect(PORTAL_HOME)
     } catch (error) {
         if (error && typeof error === 'object' && 'digest' in error) throw error
@@ -99,7 +119,10 @@ export async function acknowledgeCodesAction(): Promise<PortalResult> {
 
 export async function signOutAction(): Promise<void> {
     const session = await readSession()
-    if (session) await repo().deleteSession(session.id)
+    if (session) {
+        await repo().deleteSession(session.id)
+        await record({ kind: 'auth.signOut', actor: clientActor(session.client), summary: `${session.client.name} signed out` })
+    }
     await clearSessionCookie()
     redirect(SIGN_IN_PATH)
 }
@@ -109,11 +132,16 @@ export async function completeInviteAction(token: string, password: string): Pro
     if (!parsed.success) return { ok: false, error: parsed.error.issues[0]?.message ?? INVALID.error }
     if (typeof token !== 'string' || !token) return INVALID
     try {
+        // Read before it is used, since the invite is the only thing that says whose it was
+        const invited = await repo().tokenByHash(hashSessionToken(token)).catch(() => null)
         const result = await completeInvite(
             { tokenHash: hashSessionToken(token), password: parsed.data, userAgent: await requestUserAgent() },
             completeInviteDeps(),
         )
         if (!result.ok) return result
+        if (invited) {
+            await record({ kind: 'auth.inviteAccepted', actor: clientActor(invited.client), summary: `${invited.client.name} accepted their invite` })
+        }
         await setSessionCookie(result.token, result.expiresAt)
         // Straight into enrolment: the account does nothing until an authenticator is set up
         redirect(SETUP_PATH)
@@ -128,7 +156,12 @@ export async function requestResetAction(email: string): Promise<{ message: stri
     // The same answer for an invalid address as for a valid one that matches nothing
     if (!parsed.success) return { message: RESET_SENT_MESSAGE }
     try {
-        return await requestReset({ email: parsed.data }, requestResetDeps(await requestIpHash()))
+        const answer = await requestReset({ email: parsed.data }, requestResetDeps(await requestIpHash()))
+        await record({
+            kind: 'auth.resetRequested', actor: VISITOR,
+            summary: `Password reset asked for ${parsed.data}`, detail: { email: parsed.data },
+        })
+        return answer
     } catch (error) {
         log('Requesting a password reset failed', error)
         return { message: RESET_SENT_MESSAGE }
@@ -140,11 +173,15 @@ export async function completeResetAction(token: string, password: string, code:
     if (!parsed.success) return { ok: false, error: parsed.error.issues[0]?.message ?? INVALID.error }
     if (typeof token !== 'string' || !token || typeof code !== 'string') return INVALID
     try {
+        const asked = await repo().tokenByHash(hashSessionToken(token)).catch(() => null)
         const result = await completeReset(
             { tokenHash: hashSessionToken(token), password: parsed.data, code },
             completeResetDeps(await requestIpHash()),
         )
         if (!result.ok) return result
+        if (asked) {
+            await record({ kind: 'auth.resetCompleted', actor: clientActor(asked.client), summary: `${asked.client.name} reset their password` })
+        }
         redirect(`${SIGN_IN_PATH}?reset=1`)
     } catch (error) {
         if (error && typeof error === 'object' && 'digest' in error) throw error
@@ -163,7 +200,10 @@ export async function changePasswordAction(current: string, next: string): Promi
     try {
         // sessionId travels through so the pipeline can spare the session doing the changing while it drops the rest
         const result = await runChangePassword({ client, sessionId, current, next: parsed.data }, changePasswordDeps())
-        if (result.ok) revalidatePath('/portal/account')
+        if (result.ok) {
+            await record({ kind: 'auth.passwordChanged', actor: clientActor(client), summary: `${client.name} changed their password` })
+            revalidatePath('/portal/account')
+        }
         return result
     } catch (error) {
         return failure('Changing a client password', error)
@@ -175,7 +215,10 @@ export async function regenerateCodesAction(password: string): Promise<CodesResu
     if (typeof password !== 'string' || !password) return { ok: false, error: INVALID.error }
     try {
         const result = await runRegenerate({ client, password }, regenerateDeps())
-        if (result.ok) revalidatePath('/portal/account')
+        if (result.ok) {
+            await record({ kind: 'auth.codesRegenerated', actor: clientActor(client), summary: `${client.name} replaced their recovery codes` })
+            revalidatePath('/portal/account')
+        }
         return result
     } catch (error) {
         const failed = failure('Regenerating recovery codes', error)
@@ -187,6 +230,7 @@ export async function signOutElsewhereAction(): Promise<PortalResult> {
     const { client, sessionId } = await requireClient()
     try {
         await repo().deleteSessionsFor(client.id, sessionId)
+        await record({ kind: 'auth.signedOutElsewhere', actor: clientActor(client), summary: `${client.name} signed out their other sessions` })
         revalidatePath('/portal/account')
         return { ok: true }
     } catch (error) {

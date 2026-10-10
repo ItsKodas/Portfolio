@@ -223,3 +223,61 @@ model ClientAuthAttempt {
 
   @@index([ipHash, createdAt])
 }
+
+// The admin Logs page's tables. Written by server/audit, read only by the operator. Going forward only: nothing
+// before the migration that created them is in here.
+
+enum AuditActor {
+  // The operator, signed in with Google
+  ADMIN
+  // A client, signed in to the portal
+  CLIENT
+  // Somebody not signed in: a quote, a sign-in that failed, a reset asked for
+  VISITOR
+}
+
+// One thing somebody did. The kind is a dotted name from server/audit/kinds.ts rather than an enum, so adding a
+// kind is a code change and never a migration.
+model AuditEvent {
+  id         String     @id @default(cuid())
+  createdAt  DateTime   @default(now())
+  kind       String
+  actorType  AuditActor
+  // The operator's email, or the client's id. Null for a visitor.
+  actorId    String?
+  // Who they were when it happened, kept because a client can be renamed or deleted afterwards
+  actorName  String?
+  // The hostd project id, when this is about a site
+  site       String?
+  // What it was done to, beside the site: a client, a quote, an environment, a domain
+  targetType String?
+  targetId   String?
+  targetName String?
+  // One sentence, written when it happened
+  summary    String
+  // Anything else worth keeping, never a secret: an env file's variable names, never its values
+  detail     Json?
+
+  @@index([createdAt])
+  @@index([kind, createdAt])
+  @@index([actorId, createdAt])
+  @@index([site, createdAt])
+}
+
+// Every email the site has tried to send, as it was sent. The links in invites and resets are kept without their
+// token (server/audit/emails.ts), so this table can never be used to finish somebody else's sign-up or reset.
+model SentEmail {
+  id        String   @id @default(cuid())
+  createdAt DateTime @default(now())
+  from      String
+  to        String
+  replyTo   String
+  subject   String
+  text      String
+  html      String
+  // Null when the relay took it, its reason when it did not
+  error     String?
+
+  @@index([createdAt])
+  @@index([to, createdAt])
+}

@@ -5,9 +5,14 @@ const callerFromSession = vi.fn()
 const createProject = vi.fn()
 const startDeploy = vi.fn()
 const listCredentials = vi.fn()
+const record = vi.fn()
 const clients = { byId: vi.fn(), grantAccess: vi.fn(), list: vi.fn() }
 
 vi.mock('next/cache', () => ({ revalidatePath: () => {} }))
+vi.mock('@/server/audit/record', async importOriginal => ({
+    ...(await importOriginal<typeof import('@/server/audit/record')>()),
+    record: (...args: unknown[]) => record(...args),
+}))
 vi.mock('@/server/clients/wiring', () => ({ repo: () => clients }))
 vi.mock('@/server/hostd/config', () => ({ readHostd: () => ({ url: 'http://hostd', token: 't' }) }))
 vi.mock('@/server/hostd/session', () => ({ callerFromSession: () => callerFromSession() }))

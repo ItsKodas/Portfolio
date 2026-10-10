@@ -7,6 +7,7 @@ const ADMIN: Place[] = [
     { label: 'Sites', href: '/portal', owns: SITES },
     { label: 'Quotes', href: '/portal/quotes', owns: ['/portal/quotes'] },
     { label: 'Clients', href: '/portal/clients', owns: ['/portal/clients'] },
+    { label: 'Logs', href: '/portal/logs', owns: ['/portal/logs'] },
 ]
 
 // A client has one site and their own account, and nothing else in the portal is theirs to open
