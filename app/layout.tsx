@@ -29,7 +29,7 @@ export const metadata: Metadata = {
 	authors: [{ name: SITE.author, url: SITE.url }],
 	creator: SITE.author,
 	publisher: SITE.author,
-	keywords: [SITE.author, SITE.name, "fullstack developer", "web developer", "web development", "portfolio", "freelance web developer", "website design", ...SKILLS],
+	keywords: [SITE.author, SITE.name, "full stack developer", "web developer", "web development", "portfolio", "freelance web developer", "website design", ...SKILLS],
 	category: "technology",
 	alternates: { canonical: "/" },
 	robots: {
