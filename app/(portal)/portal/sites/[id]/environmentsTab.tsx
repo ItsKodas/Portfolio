@@ -30,6 +30,8 @@ type Props = {
         name: string
         capabilities: string[]
         environments: Environment[]
+        // The site's root domain; absent reads as none
+        rootDomain?: string | null
     }
     isAdmin: boolean
     // Whether the Env files section is drawn: the operator, or a client given ENV_FILES
@@ -117,6 +119,7 @@ export function EnvironmentsTab({ view, isAdmin, canEditEnv, selected, adding, f
                             branches={branches}
                             branchesError={branchesError}
                             primaryDomain={view.environments.find(one => one.name === LIVE)?.domain ?? null}
+                            rootDomain={view.rootDomain ?? null}
                         />
                         : (
                             <>
@@ -140,6 +143,9 @@ export function EnvironmentsTab({ view, isAdmin, canEditEnv, selected, adding, f
                                             domains={domains.domains}
                                             isAdmin={isAdmin}
                                             projectName={view.name}
+                                            rootDomain={view.rootDomain ?? null}
+                                            websockets={shown?.websockets ?? false}
+                                            flexibleSsl={shown?.flexibleSsl ?? false}
                                             trouble={domains.trouble}
                                         />
                                         : <Callout title="Not set up for this site">

@@ -446,6 +446,7 @@ export default async function SitePage({ params, searchParams }: Props) {
                                     capabilities={view.capabilities}
                                     repo={view.repo}
                                     credential={view.credential}
+                                    rootDomain={view.rootDomain}
                                     environments={view.environments}
                                     branches={branches}
                                     branchesError={branchesError}

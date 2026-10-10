@@ -1,7 +1,7 @@
 'use client'
 
-// Everything in the Environments tab's Domains section that changes something, and the main address
-// control Settings draws for live. All of it is the operator's: hostd keeps
+// Everything in the Environments tab's Domains section that changes something, and the root domain
+// control Settings draws. All of it is the operator's: hostd keeps
 // 'domains' among its admin-only policy verbs and leaves only 'domains-read' to an owner, so the panel
 // never renders any of this for a client, and each action re-derives who is asking from the session
 // anyway. Nothing here decides anything: it names an environment and a hostname, and that is all it is
@@ -11,14 +11,16 @@ import { useRouter } from 'next/navigation'
 import { useState } from 'react'
 
 import type { AdoptPreview } from '@/server/hostd/domains'
+import { siteBase } from '@/server/hostd/environmentAddress'
 import { Button } from '@/ui/Button/Button'
 import { Callout } from '@/ui/Callout/Callout'
 import { Dialog } from '@/ui/Dialog/Dialog'
 import { Field } from '@/ui/Field/Field'
 import {
-    adoptAction, adoptPreviewAction, addDomainAction, changePrimaryDomainAction, makePrimaryDomainAction,
-    removeDomainAction, setPrimaryDomainAction, verifyDomainAction, type SiteActionResult,
+    adoptAction, adoptPreviewAction, addDomainAction, makePrimaryDomainAction, removeDomainAction,
+    saveSettingsAction, setRootDomainAction, verifyDomainAction, type SiteActionResult,
 } from './actions'
+import type { SwitchKey } from '../features'
 import styles from './site.module.css'
 
 const BROKE = 'That did not work. Try reloading the page.'
@@ -86,54 +88,32 @@ export function AddDomain({ id, environment }: { id: string, environment: string
     )
 }
 
-// The environment's main address, in both of the states it can be in. `current` is null on every site
-// that was enrolled by hand, and giving one its first address is safe: nothing is being served from it
-// yet, so the write records a name and stops there.
-//
-// Replacing an address that already exists is the dangerous half, and it is a different interaction
-// rather than the same button with a different label: the old name stops being served, the new one has
-// to prove itself before it counts, every alias starts redirecting somewhere else and hostd rewrites the
-// Apache configuration. So it goes behind the dialog below, which names all four and asks for the new
-// hostname back, the same ceremony AdoptSite uses for the other change on this tab that a live site
-// notices immediately.
-//
-// What the last set or change said can be held by the caller instead (said and onSaid), for one that keys
-// this on the address: the refresh after a success brings the new address, which remounts it, and the
-// message has to outlive that. It is the only place a set tells the operator to adopt.
-type PrimaryProps = {
+// The site's root domain, set from Settings: the base new environments' addresses sit one label below
+// (uat1.example.com), and an address of live's, so it redirects to live's main address like any other
+// alias. Saving one live does not have yet adds it to live first. Not set follows live's main address
+// without a leading www.
+type RootProps = {
     id: string
-    environment: string
     current: string | null
-    said?: SiteActionResult | null
-    onSaid?: (said: SiteActionResult | null) => void
+    // live's main address, named in what an unset root falls back to
+    livePrimary: string | null
 }
 
-export function PrimaryDomain({ id, environment, current, said: heldSaid, onSaid }: PrimaryProps) {
+export function RootDomainField({ id, current, livePrimary }: RootProps) {
     const router = useRouter()
-    const [hostname, setHostname] = useState('')
+    const [hostname, setHostname] = useState(current ?? '')
     const [pending, setPending] = useState(false)
-    const [ownSaid, setOwnSaid] = useState<SiteActionResult | null>(null)
-    const said = onSaid ? heldSaid ?? null : ownSaid
-    const setSaid = onSaid ?? setOwnSaid
-    const [asking, setAsking] = useState(false)
-    const [typed, setTyped] = useState('')
+    const [said, setSaid] = useState<SiteActionResult | null>(null)
 
     const wanted = hostname.trim().toLowerCase()
-    // Typed back exactly, because this takes a live site off the address it answers on today
-    const named = typed.trim().toLowerCase() === wanted
 
-    async function run(action: () => Promise<SiteActionResult>) {
+    async function save() {
         setPending(true)
         setSaid(null)
         try {
-            const result = await action()
+            const result = await setRootDomainAction(id, wanted === '' ? null : wanted)
             setSaid(result)
-            if (result.ok) {
-                setHostname('')
-                setTyped('')
-                setAsking(false)
-                router.refresh()
-            }
+            if (result.ok) router.refresh()
         } catch {
             setSaid({ ok: false, error: BROKE })
         } finally {
@@ -141,109 +121,102 @@ export function PrimaryDomain({ id, environment, current, said: heldSaid, onSaid
         }
     }
 
+    const fallback = livePrimary ? siteBase(livePrimary) : null
     return (
-        <section className={styles.block} aria-labelledby="primary-domain">
-            <h2 id="primary-domain">Primary domain</h2>
-            {current
-                ? <p className={styles.addressName}>{current}</p>
-                : <p className={styles.empty}>{`${environment} has no main address yet.`}</p>}
+        <section className={styles.block} aria-labelledby="root-domain">
+            <h2 id="root-domain">Root domain</h2>
             <div className={styles.addDomain}>
                 <Field
-                    label={current ? 'New address' : 'Address'}
+                    label="Root domain"
                     value={hostname}
                     spellCheck={false}
                     autoComplete="off"
-                    placeholder="example.com"
-                    hint={current
-                        ? `${environment} answers on ${current} today. What you put here replaces it.`
-                        : `The main name ${environment} answers to. Other names can be pointed at it afterwards.`}
+                    placeholder={fallback ?? 'example.com'}
+                    hint={'New environments get an address one level below this, like uat1.example.com. It is one of '
+                        + "live's addresses and redirects to live's main address, which is chosen on live's Domains section."}
                     onChange={event => setHostname(event.target.value)}
                 />
                 <div className={styles.addAction}>
-                    {current
-                        ? (
-                            <Button
-                                variant="danger"
-                                disabled={pending || wanted === '' || wanted === current}
-                                onClick={() => { setTyped(''); setSaid(null); setAsking(true) }}
-                            >
-                                Change the address
-                            </Button>
-                        )
-                        : (
-                            <Button
-                                variant="primary"
-                                disabled={pending || wanted === ''}
-                                onClick={() => run(() => setPrimaryDomainAction(id, environment, wanted))}
-                            >
-                                {pending ? 'Saving...' : 'Set the address'}
-                            </Button>
-                        )}
-                    <Said said={asking ? null : said} />
+                    <Button variant="primary" disabled={pending || wanted === (current ?? '')} onClick={save}>
+                        {pending ? 'Setting...' : 'Set root domain'}
+                    </Button>
+                    <Said said={said} />
                 </div>
             </div>
-            {!current && (
+            {current === null && (
                 <p className={styles.note}>
-                    {'This records the address and changes nothing that is being served: whatever answers '
-                        + `this name today keeps answering it. The site is served from it once ${environment} `
-                        + 'is adopted, which replaces the hand-written configuration in one reload.'}
+                    {fallback
+                        ? `Not set, so new environments go under ${fallback}, from live's main address.`
+                        : 'Not set, and live has no address yet, so new environments can only go under horizons.gg.'}
                 </p>
             )}
-
-            <Dialog
-                open={asking}
-                onClose={() => setAsking(false)}
-                title="Move this site to another address"
-                footer={
-                    <>
-                        <Button variant="quiet" onClick={() => setAsking(false)}>Leave it where it is</Button>
-                        <Button
-                            variant="danger"
-                            disabled={pending || !named}
-                            onClick={() => run(() => changePrimaryDomainAction(id, environment, wanted, typed.trim()))}
-                        >
-                            {pending ? 'Changing...' : 'Change it'}
-                        </Button>
-                    </>
-                }
-            >
-                {said && !said.ok && (
-                    <div className={styles.said}>
-                        <Callout tone="crit" title="That did not happen">{said.error}</Callout>
-                    </div>
-                )}
-
-                <p>
-                    <span className={styles.mono}>{current}</span> becomes{' '}
-                    <span className={styles.mono}>{wanted}</span>. Four things follow from that:
-                </p>
-                <ul>
-                    <li>
-                        <span className={styles.mono}>{current}</span> stops being served here. Anyone who
-                        visits it reaches whatever else answers on this server.
-                    </li>
-                    <li>
-                        <span className={styles.mono}>{wanted}</span> starts unverified. hostd has to reach
-                        it and prove it lands on this site before it counts as working, so its DNS needs to
-                        point at this server.
-                    </li>
-                    <li>{`Every other name on ${environment} starts redirecting to the new address instead.`}</li>
-                    <li>
-                        {`The Apache configuration for ${environment} is rewritten and reloaded, if hostd `
-                            + 'is the one serving it.'}
-                    </li>
-                </ul>
-                <Field
-                    label={`Type ${wanted} to confirm`}
-                    value={typed}
-                    spellCheck={false}
-                    autoComplete="off"
-                    hint="Its DNS record is not ours and is left alone, and so is the old name's."
-                    onChange={event => setTyped(event.target.value)}
-                />
-            </Dialog>
         </section>
     )
+}
+
+// One of an environment's render-only switches, drawn on its main address's row like Cloudflare's proxy
+// cloud: lit when on, grey when off, and one click flips it. They belong to the environment rather than to
+// any one hostname (an alias only redirects to the main address), which is why only that row has them.
+// Flipping one rewrites the environment's Apache configuration if hostd serves it.
+type SwitchProps = {
+    id: string
+    environment: string
+    flag: SwitchKey
+    on: boolean
+}
+
+export function RowSwitch({ id, environment, flag, on }: SwitchProps) {
+    const router = useRouter()
+    const [value, setValue] = useState(on)
+    const [pending, setPending] = useState(false)
+    const [said, setSaid] = useState<SiteActionResult | null>(null)
+    const { label, short } = SWITCH_LABELS[flag]
+
+    async function flip() {
+        const next = !value
+        setPending(true)
+        setSaid(null)
+        setValue(next)
+        try {
+            const result = await saveSettingsAction(id, { [flag]: { [environment]: next } })
+            if (result.ok) router.refresh()
+            else {
+                setValue(!next)
+                setSaid(result)
+            }
+        } catch {
+            setValue(!next)
+            setSaid({ ok: false, error: BROKE })
+        } finally {
+            setPending(false)
+        }
+    }
+
+    return (
+        <>
+            <button
+                type="button"
+                role="switch"
+                aria-checked={value}
+                aria-label={`${environment} ${label}`}
+                title={`${label}: ${value ? 'on' : 'off'}`}
+                className={[styles.cloudSwitch, value && styles.cloudSwitchOn].filter(Boolean).join(' ')}
+                disabled={pending}
+                onClick={flip}
+            >
+                <svg viewBox="0 0 24 16" aria-hidden="true" className={styles.cloudIcon}>
+                    <path d="M19.4 6.6A7 7 0 0 0 6.1 4.8 5 5 0 0 0 5 14.8h14.2a4.1 4.1 0 0 0 .2-8.2Z" />
+                </svg>
+                {short}
+            </button>
+            {said && !said.ok && <span className={styles.stateBad}>{said.error}</span>}
+        </>
+    )
+}
+
+const SWITCH_LABELS: Record<SwitchKey, { label: string, short: string }> = {
+    websockets: { label: 'WebSockets', short: 'WebSockets' },
+    flexibleSsl: { label: 'Cloudflare Flexible SSL', short: 'Flexible' },
 }
 
 type ActionProps = {
@@ -252,7 +225,7 @@ type ActionProps = {
     hostname: string
     // The main address of the environment has no remove button: hostd refuses to remove a primary at all
     // (an environment without one has nothing for its aliases to redirect to), and a button that only
-    // ever answers that refusal is worse than no button. Moving it somewhere else is PrimaryDomain's job.
+    // ever answers that refusal is worse than no button. Moving it somewhere else is Make primary's job.
     removable: boolean
     // An alias can be made the main address, which swaps it with the current one
     promotable: boolean

@@ -266,6 +266,22 @@ describe('parseRegistry, problems with one project', () => {
         assert.equal(invalidReason(project({ capabilities: '[lifecycle, deploy]' })), undefined)
     })
 
+    it('reads a root domain that is one of live\'s addresses, and refuses one that is not', () => {
+        const entry = (root: string) => `projects:
+  site:
+    client: cl_1
+    name: Site
+    services: { web: { role: site } }
+    rootDomain: ${root}
+    environments:
+      live: { dir: /var/www/site, port: 5011, domain: www.site.com, aliases: [site.com] }
+`
+        assert.equal(parseRegistry(entry('site.com')).projects.get('site')?.rootDomain, 'site.com')
+        assert.equal(parseRegistry(entry('www.site.com')).projects.get('site')?.rootDomain, 'www.site.com')
+        assert.equal(parseRegistry(project()).projects.get('site')?.rootDomain, null)
+        assert.match(invalidReason(entry('other.com')) ?? '', /rootDomain other\.com must be one of live's addresses/)
+    })
+
     it('reads a contact for the holding page, and leaves it null when the entry names nobody', () => {
         assert.equal(parseRegistry(project()).projects.get('site')?.contact, null)
         const contact = parseRegistry(project({ contact: '{ name: Jo Smith, email: jo@example.com, phone: "+61 400 123 456" }' }))

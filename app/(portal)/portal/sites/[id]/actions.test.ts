@@ -42,6 +42,7 @@ vi.mock('@/server/hostd/projects', () => ({
     hasAccess: (...args: unknown[]) => hasAccess(...args),
     lifecycle: (...args: unknown[]) => lifecycle(...args),
     listEnvironments: (...args: unknown[]) => listEnvironments(...args),
+    readRootDomain: async () => ({ ok: true, value: null }),
 }))
 vi.mock('@/server/hostd/deploys', () => ({
     startDeploy: (...args: unknown[]) => startDeploy(...args),
@@ -79,8 +80,8 @@ vi.mock('@/server/hostd/environments', () => ({
 
 const {
     backupNowAction, deleteBackupAction, saveScheduleAction, restoreBackupAction, restoresAction,
-    addDomainAction, addEnvironmentAction, lifecycleAction, copyFromLiveAction, copyRunsAction, deleteEnvironmentAction, restoreEnvironmentAction, changePrimaryDomainAction, deleteSiteAction, deployAction, saveEnvAction, saveSettingsAction,
-    makePrimaryDomainAction, setPortAction, setPrimaryDomainAction,
+    addDomainAction, addEnvironmentAction, lifecycleAction, copyFromLiveAction, copyRunsAction, deleteEnvironmentAction, restoreEnvironmentAction, deleteSiteAction, deployAction, saveEnvAction, saveSettingsAction,
+    makePrimaryDomainAction, setPortAction, setRootDomainAction,
 } = await import('./actions')
 
 const ADMIN = { caller: { actor: 'admin', user: 'koda@horizons.gg' }, clientId: null }
@@ -289,53 +290,50 @@ describe('setPortAction', () => {
     })
 })
 
-describe('setPrimaryDomainAction', () => {
-    it('refuses an environment or a hostname the page could not have sent, before the session is read', async () => {
-        expect(await setPrimaryDomainAction('acme', 'uat-1', 'acme.com')).toEqual(CANNOT)
-        expect(await setPrimaryDomainAction('acme', 'live', 5 as never)).toEqual(CANNOT)
-        expect(callerFromSession).not.toHaveBeenCalled()
-        expect(writeSettings).not.toHaveBeenCalled()
-    })
+describe('setRootDomainAction', () => {
+    const liveWith = (domain: string, aliases: string[]) => ({ ...env('live'), domain, aliases })
 
-    // The grammar hostd checks this against has no capital letters in it, and a pasted hostname often
-    // does, so the same lowercasing the domain actions do happens here.
-    it('sends the trimmed, lowercased hostname as that environment\'s domain', async () => {
+    it('records one of live\'s addresses without adding anything', async () => {
         callerFromSession.mockResolvedValue({ caller: { kind: 'admin' }, clientId: null })
+        listEnvironments.mockResolvedValue({ ok: true, value: [liveWith('www.acme.com', ['acme.com'])] })
         writeSettings.mockResolvedValue({ ok: true, data: { ok: true } })
 
-        const result = await setPrimaryDomainAction('acme', 'live', '  ACME.com  ')
+        expect((await setRootDomainAction('acme', ' Acme.com ')).ok).toBe(true)
+        expect(addDomain).not.toHaveBeenCalled()
+        expect(writeSettings).toHaveBeenLastCalledWith(expect.anything(), expect.anything(), 'acme', { rootDomain: 'acme.com' })
+    })
+
+    // The root has to be one of live's addresses, so a new one is added to live first
+    it('adds a name live does not answer to yet before recording it', async () => {
+        callerFromSession.mockResolvedValue({ caller: { kind: 'admin' }, clientId: null })
+        listEnvironments.mockResolvedValue({ ok: true, value: [liveWith('www.acme.com', [])] })
+        addDomain.mockResolvedValue({ ok: true, value: [] })
+        writeSettings.mockResolvedValue({ ok: true, data: { ok: true } })
+
+        const result = await setRootDomainAction('acme', 'acme.com')
 
         expect(result.ok).toBe(true)
-        expect(writeSettings).toHaveBeenCalledWith(
-            expect.anything(), expect.anything(), 'acme', { domains: { live: 'acme.com' } },
-        )
+        expect(addDomain).toHaveBeenCalledWith(expect.anything(), expect.anything(), 'acme', 'live', 'acme.com')
+        expect(writeSettings).toHaveBeenLastCalledWith(expect.anything(), expect.anything(), 'acme', { rootDomain: 'acme.com' })
     })
 
-    // Recording the address writes no vhost: the hand-written file still serving the site is displaced
-    // by adopting it, and an operator who is not told that will wonder why nothing changed.
-    it('says nothing is served from the address until the environment is adopted', async () => {
+    it('clears it on null or a blank, asking nothing else', async () => {
         callerFromSession.mockResolvedValue({ caller: { kind: 'admin' }, clientId: null })
         writeSettings.mockResolvedValue({ ok: true, data: { ok: true } })
 
-        const result = await setPrimaryDomainAction('acme', 'live', 'acme.com')
-
-        expect(result.ok && result.message).toMatch(/adopted/i)
-        expect(result.ok && result.message).toContain("Adopt it from live's Domains section on the Environments tab.")
+        expect((await setRootDomainAction('acme', '  ')).ok).toBe(true)
+        expect(writeSettings).toHaveBeenLastCalledWith(expect.anything(), expect.anything(), 'acme', { rootDomain: null })
+        expect(addDomain).not.toHaveBeenCalled()
     })
 
-    // This pane is admin-only: hostd puts configure among its admin-only policy verbs ahead of
-    // ownership, and this is the same rule a step earlier.
-    it('refuses a client outright', async () => {
+    it('refuses something the page could not have sent, and a client', async () => {
+        expect(await setRootDomainAction('acme', 5 as never)).toEqual(CANNOT)
         callerFromSession.mockResolvedValue({ caller: { kind: 'client' }, clientId: 'cl_1' })
-
-        expect(await setPrimaryDomainAction('acme', 'live', 'acme.com')).toEqual({ ok: false, error: 'This is not set up yet.' })
+        expect(await setRootDomainAction('acme', 'acme.com')).toEqual({ ok: false, error: 'This is not set up yet.' })
         expect(writeSettings).not.toHaveBeenCalled()
     })
 })
 
-// Moving an address that already exists is the same request behind a confirmation, and the confirmation
-// is checked here rather than only in the dialog: a server action is a request like any other, so a
-// disabled button proves nothing about what actually arrived.
 describe('makePrimaryDomainAction', () => {
     it('refuses an environment or a hostname the page could not have sent', async () => {
         expect(await makePrimaryDomainAction('acme', 'uat-1', 'www.acme.com')).toEqual(CANNOT)
@@ -360,45 +358,6 @@ describe('makePrimaryDomainAction', () => {
         callerFromSession.mockResolvedValue({ caller: { kind: 'client' }, clientId: 'cl_1' })
 
         expect(await makePrimaryDomainAction('acme', 'live', 'www.acme.com'))
-            .toEqual({ ok: false, error: 'This is not set up yet.' })
-        expect(writeSettings).not.toHaveBeenCalled()
-    })
-})
-
-describe('changePrimaryDomainAction', () => {
-    it('refuses an environment, a hostname or a confirmation the page could not have sent', async () => {
-        expect(await changePrimaryDomainAction('acme', 'uat-1', 'acme.com', 'acme.com')).toEqual(CANNOT)
-        expect(await changePrimaryDomainAction('acme', 'live', 5 as never, 'acme.com')).toEqual(CANNOT)
-        expect(await changePrimaryDomainAction('acme', 'live', 'acme.com', 5 as never)).toEqual(CANNOT)
-        expect(callerFromSession).not.toHaveBeenCalled()
-        expect(writeSettings).not.toHaveBeenCalled()
-    })
-
-    it('refuses a confirmation that is not the new hostname, without asking hostd', async () => {
-        callerFromSession.mockResolvedValue({ caller: { kind: 'admin' }, clientId: null })
-
-        const result = await changePrimaryDomainAction('acme', 'live', 'shop.acme.com', 'shop.acme.co')
-
-        expect(result).toEqual({ ok: false, error: 'Type the new address back exactly to confirm the change.' })
-        expect(writeSettings).not.toHaveBeenCalled()
-    })
-
-    it('sends the trimmed, lowercased hostname once it has been named back', async () => {
-        callerFromSession.mockResolvedValue({ caller: { kind: 'admin' }, clientId: null })
-        writeSettings.mockResolvedValue({ ok: true, data: { ok: true } })
-
-        const result = await changePrimaryDomainAction('acme', 'live', '  SHOP.acme.com ', 'shop.acme.com')
-
-        expect(result.ok).toBe(true)
-        expect(writeSettings).toHaveBeenCalledWith(
-            expect.anything(), expect.anything(), 'acme', { domains: { live: 'shop.acme.com' } },
-        )
-    })
-
-    it('refuses a client outright, exactly as setting a first address does', async () => {
-        callerFromSession.mockResolvedValue({ caller: { kind: 'client' }, clientId: 'cl_1' })
-
-        expect(await changePrimaryDomainAction('acme', 'live', 'acme.com', 'acme.com'))
             .toEqual({ ok: false, error: 'This is not set up yet.' })
         expect(writeSettings).not.toHaveBeenCalled()
     })

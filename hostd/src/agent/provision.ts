@@ -563,9 +563,10 @@ export async function addEnvironment(project: ProjectEntry, args: ProvisionAddEn
     // live domain, whichever the operator meant: never the apex of either, and never two labels down,
     // which would put it out of reach of the vhost and certificate machinery that assumes one label. This
     // runs before any disk work, on the site as it already was when the request arrived. A live domain of
-    // www.example.com puts environments under example.com, which siteBase decides.
+    // www.example.com puts environments under example.com, which siteBase decides, unless the site names its
+    // root domain itself.
     const livePrimary = project.environments.get('live')?.domain ?? null
-    const liveDomain = livePrimary === null ? null : siteBase(livePrimary)
+    const liveDomain = project.rootDomain ?? (livePrimary === null ? null : siteBase(livePrimary))
     if (!oneLabelBelow(args.domain, HORIZONS_BASE) && (liveDomain === null || !oneLabelBelow(args.domain, liveDomain))) {
         const bases = liveDomain === null ? HORIZONS_BASE : `${HORIZONS_BASE} or ${liveDomain}`
         return refuse('bad-request', `${args.domain} must be one label below ${bases}`)

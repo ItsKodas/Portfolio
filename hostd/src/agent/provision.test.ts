@@ -770,6 +770,15 @@ ${NESTED_LIVE_YAML.trim()}
         assert.deepEqual(refused, { ok: false, code: 'bad-request', message: 'uat9.www.acme.com must be one label below horizons.gg or acme.com' })
     })
 
+    it('takes the site\'s root domain as the base when it names one', async () => {
+        const rootYaml = NESTED_LIVE_YAML
+            .replace('domain: acme.com', 'domain: www.acme.co\n        aliases: [acme.com]')
+            .replace('    environments:', '    rootDomain: acme.com\n    environments:')
+        const { deps } = nested({ registryYaml: rootYaml })
+        const accepted = await addEnvironment(project(rootYaml), args({ environment: 'uat9', domain: 'uat9.acme.com' }), deps)
+        assert.equal(accepted.ok, true)
+    })
+
     it('names only horizons.gg when live has no primary domain yet', async () => {
         const noDomainYaml = NESTED_LIVE_YAML.split('\n').filter(line => !line.includes('domain: acme.com')).join('\n')
         const { deps, calls } = nested({ registryYaml: noDomainYaml })

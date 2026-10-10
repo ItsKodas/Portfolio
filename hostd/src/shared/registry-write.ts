@@ -95,6 +95,8 @@ export type Change =
         branches?: Record<EnvironmentName, string | null>
         // null deletes the key
         contact?: Contact | null
+        // null deletes the key
+        rootDomain?: string | null
     }
     // The site services a live deploy found under new names (see agent/environment-services.ts): the
     // ones the compose file no longer has come out, the ones it has instead go in as role site. Only ever
@@ -370,6 +372,11 @@ function edit(doc: Document, change: Change): EditResult {
                     node.flow = true
                     doc.setIn(['projects', change.id, 'contact'], node)
                 }
+            }
+
+            if (change.rootDomain !== undefined) {
+                if (change.rootDomain === null) doc.deleteIn(['projects', change.id, 'rootDomain'])
+                else doc.setIn(['projects', change.id, 'rootDomain'], change.rootDomain)
             }
 
             for (const [name, branch] of branches) {

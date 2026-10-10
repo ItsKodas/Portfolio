@@ -3,8 +3,8 @@
 // The registry entry itself: which capabilities the project has, its repo, and each environment's
 // branch. This is the only form on the site page that changes the registry rather than asking hostd to
 // act on what is already in it, which is why it is admin only end to end (actions.ts's allow(id, true),
-// the same gate saveEnvAction uses). Beside it, live's primary domain, set and changed through the same
-// actions and confirmation the Domains tab used, and deleting the site.
+// the same gate saveEnvAction uses). Beside it, the site's root domain, and deleting the site. Each
+// environment's main address, and its WebSockets and Flexible SSL switches, live on its Domains section.
 
 import { useRouter } from 'next/navigation'
 import { useState } from 'react'
@@ -14,9 +14,9 @@ import { Button } from '@/ui/Button/Button'
 import { Callout } from '@/ui/Callout/Callout'
 import { Dialog } from '@/ui/Dialog/Dialog'
 import { Field } from '@/ui/Field/Field'
-import { CAPABILITIES, NOT_BUILT, SWITCHES, type SwitchKey } from '../features'
+import { CAPABILITIES, NOT_BUILT } from '../features'
 import { deleteSiteAction, saveSettingsAction, type SiteActionResult } from './actions'
-import { PrimaryDomain } from './domainControls'
+import { RootDomainField } from './domainControls'
 import { PortControl } from './portControl'
 import styles from './site.module.css'
 
@@ -25,15 +25,17 @@ import styles from './site.module.css'
 const CANNOT_CHECK = 'A deploy needs a git repository already at the environment\'s dir (dir/.git). hostd '
     + 'only finds that out when it runs. This form cannot check that ahead of it.'
 
-export function SiteSettingsForm({ id, name, capabilities, repo, credential, environments, branches = null, branchesError = null, credentials = null, credentialsError = null }: {
+export function SiteSettingsForm({ id, name, capabilities, repo, credential, rootDomain = null, environments, branches = null, branchesError = null, credentials = null, credentialsError = null }: {
     id: string
     // The site's name, which hostd wants typed back to delete it
     name: string
     capabilities: string[]
     repo: string | null
     credential: string | null
-    // domain is live's primary domain for the Primary domain section, null when it has none
-    environments: Array<{ name: string, branch: string | null, domain?: string | null, websockets?: boolean, flexibleSsl?: boolean, dir?: string, port?: number }>
+    // The site's root domain, the base new environments sit under, null when none is set
+    rootDomain?: string | null
+    // domain is live's primary domain, which the Root domain section falls back to when none is set
+    environments: Array<{ name: string, branch: string | null, domain?: string | null, dir?: string, port?: number }>
     // The repository's branches, fetched for the repo as it stands saved, not for whatever is currently
     // typed into the Repo field above: editing that field without saving leaves this offering the old
     // repo's branches, which is the one thing left as it is rather than fixed, because re-fetching on
@@ -52,11 +54,6 @@ export function SiteSettingsForm({ id, name, capabilities, repo, credential, env
     const [credentialValue, setCredentialValue] = useState(credential ?? '')
     const [branchValues, setBranchValues] = useState<Record<string, string>>(() =>
         Object.fromEntries(environments.map(env => [env.name, env.branch ?? ''])))
-    // Keyed by switch then environment. Absent in props means off, which is what hostd means by it too.
-    const [switchValues, setSwitchValues] = useState<Record<SwitchKey, Record<string, boolean>>>(() => ({
-        websockets: Object.fromEntries(environments.map(env => [env.name, env.websockets ?? false])),
-        flexibleSsl: Object.fromEntries(environments.map(env => [env.name, env.flexibleSsl ?? false])),
-    }))
     const [pending, setPending] = useState(false)
     const [said, setSaid] = useState<SiteActionResult | null>(null)
     // Set instead of said on a no-op save: said is what a call to hostd came back with, and a save that
@@ -105,23 +102,11 @@ export function SiteSettingsForm({ id, name, capabilities, repo, credential, env
             repo?: string | null
             credential?: string | null
             branches?: Record<string, string | null>
-            websockets?: Record<string, boolean>
-            flexibleSsl?: Record<string, boolean>
         } = {}
         if (!sameList(nextCapabilities, capabilities)) payload.capabilities = nextCapabilities
         if (nextRepo !== repo) payload.repo = nextRepo
         if (nextCredential !== credential) payload.credential = nextCredential
         if (Object.keys(changedBranches).length > 0) payload.branches = changedBranches
-        // Per environment for the same reason as branches: flipping a switch rewrites a vhost, so an
-        // environment nobody touched must not be sent at all.
-        for (const { key } of SWITCHES) {
-            const changed: Record<string, boolean> = {}
-            for (const env of environments) {
-                const next = ownValue(switchValues[key], env.name) ?? env[key] ?? false
-                if (next !== (env[key] ?? false)) changed[env.name] = next
-            }
-            if (Object.keys(changed).length > 0) payload[key] = changed
-        }
 
         if (Object.keys(payload).length === 0) {
             setNothingChanged(true)
@@ -235,22 +220,6 @@ export function SiteSettingsForm({ id, name, capabilities, repo, credential, env
                                 {`"${branchValue}" is not one of this repository's branches, so the next deploy on ${env.name} will fail until this is changed.`}
                             </p>
                         )}
-                        {SWITCHES.map(({ key, label, note }) => (
-                            <div key={key}>
-                                <label className={styles.capability}>
-                                    <input
-                                        type="checkbox"
-                                        checked={ownValue(switchValues[key], env.name) ?? env[key] ?? false}
-                                        onChange={event => {
-                                            const enabled = event.target.checked
-                                            setSwitchValues(prev => ({ ...prev, [key]: { ...prev[key], [env.name]: enabled } }))
-                                        }}
-                                    />
-                                    {`${env.name} ${label}`}
-                                </label>
-                                <p className={styles.note}>{note}</p>
-                            </div>
-                        ))}
                     </div>
                 )
             })}
@@ -275,31 +244,16 @@ export function SiteSettingsForm({ id, name, capabilities, repo, credential, env
 
             {nothingChanged && <p className={styles.note}>Nothing changed, so nothing was saved.</p>}
 
-            <LivePrimaryDomain id={id} live={environments.find(env => env.name === LIVE) ?? null} />
+            <RootDomainField
+                key={rootDomain ?? ''}
+                id={id}
+                current={rootDomain}
+                livePrimary={environments.find(env => env.name === LIVE)?.domain ?? null}
+            />
 
             <DeleteSite id={id} name={name} />
         </div>
     )
-}
-
-// live's main address. Keyed on it, so a change made elsewhere and read back on a refresh starts the
-// control over rather than leaving a half typed address or an open confirm about the old one. What the
-// last set or change said is held here, outside the key: the refresh after this control's own success
-// brings the new address too, and that message (for a set, the only word on adopting) has to survive it.
-function LivePrimaryDomain({ id, live }: { id: string, live: { domain?: string | null } | null }) {
-    const [said, setSaid] = useState<SiteActionResult | null>(null)
-    // Without live in the list its address is not known, and offering to set one could put an address over
-    // one it already has
-    if (!live) {
-        return (
-            <section className={styles.block} aria-labelledby="primary-domain">
-                <h2 id="primary-domain">Primary domain</h2>
-                <p className={styles.note}>live&apos;s address could not be read, so it cannot be changed here right now.</p>
-            </section>
-        )
-    }
-    const current = live.domain ?? null
-    return <PrimaryDomain key={current ?? ''} id={id} environment={LIVE} current={current} said={said} onSaid={setSaid} />
 }
 
 function DeleteSite({ id, name }: { id: string, name: string }) {

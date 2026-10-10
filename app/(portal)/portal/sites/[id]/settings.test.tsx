@@ -4,8 +4,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 const saveSettingsAction = vi.fn()
 const deleteSiteAction = vi.fn()
-const setPrimaryDomainAction = vi.fn()
-const changePrimaryDomainAction = vi.fn()
+const setRootDomainAction = vi.fn()
 const refresh = vi.fn()
 const push = vi.fn()
 
@@ -14,8 +13,8 @@ vi.mock('./actions', () => ({
     saveSettingsAction: (...args: unknown[]) => saveSettingsAction(...args),
     deleteSiteAction: (...args: unknown[]) => deleteSiteAction(...args),
     setPortAction: vi.fn(),
-    setPrimaryDomainAction: (...args: unknown[]) => setPrimaryDomainAction(...args),
-    changePrimaryDomainAction: (...args: unknown[]) => changePrimaryDomainAction(...args),
+    setRootDomainAction: (...args: unknown[]) => setRootDomainAction(...args),
+    makePrimaryDomainAction: vi.fn(),
     // The rest of what domainControls.tsx imports, never called from Settings
     adoptAction: vi.fn(),
     adoptPreviewAction: vi.fn(),
@@ -39,94 +38,42 @@ const props = {
 beforeEach(() => {
     vi.clearAllMocks()
     saveSettingsAction.mockResolvedValue({ ok: true, message: 'Saved.' })
-    setPrimaryDomainAction.mockResolvedValue({ ok: true, message: 'arbysauto.com is this site\'s address now.' })
-    changePrimaryDomainAction.mockResolvedValue({ ok: true, message: 'shop.arbysauto.com is this site\'s address now.' })
+    setRootDomainAction.mockResolvedValue({ ok: true, message: 'New environments now go under arbysauto.com.' })
 })
 
-// live's main address moved here from the Domains tab. Setting and changing it use the same actions and
-// the same confirmation they always have.
-describe('the primary domain', () => {
-    const region = () => screen.getByRole('region', { name: 'Primary domain' })
+// The site's root domain: what new environments' addresses sit under. Each environment's main address is
+// chosen on its Domains section instead.
+describe('the root domain', () => {
+    const region = () => screen.getByRole('region', { name: 'Root domain' })
     const withLive = (domain: string | null) =>
         [{ name: 'live', branch: null, domain, dir: '/var/www/arbysauto', port: 5011 }, { name: 'uat1', branch: null, domain: 'uat1.arbysauto.com' }]
 
-    it("shows live's main address", () => {
-        render(<SiteSettingsForm {...props} environments={withLive('arbysauto.com')} />)
-        expect(within(region()).getByText('arbysauto.com')).toBeInTheDocument()
-        expect(within(region()).getByRole('button', { name: /change the address/i })).toBeInTheDocument()
+    it('shows the root domain the site has', () => {
+        render(<SiteSettingsForm {...props} rootDomain="arbysauto.com" environments={withLive('www.arbysauto.com')} />)
+        expect(within(region()).getByLabelText('Root domain')).toHaveValue('arbysauto.com')
+        expect(within(region()).queryByText(/Not set/)).toBeNull()
     })
 
-    it("sets live's address when it has none", async () => {
-        render(<SiteSettingsForm {...props} environments={withLive(null)} />)
-        await userEvent.type(within(region()).getByLabelText('Address'), 'ArbysAuto.com')
-        await userEvent.click(within(region()).getByRole('button', { name: /set the address/i }))
+    it("says what an unset one follows, from live's main address", () => {
+        render(<SiteSettingsForm {...props} environments={withLive('www.arbysauto.com')} />)
+        expect(within(region()).getByText(/new environments go under arbysauto\.com/)).toBeInTheDocument()
+    })
 
-        expect(setPrimaryDomainAction).toHaveBeenCalledWith('arbysauto', 'live', 'arbysauto.com')
-        expect(await screen.findByText(/is this site's address now/)).toBeInTheDocument()
+    it('saves the typed root domain, lowercased', async () => {
+        render(<SiteSettingsForm {...props} environments={withLive('www.arbysauto.com')} />)
+        await userEvent.type(within(region()).getByLabelText('Root domain'), 'ArbysAuto.com')
+        await userEvent.click(within(region()).getByRole('button', { name: 'Set root domain' }))
+
+        expect(setRootDomainAction).toHaveBeenCalledWith('arbysauto', 'arbysauto.com')
+        expect(await screen.findByText(/now go under arbysauto\.com/)).toBeInTheDocument()
         expect(refresh).toHaveBeenCalled()
     })
 
-    // The refresh after a set hands the form live's new address. What the set said, which is the only
-    // place the operator is told to adopt, has to survive that.
-    it('keeps what the set said once the refresh brings the new address', async () => {
-        const { rerender } = render(<SiteSettingsForm {...props} environments={withLive(null)} />)
-        await userEvent.type(within(region()).getByLabelText('Address'), 'arbysauto.com')
-        await userEvent.click(within(region()).getByRole('button', { name: /set the address/i }))
-        await screen.findByText(/is this site's address now/)
-
-        rerender(<SiteSettingsForm {...props} environments={withLive('arbysauto.com')} />)
-
-        expect(within(region()).getByRole('button', { name: /change the address/i })).toBeInTheDocument()
-        expect(within(region()).getByText(/is this site's address now/)).toBeInTheDocument()
-    })
-
-    it('keeps what a change said once the refresh brings the new address', async () => {
-        const { rerender } = render(<SiteSettingsForm {...props} environments={withLive('arbysauto.com')} />)
-        await userEvent.type(within(region()).getByLabelText(/new address/i), 'shop.arbysauto.com')
-        await userEvent.click(within(region()).getByRole('button', { name: /change the address/i }))
-        await userEvent.type(await screen.findByLabelText(/to confirm/i), 'shop.arbysauto.com')
-        await userEvent.click(screen.getByRole('button', { name: /^change it$/i }))
-        await screen.findByText(/shop\.arbysauto\.com is this site's address now/)
-
-        rerender(<SiteSettingsForm {...props} environments={withLive('shop.arbysauto.com')} />)
-
-        expect(within(region()).getByText(/shop\.arbysauto\.com is this site's address now/)).toBeInTheDocument()
-    })
-
-    // Settings only ever draws live's, so it names live rather than "this environment"
-    it('speaks of live, not of this environment', () => {
-        const { unmount } = render(<SiteSettingsForm {...props} environments={withLive(null)} />)
-        expect(within(region()).queryByText(/this environment/i)).toBeNull()
-        expect(within(region()).getByText(/The main name live answers to/)).toBeInTheDocument()
-        expect(within(region()).getByText(/once live is adopted/)).toBeInTheDocument()
-        unmount()
-
+    it('draws no main address or switches, which live on the Domains section now', () => {
         render(<SiteSettingsForm {...props} environments={withLive('arbysauto.com')} />)
-        expect(within(region()).queryByText(/this environment/i)).toBeNull()
-        expect(within(region()).getByText(/live answers on arbysauto\.com today/)).toBeInTheDocument()
-    })
-
-    it("changes live's address only once the new one is typed back", async () => {
-        render(<SiteSettingsForm {...props} environments={withLive('arbysauto.com')} />)
-        await userEvent.type(within(region()).getByLabelText(/new address/i), 'shop.arbysauto.com')
-        await userEvent.click(within(region()).getByRole('button', { name: /change the address/i }))
-
-        const confirm = await screen.findByLabelText(/type shop\.arbysauto\.com to confirm/i)
-        const go = screen.getByRole('button', { name: /^change it$/i })
-        expect(go).toBeDisabled()
-        await userEvent.type(confirm, 'shop.arbysauto.com')
-        await userEvent.click(go)
-
-        expect(changePrimaryDomainAction).toHaveBeenCalledWith('arbysauto', 'live', 'shop.arbysauto.com', 'shop.arbysauto.com')
-        expect(setPrimaryDomainAction).not.toHaveBeenCalled()
-    })
-
-    // Without live in the list its address is unknown, and offering to set one could put a second
-    // address over one it already has
-    it('offers nothing when live could not be read', () => {
-        render(<SiteSettingsForm {...props} environments={[]} />)
-        expect(within(region()).getByText(/could not be read/)).toBeInTheDocument()
-        expect(within(region()).queryByRole('button')).toBeNull()
+        expect(screen.queryByRole('region', { name: 'Primary domain' })).toBeNull()
+        expect(screen.queryByRole('checkbox', { name: /WebSockets/ })).toBeNull()
+        expect(screen.queryByRole('checkbox', { name: /Flexible SSL/ })).toBeNull()
     })
 
     // Moved to the Environments tab, with the add form
@@ -153,41 +100,6 @@ describe('the settings form', () => {
         // All eight, including the four hostd cannot act on yet
         const capabilities = screen.getByRole('group', { name: /capabilities/i })
         expect(within(capabilities).getAllByRole('checkbox')).toHaveLength(8)
-    })
-
-    it('shows each environment\'s WebSockets switch as the registry has it', () => {
-        const environments = [
-            { name: 'live', branch: null, websockets: true },
-            { name: 'test', branch: null },
-        ]
-        render(<SiteSettingsForm {...props} environments={environments} />)
-        expect(screen.getByRole('checkbox', { name: /live WebSockets/ })).toBeChecked()
-        expect(screen.getByRole('checkbox', { name: /test WebSockets/ })).not.toBeChecked()
-    })
-
-    // Switching it rewrites that environment's vhost, so the environment left alone is not sent at all.
-    it('sends only the environment whose WebSockets switch changed', async () => {
-        const environments = [
-            { name: 'live', branch: null },
-            { name: 'test', branch: null, websockets: true },
-        ]
-        render(<SiteSettingsForm {...props} environments={environments} />)
-
-        await userEvent.click(screen.getByRole('checkbox', { name: /live WebSockets/ }))
-        await userEvent.click(screen.getByRole('button', { name: /save/i }))
-
-        expect(saveSettingsAction).toHaveBeenCalledWith('arbysauto', { websockets: { live: true } })
-    })
-
-    // Unticking is the way off once the CDN reaches port 443, so it has to be sent as false, not dropped.
-    it('sends a Flexible SSL switch turned off, and nothing else', async () => {
-        render(<SiteSettingsForm {...props} environments={[{ name: 'live', branch: null, flexibleSsl: true }]} />)
-
-        expect(screen.getByRole('checkbox', { name: /live Cloudflare Flexible SSL/ })).toBeChecked()
-        await userEvent.click(screen.getByRole('checkbox', { name: /live Cloudflare Flexible SSL/ }))
-        await userEvent.click(screen.getByRole('button', { name: /save/i }))
-
-        expect(saveSettingsAction).toHaveBeenCalledWith('arbysauto', { flexibleSsl: { live: false } })
     })
 
     it('marks the ones hostd cannot act on yet, so ticking one is not mistaken for switching it on', () => {
@@ -247,11 +159,10 @@ describe('the settings form', () => {
         const { rerender } = render(<SiteSettingsForm {...props} />)
         rerender(<SiteSettingsForm
             {...props}
-            environments={[...props.environments, { name: 'uat1', branch: 'uat', websockets: true, flexibleSsl: true }]}
+            environments={[...props.environments, { name: 'uat1', branch: 'uat' }]}
         />)
 
         expect(screen.getByLabelText(/uat1 branch/i)).toHaveValue('uat')
-        expect(screen.getByRole('checkbox', { name: /uat1 WebSockets/ })).toBeChecked()
 
         await userEvent.click(screen.getByRole('checkbox', { name: /deploy/ }))
         await userEvent.click(screen.getByRole('button', { name: /save/i }))
@@ -269,8 +180,6 @@ describe('the settings form', () => {
         />)
 
         expect(screen.getByLabelText(/constructor branch/i)).toHaveValue('uat')
-        expect(screen.getByRole('checkbox', { name: /constructor WebSockets/ })).not.toBeChecked()
-        expect(screen.getByRole('checkbox', { name: /constructor Cloudflare Flexible SSL/ })).not.toBeChecked()
 
         await userEvent.click(screen.getByRole('checkbox', { name: /deploy/ }))
         await userEvent.click(screen.getByRole('button', { name: /save/i }))

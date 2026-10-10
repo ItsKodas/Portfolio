@@ -202,10 +202,12 @@ type AddProps = {
     // live's primary domain as the page read it, offered as a base beside horizons.gg. null when live has
     // none. Only an offer: the action checks the base again against hostd's current value.
     primaryDomain: string | null
+    // The site's root domain, which takes the place of the primary as the base when set
+    rootDomain?: string | null
 }
 
 // Opened in the detail area by the list's Add environment
-export function AddEnvironment({ id, taken, branches, branchesError, primaryDomain }: AddProps) {
+export function AddEnvironment({ id, taken, branches, branchesError, primaryDomain, rootDomain = null }: AddProps) {
     const router = useRouter()
     const say = useContext(SaidContext)
     const [name, setName] = useState('')
@@ -225,7 +227,7 @@ export function AddEnvironment({ id, taken, branches, branchesError, primaryDoma
         ? null
         : taken.includes(wanted) ? `This site has ${wanted} already.` : newEnvironmentProblem(wanted)
 
-    const bases = addressBases(primaryDomain)
+    const bases = addressBases(primaryDomain, rootDomain)
     // A primary domain that went away on a refresh leaves horizons.gg chosen rather than a base on offer
     // nowhere
     const chosenBase = bases.includes(base) ? base : HORIZONS_BASE
