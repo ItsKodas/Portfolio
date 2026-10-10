@@ -1,6 +1,7 @@
 // The address rule for a new environment, once, on this side. A copy of hostd's own (HORIZONS_BASE in
-// hostd/src/shared/registry.ts, oneLabelBelow in hostd/src/shared/hostnames.ts): exactly one DNS label
-// below horizons.gg or below live's primary domain. Its own module with no server-only import, because the
+// hostd/src/shared/registry.ts, oneLabelBelow and siteBase in hostd/src/shared/hostnames.ts): exactly one
+// DNS label below horizons.gg or below the site's own domain, which is live's primary without a leading
+// www. Its own module with no server-only import, because the
 // add form builds the address in the browser and the action checks it again on the server.
 
 export const HORIZONS_BASE = 'horizons.gg'
@@ -14,10 +15,18 @@ export function isAddressLabel(value: string): boolean {
     return LABEL.test(value)
 }
 
-// The bases a new environment's address can sit under: horizons.gg always, and live's primary domain when
-// live has one
+// The site's own domain from live's primary: www.example.com means the site is example.com, so its
+// environments go under example.com rather than under www.
+export function siteBase(domain: string): string {
+    const rest = domain.startsWith('www.') ? domain.slice(4) : null
+    return rest !== null && rest.includes('.') ? rest : domain
+}
+
+// The bases a new environment's address can sit under: horizons.gg always, and the site's own domain when
+// live has a primary
 export function addressBases(liveDomain: string | null): string[] {
-    return liveDomain && liveDomain !== HORIZONS_BASE ? [HORIZONS_BASE, liveDomain] : [HORIZONS_BASE]
+    const base = liveDomain ? siteBase(liveDomain) : null
+    return base && base !== HORIZONS_BASE ? [HORIZONS_BASE, base] : [HORIZONS_BASE]
 }
 
 // What the form offers before the prefix is edited by hand. Under horizons.gg the site id keeps one site's
