@@ -9,17 +9,17 @@
 
 // The two lines the hero opens on, kept here so the page, the title tag and the share image cannot drift apart
 const name = 'Horizons'
-const tagline = 'Full Stack Development'
+const tagline = 'Full-Stack Development'
 
 export const SITE = {
     url: process.env.NEXT_PUBLIC_SITE_URL ?? 'https://www.horizons.gg',
     name,
     tagline,
     author: 'Dakoda Lancelot',
-    role: 'Full Stack Developer',
+    role: 'Full-Stack Developer',
     title: `${name} · ${tagline}`,
     // First person, and plainly put: it is my own site, so it says what I build rather than how well I build it
-    description: "I'm Koda, a full stack developer. I build websites and web apps with Next.js, React, TypeScript and Node.js, from the backend through to the frontend.",
+    description: "I'm Koda, a full-stack developer. I build websites and web apps with Next.js, React, TypeScript and Node.js, from the backend through to the frontend.",
     // The scene's navy, for browser chrome and the share image
     colour: '#0b101f',
     locale: 'en_AU',
