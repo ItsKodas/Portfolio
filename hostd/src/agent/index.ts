@@ -43,6 +43,7 @@ import { siblingDirProblem } from './boot-checks.ts'
 import { DeletedStore } from './deleted-store.ts'
 import { CopyStore } from './copy-store.ts'
 import { removeInterruptedStaging, type CopyFs } from './copy-run.ts'
+import { HoldingPages } from './holding-pages.ts'
 
 const REGISTRY_FILE = process.env.HOSTD_REGISTRY_FILE ?? '/etc/hostd/registry/projects.yaml'
 const SOCKET_PATH = process.env.HOSTD_AGENT_SOCKET ?? '/run/hostd/agent.sock'
@@ -209,6 +210,36 @@ async function main(): Promise<void> {
             return false
         }
     }
+
+    // Every environment's holding page, kept saying why that site is down (see holding-pages.ts). The
+    // modes are set outright rather than left to the umask: the socket below sets one that would leave
+    // these unreadable to Apache, which runs as www-data and has to read them.
+    const holdingPages = new HoldingPages({
+        registry: () => store.current(),
+        listContainers: () => docker.listAllContainers(),
+        flagUp: key => exists(posix.join(MAINTENANCE_DIR, key)),
+        writeFile: async (path, text) => {
+            const dir = posix.dirname(path)
+            await mkdir(dir, { recursive: true })
+            await chmod(dir, 0o755)
+            const temporary = `${path}.tmp`
+            await writeFile(temporary, text, 'utf8')
+            await chmod(temporary, 0o644)
+            await rename(temporary, path)
+        },
+        pageDir: MAINTENANCE_ROOT,
+        now: Date.now,
+    })
+    let lastHoldingProblems = ''
+    const sweepHoldingPages = async () => {
+        const problems = await holdingPages.sweep()
+        // Logged when they change rather than every poll, the way warnings are below
+        if (problems.join('\n') !== lastHoldingProblems) {
+            for (const problem of problems) log(`WARN holding page: ${problem}`)
+            lastHoldingProblems = problems.join('\n')
+        }
+    }
+
     const ownerOf = async (path: string): Promise<{ uid: number, gid: number, mode: number }> => {
         const info = await stat(path)
         // Masked to the nine permission bits, the same reasoning registry-write.ts's own chmod carries:
@@ -293,6 +324,8 @@ async function main(): Promise<void> {
                 return info.bavail * info.bsize
             },
             setMaintenance: async key => {
+                // The page first, so it already says "upgrading" when the flag starts Apache serving it
+                await holdingPages.refreshKey(key, 'upgrading').catch(error => log(`WARN holding page for ${key}: ${describeError(error)}`))
                 await mkdir(MAINTENANCE_DIR, { recursive: true })
                 await writeFile(posix.join(MAINTENANCE_DIR, key), '')
             },
@@ -464,6 +497,7 @@ async function main(): Promise<void> {
         // never both read the registry text and lose one another's change.
         writeRegistry: change => writer.write(change),
         reloadRegistry: async () => { await store.refresh(); return store.current() },
+        refreshHoldingPage: (project, environment) => holdingPages.refresh(project.id, environment.name),
         config: domainsConfig,
     }
 
@@ -521,6 +555,10 @@ async function main(): Promise<void> {
             backupDisk: async () => (await readSystemUsage(source, BACKUP_DIR)).disk,
         },
         domains: domainsDeps,
+        // So a stop or start shows on the holding page at once rather than on the next sweep
+        afterLifecycle: async project => {
+            await holdingPages.refresh(project.id, 'live').catch(error => log(`WARN holding page for ${project.id}: ${describeError(error)}`))
+        },
         // An age, which is what /health compares against its staleness threshold, not the timestamp the
         // rail records: the two are one line apart here and the whole alarm depends on which is which.
         railAge: () => rail.ageOfLastSuccess(),
@@ -561,6 +599,14 @@ async function main(): Promise<void> {
     await chown(SOCKET_PATH, 0, SOCKET_GID)
     await chmod(SOCKET_PATH, 0o660)
     log(`listening on ${SOCKET_PATH}`)
+
+    // Pages first, so every vhost the step after this points at its own page finds one already there.
+    // Not awaited: each vhost it rewrites waits on the host's rail, which may be slow to answer just
+    // after a reboot, and nothing else at boot needs it done.
+    await sweepHoldingPages()
+    agent.pointVhostsAtHoldingPages()
+        .then(problems => { for (const problem of problems) log(`WARN ${problem}`) })
+        .catch(error => log(`WARN the vhosts could not be pointed at their holding pages: ${describeError(error)}`))
 
     let lastGuardRun = Date.now()
     let lastInvalidRun = lastGuardRun
@@ -605,6 +651,7 @@ async function main(): Promise<void> {
         fetcherProblem = await checkFetcher()
         const changed = await store.refresh()
         if (changed) log('registry reloaded')
+        await sweepHoldingPages()
         if (changed || Date.now() - lastGuardRun >= GUARD_EVERY_MS) {
             await guard.checkAll(store.current())
             lastGuardRun = Date.now()

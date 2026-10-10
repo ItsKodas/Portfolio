@@ -266,6 +266,23 @@ describe('parseRegistry, problems with one project', () => {
         assert.equal(invalidReason(project({ capabilities: '[lifecycle, deploy]' })), undefined)
     })
 
+    it('reads a contact for the holding page, and leaves it null when the entry names nobody', () => {
+        assert.equal(parseRegistry(project()).projects.get('site')?.contact, null)
+        const contact = parseRegistry(project({ contact: '{ name: Jo Smith, email: jo@example.com, phone: "+61 400 123 456", url: "https://example.com" }' }))
+            .projects.get('site')?.contact
+        assert.deepEqual(contact, { name: 'Jo Smith', email: 'jo@example.com', phone: '+61 400 123 456', url: 'https://example.com' })
+        assert.deepEqual(parseRegistry(project({ contact: '{ email: jo@example.com }' })).projects.get('site')?.contact,
+            { name: null, email: 'jo@example.com', phone: null, url: null })
+    })
+
+    it('refuses a contact a visitor could do nothing with, or one that would publish a broken link', () => {
+        assert.match(invalidReason(project({ contact: '{ name: Jo }' })) ?? '', /contact needs at least one of email, phone or url/)
+        assert.match(invalidReason(project({ contact: '{ email: not-an-address }' })) ?? '', /contact.email must be an email address/)
+        assert.match(invalidReason(project({ contact: '{ phone: call me }' })) ?? '', /contact.phone must be/)
+        assert.match(invalidReason(project({ contact: '{ url: "javascript:alert(1)" }' })) ?? '', /contact.url must be an http or https address/)
+        assert.match(invalidReason(project({ contact: '{ email: jo@example.com, fax: "1" }' })) ?? '', /contact may only contain/)
+    })
+
     it('refuses maxDomains outside 1 to 20', () => {
         assert.match(invalidReason(project({ maxDomains: '0' })) ?? '', /maxDomains must be a whole number from 1 to 20/)
     })

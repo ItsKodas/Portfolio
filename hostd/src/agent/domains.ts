@@ -12,6 +12,7 @@ import type { Change } from '../shared/registry-write.ts'
 import type { ApacheRail } from './apache-rail.ts'
 import { blindWarning, findClaims, readNothing, servesHttpOnly, type Claim, type SitesEnabled } from './sites-enabled.ts'
 import { renderVhost, upstreamFor, vhostPath } from './vhost.ts'
+import { holdingPagePath } from './holding-pages.ts'
 
 export type DomainsConfig = {
     includeDir: string
@@ -37,6 +38,10 @@ export type DomainsDeps = {
     // silently rejected still produce a vhost claiming the alias.
     writeRegistry(change: Change): Promise<{ ok: true } | { ok: false, problem: string, conflict?: true }>
     reloadRegistry(): Promise<Registry>
+    // Writes the environment's holding page now, so it is already on disk when the vhost that names it
+    // is loaded. Optional, and its failure only logged by the caller: a vhost that cannot find its page
+    // still serves the site, and the main loop writes the page again on its next pass.
+    refreshHoldingPage?(project: ProjectEntry, environment: EnvironmentEntry): Promise<void>
     config: DomainsConfig
 }
 
@@ -53,6 +58,7 @@ function render(deps: DomainsDeps, project: ProjectEntry, environment: Environme
         certificate: { chain: deps.config.originCert, key: deps.config.originKey },
         maintenanceDir: deps.config.maintenancePageDir,
         maintenanceFlag: posix.join(deps.config.maintenanceFlagDir, `${project.id}-${environment.name}`),
+        holdingPage: holdingPagePath(deps.config.maintenancePageDir, project.id, environment.name),
         acmeWebroot: deps.config.acmeWebroot,
     })
 }
@@ -71,6 +77,11 @@ async function sweep(deps: DomainsDeps): Promise<{ ok: true, sites: SitesEnabled
     const sites = await deps.listSitesEnabled()
     if (readNothing(sites)) return refuse('unavailable', blindWarning(deps.config.sitesEnabled, sites.unreadable))
     return { ok: true, sites }
+}
+
+// Never throws: the page is a nicety on top of the vhost, and the domain change must not fail for it.
+async function ensureHoldingPage(deps: DomainsDeps, project: ProjectEntry, environment: EnvironmentEntry): Promise<void> {
+    await deps.refreshHoldingPage?.(project, environment).catch(() => {})
 }
 
 async function revert(deps: DomainsDeps, path: string, previous: string | null): Promise<string> {
@@ -97,6 +108,7 @@ export async function writeVhost(
     const path = vhostPath(deps.config.includeDir, project.id, environment.name)
     const previous = await deps.readFile(path)
     const text = render(deps, project, environment, token)
+    await ensureHoldingPage(deps, project, environment)
 
     const result = await deps.rail.send('reload', { write: { path, text }, remove: [], disable: [] })
     if (!result.ok) {
@@ -317,6 +329,7 @@ export async function adopt(
     const path = vhostPath(deps.config.includeDir, project.id, environment.name)
     const previous = await deps.readFile(path)
     const text = render(deps, adopting.project, adopting.environment, token)
+    await ensureHoldingPage(deps, adopting.project, adopting.environment)
 
     // One request, so the new file arrives and the old one leaves before the single configtest. Two
     // requests would mean a moment with both files loaded, where Apache picks one by file order, or a

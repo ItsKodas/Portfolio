@@ -47,6 +47,13 @@ projects:
       # must not contain the compose file, an env file, a build context or a Dockerfile.
       media: { path: uploads, mode: rw }         # rw | ro | hidden (backed up, never shown)
     capabilities: [lifecycle, logs]              # lifecycle | logs | files | backups | domains | provision | env
+    # Optional. Who a visitor should reach while the site is down, shown on its holding page to anyone
+    # who visits, so only details meant to be public. At least one of email, phone or url.
+    contact:
+      name: Acme Bakery
+      email: hello@acmebakery.com.au
+      phone: +61 8 9000 0000
+      url: https://acmebakery.com.au/contact
 
   # A project with a live and a test environment. Each environment has its own folder, branch, domain,
   # port and certificate mode; repo, limits and portEnv live at the project level and apply to both.
