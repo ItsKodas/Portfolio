@@ -8,7 +8,7 @@ const listProjects = vi.fn()
 const listDeploys = vi.fn()
 const listDomains = vi.fn()
 const getProject = vi.fn()
-const assertOwned = vi.fn()
+const accessOf = vi.fn()
 const callerFromSession = vi.fn()
 
 vi.mock('next/navigation', () => ({
@@ -23,9 +23,10 @@ vi.mock('@/server/hostd/session', () => ({ callerFromSession: () => callerFromSe
 vi.mock('@/server/hostd/projects', () => ({
     listProjects: (...args: unknown[]) => listProjects(...args),
     getProject: (...args: unknown[]) => getProject(...args),
-    assertOwned: (...args: unknown[]) => assertOwned(...args),
 }))
-vi.mock('@/server/db', () => ({ getDb: () => ({ site: { findUnique: async () => null } }) }))
+vi.mock('@/server/sites/access', () => ({ accessOf: (...args: unknown[]) => accessOf(...args) }))
+// The Access tab reads the portal's database itself; access.test.tsx is where it is rendered
+vi.mock('./access', () => ({ SiteAccessPanel: ({ projectId }: { projectId: string }) => <p>{`access to ${projectId}`}</p> }))
 // The server action is a round trip this page never makes while rendering, and importing it for real
 // would drag Prisma and next/cache into a jsdom test for nothing.
 vi.mock('./actions', () => ({
@@ -85,7 +86,7 @@ beforeEach(() => {
     listProjects.mockResolvedValue({ ok: true, value: [{ id: 'asot', name: 'ASOT', valid: true, capabilities: ['lifecycle', 'logs'] }] })
     getProject.mockResolvedValue({ ok: true, value: [service('running')] })
     listDomains.mockResolvedValue({ ok: true, value: [] })
-    assertOwned.mockResolvedValue(true)
+    accessOf.mockResolvedValue(['LOGS', 'LIFECYCLE', 'ENVIRONMENTS', 'DEPLOYS'])
     listBranches.mockResolvedValue({ ok: true, value: [] })
     listCredentials.mockResolvedValue({ ok: true, value: [] })
     listDeletedEnvironments.mockResolvedValue({ ok: true, value: [] })
@@ -119,7 +120,7 @@ describe('the site page', () => {
     // somebody else's project confirms it does not exist; "not yours" confirms it does.
     it('answers a site that is not yours exactly as it answers one that is not there', async () => {
         callerFromSession.mockResolvedValue(client)
-        assertOwned.mockResolvedValue(false)
+        accessOf.mockResolvedValue(null)
         const notYours = await thrownBy(page)
 
         vi.clearAllMocks()
@@ -133,7 +134,7 @@ describe('the site page', () => {
 
     it('never asks hostd about a project the client does not own', async () => {
         callerFromSession.mockResolvedValue(client)
-        assertOwned.mockResolvedValue(false)
+        accessOf.mockResolvedValue(null)
 
         await thrownBy(page)
 
@@ -342,12 +343,12 @@ describe('the environments tab', () => {
     }] })
     const tabNames = () => screen.getAllByRole('tab').map(tab => tab.textContent)
 
-    it('gives the operator Overview, Logs, Environments, Deploys, Backups and Settings, in that order', async () => {
+    it('gives the operator Overview, Logs, Environments, Deploys, Backups, Access and Settings, in that order', async () => {
         render(await page())
-        expect(tabNames()).toEqual(['Overview', 'Logs', 'Environments', 'Deploys', 'Backups', 'Settings'])
+        expect(tabNames()).toEqual(['Overview', 'Logs', 'Environments', 'Deploys', 'Backups', 'Access', 'Settings'])
     })
 
-    it('gives a client the same but Settings', async () => {
+    it('gives a client with every permission the same but Access and Settings', async () => {
         callerFromSession.mockResolvedValue(client)
         render(await page())
         expect(tabNames()).toEqual(['Overview', 'Logs', 'Environments', 'Deploys', 'Backups'])
@@ -478,5 +479,54 @@ describe('the environments tab', () => {
         render(await page({ tab: 'environments', add: '1' }))
         expect(screen.queryByRole('heading', { name: 'Add an environment' })).toBeNull()
         expect(listBranches).not.toHaveBeenCalled()
+    })
+})
+
+// What a client was given on this site decides what they are shown of it
+describe('a client\'s permissions', () => {
+    const tabNames = () => screen.getAllByRole('tab').map(tab => tab.textContent)
+
+    it('shows a client with nothing but access the Overview and Backups, with no log or controls', async () => {
+        callerFromSession.mockResolvedValue(client)
+        accessOf.mockResolvedValue([])
+        render(await page())
+        expect(tabNames()).toEqual(['Overview', 'Backups'])
+        expect(screen.queryByRole('button', { name: /restart/i })).toBeNull()
+        expect(screen.queryByRole('button', { name: 'asot-web' })).toBeNull()
+        // What the site is made of is still there
+        expect(within(screen.getByRole('complementary')).getByText('asot-web')).toBeInTheDocument()
+    })
+
+    it('adds exactly the tabs a client was given', async () => {
+        callerFromSession.mockResolvedValue(client)
+        accessOf.mockResolvedValue(['LOGS', 'DEPLOYS'])
+        render(await page())
+        expect(tabNames()).toEqual(['Overview', 'Logs', 'Deploys', 'Backups'])
+    })
+
+    it('lands a client asking for a tab they were not given on Overview', async () => {
+        callerFromSession.mockResolvedValue(client)
+        accessOf.mockResolvedValue(['LOGS'])
+        render(await page({ tab: 'environments' }))
+        expect(screen.getByRole('tab', { name: 'Overview' })).toHaveAttribute('aria-selected', 'true')
+        expect(listDomains).not.toHaveBeenCalled()
+    })
+
+    it('asks the access for this client and this site', async () => {
+        callerFromSession.mockResolvedValue(client)
+        render(await page())
+        expect(accessOf).toHaveBeenCalledWith('cl_8F2K1ABC', 'asot')
+    })
+
+    it('opens the Access tab for the operator', async () => {
+        render(await page({ tab: 'access' }))
+        expect(screen.getByText('access to asot')).toBeInTheDocument()
+    })
+
+    it('never gives a client the Access tab', async () => {
+        callerFromSession.mockResolvedValue(client)
+        render(await page({ tab: 'access' }))
+        expect(screen.queryByRole('tab', { name: 'Access' })).toBeNull()
+        expect(screen.queryByText('access to asot')).toBeNull()
     })
 })

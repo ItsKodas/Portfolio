@@ -11,7 +11,7 @@ import type { PrismaClient } from '../generated/prisma/client'
 
 const url = process.env.TEST_DATABASE_URL
 
-const TABLES = '"Client", "Site", "ClientSession", "ClientToken", "ClientRecoveryCode", "ClientTotpUse", "ClientAuthAttempt", "Quote", "Note"'
+const TABLES = '"Client", "Site", "SiteAccess", "ClientSession", "ClientToken", "ClientRecoveryCode", "ClientTotpUse", "ClientAuthAttempt", "Quote", "Note"'
 
 describe.skipIf(!url)('client models', () => {
     let db: PrismaClient
@@ -62,19 +62,22 @@ describe.skipIf(!url)('client models', () => {
         expect(await db.clientTotpUse.count()).toBe(2)
     })
 
-    it('cascades sessions, tokens, codes and sites when a client is deleted', async () => {
+    it('cascades sessions, tokens, codes and site access when a client is deleted, keeping the site', async () => {
         await client()
         await db.clientSession.create({ data: { clientId: 'cl_ABCDEFGH', tokenHash: 't1', expiresAt: new Date() } })
         await db.clientToken.create({ data: { clientId: 'cl_ABCDEFGH', tokenHash: 'k1', purpose: 'INVITE', expiresAt: new Date() } })
         await db.clientRecoveryCode.create({ data: { clientId: 'cl_ABCDEFGH', codeHash: 'c1' } })
-        await db.site.create({ data: { clientId: 'cl_ABCDEFGH', projectId: 'acme-bakery', name: 'Acme Bakery' } })
+        const site = await db.site.create({ data: { projectId: 'acme-bakery', name: 'Acme Bakery' } })
+        await db.siteAccess.create({ data: { siteId: site.id, clientId: 'cl_ABCDEFGH', permissions: ['LOGS'] } })
 
         await db.client.delete({ where: { id: 'cl_ABCDEFGH' } })
 
         expect(await db.clientSession.count()).toBe(0)
         expect(await db.clientToken.count()).toBe(0)
         expect(await db.clientRecoveryCode.count()).toBe(0)
-        expect(await db.site.count()).toBe(0)
+        expect(await db.siteAccess.count()).toBe(0)
+        // A site is nobody's, so it outlives every client who had it
+        expect(await db.site.count()).toBe(1)
     })
 
     // Deleting a client must never delete the quote they came from, so the history survives

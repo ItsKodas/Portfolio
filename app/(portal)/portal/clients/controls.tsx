@@ -5,15 +5,13 @@
 
 import { useState } from 'react'
 
-import { siteSchema } from '@/server/clients/schema'
 import { Button } from '@/ui/Button/Button'
 import { Callout } from '@/ui/Callout/Callout'
 import { Dialog } from '@/ui/Dialog/Dialog'
 import { Field } from '@/ui/Field/Field'
-import { ContentCopy, DeleteOutline } from '@/ui/icons'
+import { ContentCopy } from '@/ui/icons'
 import {
-    addSiteAction, clearLockAction, createClientAction, deleteClientAction, removeSiteAction,
-    resendInviteAction, resetTwoFactorAction, sendResetAction, setSuspendedAction, updateClientAction,
+    clearLockAction, createClientAction, deleteClientAction, resendInviteAction, resetTwoFactorAction, sendResetAction, setSuspendedAction, updateClientAction,
     type AdminResult,
 } from './actions'
 import styles from './controls.module.css'
@@ -45,7 +43,7 @@ const Problem = ({ error }: { error: string | null }) => (
     error ? <div className={styles.problem}><Callout tone="crit" title={error}>{null}</Callout></div> : null
 )
 
-// The id is what gets typed by hand into hostd's projects.yaml, so copying it correctly matters more than usual
+// The id is what hostd's audit log names a client by, so copying it correctly still matters
 export function ClientId({ id }: { id: string }) {
     const [copied, setCopied] = useState(false)
 
@@ -69,7 +67,7 @@ export function ClientId({ id }: { id: string }) {
                 {copied && <span className={styles.copied}>Copied</span>}
             </div>
             <p className={styles.note}>
-                Use this as <code>client:</code> in hostd&apos;s projects.yaml
+                hostd&apos;s audit log names this client by it. Sites are given on this page, not in projects.yaml.
             </p>
         </div>
     )
@@ -209,40 +207,10 @@ export function DeleteClientButton({ clientId }: { clientId: string }) {
                 }
             >
                 <p className={styles.dialogText}>
-                    This removes the client, their sites, sessions and recovery codes entirely. It can&apos;t be
+                    This removes the client, their access to every site, their sessions and recovery codes entirely. The sites themselves stay. It can&apos;t be
                     undone from here.
                 </p>
             </Dialog>
         </div>
-    )
-}
-
-export function AddSiteForm({ clientId }: { clientId: string }) {
-    const { pending, error, run } = useAction()
-    const [projectId, setProjectId] = useState('')
-    const [name, setName] = useState('')
-    const valid = siteSchema.safeParse({ projectId, name }).success
-
-    return (
-        <form onSubmit={event => { event.preventDefault(); run(() => addSiteAction(clientId, { projectId, name }), () => { setProjectId(''); setName('') }) }}>
-            <div className={styles.addSite}>
-                <Field label="Project id" value={projectId} onChange={event => setProjectId(event.target.value)} />
-                <Field label="Site name" value={name} onChange={event => setName(event.target.value)} />
-                <Button type="submit" className={styles.addSiteButton} disabled={pending || !valid}>Add site</Button>
-            </div>
-            <Problem error={error} />
-        </form>
-    )
-}
-
-export function RemoveSiteButton({ clientId, siteId }: { clientId: string, siteId: string }) {
-    const { pending, error, run } = useAction()
-    return (
-        <>
-            <Button variant="quiet" size="small" aria-label="Remove site" disabled={pending} onClick={() => run(() => removeSiteAction(clientId, siteId))}>
-                <DeleteOutline size={15} />
-            </Button>
-            <Problem error={error} />
-        </>
     )
 }

@@ -1,6 +1,6 @@
 // Relays hostd's log stream to a browser. The browser names a project and a service and nothing else: the
-// caller comes from the session, the token never leaves the server, and a client's ownership is checked
-// here before hostd is asked.
+// caller comes from the session, the token never leaves the server, and a client's access is checked here
+// before hostd is asked.
 
 import 'server-only'
 
@@ -13,9 +13,11 @@ import type { LogStream } from './logs'
 type BaseRelayDeps = {
     config: HostdConfig
     caller: Caller
-    // null when the caller is the operator, who owns everything
+    // null when the caller is the operator, who reaches everything
     clientId: string | null
-    assertOwned: (clientId: string, projectId: string) => Promise<boolean>
+    // Whether this client has access to the site and the permission this stream needs: LOGS for the log,
+    // DEPLOYS for a deploy as it runs. The route decides which, since it knows which stream it is.
+    mayWatch: (clientId: string, projectId: string) => Promise<boolean>
 }
 
 export type RelayDeps = BaseRelayDeps & {
@@ -52,9 +54,9 @@ export async function relayLogs(deps: RelayDeps, id: string, params: URLSearchPa
     const service = params.get('service')
     if (!service) return problem('bad-request')
 
-    // A client may only watch their own site. Answering 404 rather than 403 means the portal does not
+    // A client may only watch a site they have been given. Answering 404 rather than 403 means the portal does not
     // confirm that a project id exists to somebody who has no business knowing.
-    if (deps.clientId && !(await deps.assertOwned(deps.clientId, id))) return problem('not-found')
+    if (deps.clientId && !(await deps.mayWatch(deps.clientId, id))) return problem('not-found')
 
     const tailText = params.get('tail')
     const tail = tailText === null ? undefined : Number(tailText)
@@ -85,9 +87,9 @@ export async function relayDeployWatch(deps: DeployWatchRelayDeps, id: string, p
     const environment = params.get('environment')
     if (!isEnvironmentName(environment)) return problem('bad-request')
 
-    // A client may only watch their own site. Answering 404 rather than 403 means the portal does not
+    // A client may only watch a site they have been given. Answering 404 rather than 403 means the portal does not
     // confirm that a project id exists to somebody who has no business knowing.
-    if (deps.clientId && !(await deps.assertOwned(deps.clientId, id))) return problem('not-found')
+    if (deps.clientId && !(await deps.mayWatch(deps.clientId, id))) return problem('not-found')
 
     const stream = await deps.openDeployStream(deps.config, deps.caller, id, environment)
     if (!stream.ok) return problem(stream.code)

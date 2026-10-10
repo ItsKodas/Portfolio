@@ -1,7 +1,7 @@
 'use server'
 
 // Everything the site page changes. Each action works out who is asking from the session alone and checks
-// a client's ownership itself before hostd is asked, exactly as the log relay does. Nothing the browser
+// a client's access itself before hostd is asked, exactly as the log relay does. Nothing the browser
 // sent may influence either: it names a project and an action, and that is all it is trusted with.
 
 import { revalidatePath } from 'next/cache'
@@ -20,10 +20,12 @@ import {
 import type { Caller } from '@/server/hostd/actor'
 import { forAdmin, forClient } from '@/server/hostd/errors'
 import { setPort } from '@/server/hostd/ports'
-import { assertOwned, lifecycle, listEnvironments } from '@/server/hostd/projects'
+import { hasAccess, lifecycle, listEnvironments } from '@/server/hostd/projects'
 import { removeProject } from '@/server/hostd/remove'
 import { callerFromSession } from '@/server/hostd/session'
 import { writeSettings, type SiteSettings } from '@/server/hostd/settings'
+import { accessOf } from '@/server/sites/access'
+import type { Permission } from '@/server/sites/permissions'
 import { stateWord } from './domains'
 
 export type SiteActionResult = { ok: true, message: string } | { ok: false, error: string }
@@ -55,20 +57,16 @@ const NOT_YOURS = 'This is not set up yet.'
 type Allowed = { ok: true, caller: Caller, config: HostdConfig, isAdmin: boolean }
 
 // The gate every action goes through. It answers a caller who may not do this exactly as it answers one
-// asking about a project that does not exist, so neither can be used to probe for the other.
-async function allow(id: string, adminOnly: boolean): Promise<Allowed | { ok: false, error: string }> {
+// asking about a project that does not exist, so neither can be used to probe for the other. A client needs
+// access to the site and, when one is named, the permission the action belongs to.
+async function allow(id: string, adminOnly: boolean, permission?: Permission): Promise<Allowed | { ok: false, error: string }> {
     const who = await callerFromSession()
     if (!who) return { ok: false, error: SIGN_IN_AGAIN }
 
     const isAdmin = who.clientId === null
     if (adminOnly && !isAdmin) return { ok: false, error: NOT_YOURS }
 
-    if (who.clientId) {
-        const db = getDb()
-        const owned = await assertOwned(who.clientId, id, projectId =>
-            db.site.findUnique({ where: { projectId }, select: { projectId: true, clientId: true } }))
-        if (!owned) return { ok: false, error: NOT_YOURS }
-    }
+    if (who.clientId && !(await hasAccess(who.clientId, id, accessOf, permission))) return { ok: false, error: NOT_YOURS }
 
     const problems: string[] = []
     const config = readHostd(process.env, problems)
@@ -113,7 +111,7 @@ export async function lifecycleAction(id: string, action: string): Promise<SiteA
     if (!(LIFECYCLE as readonly string[]).includes(action)) return { ok: false, error: 'That is not something this page can do.' }
     const asked = action as LifecycleAction
 
-    const allowed = await allow(id, false)
+    const allowed = await allow(id, false, 'LIFECYCLE')
     if (!allowed.ok) return allowed
 
     const result = await lifecycle(allowed.config, allowed.caller, id, asked)
@@ -426,14 +424,14 @@ export async function deleteSiteAction(id: string, confirm: string): Promise<Sit
     const result = await removeProject(allowed.config, allowed.caller, id, confirm)
     if (!result.ok) return refused(`delete ${id}`, allowed.isAdmin, result)
 
-    // Only once hostd has let it go, so a refusal never leaves a client's link pointing at nothing. A
-    // failure here leaves a link to a site hostd no longer knows, which the client's page shows as unavailable
-    // and which can be removed from that page.
+    // Only once hostd has let it go, so a refusal never takes anyone's access away from a site that is still
+    // there. Deleting the row takes every client's access with it. A failure here leaves access to a site
+    // hostd no longer knows, which shows as unavailable and can be removed from each client's page.
     try {
         await getDb().site.deleteMany({ where: { projectId: id } })
     } catch (error) {
         console.error(`[portal] unlinking ${id} after deleting it failed: ${String(error)}`)
-        return { ok: true, message: "Deleted, but it is still linked to its client. Remove it from the client's page." }
+        return { ok: true, message: "Deleted, but clients still have access to it. Remove it from each client's page." }
     }
 
     revalidatePath('/portal', 'layout')

@@ -17,17 +17,20 @@ const deleteEnvironment = vi.fn()
 const restoreEnvironment = vi.fn()
 const copyFromLive = vi.fn()
 const copyRuns = vi.fn()
+const hasAccess = vi.fn()
+const lifecycle = vi.fn()
 
 vi.mock('next/cache', () => ({ revalidatePath: () => {} }))
 vi.mock('@/server/db', () => ({ getDb: () => ({ site: { deleteMany: (...args: unknown[]) => deleteSites(...args) } }) }))
 vi.mock('@/server/hostd/remove', () => ({ removeProject: (...args: unknown[]) => removeProject(...args) }))
 vi.mock('@/server/hostd/config', () => ({ readHostd: () => ({ url: 'http://hostd', token: 't' }) }))
+vi.mock('@/server/sites/access', () => ({ accessOf: async () => null }))
 vi.mock('@/server/hostd/session', () => ({ callerFromSession: () => callerFromSession() }))
 vi.mock('@/server/hostd/settings', () => ({ writeSettings: (...args: unknown[]) => writeSettings(...args) }))
 vi.mock('@/server/hostd/ports', () => ({ setPort: (...args: unknown[]) => setPort(...args) }))
 vi.mock('@/server/hostd/projects', () => ({
-    assertOwned: async () => true,
-    lifecycle: vi.fn(),
+    hasAccess: (...args: unknown[]) => hasAccess(...args),
+    lifecycle: (...args: unknown[]) => lifecycle(...args),
     listEnvironments: (...args: unknown[]) => listEnvironments(...args),
 }))
 vi.mock('@/server/hostd/deploys', () => ({
@@ -56,7 +59,7 @@ vi.mock('@/server/hostd/environments', () => ({
 }))
 
 const {
-    addDomainAction, addEnvironmentAction, copyFromLiveAction, copyRunsAction, deleteEnvironmentAction, restoreEnvironmentAction, changePrimaryDomainAction, deleteSiteAction, deployAction, saveEnvAction, saveSettingsAction,
+    addDomainAction, addEnvironmentAction, lifecycleAction, copyFromLiveAction, copyRunsAction, deleteEnvironmentAction, restoreEnvironmentAction, changePrimaryDomainAction, deleteSiteAction, deployAction, saveEnvAction, saveSettingsAction,
     setPortAction, setPrimaryDomainAction,
 } = await import('./actions')
 
@@ -71,6 +74,7 @@ beforeEach(() => {
     // No session, which is the first thing past the shape check: a well-formed object gets this answer
     // and a malformed one never gets that far.
     callerFromSession.mockResolvedValue(null)
+    hasAccess.mockResolvedValue(true)
     listEnvironments.mockResolvedValue({ ok: true, value: [env('live')] })
 })
 
@@ -340,7 +344,7 @@ describe('deleteSiteAction', () => {
         expect(deleteSites).not.toHaveBeenCalled()
     })
 
-    it('still says deleted when only the unlink failed', async () => {
+    it('still says deleted when only taking the access away failed', async () => {
         callerFromSession.mockResolvedValue({ caller: { kind: 'admin' }, clientId: null })
         removeProject.mockResolvedValue({ ok: true, value: { ok: true } })
         deleteSites.mockRejectedValue(new Error('connection lost'))
@@ -348,7 +352,7 @@ describe('deleteSiteAction', () => {
         const result = await deleteSiteAction('acme', 'Acme')
 
         expect(result.ok).toBe(true)
-        expect(result.ok && result.message).toMatch(/still linked/)
+        expect(result.ok && result.message).toMatch(/still have access/)
     })
 })
 
@@ -731,5 +735,33 @@ describe('copyRunsAction', () => {
 
         const result = await copyRunsAction('acme', 'uat1')
         expect(result.ok).toBe(false)
+    })
+})
+
+// Start, stop and restart are the one change a client can make, and only with the permission for it
+describe('lifecycleAction', () => {
+    it('asks for the start and stop permission, and refuses a client without it before hostd is asked', async () => {
+        callerFromSession.mockResolvedValue(CLIENT)
+        hasAccess.mockResolvedValue(false)
+        const result = await lifecycleAction('acme', 'restart')
+        expect(result).toEqual({ ok: false, error: 'This is not set up yet.' })
+        expect(hasAccess.mock.calls[0][0]).toBe('cl_1')
+        expect(hasAccess.mock.calls[0][1]).toBe('acme')
+        expect(hasAccess.mock.calls[0][3]).toBe('LIFECYCLE')
+        expect(lifecycle).not.toHaveBeenCalled()
+    })
+
+    it('lets a client with it through to hostd', async () => {
+        callerFromSession.mockResolvedValue(CLIENT)
+        lifecycle.mockResolvedValue({ ok: true, value: { ok: true } })
+        expect((await lifecycleAction('acme', 'restart')).ok).toBe(true)
+        expect(lifecycle).toHaveBeenCalled()
+    })
+
+    it('never looks up access for the operator', async () => {
+        callerFromSession.mockResolvedValue(ADMIN)
+        lifecycle.mockResolvedValue({ ok: true, value: { ok: true } })
+        expect((await lifecycleAction('acme', 'start')).ok).toBe(true)
+        expect(hasAccess).not.toHaveBeenCalled()
     })
 })

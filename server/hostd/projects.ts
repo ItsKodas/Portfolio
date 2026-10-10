@@ -4,6 +4,7 @@
 
 import 'server-only'
 
+import type { Permission } from '../sites/permissions'
 import type { Caller } from './actor'
 import { hostdRequest, type HostdResult } from './client'
 import type { HostdConfig } from './config'
@@ -78,8 +79,8 @@ export type Project = {
     services?: ServiceStatus[]
 }
 
-export type SiteRow = { projectId: string, clientId: string }
-export type FindSite = (projectId: string) => Promise<SiteRow | null>
+// What a client may do on one site, from the portal's own database: null for no access at all
+export type FindAccess = (clientId: string, projectId: string) => Promise<readonly Permission[] | null>
 
 export async function listProjects(
     config: HostdConfig,
@@ -134,9 +135,10 @@ export async function lifecycle(
     return hostdRequest<{ ok: boolean }>(config, caller, `/projects/${id}/${action}`, { method: 'POST' }, fetchImpl)
 }
 
-// The portal's own ownership check. hostd runs its own, and describes it as a second line of defence
-// against portal bugs; that only works if there is a first line.
-export async function assertOwned(clientId: string, projectId: string, findSite: FindSite): Promise<boolean> {
-    const site = await findSite(projectId)
-    return site !== null && site.clientId === clientId
+// The portal's own access check. hostd runs its own, and describes it as a second line of defence against
+// portal bugs; that only works if there is a first line. Without a permission named, any access to the site
+// will do, which is what its Overview needs.
+export async function hasAccess(clientId: string, projectId: string, findAccess: FindAccess, permission?: Permission): Promise<boolean> {
+    const permissions = await findAccess(clientId, projectId)
+    return permissions !== null && (permission === undefined || permissions.includes(permission))
 }

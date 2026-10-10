@@ -247,3 +247,29 @@ describe('visibleProjects', () => {
         assert.deepEqual(visibleProjects(registry, admin).map(p => p.id), ['acme', 'quiet', 'other'])
     })
 })
+
+// A site is shared by every client the portal has given it to, which the registry's one client field cannot
+// say. When the portal sends its list, the list decides and the registry's field is not consulted at all.
+describe('the portal\'s list of sites', () => {
+    const shared: Actor = { kind: 'client', client: 'cl_2', sites: new Set(['acme', 'other']) }
+    const revoked: Actor = { kind: 'client', client: 'cl_1', sites: new Set(['quiet']) }
+
+    it('lets a client reach a site the registry names someone else for', () => {
+        const decision = authorize(registry, shared, 'acme', 'lifecycle')
+        assert.equal(decision.ok && decision.project.id, 'acme')
+    })
+
+    it('refuses the registry\'s own client once the portal has taken the site away', () => {
+        assert.deepEqual(authorize(registry, revoked, 'acme', 'status'), { ok: false, status: 404, code: 'not-found', message: 'no project acme' })
+    })
+
+    it('still keeps the operator\'s verbs from a client with access', () => {
+        assert.equal(authorize(registry, shared, 'acme', 'env').ok, false)
+    })
+
+    it('lists exactly the sites on the list', () => {
+        assert.deepEqual(visibleProjects(registry, shared).map(p => p.id), ['acme', 'other'])
+        assert.deepEqual(visibleProjects(registry, revoked).map(p => p.id), ['quiet'])
+        assert.deepEqual(visibleProjects(registry, { kind: 'client', client: 'cl_1', sites: new Set() }), [])
+    })
+})

@@ -33,7 +33,7 @@ export default async function ClientsPage() {
             company: client.company,
             email: client.email,
             status: <Chip tone={STATE_TONES[state]}>{state}</Chip>,
-            sites: client._count.sites,
+            sites: client._count.siteAccess,
             signedIn: client.lastSignInAt ? formatWhen(client.lastSignInAt) : 'Never',
         }
     })

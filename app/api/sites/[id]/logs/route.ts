@@ -1,9 +1,9 @@
-import { getDb } from '@/server/db'
 import { readHostd } from '@/server/hostd/config'
 import { openLogStream } from '@/server/hostd/logs'
-import { assertOwned } from '@/server/hostd/projects'
+import { hasAccess } from '@/server/hostd/projects'
 import { relayLogs } from '@/server/hostd/relay'
 import { callerFromSession } from '@/server/hostd/session'
+import { accessOf } from '@/server/sites/access'
 
 export const dynamic = 'force-dynamic'
 
@@ -21,16 +21,12 @@ export async function GET(request: Request, { params }: { params: Promise<{ id: 
         return Response.json({ code: 'unavailable', message: 'This is temporarily unavailable.' }, { status: 503 })
     }
 
-    const db = getDb()
     return relayLogs(
         {
             config,
             caller: who.caller,
             clientId: who.clientId,
-            assertOwned: (clientId, projectId) => assertOwned(clientId, projectId, async pid => {
-                const site = await db.site.findUnique({ where: { projectId: pid }, select: { projectId: true, clientId: true } })
-                return site
-            }),
+            mayWatch: (clientId, projectId) => hasAccess(clientId, projectId, accessOf, 'LOGS'),
             openLogStream,
         },
         id,

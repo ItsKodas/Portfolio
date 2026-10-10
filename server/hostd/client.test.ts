@@ -23,6 +23,15 @@ describe('hostdRequest', () => {
         expect(calls[0].headers.Authorization).toBe(`Bearer ${'a'.repeat(32)}`)
         expect(calls[0].headers['X-Hostd-Actor']).toBe('admin')
         expect(calls[0].headers['X-Hostd-User']).toBe('koda@horizons.gg')
+        expect(calls[0].headers['X-Hostd-Sites']).toBeUndefined()
+    })
+
+    it('tells hostd which sites a client has access to, even when that is none', async () => {
+        const { fetchImpl, calls } = fakeFetch(200, { projects: [] })
+        await hostdRequest(config, { actor: 'client:cl_1', user: 'cl_1', sites: ['acme', 'shop'] }, '/projects', {}, fetchImpl)
+        await hostdRequest(config, { actor: 'client:cl_1', user: 'cl_1', sites: [] }, '/projects', {}, fetchImpl)
+        expect(calls[0].headers['X-Hostd-Sites']).toBe('acme,shop')
+        expect(calls[1].headers['X-Hostd-Sites']).toBe('')
     })
 
     it('returns a refusal rather than throwing', async () => {

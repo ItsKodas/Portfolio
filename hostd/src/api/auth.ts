@@ -1,12 +1,18 @@
 // Who is calling. The token proves the caller is the portal; the actor header says which client the
 // portal is acting for. hostd cannot verify that claim (the portal is what signs users in), which is why
 // the agent re-checks everything that does not depend on it.
+//
+// For a client, X-Hostd-Sites says which projects the portal has given them access to, read from its own
+// database for this one request. It is trusted exactly as far as the actor header is, and for the same reason.
+// Absent means a portal from before site access existed, and the registry's own client field decides instead.
 
 import { createHash, timingSafeEqual } from 'node:crypto'
 import type { IncomingHttpHeaders } from 'node:http'
-import { CLIENT_ID, USER_ID } from '../shared/formats.ts'
+import { CLIENT_ID, PROJECT_ID, USER_ID } from '../shared/formats.ts'
 
-export type Actor = { kind: 'admin' } | { kind: 'client', client: string }
+// sites is the projects the portal says this client may reach. Optional rather than nullable so an actor
+// built without it reads as the older portal it stands for (see policy.ts, ownsProject).
+export type Actor = { kind: 'admin' } | { kind: 'client', client: string, sites?: ReadonlySet<string> }
 export type Caller = { actor: Actor, user: string }
 export type AuthFailure = {
     ok: false
@@ -29,6 +35,20 @@ export function parseActor(raw: string | undefined): Actor | null {
     if (raw === 'admin') return { kind: 'admin' }
     const client = raw?.startsWith('client:') ? raw.slice('client:'.length) : null
     return client && CLIENT_ID.test(client) ? { kind: 'client', client } : null
+}
+
+// Far more than any one client will ever be given, and small enough that a header cannot be used to make
+// hostd build a large set.
+const MAX_SITES = 500
+
+// A comma separated list of project ids, possibly empty: a client with access to nothing is still a client.
+// Anything else is refused rather than half read, because a list that is quietly shorter than the portal
+// meant is a client locked out for no stated reason, and one that is longer is worse.
+export function parseSites(raw: string): ReadonlySet<string> | null {
+    if (raw === '') return new Set()
+    const ids = raw.split(',')
+    if (ids.length > MAX_SITES || !ids.every(id => PROJECT_ID.test(id))) return null
+    return new Set(ids)
 }
 
 export function actorLabel(actor: Actor): string {
@@ -55,6 +75,15 @@ export function authenticate(headers: IncomingHttpHeaders, token: string): { ok:
     }
     if (!userHeader || !USER_ID.test(userHeader)) {
         return { ok: false, status: 400, code: 'bad-request', message: 'X-Hostd-User is missing or malformed', label: actorLabel(actor), user: 'unknown' }
+    }
+    // Only a client's is read: the operator reaches every project whatever a header says.
+    const sitesHeader = headers['x-hostd-sites']
+    if (actor.kind === 'client' && sitesHeader !== undefined) {
+        const sites = typeof sitesHeader === 'string' ? parseSites(sitesHeader) : null
+        if (!sites) {
+            return { ok: false, status: 400, code: 'bad-request', message: 'X-Hostd-Sites must be a comma separated list of project ids', label: actorLabel(actor), user: userLabel }
+        }
+        return { ok: true, caller: { actor: { ...actor, sites }, user: userHeader } }
     }
     return { ok: true, caller: { actor, user: userHeader } }
 }

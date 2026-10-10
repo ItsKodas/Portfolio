@@ -11,6 +11,7 @@ import { clientDetailsSchema, siteSchema } from '@/server/clients/schema'
 import { hashSessionToken, newSessionToken } from '@/server/clients/session'
 import { INVITE_TTL_MS, RESET_TTL_MS } from '@/server/clients/setup'
 import { log, newClientWithInvite, repo, sendClientEmail } from '@/server/clients/wiring'
+import { parsePermissions } from '@/server/sites/permissions'
 
 export type AdminResult = { ok: true } | { ok: false, error: string, clientId?: string }
 
@@ -216,25 +217,43 @@ export async function deleteClientAction(clientId: string): Promise<AdminResult>
     redirect('/admin/clients')
 }
 
-export async function addSiteAction(clientId: string, input: unknown): Promise<AdminResult> {
+// Access is shown on both the client's page and the site's Access tab, and a site's nav and tabs follow it, so
+// a change to it refreshes the whole portal rather than guessing which page asked.
+async function changeAccess(clientId: string, work: () => Promise<void>): Promise<AdminResult> {
+    try {
+        await work()
+    } catch (error) {
+        log(`Changing site access for ${clientId} failed`, error)
+        return FAILED
+    }
+    revalidatePath('/portal', 'layout')
+    return { ok: true }
+}
+
+// Gives a client a site, or changes what they may do on one they already have. Taken from the client's page
+// (any project id, typed) and from a site's Access tab (that site, by its id and name) alike.
+export async function grantSiteAction(clientId: string, input: unknown, permissions: unknown): Promise<AdminResult> {
     await requireAdmin()
     if (!id.safeParse(clientId).success) return INVALID
     const parsed = siteSchema.safeParse(input)
     if (!parsed.success) return { ok: false, error: parsed.error.issues[0]?.message ?? INVALID.error }
+    const allowed = parsePermissions(permissions)
+    if (!allowed) return INVALID
+    if (!(await repo().byId(clientId))) return FAILED
 
-    try {
-        await repo().createSite(clientId, parsed.data)
-    } catch (error) {
-        if (String(error).includes('Site_projectId_key')) return { ok: false, error: 'That project id is already linked to a client.' }
-        log(`Adding a site to ${clientId} failed`, error)
-        return FAILED
-    }
-    refresh(clientId)
-    return { ok: true }
+    return changeAccess(clientId, () => repo().grantAccess(clientId, parsed.data, allowed))
 }
 
-export async function removeSiteAction(clientId: string, siteId: string): Promise<AdminResult> {
+export async function setSitePermissionsAction(clientId: string, siteId: string, permissions: unknown): Promise<AdminResult> {
     await requireAdmin()
     if (!id.safeParse(clientId).success || !id.safeParse(siteId).success) return INVALID
-    return change(clientId, () => repo().removeSite(clientId, siteId))
+    const allowed = parsePermissions(permissions)
+    if (!allowed) return INVALID
+    return changeAccess(clientId, () => repo().setAccessPermissions(siteId, clientId, allowed))
+}
+
+export async function revokeSiteAction(clientId: string, siteId: string): Promise<AdminResult> {
+    await requireAdmin()
+    if (!id.safeParse(clientId).success || !id.safeParse(siteId).success) return INVALID
+    return changeAccess(clientId, () => repo().revokeAccess(siteId, clientId))
 }
