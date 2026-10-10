@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 
 import type { DeployHistory, DeployOutcome, DeployRecord } from '@/server/hostd/deploys'
-import { formatDuration, outcomeTone, outcomeWord, rollbackTarget, shortCommit, updatesFor } from './deploys'
+import { formatDuration, hasNotes, notesFor, outcomeTone, outcomeWord, rollbackTarget, shortCommit, updatesFor } from './deploys'
 
 const record = (over: Partial<DeployRecord> = {}): DeployRecord => ({
     commit: '5f0ac31aa1f4e0c1b2d3e4f5a6b7c8d9e0f1a2b3',
@@ -111,5 +111,41 @@ describe('what a client is shown', () => {
 
     it('has nothing to show for a site that has never had a good deploy', () => {
         expect(updatesFor(history({ deploys: [record({ outcome: 'failed' })] }))).toEqual([])
+    })
+})
+
+describe('what an update says it changed', () => {
+    it('reads a GitHub merge as the pull request title it carries, with the merged commits under it', () => {
+        const notes = notesFor(record({
+            subject: 'Merge pull request #12 from acme/booking',
+            details: { body: 'Make booking work on phones', changes: [{ subject: 'Check the date', body: '' }] },
+        }))
+        expect(notes).toEqual({ headline: 'Make booking work on phones', description: '', changes: [{ subject: 'Check the date', body: '' }] })
+        expect(hasNotes(notes)).toBe(true)
+    })
+
+    it('reads a GitLab merge as its merge request title and description', () => {
+        const notes = notesFor(record({
+            subject: "Merge branch 'booking' into 'main'",
+            details: { body: 'Make booking work on phones\n\nThe form was too wide.\n\nSee merge request acme/site!4', changes: [] },
+        }))
+        expect(notes.headline).toBe('Make booking work on phones')
+        expect(notes.description).toBe('The form was too wide.\n\nSee merge request acme/site!4')
+    })
+
+    it('reads an ordinary commit as its subject and body', () => {
+        const notes = notesFor(record({ details: { body: 'Refuses a date in the past.', changes: [] } }))
+        expect(notes).toEqual({ headline: 'Fix the booking form', description: 'Refuses a date in the past.', changes: [] })
+    })
+
+    it('has nothing to open for a commit with no body, or one hostd could not read', () => {
+        expect(hasNotes(notesFor(record({ details: { body: '', changes: [] } })))).toBe(false)
+        expect(hasNotes(notesFor(record({ details: null })))).toBe(false)
+        expect(hasNotes(notesFor(record()))).toBe(false)
+    })
+
+    it('keeps the merge subject when the merge says nothing else', () => {
+        const notes = notesFor(record({ subject: 'Merge branch main', details: { body: '', changes: [] } }))
+        expect(notes.headline).toBe('Merge branch main')
     })
 })

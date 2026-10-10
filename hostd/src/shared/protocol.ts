@@ -11,7 +11,7 @@ import { normaliseHostname } from './hostnames.ts'
 import { PORT_RANGE, type OwnPort } from './ports.ts'
 import { posix } from 'node:path'
 import type { Commit } from './fetch-protocol.ts'
-import type { DeployRecord, DeployTrigger } from './deploys.ts'
+import type { DeployDetails, DeployRecord, DeployTrigger } from './deploys.ts'
 import type { EnvFileList } from './envfiles.ts'
 import type { SystemUsage } from './system.ts'
 import { BACKUP_ACTORS, BACKUP_TAGS, type BackupActor, type BackupRecord, type BackupTag, type Snapshot } from './backups.ts'
@@ -345,7 +345,8 @@ export type DeployHistoryReply = {
     deployed: string | null
     paused: boolean
     consecutiveFailures: number
-    deploys: DeployRecord[]
+    // Each record with what its commit changed, read when the history is asked for (see DeployDetails)
+    deploys: Array<DeployRecord & { details: DeployDetails | null }>
 }
 export type DeployCommitsReply = { ok: true, commits: Commit[] }
 export type BranchesReply = { ok: true, branches: string[] }

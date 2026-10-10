@@ -2,6 +2,7 @@
 // agent/deploy-state.ts) is what puts this on disk. Nothing here ever holds an env value or a repo URL,
 // because a client is allowed to read this history for their own site.
 
+import type { CommitMessage } from './fetch-protocol.ts'
 import type { EnvironmentName } from './registry.ts'
 
 // A repo with a broken build would otherwise rebuild every two minutes for ever. Three is enough to ride
@@ -46,6 +47,49 @@ export type DeployRecord = {
     // The tail of whatever command failed, so a broken build is diagnosable from the portal. Never an
     // env file's contents: nothing here reads one.
     output: string | null
+}
+
+// What a deploy's commit says it changed, for the portal to show a client. Never stored with the record:
+// the agent reads it from the repository when the history is asked for, so a deploy recorded before this
+// existed reads exactly as well as one recorded after. Null when the commit could not be read.
+export type DeployDetails = {
+    // The rest of the deployed commit's message after its subject: for a merge commit, what GitHub or
+    // GitLab put there (the pull request's title, or a merge request's title and description).
+    body: string
+    // For a merge commit, the commits it brought in, newest first. Empty for an ordinary commit, whose
+    // own subject and body already are the whole of what it changed.
+    changes: Array<{ subject: string, body: string }>
+}
+
+// How many merged commits one deploy lists. A merge bringing in more than this is described by its
+// newest ones, which is plenty to read and keeps a history reply bounded.
+export const MAX_DEPLOY_CHANGES = 30
+
+// Git trailers (Co-Authored-By, Signed-off-by, a tool's session link) are bookkeeping, not a
+// description of a change, and a client has no use for them. Only a final paragraph made entirely of
+// `Key: value` lines is one, which is git's own rule for where trailers live.
+const TRAILER = /^[A-Za-z0-9][A-Za-z0-9-]*: \S/
+
+export function withoutTrailers(body: string): string {
+    const paragraphs = body.trim().split(/\n\s*\n/)
+    const last = paragraphs[paragraphs.length - 1]
+    if (last !== undefined && last.split('\n').every(line => TRAILER.test(line.trim()))) paragraphs.pop()
+    return paragraphs.join('\n\n').trim()
+}
+
+// The fetcher's answer for one commit, as details. The commit itself is found by its sha rather than by
+// position: git orders a log by date, and a merged commit can be dated after the merge that brought it.
+export function detailsOf(commit: string, messages: CommitMessage[]): DeployDetails | null {
+    // %H is the full sha, and a record's commit is too, except for one a person typed short
+    const own = messages.find(message => commit !== '' && message.commit.startsWith(commit))
+    if (!own) return null
+    const changes = own.merge
+        ? messages
+            .filter(message => message !== own && !message.merge)
+            .slice(0, MAX_DEPLOY_CHANGES)
+            .map(message => ({ subject: message.subject, body: withoutTrailers(message.body) }))
+        : []
+    return { body: withoutTrailers(own.body), changes }
 }
 
 export type EnvironmentDeploys = { deploys: DeployRecord[], consecutiveFailures: number, paused: boolean }

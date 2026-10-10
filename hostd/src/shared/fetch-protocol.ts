@@ -24,6 +24,10 @@ export type FetchRequest =
     | { verb: 'repair', dir: string, worktree: string }
     | { verb: 'log', dir: string, branch: string, limit: number }
     | { verb: 'tip', dir: string, branch: string }
+    // What one commit says and what it brought in: the commit itself, and when it is a merge, the
+    // commits it merged (everything reachable from it but not from its first parent). This is what the
+    // portal shows a client as what a deploy changed.
+    | { verb: 'changes', dir: string, commit: string, limit: number }
     // No dir: this reads the remote directly (git ls-remote --heads), which needs nothing on disk. A
     // project can have a repo and have never been deployed, so there may be no clone to read branches
     // out of, and the remote's branches right now are also a better answer than whatever an old clone
@@ -34,9 +38,12 @@ export type FetchRequest =
     | { verb: 'credentials' }
 
 export type Commit = { commit: string, subject: string, author: string, at: string }
+// One commit's whole message. merge is whether it has more than one parent, which is what tells a pull
+// request's merge commit apart from the commits it brought in.
+export type CommitMessage = { commit: string, merge: boolean, subject: string, body: string }
 
 export type FetchReply =
-    | { ok: true, commit?: string, commits?: Commit[], branches?: string[], credentials?: string[] }
+    | { ok: true, commit?: string, commits?: Commit[], changes?: CommitMessage[], branches?: string[], credentials?: string[] }
     | { ok: false, code: 'bad-request' | 'failed' | 'unavailable', message: string }
 
 type Parsed = { ok: true, request: FetchRequest } | FetchReply
@@ -142,6 +149,18 @@ export function parseFetchRequest(line: string): Parsed {
                 return refuse(`limit must be a whole number from 1 to ${MAX_LOG_LIMIT}`)
             }
             return { ok: true, request: { verb: 'log', dir, branch, limit } }
+        }
+
+        case 'changes': {
+            if (!onlyKeys(raw, ['verb', 'dir', 'commit', 'limit'])) return refuse('changes takes only dir, commit and limit')
+            const dir = dirOf(raw, 'dir')
+            if (!dir) return refuse('dir must be a folder directly under /var/www')
+            if (typeof raw.commit !== 'string' || !GIT_COMMIT.test(raw.commit)) return refuse('commit is malformed')
+            const limit = raw.limit
+            if (typeof limit !== 'number' || !Number.isInteger(limit) || limit < 1 || limit > MAX_LOG_LIMIT) {
+                return refuse(`limit must be a whole number from 1 to ${MAX_LOG_LIMIT}`)
+            }
+            return { ok: true, request: { verb: 'changes', dir, commit: raw.commit, limit } }
         }
 
         case 'tip': {
