@@ -22,10 +22,10 @@ const listColumns = {
 export function clientRepo(db: PrismaClient) {
     const repo = {
         // One transaction: a client who exists with no way to accept the invite is worse than no client at all
-        createWithInvite: (details: ClientDetails, id: string, token: { tokenHash: string, expiresAt: Date }) =>
+        createWithInvite: (details: ClientDetails, id: string, token: { tokenHash: string, expiresAt: Date }, totpRequired = true) =>
             db.client.create({
                 data: {
-                    id, ...details,
+                    id, ...details, totpRequired,
                     tokens: { create: { purpose: 'INVITE', tokenHash: token.tokenHash, expiresAt: token.expiresAt } },
                 },
             }),

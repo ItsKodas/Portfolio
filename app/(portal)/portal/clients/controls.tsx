@@ -83,13 +83,14 @@ export function ClientForm({ fromQuoteId, initial, clientId }: {
     const [name, setName] = useState(initial?.name ?? '')
     const [company, setCompany] = useState(initial?.company ?? '')
     const [email, setEmail] = useState(initial?.email ?? '')
+    const [totpRequired, setTotpRequired] = useState(true)
 
     function submit() {
         const input = { name, company: company || null, email }
         // createClientAction redirects the browser on success, which the framework handles on its own; an
         // ok:false result here always means the email address is a duplicate or the email failed to send
         if (clientId) run(() => updateClientAction(clientId, input))
-        else run(() => createClientAction(input, fromQuoteId))
+        else run(() => createClientAction(input, fromQuoteId, totpRequired))
     }
 
     return (
@@ -98,6 +99,13 @@ export function ClientForm({ fromQuoteId, initial, clientId }: {
                 <Field label="Name" value={name} onChange={event => setName(event.target.value)} required />
                 <Field label="Company" value={company} onChange={event => setCompany(event.target.value)} />
                 <Field label="Email" type="email" value={email} onChange={event => setEmail(event.target.value)} required />
+                {/* Only when creating: an existing client's setting has its own button, with a warning, on their page */}
+                {!clientId && (
+                    <label className={styles.check}>
+                        <input type="checkbox" checked={totpRequired} onChange={event => setTotpRequired(event.target.checked)} />
+                        Require 2FA (untick for a client who can&apos;t use an authenticator app)
+                    </label>
+                )}
                 <div>
                     <Button type="submit" variant="primary" disabled={pending}>{clientId ? 'Save' : 'Create client'}</Button>
                 </div>

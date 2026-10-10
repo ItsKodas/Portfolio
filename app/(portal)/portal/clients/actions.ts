@@ -52,10 +52,13 @@ async function change(clientId: string, work: () => Promise<void>, recorded: () 
     return { ok: true }
 }
 
-export async function createClientAction(input: unknown, fromQuoteId?: string): Promise<AdminResult> {
+// totpRequired is the create form's "Require 2FA" box, ticked unless the operator unticks it. The same setting
+// lives on the client's page afterwards (setTwoFactorRequiredAction).
+export async function createClientAction(input: unknown, fromQuoteId?: string, totpRequired: unknown = true): Promise<AdminResult> {
     const actor = adminActor(await requireAdmin())
     const parsed = clientDetailsSchema.safeParse(input)
     if (!parsed.success) return { ok: false, error: parsed.error.issues[0]?.message ?? INVALID.error }
+    if (typeof totpRequired !== 'boolean') return INVALID
 
     const existing = await repo().byEmail(parsed.data.email)
     // Offering to link is better than creating a second account on the same address
@@ -63,7 +66,7 @@ export async function createClientAction(input: unknown, fromQuoteId?: string): 
 
     let created
     try {
-        created = await newClientWithInvite(parsed.data)
+        created = await newClientWithInvite(parsed.data, totpRequired)
     } catch (error) {
         log('Creating a client failed', error)
         return { ok: false, error: 'That did not work. Please try again.' }
@@ -71,8 +74,8 @@ export async function createClientAction(input: unknown, fromQuoteId?: string): 
 
     await record({
         kind: 'client.create', actor, target: asTarget(created.client),
-        summary: `Created ${created.client.name} (${created.client.email})`,
-        detail: fromQuoteId ? { fromQuote: fromQuoteId } : undefined,
+        summary: `Created ${created.client.name} (${created.client.email})${totpRequired ? '' : ', signing in with their password alone'}`,
+        detail: { ...(fromQuoteId && { fromQuote: fromQuoteId }), totpRequired },
     })
 
     if (fromQuoteId && id.safeParse(fromQuoteId).success) {
