@@ -6,6 +6,11 @@ import { requireAdmin } from '@/server/auth'
 import { repo } from '@/server/clients/wiring'
 import { getDb } from '@/server/db'
 import { quoteRepo } from '@/server/quotes/repo'
+import { formatDayShort, todayIn } from '@/server/invoices/days'
+import { formatMoney } from '@/server/invoices/money'
+import { autopayActive, INTERVAL_LABELS, nextBillingDay } from '@/server/invoices/plans'
+import { invoiceNumber, STANDING_LABELS, STANDING_TONES, standingOf } from '@/server/invoices/standing'
+import { invoices as invoiceRepo, paypalMode, plans as planRepo } from '@/server/invoices/wiring'
 import { Button } from '@/ui/Button/Button'
 import { Chip } from '@/ui/Chip/Chip'
 import { formatWhen } from '../../format'
@@ -20,6 +25,8 @@ import { STATE_TONES, clientState } from '../state'
 import { savePublicContactAction } from '../actions'
 import { PublicContactForm } from '../../publicContact/form'
 import { startViewingAsAction } from '../../viewAs/actions'
+import { EditPlan, EndPlanButton, PlanForm, StopAutopayButton } from '../../invoices/controls'
+import invoiceStyles from '../../invoices/invoices.module.css'
 import styles from './client.module.css'
 
 export const metadata: Metadata = { title: 'Client' }
@@ -40,15 +47,20 @@ export default async function ClientPage({ params }: { params: Promise<{ id: str
     const client = await clients.byId(id)
     if (!client) notFound()
 
-    const [access, sessions, unusedRecoveryCodes, quotes] = await Promise.all([
+    const now = new Date()
+    const today = todayIn(now)
+    const [access, sessions, unusedRecoveryCodes, quotes, plans, invoices, sites] = await Promise.all([
         clients.listAccess(id),
         clients.listSessions(id),
         clients.countUnusedRecoveryCodes(id),
         quoteRepo(getDb()).listForClient(id),
+        planRepo().list({ clientId: id }),
+        invoiceRepo().list({ standing: null, clientId: id }, today),
+        planRepo().sites(),
     ])
 
-    const now = new Date()
     const state = clientState(client, now)
+    const mode = paypalMode()
 
     return (
         <>
@@ -133,6 +145,77 @@ export default async function ClientPage({ params }: { params: Promise<{ id: str
                         ))}
                     </div>
                     <GrantSiteForm clientId={client.id} />
+                </section>
+
+                <section className={frame.panel}>
+                    <h2 className={frame.section}>Plans</h2>
+                    {plans.length === 0 ? <p className={frame.empty}>No plans. Add one below for anything charged on repeat, such as hosting.</p> : (
+                        <div className={invoiceStyles.plans}>
+                            {plans.map(plan => {
+                                const automatic = autopayActive(plan, mode)
+                                return (
+                                    <div key={plan.id}>
+                                        <div className={invoiceStyles.plan}>
+                                            <div>
+                                                <p className={invoiceStyles.planName}>
+                                                    {plan.description}{' '}
+                                                    {plan.amountCents === 0 ? 'Not charged' : `${formatMoney(plan.amountCents)} a ${INTERVAL_LABELS[plan.interval]}`}
+                                                </p>
+                                                <p className={invoiceStyles.planMeta}>
+                                                    {plan.site ? `${plan.site.name}. ` : ''}
+                                                    {plan.amountCents === 0 ? 'Listed for the client, never invoiced.'
+                                                        : automatic ? 'Paid automatically with PayPal.'
+                                                            : `Next invoice ${formatDayShort(nextBillingDay(plan))}, due ${plan.dueDays} days after.`}
+                                                    {plan.subscriptionStatus === 'SUSPENDED' && ' Automatic payment is failing, so it is invoiced instead.'}
+                                                </p>
+                                            </div>
+                                            <div className={frame.controls}>
+                                                {automatic && <StopAutopayButton planId={plan.id} />}
+                                                <EndPlanButton planId={plan.id} autopay={automatic} />
+                                            </div>
+                                        </div>
+                                        <EditPlan
+                                            clientId={client.id}
+                                            planId={plan.id}
+                                            sites={sites}
+                                            billed={plan.periodsBilled > 0}
+                                            initial={{
+                                                description: plan.description, amountCents: plan.amountCents, interval: plan.interval,
+                                                startsOn: plan.startsOn, dueDays: plan.dueDays, siteId: plan.siteId,
+                                            }}
+                                        />
+                                    </div>
+                                )
+                            })}
+                        </div>
+                    )}
+                    <hr className={frame.rule} />
+                    <PlanForm
+                        clientId={client.id}
+                        sites={sites}
+                        initial={{ description: 'Website hosting', amountCents: null, interval: 'MONTHLY', startsOn: today, dueDays: 14, siteId: null }}
+                    />
+                </section>
+
+                <section className={frame.panel}>
+                    <div className={[frame.head, frame.headSpread].join(' ')}>
+                        <h2 className={frame.section}>Invoices</h2>
+                        <Link href={`/portal/invoices/new?client=${client.id}`} className={[frame.action, frame.actionSmall].join(' ')}>New invoice</Link>
+                    </div>
+                    {invoices.length === 0 ? <p className={frame.empty}>No invoices yet.</p> : (
+                        <div className={styles.quotes}>
+                            {invoices.map(invoice => {
+                                const standing = standingOf(invoice, today)
+                                return (
+                                    <p key={invoice.id} className={styles.quote}>
+                                        <Link href={`/portal/invoices/${invoice.id}`} className={frame.plainLink}>{invoiceNumber(invoice.number)}</Link>
+                                        <span className={styles.quoteWhen}> {formatMoney(invoice.totalCents, invoice.currency)}, due {formatDayShort(invoice.dueOn)} </span>
+                                        <Chip tone={STANDING_TONES[standing]}>{STANDING_LABELS[standing]}</Chip>
+                                    </p>
+                                )
+                            })}
+                        </div>
+                    )}
                 </section>
 
                 <section className={frame.panel}>

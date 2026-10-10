@@ -6,12 +6,12 @@ const active = (admin: boolean, pathname: string) =>
     tabsFor(admin, pathname).filter(tab => tab.active).map(tab => tab.label)
 
 describe('tabsFor', () => {
-    it('gives the operator the sites, the quotes, the clients and the logs', () => {
-        expect(tabsFor(true, '/portal').map(tab => tab.label)).toEqual(['Sites', 'Quotes', 'Clients', 'Logs'])
+    it('gives the operator the sites, the quotes, the clients, the invoices and the logs', () => {
+        expect(tabsFor(true, '/portal').map(tab => tab.label)).toEqual(['Sites', 'Quotes', 'Clients', 'Invoices', 'Logs'])
     })
 
-    it('gives a client their overview and their account, and nothing of the operator\'s', () => {
-        expect(tabsFor(false, '/portal').map(tab => tab.label)).toEqual(['Overview', 'Account'])
+    it('gives a client their overview, their billing and their account, and nothing of the operator\'s', () => {
+        expect(tabsFor(false, '/portal').map(tab => tab.label)).toEqual(['Overview', 'Billing', 'Account'])
     })
 
     it('lights the dashboard\'s tab on a site page, since the dashboard is what lists them', () => {
@@ -23,6 +23,8 @@ describe('tabsFor', () => {
         expect(active(true, '/portal/quotes/42')).toEqual(['Quotes'])
         expect(active(true, '/portal/clients/new')).toEqual(['Clients'])
         expect(active(true, '/portal/logs/emails/abc')).toEqual(['Logs'])
+        expect(active(true, '/portal/invoices/plans')).toEqual(['Invoices'])
+        expect(active(false, '/portal/billing/abc')).toEqual(['Billing'])
     })
 
     it('does not let /portal claim every page beneath it', () => {

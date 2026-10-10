@@ -18,7 +18,7 @@ import { LogViews, Pager } from './views'
 
 export const metadata: Metadata = { title: 'Logs' }
 
-const WHO_TYPE = { ADMIN: 'Operator', CLIENT: 'Client', VISITOR: 'Not signed in' } as const
+const WHO_TYPE = { ADMIN: 'Operator', CLIENT: 'Client', VISITOR: 'Not signed in', SYSTEM: 'Automatic' } as const
 
 // Everything anyone has done, newest first. The operator's alone: a client never sees another client's
 // doings, or their own written down like this.
@@ -117,7 +117,7 @@ export default async function ActivityLog({ searchParams }: { searchParams: Prom
 
 // Taking something away is worth seeing at a glance; everything else reads as plain
 function toneOf(kind: string): 'warn' | 'crit' | undefined {
-    if (/\.(delete|revoke|suspend|signInRefused|codeRefused|twoFactorReset)$/.test(kind)) return 'crit'
-    if (/\.(stop|rollback|noteDelete)$/.test(kind)) return 'warn'
+    if (/\.(delete|revoke|suspend|signInRefused|codeRefused|twoFactorReset|paymentFailed|invoiceVoid|overdue)$/.test(kind)) return 'crit'
+    if (/\.(stop|rollback|noteDelete|invoiceDelete|refund|autopayStop|planEnd)$/.test(kind)) return 'warn'
     return undefined
 }

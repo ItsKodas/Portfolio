@@ -146,6 +146,45 @@ that project.
 again. Generate it with `openssl rand -base64 32` and add it, with `CLIENT_REPLY_TO`, to the server's `.env`
 alongside the other variables in the Deploying section above.
 
+## Invoicing
+
+The operator writes invoices under **Invoices** in the portal, and clients see and pay theirs under **Billing**.
+An invoice starts as a draft, gets its number (INV-0001 onwards) when it is sent, and is emailed to the client with
+its PDF attached. Once sent it can't be edited, only voided, marked paid by hand (a bank transfer, say) or chased.
+Both sides can download any invoice as a PDF. The design is in `docs/superpowers/specs/2026-10-10-invoicing-design.md`.
+
+Recurring charges, such as monthly hosting, are **plans**, added on a client's page: a description, a price (0 for
+one that is not charged), monthly or yearly, a start date and the days to pay. Each period raises its own invoice
+on the day it starts. A client can set a plan to **pay automatically**, which makes a PayPal subscription; from then
+on each PayPal payment raises that period's invoice already paid, and stopping it (from either side) goes back to
+invoices.
+
+An hourly run inside the site raises plan invoices, sends a reminder three days before an invoice is due (when it
+gave more than three days to pay), and overdue notices 1, 7 and 14 days after, between 9am and 6pm Brisbane time.
+`BILLING_SCHEDULE=off` stops it. Every invoice, payment and email lands in the Logs page under Billing.
+
+### PayPal
+
+`PAYPAL_MODE` picks the sandbox (test money, the default) or live. Live is refused unless the site is a production
+build. The two are separate worlds: each needs its own app, credentials and webhook, and nothing made in one exists
+in the other.
+
+1. At [developer.paypal.com](https://developer.paypal.com), under **Apps & Credentials**, set the toggle to Sandbox
+   (or Live), create an app (type Merchant) and copy its client id and secret into `PAYPAL_CLIENT_ID` and
+   `PAYPAL_CLIENT_SECRET`.
+2. In that app, add a webhook for `https://www.horizons.gg/api/paypal/webhook` with these events:
+   `CHECKOUT.ORDER.APPROVED`, `PAYMENT.CAPTURE.COMPLETED`, `PAYMENT.CAPTURE.DENIED`, `PAYMENT.CAPTURE.DECLINED`,
+   `PAYMENT.CAPTURE.REFUNDED`, `PAYMENT.SALE.COMPLETED`, and all the `BILLING.SUBSCRIPTION.*` ones. Copy the webhook's
+   id into `PAYPAL_WEBHOOK_ID`.
+3. Sandbox payments are made with a sandbox personal account, from **Testing Tools > Sandbox Accounts** on the same
+   site. A payment made in the sandbox is marked as such on the invoice.
+
+Without PayPal set up, invoices still send and can be marked paid by hand; the Invoices page says what is missing.
+
+`BUSINESS_NAME`, `BUSINESS_ABN`, `BUSINESS_EMAIL`, `BUSINESS_ADDRESS` and `GST_REGISTERED` set what invoices say
+about the business (see `.env.example`). GST is off unless `GST_REGISTERED=1`, because only a GST-registered business
+may charge it or issue a tax invoice.
+
 ## Wallpaper Engine
 
 The hero scene is also a [Wallpaper Engine](https://www.wallpaperengine.io/) web wallpaper (`app/wallpaper`, viewable at

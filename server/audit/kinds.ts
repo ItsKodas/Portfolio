@@ -11,6 +11,7 @@ export const CATEGORIES = {
     access: 'Access',
     client: 'Clients',
     quote: 'Quotes',
+    billing: 'Billing',
 } as const
 
 export type Category = keyof typeof CATEGORIES
@@ -86,6 +87,25 @@ export const KINDS = {
     'quote.noteDelete': 'Note deleted',
     'quote.delete': 'Quote deleted',
     'quote.resend': 'Quote emails sent again',
+
+    'billing.invoiceCreate': 'Invoice drafted',
+    'billing.invoiceUpdate': 'Draft edited',
+    'billing.invoiceDelete': 'Draft deleted',
+    'billing.invoiceSend': 'Invoice sent',
+    'billing.invoiceResend': 'Invoice sent again',
+    'billing.invoiceVoid': 'Invoice voided',
+    'billing.reminder': 'Payment reminder sent',
+    'billing.overdue': 'Overdue notice sent',
+    'billing.checkout': 'Checkout started',
+    'billing.paid': 'Invoice paid',
+    'billing.markedPaid': 'Marked paid',
+    'billing.paymentFailed': 'Payment failed',
+    'billing.refund': 'Payment refunded',
+    'billing.planCreate': 'Plan created',
+    'billing.planUpdate': 'Plan changed',
+    'billing.planEnd': 'Plan ended',
+    'billing.autopayStart': 'Automatic payments on',
+    'billing.autopayStop': 'Automatic payments off',
 } as const satisfies Record<`${Category}.${string}`, string>
 
 export type Kind = keyof typeof KINDS

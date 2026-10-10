@@ -16,6 +16,7 @@ import { log, newClientWithInvite, repo, sendClientEmail } from '@/server/client
 import { callerFromSession } from '@/server/hostd/session'
 import { sitesOf } from '@/server/sites/access'
 import { syncHoldingContacts } from '@/server/sites/holdingContact'
+import { billing } from '@/server/invoices/wiring'
 import { parsePermissions } from '@/server/sites/permissions'
 
 export type AdminResult = { ok: true } | { ok: false, error: string, clientId?: string }
@@ -295,6 +296,9 @@ export async function deleteClientAction(clientId: string): Promise<AdminResult>
     // Read first, because afterwards there is no name left to say who was deleted, and no sites to update
     const before = await repo().byId(clientId)
     const sites = await sitesOf(clientId).catch(() => [])
+    // Their plans go with them, so PayPal has to stop taking money for them before they do. Their invoices stay.
+    const stopped = await billing().stopAllForClient(clientId, actor)
+    if (!stopped.ok) return { ok: false, error: `Not deleted: ${stopped.error}`, clientId }
     try {
         await repo().remove(clientId)
     } catch (error) {
