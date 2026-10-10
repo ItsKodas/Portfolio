@@ -62,6 +62,9 @@ function setup(over: Partial<BackupDeps> = {}) {
         retention: async () => ({ ok: true }),
         prune: async () => ({ ok: true }),
         dump: () => { throw new Error('not used') },
+        paths: async () => { throw new Error('not used') },
+        restoreSize: async () => { throw new Error('not used') },
+        restore: async () => { throw new Error('not used') },
     }
     const execs: Array<{ id: string, argv: string[] }> = []
     const deps: BackupDeps = {

@@ -38,12 +38,20 @@ export class BackupRunner {
     }
 
     start(project: ProjectEntry, request: BackupRequest): BackupStartedReply | Refusal {
+        const begun = this.begin(project, request)
+        return begun.ok ? { ok: true, started: { run: request.run, tag: request.tag } } : begun
+    }
+
+    // start, for a caller that has to know how the run ended: a restore, whose safety backup must have
+    // worked before it touches live. The same locks, taken the same way, and the run recorded the same way.
+    begin(project: ProjectEntry, request: BackupRequest): { ok: true, done: Promise<BackupRecord> } | Refusal {
         if (this.running.has(project.id)) return refuse('busy', `${project.id} already has a backup running`)
         if (this.running.size > 0) return refuse('busy', 'another backup is running; only one runs on the dedi at a time')
         if (this.deps.deployRunning(project.id)) return refuse('busy', `${project.id} is deploying; a backup waits until that has finished`)
 
-        this.running.set(project.id, this.run(project, request))
-        return { ok: true, started: { run: request.run, tag: request.tag } }
+        const done = this.run(project, request)
+        this.running.set(project.id, done.then(() => {}))
+        return { ok: true, done }
     }
 
     // For the tests, and for a clean shutdown: nothing in production awaits a run.
@@ -51,7 +59,7 @@ export class BackupRunner {
         await Promise.all([...this.running.values()])
     }
 
-    private async run(project: ProjectEntry, request: BackupRequest): Promise<void> {
+    private async run(project: ProjectEntry, request: BackupRequest): Promise<BackupRecord> {
         try {
             let record: BackupRecord
             try {
@@ -67,6 +75,7 @@ export class BackupRunner {
             }
             await this.deps.store.record(project.id, record)
             if (record.outcome === 'failed') this.deps.log(`backup ${project.id} failed: ${record.reason}`)
+            return record
         } finally {
             this.running.delete(project.id)
         }

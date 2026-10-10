@@ -50,7 +50,7 @@ export class DeployRunner {
 
     start(project: ProjectEntry, environment: EnvironmentEntry, request: DeployRequest): DeployStartedReply | Refusal {
         const key = deployKey(project.id, environment.name)
-        if (this.blocked.has(key)) return refuse('busy', `${project.id} ${environment.name} is being deleted, restored or copied into`)
+        if (this.blocked.has(key)) return refuse('busy', `${project.id} ${environment.name} is being deleted, restored or copied into, or is having a backup put back`)
         // A caller holding objects from an older read of the registry (the poller across its fetch) must
         // not deploy an environment a delete has since removed: its folder is in the trash by now.
         if (!this.deps.registry().projects.get(project.id)?.environments.has(environment.name)) {

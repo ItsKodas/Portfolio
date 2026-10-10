@@ -8,7 +8,7 @@ import {
     type HealthReply, type LifecycleAction,
     type LifecycleReply, type LogLine, type LogsArgs, type PortsArgs, type PortsReply, type ProjectStatus, type ProvisionAddEnvironmentArgs,
     type ProvisionCreateArgs, type ProvisionDeleteEnvironmentArgs, type ProvisionRemoveArgs, type ProvisionRestoreEnvironmentArgs,
-    type ProvisionTrashArgs, type Refusal, type ServiceStatus, type StatusesReply,
+    type ProvisionTrashArgs, type Refusal, type RestoreArgs, type RestoreRecord, type ServiceStatus, type StatusesReply,
 } from '../shared/protocol.ts'
 import { environmentOf, ENVIRONMENT_FLAGS, type EnvironmentFlag, type EnvironmentName, type ProjectEntry, type Registry } from '../shared/registry.ts'
 import { describeError } from '../shared/formats.ts'
@@ -41,6 +41,7 @@ import { holdingPagePath } from './holding-pages.ts'
 import { copyRefusal, runCopy, type CopyFs } from './copy-run.ts'
 import type { IoHelper } from './io-helper.ts'
 import type { CopyStore } from './copy-store.ts'
+import { restoreRefusal, runRestore, type RestoreFs } from './restore-run.ts'
 
 export const MAX_FOLLOWS_PER_PROJECT = 4
 export const FOLLOW_MAX_MS = 60 * 60_000
@@ -90,7 +91,7 @@ export type AgentDeps = {
     // Absent until the production entrypoint wires the backup directory, the store and the runner: the
     // backup verb then refuses unavailable instead of crashing, exactly like deploys and provision do.
     backups?: {
-        runner: Pick<BackupRunner, 'start' | 'isRunning'>
+        runner: Pick<BackupRunner, 'start' | 'isRunning'> & Partial<Pick<BackupRunner, 'begin'>>
         store: Pick<BackupStore, 'get' | 'failures'>
         restic: Restic
         backupDir: string
@@ -137,6 +138,21 @@ export type AgentDeps = {
         // Injected only so the tests can hold a run open and watch the block; everything else passes the
         // real one
         run?: typeof runCopy
+    }
+    // Putting a backup back over live. Absent until the production entrypoint wires the record and the
+    // filesystem: the restore verb then refuses unavailable instead of crashing. It needs backups too, for
+    // the repository and for the safety backup it takes first.
+    restores?: {
+        store: Pick<CopyStore<RestoreRecord>, 'list' | 'get' | 'start' | 'finish'>
+        fs: RestoreFs
+        helper: IoHelper
+        newRunId: () => string
+        log(message: string): void
+        now(): number
+        sleep?(ms: number): Promise<void>
+        // Injected only so the tests can hold a run open and watch the block; everything else passes the
+        // real one
+        run?: typeof runRestore
     }
 }
 
@@ -185,8 +201,23 @@ export class Agent {
     // the environment back and removed its staging. Nothing may deploy, move, delete or restore that
     // environment, write its vhost, or back the project up, until it is gone.
     private readonly copying = new Map<string, Promise<void>>()
+    // Keyed by project while a backup is being put back over its live environment: from the safety backup
+    // it takes first until live's services are put back and its staging removed. Nothing may deploy live,
+    // start or stop the project, change live's port or env files, reconfigure or remove the project, copy
+    // from live or back the project up until it is gone.
+    private readonly restoring = new Map<string, Promise<void>>()
 
     constructor(private readonly deps: AgentDeps) {}
+
+    // Why anything that touches live, or the project as a whole, has to wait, or null
+    private restoringRefusal(id: string): Refusal | null {
+        return this.restoring.has(id) ? refuse('busy', `${id} is having a backup put back over live; wait until that has finished`) : null
+    }
+
+    // For the tests, and for a clean shutdown: nothing in production awaits a restore.
+    async settleRestores(): Promise<void> {
+        await Promise.all([...this.restoring.values()])
+    }
 
     // Whether the project, or the one named environment of it, is being copied into
     private copyingIn(id: string, environment?: string): boolean {
@@ -268,6 +299,79 @@ export class Agent {
                 return reply(await this.port(checked.project, request.args.environment, request.args.port))
             case 'copy':
                 return reply(await this.copy(checked.project, request.args))
+            case 'restore':
+                return reply(await this.restore(checked.project, request.args))
+        }
+    }
+
+    // One of the project's backups put back over live. start answers once the safety backup has begun and
+    // the run is under way, as a copy's does: a restore is minutes of backing up, unpacking and loading.
+    // The record is what the portal polls.
+    private async restore(project: ProjectEntry, args: RestoreArgs): Promise<AgentReply> {
+        const restores = this.deps.restores
+        const backups = this.deps.backups
+        if (!restores || !backups) return refuse('unavailable', 'restores are not configured')
+        const running = this.restoring.has(project.id)
+        if (args.action === 'list') return { ok: true, restores: restores.store.list(project.id, 'live'), running }
+        if (args.action === 'get-run') return { ok: true, restore: restores.store.get(project.id, 'live', args.run), running }
+
+        // Every check and the slot taken before the first await, so nothing that touches live can slip in
+        // while the snapshot is being looked up
+        const key = `${project.id}:live`
+        if (running) return refuse('busy', `${project.id} already has a restore running`)
+        if (this.deps.deploys?.runner.isRunning(deployKey(project.id, 'live'))) return refuse('busy', `${project.id} live has a deploy running`)
+        if (this.portChanging.has(key)) return refuse('busy', `${project.id} live is moving to another port`)
+        if (this.envBusy.has(key)) return refuse('busy', `${project.id} already has an env write running for live`)
+        // A copy is reading live's databases and storage, which this is about to replace
+        if (this.copyingIn(project.id)) return refuse('busy', `${project.id} has an environment being copied from live`)
+        if (backups.runner.isRunning(project.id)) return refuse('busy', `${project.id} has a backup running; a restore waits until it has finished`)
+        if (this.provisioningBusy) return refuse('busy', 'another provisioning action is in progress')
+        if (this.lifecycleBusy.has(project.id)) return refuse('busy', `${project.id} already has a lifecycle action running`)
+        const refusal = restoreRefusal(project)
+        if (refusal) return refuse('bad-request', refusal)
+        this.restoring.set(project.id, Promise.resolve())
+        // The runner's own block as well: the poller starts deploys straight through it
+        const unblock = this.deps.deploys?.runner.block?.(deployKey(project.id, 'live'))
+        let started = false
+        try {
+            // The id is checked against this project's own repository: a hex id is not proof the backup is
+            // this client's
+            const repo = repoPath(backups.backupDir, project.id)
+            const listed = await backups.restic.snapshots(repo)
+            if (!listed.ok) return refuse('failed', listed.reason, listed.output)
+            const snapshot = listed.snapshots.find(entry => entry.id === args.snapshot || entry.id.startsWith(args.snapshot))
+            if (!snapshot) return refuse('bad-request', `no backup ${args.snapshot} for ${project.id}`)
+            const diskFull = await this.backupDiskProblem()
+            if (diskFull) return refuse('unavailable', `${diskFull}, so the safety backup a restore takes first cannot be made`)
+
+            // The safety backup, under the backup runner's own locks: one per project and one on the dedi.
+            // Manual, so retention never takes it, and outside the manual cap and cooldown, which are there
+            // to stop a client filling the disk, not to stop a restore keeping what it replaces.
+            const run = restores.newRunId()
+            if (!backups.runner.begin) return refuse('unavailable', 'restores are not configured')
+            const safety = backups.runner.begin(project, { tag: 'manual', actor: 'admin', run: backups.newRunId(), keep: null })
+            if (!safety.ok) return safety
+            const restore = restores.run ?? runRestore
+            const done = restore(project, { snapshot: snapshot.id, run, actor: args.actor ?? 'admin', safety: safety.done }, {
+                dockerApi: this.deps.docker, runner: this.deps.runner, fs: restores.fs, helper: restores.helper,
+                restic: backups.restic, backupDir: backups.backupDir, store: restores.store,
+                log: restores.log, now: restores.now, ...(restores.sleep ? { sleep: restores.sleep } : {}),
+            })
+                .then(() => {}, error => restores.log(`restore ${project.id} ${run} failed unexpectedly: ${describeError(error)}`))
+                .finally(async () => {
+                    unblock?.()
+                    this.restoring.delete(project.id)
+                    // So the holding page says what live is doing now, rather than on the next sweep
+                    await this.deps.afterLifecycle?.(project)
+                })
+            this.restoring.set(project.id, done)
+            started = true
+            return { ok: true, run }
+        } finally {
+            if (!started) {
+                unblock?.()
+                this.restoring.delete(project.id)
+            }
         }
     }
 
@@ -295,6 +399,9 @@ export class Agent {
         // is starting and stopping the project's containers under it
         if (this.provisioningBusy) return refuse('busy', 'another provisioning action is in progress')
         if (this.lifecycleBusy.has(project.id)) return refuse('busy', `${project.id} already has a lifecycle action running`)
+        // Nor while a backup is being put back over live, which the copy would read half-replaced
+        const restoringNow = this.restoringRefusal(project.id)
+        if (restoringNow) return restoringNow
         this.copying.set(key, Promise.resolve())
         // The runner's own block as well: the poller starts deploys straight through it
         const unblock = this.deps.deploys?.runner.block?.(deployKey(project.id, name))
@@ -352,6 +459,10 @@ export class Agent {
             // the same databases and storage, so the two never overlap. The copy refuses the other way.
             const copyingNow = this.copyBlocksBackup(project.id)
             if (copyingNow) return reply(copyingNow)
+            // Nor while a restore is replacing what a backup would read. A restore's own safety backup is
+            // started by the restore itself, not through here.
+            const restoringNow = this.restoringRefusal(project.id)
+            if (restoringNow) return reply(restoringNow)
             // The design's run order refuses on a full disk before it refuses a sixth manual run, and the
             // runbook lists this under "When a backup is refused", so it is a synchronous refusal like the
             // manual cap and the cooldown beside it, not a run that starts and records a reason minutes
@@ -377,7 +488,7 @@ export class Agent {
             // same limitation on its own actor field.
             // Again, with nothing awaited between this and the start: a copy may have begun while the disk
             // and the snapshots were being read
-            const copyingSince = this.copyBlocksBackup(project.id)
+            const copyingSince = this.copyBlocksBackup(project.id) ?? this.restoringRefusal(project.id)
             if (copyingSince) return reply(copyingSince)
             return reply(runner.start(project, {
                 tag: args.tag, actor: args.tag === 'scheduled' ? 'hostd' : (args.actor ?? 'admin'),
@@ -584,6 +695,10 @@ export class Agent {
         if (this.portChanging.has(key)) return refuse('busy', `${project.id} ${environment.name} is moving to another port`)
         if (this.trashingIn(project.id, environment.name)) return refuse('busy', `${project.id} ${environment.name} is being deleted or restored`)
         if (this.copyingIn(project.id, environment.name)) return refuse('busy', `${project.id} ${environment.name} is being copied from live`)
+        if (environment.name === 'live') {
+            const restoringNow = this.restoringRefusal(project.id)
+            if (restoringNow) return restoringNow
+        }
 
         if (args.action === 'rollback') {
             const target = lastHealthyCommit(store.get(key), environment.deployed)
@@ -675,6 +790,9 @@ export class Agent {
         if (this.trashingIn(project.id)) return refuse('busy', `${project.id} has an environment being deleted or restored`)
         // And it may rewrite the vhost, or the registry entry, of an environment a copy is working in
         if (this.copyingIn(project.id)) return refuse('busy', `${project.id} has an environment being copied from live`)
+        // And it may change the services and storage a restore is putting back
+        const restoringNow = this.restoringRefusal(project.id)
+        if (restoringNow) return restoringNow
         // Which environments are having an address REPLACED rather than given one for the first time.
         // Read before the writes below, because they are what makes the old value unreadable, and it is
         // the old value that decides whether Apache has a file to rewrite afterwards.
@@ -807,6 +925,7 @@ export class Agent {
         const envKey = `${project.id}:${environment}`
         if (this.envBusy.has(envKey)) return refuse('busy', `${project.id} already has an env write running for ${environment}`)
         if (this.copying.has(envKey)) return refuse('busy', `${project.id} ${environment} is being copied from live`)
+        if (environment === 'live' && this.restoring.has(project.id)) return this.restoringRefusal(project.id)!
         this.provisioningBusy = true
         this.envBusy.add(envKey)
         // Held, not just checked, so a lifecycle action or a deploy arriving mid-change is refused too
@@ -1042,6 +1161,8 @@ export class Agent {
             if (args.action === 'delete-environment' || args.action === 'restore-environment') return await this.trash(project, args)
             if (args.environment !== null) return await this.trash(project, { action: 'delete-environment', environment: args.environment })
             if (this.copyingIn(project.id)) return refuse('busy', `${project.id} has an environment being copied from live`)
+            const restoringNow = this.restoringRefusal(project.id)
+            if (restoringNow) return restoringNow
             const reply = await removeProject(project, this.deps.provision)
             if (!reply.ok) return reply
             const note = await this.removeVhosts(project, null)
@@ -1193,6 +1314,7 @@ export class Agent {
 
         const key = `${project.id}:${environment.name}`
         if (this.envBusy.has(key)) return refuse('busy', `${project.id} already has an env write running for ${environment.name}`)
+        if (environment.name === 'live' && this.restoring.has(project.id)) return this.restoringRefusal(project.id)!
         this.envBusy.add(key)
         try {
             const result = await writeEnvFile(environment, args.path, args.text, this.deps.envFs)
@@ -1204,6 +1326,9 @@ export class Agent {
 
     private async lifecycle(project: ProjectEntry, action: LifecycleAction): Promise<LifecycleReply | Refusal> {
         if (this.lifecycleBusy.has(project.id)) return refuse('busy', `${project.id} already has a lifecycle action running`)
+        // A restore stops live's services and starts them again itself
+        const restoringNow = this.restoringRefusal(project.id)
+        if (restoringNow) return restoringNow
         this.lifecycleBusy.add(project.id)
         try {
             // Start and restart read the compose file and its mounts, so the guard is re-run first: the

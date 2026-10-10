@@ -18,7 +18,7 @@ import { DomainStore, domainKey, newRecord, type DomainRecord } from './domain-s
 // as the thing it actually is (a record the verifier will pick up) rather than as a state string.
 import { nextCheckAt } from './verifier.ts'
 import { parseRegistry, type Registry } from '../shared/registry.ts'
-import { DOMAIN_TOKEN, checkStructure, type AgentReply, type AgentRequest, type CopyRecord, type LogLine } from '../shared/protocol.ts'
+import { DOMAIN_TOKEN, checkStructure, type AgentReply, type AgentRequest, type CopyRecord, type RestoreRecord, type LogLine } from '../shared/protocol.ts'
 import type { SystemUsage } from '../shared/system.ts'
 
 const TOKEN = 'k'.repeat(64)
@@ -2768,5 +2768,77 @@ describe('copying from live', () => {
             assert.equal(response.status, 400)
             assert.deepEqual(agent.calls, [])
         })
+    })
+})
+
+describe('putting a backup back over live', () => {
+    const RUN = 'abcdef012345'
+    const record: RestoreRecord = {
+        project: 'acme', environment: 'live', run: RUN, actor: 'user_1', startedAt: '2026-10-10T10:00:00.000Z', durationMs: 0,
+        outcome: 'running', step: 'safety', reason: null, services: ['db'], storage: ['uploads'], snapshot: '0123abcd', safety: null,
+    }
+
+    it('routes a start, the restore list and one restore under backups', () => {
+        assert.deepEqual(matchRoute('POST', '/projects/acme/backups/0123abcd/restore'), { verb: 'backup-restore', project: 'acme', snapshot: '0123abcd' })
+        assert.equal(matchRoute('GET', '/projects/acme/backups/0123abcd/restore').verb, 'method-not-allowed')
+        assert.equal(matchRoute('POST', '/projects/acme/backups/not-hex!/restore').verb, 'not-found')
+        assert.deepEqual(matchRoute('GET', '/projects/acme/backups/restores'), { verb: 'backup-restores', project: 'acme' })
+        assert.deepEqual(matchRoute('GET', `/projects/acme/backups/restores/${RUN}`), { verb: 'backup-restore-run', project: 'acme', run: RUN })
+        assert.equal(matchRoute('GET', '/projects/acme/backups/restores/not-a-run').verb, 'not-found')
+    })
+
+    it('starts a restore for the admin with the site\'s name typed back, naming who asked, and audits it', async () => {
+        agent.reply = () => ({ ok: true, run: RUN })
+        const response = await request('/projects/acme/backups/0123abcd/restore', { method: 'POST', actor: 'admin', body: { name: 'Acme' } })
+        assert.equal(response.status, 202)
+        assert.deepEqual(await response.json(), { ok: true, run: RUN })
+        assert.deepEqual(agent.calls, [{ verb: 'restore', project: 'acme', args: { action: 'start', snapshot: '0123abcd', actor: 'user_1' } }])
+        const [entry] = await audit.read({ limit: 1 })
+        assert.deepEqual([entry?.verb, entry?.target, entry?.outcome], ['backup-restore', 'restore 0123abcd', 'ok'])
+    })
+
+    it('refuses a start whose name does not match, without calling the agent', async () => {
+        for (const body of [{ name: 'acme' }, {}, { name: 'Acme', extra: true }]) {
+            const response = await request('/projects/acme/backups/0123abcd/restore', { method: 'POST', actor: 'admin', body })
+            assert.equal(response.status, 400, JSON.stringify(body))
+        }
+        assert.deepEqual(agent.calls, [])
+        const [entry] = await audit.read({ limit: 1 })
+        assert.deepEqual([entry?.verb, entry?.outcome], ['backup-restore', 'refused'])
+    })
+
+    it('answers the agent\'s refusal with its status, audited as refused', async () => {
+        agent.reply = () => ({ ok: false, code: 'busy', message: 'acme has a backup running; a restore waits until it has finished' })
+        const response = await request('/projects/acme/backups/0123abcd/restore', { method: 'POST', actor: 'admin', body: { name: 'Acme' } })
+        assert.equal(response.status, 409)
+        const [entry] = await audit.read({ limit: 1 })
+        assert.deepEqual([entry?.verb, entry?.outcome, entry?.reason], ['backup-restore', 'refused', 'busy'])
+    })
+
+    it('answers a client as though the project were not there, for a start and for the records', async () => {
+        for (const [path, method] of [
+            ['/projects/acme/backups/0123abcd/restore', 'POST'], ['/projects/acme/backups/restores', 'GET'], [`/projects/acme/backups/restores/${RUN}`, 'GET'],
+        ] as const) {
+            const response = await request(path, { method, actor: 'client:cl_1', ...(method === 'POST' ? { body: { name: 'Acme' } } : {}) })
+            assert.equal(response.status, 404, path)
+        }
+        assert.deepEqual(agent.calls, [])
+    })
+
+    it('lists the restores and whether one is running, and answers one restore', async () => {
+        agent.reply = () => ({ ok: true, restores: [record], running: true })
+        const listed = await request('/projects/acme/backups/restores', { actor: 'admin' })
+        assert.equal(listed.status, 200)
+        assert.deepEqual(await listed.json(), { ok: true, restores: [record], running: true })
+
+        agent.reply = () => ({ ok: true, restore: record, running: true })
+        const one = await request(`/projects/acme/backups/restores/${RUN}`, { actor: 'admin' })
+        assert.equal(one.status, 200)
+        assert.deepEqual(await one.json(), { ok: true, restore: record, running: true })
+        assert.deepEqual(agent.calls.at(-1), { verb: 'restore', project: 'acme', args: { action: 'get-run', run: RUN } })
+
+        agent.reply = () => ({ ok: true, restore: null, running: false })
+        const missing = await request(`/projects/acme/backups/restores/${RUN}`, { actor: 'admin' })
+        assert.equal(missing.status, 404)
     })
 })

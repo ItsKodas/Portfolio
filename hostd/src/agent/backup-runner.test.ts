@@ -110,3 +110,20 @@ describe('BackupRunner', () => {
         assert.equal(runner.isBusy(), false)
     })
 })
+
+describe('BackupRunner.begin', () => {
+    it('hands back the run\'s own outcome once it is recorded, under the same locks as start', async () => {
+        const { runner, release, store } = setup()
+        const begun = runner.begin(acme, { tag: 'manual', actor: 'admin', run: 'run1', keep: null })
+        assert.ok(begun.ok)
+        assert.equal(runner.isRunning('acme'), true)
+        const other = runner.begin(widget, { tag: 'manual', actor: 'admin', run: 'run2', keep: null })
+        assert.equal(!other.ok && other.message, 'another backup is running; only one runs on the dedi at a time')
+        release()
+        const record = await begun.done
+        assert.equal(record.snapshot, 'deadbeef')
+        assert.equal(store.get('acme').runs[0]?.snapshot, 'deadbeef')
+        await runner.settle()
+        assert.equal(runner.isRunning('acme'), false)
+    })
+})

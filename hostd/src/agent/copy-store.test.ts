@@ -1,8 +1,8 @@
 import { describe, it } from 'node:test'
 import assert from 'node:assert/strict'
 
-import { CopyStore, COPY_KEEP, INTERRUPTED_REASON, type CopyStoreFs } from './copy-store.ts'
-import type { CopyRecord } from '../shared/protocol.ts'
+import { CopyStore, COPY_KEEP, INTERRUPTED_REASON, RESTORE_INTERRUPTED_REASON, RESTORES, type CopyStoreFs } from './copy-store.ts'
+import type { CopyRecord, RestoreRecord } from '../shared/protocol.ts'
 
 const PATH = '/var/lib/hostd/copies.json'
 
@@ -159,5 +159,35 @@ describe('CopyStore', () => {
         await store.load()
         assert.deepEqual(await store.markInterrupted(Date.now()), [])
         assert.equal(writes.length, 0)
+    })
+})
+
+describe('CopyStore for restores', () => {
+    const restore = (run: string, overrides: Partial<RestoreRecord> = {}): RestoreRecord => ({
+        ...record(run, { environment: 'live' }), snapshot: '0123abcd', safety: null, ...overrides,
+    })
+
+    it('keeps restore records, and drops a saved entry that is not one', async () => {
+        const saved = { runs: [restore('aaaaaaaa'), record('bbbbbbbb', { environment: 'live' }), restore('cccccccc', { snapshot: '../x' })] }
+        const { fs } = setup({ [PATH]: JSON.stringify(saved) })
+        const store = new CopyStore<RestoreRecord>(PATH, fs, undefined, RESTORES)
+        await store.load()
+        assert.deepEqual(store.list('acme', 'live').map(entry => entry.run), ['aaaaaaaa'])
+    })
+
+    it('marks an interrupted restore failed with its own reason', async () => {
+        const { fs } = setup()
+        const store = new CopyStore<RestoreRecord>(PATH, fs, undefined, RESTORES)
+        await store.load()
+        await store.start(restore('aaaaaaaa', { step: 'load:db' }))
+        const interrupted = await store.markInterrupted(Date.parse('2026-09-25T10:01:00.000Z'))
+        assert.deepEqual(interrupted.map(entry => [entry.outcome, entry.reason, entry.snapshot]), [['failed', RESTORE_INTERRUPTED_REASON, '0123abcd']])
+    })
+
+    it('says which history it could not read', async () => {
+        const { fs } = setup({ [PATH]: 'not json' })
+        const store = new CopyStore<RestoreRecord>(PATH, fs, undefined, RESTORES)
+        await store.load()
+        assert.match(store.warnings()[0] ?? '', /^the restore history at /)
     })
 })

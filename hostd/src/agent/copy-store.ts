@@ -11,9 +11,9 @@ import { randomBytes } from 'node:crypto'
 import { posix } from 'node:path'
 
 import { describeError, isRecord } from '../shared/formats.ts'
-import type { CopyRecord } from '../shared/protocol.ts'
+import { RUN_ID, SNAPSHOT_ID, type CopyRecord, type RestoreRecord } from '../shared/protocol.ts'
 
-export type { CopyRecord } from '../shared/protocol.ts'
+export type { CopyRecord, RestoreRecord } from '../shared/protocol.ts'
 
 export const COPY_KEEP = 20
 export const INTERRUPTED_REASON = 'the agent restarted during the copy'
@@ -32,7 +32,7 @@ const nodeFs: CopyStoreFs = {
     mkdir: async dir => { await mkdir(dir, { recursive: true }) },
 }
 
-type Saved = { runs: CopyRecord[] }
+type Saved<R> = { runs: R[] }
 
 const isStrings = (value: unknown): value is string[] => Array.isArray(value) && value.every(entry => typeof entry === 'string')
 const isTextOrNull = (value: unknown): boolean => value === null || typeof value === 'string'
@@ -48,12 +48,30 @@ function isCopyRecord(value: unknown): value is CopyRecord {
         && isStrings(value.services) && isStrings(value.storage)
 }
 
+// What one store keeps: copies, or restores of a backup into live (restore-run.ts), which are the same
+// record with the snapshot and its safety backup beside it. The words are for its warnings and for the
+// reason a run the agent restarted during is given.
+export type RunKind<R extends CopyRecord> = { what: string, interrupted: string, valid: (value: unknown) => value is R }
+
+export const COPIES: RunKind<CopyRecord> = { what: 'copy', interrupted: INTERRUPTED_REASON, valid: isCopyRecord }
+
+export const RESTORE_INTERRUPTED_REASON = 'the agent restarted during the restore, so live may be partly restored and some of its services stopped'
+
+function isRestoreRecord(value: unknown): value is RestoreRecord {
+    if (!isCopyRecord(value) || !RUN_ID.test(value.run)) return false
+    const { snapshot, safety } = value as Record<string, unknown>
+    return typeof snapshot === 'string' && SNAPSHOT_ID.test(snapshot)
+        && (safety === null || (typeof safety === 'string' && SNAPSHOT_ID.test(safety)))
+}
+
+export const RESTORES: RunKind<RestoreRecord> = { what: 'restore', interrupted: RESTORE_INTERRUPTED_REASON, valid: isRestoreRecord }
+
 const sameEnvironment = (entry: CopyRecord, project: string, environment: string): boolean =>
     entry.project === project && entry.environment === environment
 
-export class CopyStore {
+export class CopyStore<R extends CopyRecord = CopyRecord> {
     // Newest first, across every environment
-    private runs: CopyRecord[] = []
+    private runs: R[] = []
     private problem: string | null = null
     // One write at a time, so two runs finishing together cannot lose one another's change
     private queue: Promise<unknown> = Promise.resolve()
@@ -62,6 +80,7 @@ export class CopyStore {
         private readonly path: string,
         private readonly fs: CopyStoreFs = nodeFs,
         private readonly log: (message: string) => void = () => {},
+        private readonly kind: RunKind<R> = COPIES as unknown as RunKind<R>,
     ) {}
 
     // Never throws: a missing file is a machine that has never copied anything.
@@ -71,15 +90,15 @@ export class CopyStore {
             text = await this.fs.readFile(this.path)
         } catch (error) {
             if ((error as NodeJS.ErrnoException).code === 'ENOENT') return
-            this.warn(`the copy history at ${this.path} could not be read: ${describeError(error)}`)
+            this.warn(`the ${this.kind.what} history at ${this.path} could not be read: ${describeError(error)}`)
             return
         }
         try {
-            const saved = JSON.parse(text) as Partial<Saved>
-            if (!isRecord(saved) || !Array.isArray(saved.runs)) throw new Error('the file is not a copy history')
-            this.runs = saved.runs.filter(isCopyRecord)
+            const saved = JSON.parse(text) as Partial<Saved<unknown>>
+            if (!isRecord(saved) || !Array.isArray(saved.runs)) throw new Error(`the file is not a ${this.kind.what} history`)
+            this.runs = saved.runs.filter(this.kind.valid)
         } catch (error) {
-            this.warn(`the copy history at ${this.path} could not be read: ${describeError(error)}`)
+            this.warn(`the ${this.kind.what} history at ${this.path} could not be read: ${describeError(error)}`)
         }
     }
 
@@ -92,16 +111,16 @@ export class CopyStore {
         return this.problem ? [this.problem] : []
     }
 
-    list(project: string, environment: string): CopyRecord[] {
+    list(project: string, environment: string): R[] {
         return this.runs.filter(entry => sameEnvironment(entry, project, environment))
     }
 
-    get(project: string, environment: string, run: string): CopyRecord | null {
+    get(project: string, environment: string, run: string): R | null {
         return this.runs.find(entry => sameEnvironment(entry, project, environment) && entry.run === run) ?? null
     }
 
     // A new run, newest first. Older runs of the same environment beyond COPY_KEEP are dropped.
-    start(record: CopyRecord): Promise<void> {
+    start(record: R): Promise<void> {
         let kept = 0
         this.runs = [record, ...this.runs].filter(entry => {
             if (!sameEnvironment(entry, record.project, record.environment)) return true
@@ -111,20 +130,20 @@ export class CopyStore {
         return this.save()
     }
 
-    // The same run, finished
-    finish(record: CopyRecord): Promise<void> {
+    // The same run, finished, or (for a restore) on to its next step
+    finish(record: R): Promise<void> {
         this.runs = this.runs.map(entry => (sameEnvironment(entry, record.project, record.environment) && entry.run === record.run ? record : entry))
         return this.save()
     }
 
     // At boot: a run still marked running belonged to an agent that has since stopped, so it never
     // finished. Each is marked failed and handed back, so the caller can remove what it left staged.
-    async markInterrupted(now: number): Promise<CopyRecord[]> {
-        const interrupted: CopyRecord[] = []
+    async markInterrupted(now: number): Promise<R[]> {
+        const interrupted: R[] = []
         this.runs = this.runs.map(entry => {
             if (entry.outcome !== 'running') return entry
-            const marked: CopyRecord = {
-                ...entry, outcome: 'failed', reason: INTERRUPTED_REASON,
+            const marked: R = {
+                ...entry, outcome: 'failed', reason: this.kind.interrupted,
                 durationMs: Math.max(0, now - Date.parse(entry.startedAt)),
             }
             interrupted.push(marked)
@@ -140,8 +159,8 @@ export class CopyStore {
         return run
     }
 
-    private async write(runs: CopyRecord[]): Promise<void> {
-        const saved: Saved = { runs }
+    private async write(runs: R[]): Promise<void> {
+        const saved: Saved<R> = { runs }
         // Same directory, so the rename is atomic, and a random suffix with 'wx' (O_CREAT | O_EXCL) so the
         // temporary name can neither be guessed and pre-planted nor opened through if it is.
         const temporary = posix.join(posix.dirname(this.path), `.${posix.basename(this.path)}.${randomBytes(6).toString('hex')}.tmp`)
@@ -150,7 +169,7 @@ export class CopyStore {
             await this.fs.writeFile(temporary, `${JSON.stringify(saved, null, 2)}\n`, { flag: 'wx' })
             await this.fs.rename(temporary, this.path)
         } catch (error) {
-            this.warn(`the copy history could not be written: ${describeError(error)}`)
+            this.warn(`the ${this.kind.what} history could not be written: ${describeError(error)}`)
         }
     }
 }
