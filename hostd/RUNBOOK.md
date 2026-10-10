@@ -1771,7 +1771,8 @@ fallback that names no site. Each site's page says why it is down, read off Dock
 agent's loop: upgrading while a deploy holds the maintenance flag, switched off for a container `docker
 stop` took down, having trouble for one in a restart loop or one that died and stayed down, and back
 shortly for anything else. It also shows the registry entry's `contact`, when it has one (see
-`registry/projects.example.yaml`), so a visitor knows who to reach. Vhosts written before per-site pages
+`registry/projects.example.yaml`), so a visitor knows who to reach. The portal writes that from the
+client's public contact details once the operator lists them on the client's page. Vhosts written before per-site pages
 existed are pointed at their own page once, the first time the agent boots with this in place.
 
 Put the Cloudflare Origin CA certificate at `/etc/ssl/hostd/origin.pem` and its key at

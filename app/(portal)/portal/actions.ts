@@ -9,7 +9,10 @@ import { revalidatePath } from 'next/cache'
 import { clientActor, record, VISITOR } from '@/server/audit/record'
 import { CODE_PATH, PORTAL_HOME, SETUP_PATH, SIGN_IN_PATH, clearSessionCookie, readSession, requireClient, requirePendingSession, setSessionCookie } from '@/server/clients/auth'
 import { EnvError } from '@/server/env'
-import { codeSchema, emailSchema, passwordSchema } from '@/server/clients/schema'
+import { codeSchema, emailSchema, passwordSchema, publicContactSchema } from '@/server/clients/schema'
+import { callerForPortal } from '@/server/hostd/actor'
+import { sitesOf } from '@/server/sites/access'
+import { syncHoldingContacts } from '@/server/sites/holdingContact'
 import { codeStep, passwordStep } from '@/server/clients/signIn'
 import { acknowledgeRecoveryCodes, completeInvite, confirmEnrolment } from '@/server/clients/setup'
 import { hashSessionToken } from '@/server/clients/session'
@@ -236,4 +239,36 @@ export async function signOutElsewhereAction(): Promise<PortalResult> {
     } catch (error) {
         return failure('Signing out other sessions', error)
     }
+}
+
+// The details the client's sites show a visitor while they are down. The client edits them; whether they
+// are shown at all is the operator's call, so a client who is not listed only saves them for later.
+export async function saveMyPublicContactAction(input: unknown): Promise<PortalResult> {
+    const { client } = await requireClient()
+    const parsed = publicContactSchema.safeParse(input)
+    if (!parsed.success) return { ok: false, error: parsed.error.issues[0]?.message ?? INVALID.error }
+    try {
+        await repo().setPublicContact(client.id, parsed.data)
+        await record({
+            kind: 'client.publicContact', actor: clientActor(client),
+            target: { type: 'client', id: client.id, name: client.name }, summary: `${client.name} changed their public contact`,
+        })
+        revalidatePath('/portal/account')
+    } catch (error) {
+        return failure('Saving a public contact', error)
+    }
+    if (!client.publicContactListed) return { ok: true }
+
+    // As the portal rather than as the client: hostd takes a site's contact only from an admin
+    try {
+        const problems = await syncHoldingContacts(await sitesOf(client.id), callerForPortal())
+        if (problems.length > 0) {
+            log(`Sending ${client.id}'s public contact to hostd: ${problems.join('; ')}`)
+            return { ok: false, error: 'Your details were saved, but your sites could not be updated just now. Koda has been told.' }
+        }
+    } catch (error) {
+        log(`Sending ${client.id}'s public contact to hostd failed`, error)
+        return { ok: false, error: 'Your details were saved, but your sites could not be updated just now. Koda has been told.' }
+    }
+    return { ok: true }
 }

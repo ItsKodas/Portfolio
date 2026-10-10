@@ -373,6 +373,22 @@ describe('configure', () => {
         assert.equal(parseRegistry(result.text).projects.get('arbysauto')!.upstream.host, '10.0.0.5')
     })
 
+    it('writes a contact with only the fields that are set, and takes it away on null', () => {
+        const result = applyChange(LIVE_ONLY, { kind: 'configure', id: 'arbysauto', contact: { name: "Arby's Auto Glass", email: 'hi@arbysauto.com', phone: null } })
+        assert.ok(result.ok)
+        assert.deepEqual(parseRegistry(result.text).projects.get('arbysauto')!.contact, { name: "Arby's Auto Glass", email: 'hi@arbysauto.com', phone: null })
+        assert.ok(!result.text.includes('phone'))
+        const cleared = applyChange(result.text, { kind: 'configure', id: 'arbysauto', contact: null })
+        assert.ok(cleared.ok)
+        assert.equal(parseRegistry(cleared.text).projects.get('arbysauto')!.contact, null)
+        assert.ok(!cleared.text.includes('contact'))
+    })
+
+    it('refuses a contact the registry would not take', () => {
+        const result = applyChange(LIVE_ONLY, { kind: 'configure', id: 'arbysauto', contact: { name: 'Arbys', email: 'not an address', phone: null } })
+        assert.equal(result.ok, false)
+    })
+
     it('replaces the capability list wholesale', () => {
         const result = applyChange(LIVE_ONLY, { kind: 'configure', id: 'arbysauto', capabilities: ['lifecycle', 'logs', 'env', 'deploy'] })
         assert.ok(result.ok)

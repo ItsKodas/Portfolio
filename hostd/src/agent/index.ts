@@ -501,6 +501,9 @@ async function main(): Promise<void> {
         config: domainsConfig,
     }
 
+    // See pointVhosts below
+    let vhostPageProblems: string[] = []
+
     const warnings = () => [
         ...store.warnings(),
         ...deployStore.warnings(),
@@ -525,6 +528,10 @@ async function main(): Promise<void> {
             [...store.current().projects.values()].flatMap(project => [...project.environments.values()].flatMap(hostnamesOf)),
         )),
         ...(fetcherProblem ? [fetcherProblem] : []),
+        // A vhost still serving the shared fallback page rather than its own, and why it could not be moved
+        // over. Said here because the visitor-facing symptom (every site's page saying "back shortly"
+        // whatever the reason) gives the operator nothing to go on.
+        ...vhostPageProblems,
     ]
 
     const agent = new Agent({
@@ -586,6 +593,22 @@ async function main(): Promise<void> {
         },
     })
 
+    // Points every vhost hostd wrote before per-site holding pages at its own page (see the agent's
+    // pointVhostsAtHoldingPages). Never awaited, and never two at once: each rewrite waits on the host's
+    // rail, which can take its full timeout, and the main loop must not wait behind it.
+    let pointingVhosts = false
+    const pointVhosts = () => {
+        if (pointingVhosts) return
+        pointingVhosts = true
+        agent.pointVhostsAtHoldingPages()
+            .then(problems => {
+                if (problems.join('\n') !== vhostPageProblems.join('\n')) for (const problem of problems) log(`WARN ${problem}`)
+                vhostPageProblems = problems.map(problem => `a vhost still serves the shared holding page: ${problem}`)
+            })
+            .catch(error => { vhostPageProblems = [`the vhosts could not be pointed at their holding pages: ${describeError(error)}`] })
+            .finally(() => { pointingVhosts = false })
+    }
+
     await rm(SOCKET_PATH, { force: true })
     // The socket is created 0660 rather than chmodded afterwards, so there is no moment when it is wider.
     process.umask(0o117)
@@ -604,9 +627,7 @@ async function main(): Promise<void> {
     // Not awaited: each vhost it rewrites waits on the host's rail, which may be slow to answer just
     // after a reboot, and nothing else at boot needs it done.
     await sweepHoldingPages()
-    agent.pointVhostsAtHoldingPages()
-        .then(problems => { for (const problem of problems) log(`WARN ${problem}`) })
-        .catch(error => log(`WARN the vhosts could not be pointed at their holding pages: ${describeError(error)}`))
+    pointVhosts()
 
     let lastGuardRun = Date.now()
     let lastInvalidRun = lastGuardRun
@@ -624,6 +645,10 @@ async function main(): Promise<void> {
     for (;;) {
         if (Date.now() - lastSitesEnabledRun >= SITES_ENABLED_EVERY_MS) {
             lastSitesEnabledRun = Date.now()
+            // Again every minute rather than once at boot, so a rewrite the rail refused or timed out on is
+            // tried again instead of leaving that site on the fallback page until the next restart. Cheap
+            // once every vhost is up to date: it only reads the files.
+            pointVhosts()
             // Logged rather than thrown: this loop is also the registry refresh, the guard, the deploy
             // poller and the status file, and none of those should stop because a vhost could not be
             // read. read() only throws on a read it deliberately refuses to treat as "nothing there",

@@ -6,7 +6,7 @@ import 'server-only'
 import type { ClientSession, ClientTokenPurpose, PrismaClient, Site } from '../generated/prisma/client'
 import type { Permission } from '../sites/permissions'
 import type { LockUpdate } from './limits'
-import type { ClientDetails, SiteInput } from './schema'
+import type { ClientDetails, PublicContact, SiteInput } from './schema'
 
 // How long a used TOTP step stays recorded. Well past the accepted window, and short enough that the table
 // never grows.
@@ -39,6 +39,17 @@ export function clientRepo(db: PrismaClient) {
 
         updateDetails: async (id: string, details: ClientDetails) => {
             await db.client.update({ where: { id }, data: details })
+        },
+
+        setPublicContact: async (id: string, contact: PublicContact) => {
+            await db.client.update({
+                where: { id },
+                data: { publicName: contact.name, publicEmail: contact.email, publicPhone: contact.phone },
+            })
+        },
+
+        setPublicContactListed: async (id: string, listed: boolean) => {
+            await db.client.update({ where: { id }, data: { publicContactListed: listed } })
         },
 
         remove: async (id: string) => {

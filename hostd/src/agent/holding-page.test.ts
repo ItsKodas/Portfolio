@@ -15,8 +15,8 @@ const input = (over: Partial<HoldingPageInput> = {}): HoldingPageInput => ({
 describe('renderHoldingPage', () => {
     it('says why the site is down, in each state', () => {
         assert.match(renderHoldingPage(input({ state: 'upgrading' })), /A new version of Mappies is being put in place/)
-        assert.match(renderHoldingPage(input({ state: 'stopped' })), /Mappies has been switched off for now/)
-        assert.match(renderHoldingPage(input({ state: 'crashed' })), /Mappies has run into a problem and could not restart itself/)
+        assert.match(renderHoldingPage(input({ state: 'stopped' })), /Mappies is offline for now/)
+        assert.match(renderHoldingPage(input({ state: 'crashed' })), /Mappies is having some trouble right now/)
         assert.match(renderHoldingPage(input({ state: 'unavailable' })), /Mappies is not answering right now/)
     })
 
@@ -30,17 +30,17 @@ describe('renderHoldingPage', () => {
     it('escapes everything that came from the registry', () => {
         const page = renderHoldingPage(input({
             name: '<script>alert(1)</script>',
-            contact: { name: 'Jo "the owner"', email: 'jo@example.com', phone: null, url: 'https://example.com/?a=1&b=<2>' },
+            contact: { name: 'Jo "the owner"', email: 'jo+<b>@example.com', phone: null },
         }))
         assert.ok(!page.includes('<script>alert(1)</script>'))
         assert.match(page, /&lt;script&gt;alert\(1\)&lt;\/script&gt;/)
         assert.match(page, /Need to reach Jo &quot;the owner&quot;\?/)
-        assert.match(page, /href="https:\/\/example\.com\/\?a=1&amp;b=&lt;2&gt;"/)
+        assert.match(page, /href="mailto:jo\+&lt;b&gt;@example\.com"/)
     })
 
     it('leaves the contact section out when the site names nobody, and links each way to reach them when it does', () => {
         assert.ok(!renderHoldingPage(input()).includes('class="contact"'))
-        const page = renderHoldingPage(input({ contact: { name: null, email: 'jo@example.com', phone: '+61 (0)400 123-456', url: null } }))
+        const page = renderHoldingPage(input({ contact: { name: null, email: 'jo@example.com', phone: '+61 (0)400 123-456' } }))
         assert.match(page, /Need to reach the site owner\?/)
         assert.match(page, /href="mailto:jo@example\.com"/)
         assert.match(page, /href="tel:\+610400123456"/)
@@ -59,7 +59,8 @@ describe('renderHoldingPage', () => {
     it('renders the shared fallback without a site, leaving the address to the script', () => {
         const page = renderHoldingPage(input({ name: null, hostname: null, environment: null }))
         assert.match(page, /<span data-host>This site<\/span>/)
-        assert.match(page, /This site is not answering right now/)
+        assert.match(page, /This site is not available right now/)
+        assert.ok(!page.includes('Back shortly'))
     })
 
     it('carries the scene and its campfire, and loads nothing from anywhere', () => {
@@ -76,7 +77,7 @@ describe('renderHoldingPage', () => {
     // CLAUDE.md: no em dashes in anything a visitor reads
     it('uses no em dashes in any state', () => {
         for (const state of HOLDING_STATES) {
-            const page = renderHoldingPage(input({ state, contact: { name: 'Jo', email: 'jo@example.com', phone: null, url: null } }))
+            const page = renderHoldingPage(input({ state, contact: { name: 'Jo', email: 'jo@example.com', phone: null } }))
             assert.ok(!page.includes('\u2014') && !page.includes('&mdash;'), state)
         }
     })

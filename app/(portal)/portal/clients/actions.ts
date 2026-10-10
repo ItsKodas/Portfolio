@@ -9,10 +9,13 @@ import { requireAdmin } from '@/server/auth'
 import { getDb } from '@/server/db'
 import { EnvError } from '@/server/env'
 import { emailChangedEmail, inviteEmail, resetEmail, twoFactorResetEmail } from '@/server/clients/emails'
-import { clientDetailsSchema, siteSchema } from '@/server/clients/schema'
+import { clientDetailsSchema, publicContactSchema, siteSchema } from '@/server/clients/schema'
 import { hashSessionToken, newSessionToken } from '@/server/clients/session'
 import { INVITE_TTL_MS, RESET_TTL_MS } from '@/server/clients/setup'
 import { log, newClientWithInvite, repo, sendClientEmail } from '@/server/clients/wiring'
+import { callerFromSession } from '@/server/hostd/session'
+import { sitesOf } from '@/server/sites/access'
+import { syncHoldingContacts } from '@/server/sites/holdingContact'
 import { parsePermissions } from '@/server/sites/permissions'
 
 export type AdminResult = { ok: true } | { ok: false, error: string, clientId?: string }
@@ -129,6 +132,57 @@ export async function updateClientAction(clientId: string, input: unknown): Prom
     return { ok: true }
 }
 
+// The details a client's sites show a visitor while they are down, and whether they are shown at all. Only
+// the operator can list them; the client edits the same details on their own account page.
+export async function savePublicContactAction(clientId: string, input: unknown, listed: unknown): Promise<AdminResult> {
+    const actor = adminActor(await requireAdmin())
+    if (!id.safeParse(clientId).success || typeof listed !== 'boolean') return INVALID
+    const parsed = publicContactSchema.safeParse(input)
+    if (!parsed.success) return { ok: false, error: parsed.error.issues[0]?.message ?? INVALID.error }
+    if (listed && !parsed.data.email && !parsed.data.phone) {
+        return { ok: false, error: 'Add an email or a phone number before listing them.' }
+    }
+    const client = await repo().byId(clientId)
+    if (!client) return FAILED
+
+    try {
+        await repo().setPublicContact(clientId, parsed.data)
+        await repo().setPublicContactListed(clientId, listed)
+    } catch (error) {
+        log(`Saving the public contact of ${clientId} failed`, error)
+        return FAILED
+    }
+    await record({
+        kind: 'client.publicContact', actor, target: asTarget(client),
+        summary: listed ? `Listed ${client.name}'s public contact on their sites` : `Saved ${client.name}'s public contact, not listed`,
+    })
+    refresh(clientId)
+
+    const problems = await sendHoldingContacts(await sitesOf(clientId))
+    if (problems.length > 0) return { ok: false, error: `Saved, but not every site was updated: ${problems.join('; ')}`, clientId }
+    return { ok: true }
+}
+
+// The operator's own caller, so hostd's audit log names them. Never throws: the change it follows is
+// already saved, and a site that could not be told is said out loud by the caller or logged.
+async function sendHoldingContacts(projectIds: string[]): Promise<string[]> {
+    try {
+        const who = await callerFromSession()
+        if (!who) return ['your session has expired']
+        return await syncHoldingContacts(projectIds, who.caller)
+    } catch (error) {
+        log('Sending holding page contacts to hostd failed', error)
+        return ['the server log has the reason']
+    }
+}
+
+// After an access change: who is listed on a site may have changed with it. Logged rather than reported,
+// because the access change itself worked and is what the operator asked for.
+async function resyncHoldingContacts(projectIds: string[]) {
+    const problems = await sendHoldingContacts(projectIds)
+    for (const problem of problems) log(`The holding page contact could not be updated: ${problem}`)
+}
+
 export async function resendInviteAction(clientId: string): Promise<AdminResult> {
     const actor = adminActor(await requireAdmin())
     if (!id.safeParse(clientId).success) return INVALID
@@ -238,8 +292,9 @@ export async function clearLockAction(clientId: string): Promise<AdminResult> {
 export async function deleteClientAction(clientId: string): Promise<AdminResult> {
     const actor = adminActor(await requireAdmin())
     if (!id.safeParse(clientId).success) return INVALID
-    // Read first, because afterwards there is no name left to say who was deleted
+    // Read first, because afterwards there is no name left to say who was deleted, and no sites to update
     const before = await repo().byId(clientId)
+    const sites = await sitesOf(clientId).catch(() => [])
     try {
         await repo().remove(clientId)
     } catch (error) {
@@ -251,6 +306,7 @@ export async function deleteClientAction(clientId: string): Promise<AdminResult>
         target: before ? asTarget(before) : { type: 'client', id: clientId },
         summary: `Deleted ${before ? `${before.name} (${before.email})` : clientId}`,
     })
+    if (before?.publicContactListed) await resyncHoldingContacts(sites)
     revalidatePath('/admin/clients')
     // Outside the try: redirect() works by throwing
     redirect('/admin/clients')
@@ -282,11 +338,13 @@ export async function grantSiteAction(clientId: string, input: unknown, permissi
     const client = await repo().byId(clientId)
     if (!client) return FAILED
 
-    return changeAccess(clientId, () => repo().grantAccess(clientId, parsed.data, allowed), () => record({
+    const result = await changeAccess(clientId, () => repo().grantAccess(clientId, parsed.data, allowed), () => record({
         kind: 'access.grant', actor, site: parsed.data.projectId, target: asTarget(client),
         summary: `Gave ${client.name} ${parsed.data.projectId}: ${permissionWords(allowed)}`,
         detail: { permissions: allowed },
     }))
+    if (result.ok && client.publicContactListed) await resyncHoldingContacts([parsed.data.projectId])
+    return result
 }
 
 export async function setSitePermissionsAction(clientId: string, siteId: string, permissions: unknown): Promise<AdminResult> {
@@ -305,9 +363,11 @@ export async function revokeSiteAction(clientId: string, siteId: string): Promis
     if (!id.safeParse(clientId).success || !id.safeParse(siteId).success) return INVALID
     // The site is named before the row goes, since afterwards there is nothing to read it from
     const site = await siteName(siteId)
-    return changeAccess(clientId, () => repo().revokeAccess(siteId, clientId), () => recordAccess(
+    const result = await changeAccess(clientId, () => repo().revokeAccess(siteId, clientId), () => recordAccess(
         actor, clientId, siteId, 'access.revoke', (name, project) => `Took ${project} away from ${name}`, undefined, site,
     ))
+    if (result.ok && site) await resyncHoldingContacts([site])
+    return result
 }
 
 // What the activity log says about a change that only had the client's id to hand

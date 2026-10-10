@@ -17,6 +17,8 @@ import {
     ResendInviteButton, ResetTwoFactorButton, SendResetButton, SuspendButton,
 } from '../controls'
 import { STATE_TONES, clientState } from '../state'
+import { savePublicContactAction } from '../actions'
+import { PublicContactForm } from '../../publicContact/form'
 import { startViewingAsAction } from '../../viewAs/actions'
 import styles from './client.module.css'
 
@@ -74,6 +76,16 @@ export default async function ClientPage({ params }: { params: Promise<{ id: str
 
                 <section className={frame.panel}>
                     <ClientForm clientId={client.id} initial={{ name: client.name, company: client.company, email: client.email }} />
+                </section>
+
+                <section className={frame.panel}>
+                    <h2 className={frame.section}>Public contact</h2>
+                    <PublicContactForm
+                        intro="Shown to visitors on their sites' holding page while a site is down, once ticked. The client can edit these from their own account page too."
+                        initial={{ name: client.publicName, email: client.publicEmail, phone: client.publicPhone }}
+                        listed={{ value: client.publicContactListed, editable: true }}
+                        save={savePublicContactAction.bind(null, client.id)}
+                    />
                 </section>
 
                 <section className={frame.panel}>

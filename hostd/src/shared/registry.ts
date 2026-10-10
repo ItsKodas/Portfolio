@@ -106,9 +106,11 @@ export type ProjectEntry = {
     contact: Contact | null
 }
 
-// Public contact details, published on the holding page to anyone who visits while the site is down, so
-// they are whatever the operator chose to put here and never read out of a client's portal account.
-export type Contact = { name: string | null, email: string | null, phone: string | null, url: string | null }
+// Public contact details, published on the holding page to anyone who visits while the site is down. The
+// portal writes them from the client account the operator chose to list (through configure), or the
+// operator writes them by hand. name is the business's name, never a person's. No website: the page is
+// only ever shown while the site is down, so a link to it would lead straight back here.
+export type Contact = { name: string | null, email: string | null, phone: string | null }
 
 export type Registry = {
     reserved: string[]
@@ -164,7 +166,6 @@ const MEMORY_LIMIT = /^[0-9]+(b|k|m|g)$/i
 const CPU_LIMIT = /^[0-9]+(\.[0-9]+)?$/
 const CONTACT_EMAIL = /^[^\s@<>"]{1,64}@[A-Za-z0-9.-]{1,189}\.[A-Za-z]{2,63}$/
 const CONTACT_PHONE = /^\+?[0-9][0-9 ()-]{3,30}$/
-const CONTACT_URL = /^https?:\/\/[^\s<>"]{1,200}$/
 
 function wholeNumber(value: unknown, min: number, max: number): number | null {
     return typeof value === 'number' && Number.isInteger(value) && value >= min && value <= max ? value : null
@@ -198,8 +199,8 @@ function parseKeep(raw: unknown, fallback: Keep, where: string, problems: string
 // a typo from publishing a mailto: or tel: link that goes nowhere.
 function parseContact(raw: unknown, problems: string[]): Contact | null {
     if (raw === undefined) return null
-    if (!isRecord(raw) || !onlyKeys(raw, ['name', 'email', 'phone', 'url'])) {
-        problems.push('contact may only contain name, email, phone and url')
+    if (!isRecord(raw) || !onlyKeys(raw, ['name', 'email', 'phone'])) {
+        problems.push('contact may only contain name, email and phone')
         return null
     }
     const field = (key: string, valid: (value: string) => boolean, rule: string): string | null => {
@@ -213,10 +214,9 @@ function parseContact(raw: unknown, problems: string[]): Contact | null {
         name: field('name', value => value.trim().length >= 1 && value.length <= 100, '1 to 100 characters'),
         email: field('email', value => CONTACT_EMAIL.test(value), 'an email address'),
         phone: field('phone', value => CONTACT_PHONE.test(value), 'a phone number of digits, spaces, brackets and dashes'),
-        url: field('url', value => CONTACT_URL.test(value), 'an http or https address'),
     }
-    if (contact.email === null && contact.phone === null && contact.url === null) {
-        problems.push('contact needs at least one of email, phone or url')
+    if (contact.email === null && contact.phone === null) {
+        problems.push('contact needs an email or a phone')
         return null
     }
     return contact

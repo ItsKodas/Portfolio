@@ -42,20 +42,30 @@ const STATE_COPY: Record<HoldingState, { label: string, lead: (name: string) => 
         body: () => 'This usually only takes a minute or two. There is nothing you need to do: this page will take you back to the site as soon as it is ready.',
     },
     stopped: {
-        label: 'Switched off',
-        lead: name => `${name} has been switched off for now.`,
-        body: contact => `The site's owner has taken it offline on purpose, so nothing is broken. It will be back when they switch it on again.${contact ? ' If you were not expecting this, you can reach them below.' : ''}`,
+        label: 'Offline for now',
+        lead: name => `${name} is offline for now.`,
+        // Honest that it was taken down on purpose, without a promise of when it returns (only its owner
+        // knows) and without wording that would put a visitor off coming back
+        body: contact => `The site's owner has taken it offline for the time being, so nothing has gone wrong. Please check back later.${contact ? ' Need something in the meantime? You can reach them below.' : ''}`,
     },
     crashed: {
         label: 'Having trouble',
-        lead: name => `${name} has run into a problem and could not restart itself.`,
-        body: contact => `The site keeps stopping unexpectedly, so it has not been able to recover on its own.${contact ? ' If you need it urgently, the site\'s owner can help.' : ' The site\'s owner will need to look into it.'}`,
+        lead: name => `${name} is having some trouble right now.`,
+        body: contact => `It has run into a technical problem and is not available at the moment.${contact ? ' If you need something urgently, you can reach the site\'s owner below.' : ' Please check back later.'}`,
     },
     unavailable: {
         label: 'Back shortly',
         lead: name => `${name} is not answering right now.`,
         body: () => 'It should be back shortly. This page checks again by itself and will take you to the site as soon as it answers.',
     },
+}
+
+// The shared fallback stands in for every site and knows nothing about any of them, so it says nothing
+// about why or for how long: "back shortly" would be a promise it has no grounds for
+const FALLBACK_COPY = {
+    label: 'Unavailable',
+    lead: () => 'This site is not available right now.',
+    body: () => 'Please check back later. This page checks again by itself and will take you to the site once it is back.',
 }
 
 // Each state's accent, taken from the landing page's palette: the lake's blue, the sky's lilac, the
@@ -134,16 +144,10 @@ function scene(): string {
     return `${svg}${campfire()}</svg>`
 }
 
-// A URL shown without its scheme or a trailing slash, the way a person would read it out
-function displayUrl(url: string): string {
-    return url.replace(/^https?:\/\//, '').replace(/\/$/, '')
-}
-
 function contactSection(contact: Contact): string {
     const links: string[] = []
     if (contact.email) links.push(`<a href="mailto:${escapeHtml(contact.email)}"><span>Email</span>${escapeHtml(contact.email)}</a>`)
     if (contact.phone) links.push(`<a href="tel:${escapeHtml(contact.phone.replace(/[^0-9+]/g, ''))}"><span>Phone</span>${escapeHtml(contact.phone)}</a>`)
-    if (contact.url) links.push(`<a href="${escapeHtml(contact.url)}" rel="noopener noreferrer"><span>Website</span>${escapeHtml(displayUrl(contact.url))}</a>`)
     const who = contact.name ? escapeHtml(contact.name) : 'the site owner'
     return `<section class="contact">
 <h2>Need to reach ${who}?</h2>
@@ -152,7 +156,7 @@ function contactSection(contact: Contact): string {
 }
 
 export function renderHoldingPage(input: HoldingPageInput): string {
-    const copy = STATE_COPY[input.state]
+    const copy = input.name === null ? FALLBACK_COPY : STATE_COPY[input.state]
     const name = input.name === null ? null : escapeHtml(input.name)
     const hostname = input.hostname === null ? null : escapeHtml(input.hostname)
     // The fallback page knows no site, so it says "This site" and lets the script put the address in

@@ -7,7 +7,7 @@ import { readFile, writeFile, rename, unlink, stat, chmod, chown } from 'node:fs
 import { randomBytes } from 'node:crypto'
 import { parseDocument, isMap, isNode, isScalar, isSeq, type Document } from 'yaml'
 
-import { parseRegistry, RegistryError, type Capability, type CertificateMode, type EnvironmentFlag, type EnvironmentName } from './registry.ts'
+import { parseRegistry, RegistryError, type Capability, type CertificateMode, type Contact, type EnvironmentFlag, type EnvironmentName } from './registry.ts'
 import { describeError, RESERVED_PROJECT_IDS, PROJECT_ID } from './formats.ts'
 
 export type RegistryWriteFs = {
@@ -93,6 +93,8 @@ export type Change =
         repo?: string | null
         credential?: string | null
         branches?: Record<EnvironmentName, string | null>
+        // null deletes the key
+        contact?: Contact | null
     }
     // The site services a live deploy found under new names (see agent/environment-services.ts): the
     // ones the compose file no longer has come out, the ones it has instead go in as role site. Only ever
@@ -341,6 +343,16 @@ function edit(doc: Document, change: Change): EditResult {
             if (change.credential !== undefined) {
                 if (change.credential === null) doc.deleteIn(['projects', change.id, 'credential'])
                 else doc.setIn(['projects', change.id, 'credential'], change.credential)
+            }
+
+            if (change.contact !== undefined) {
+                if (change.contact === null) doc.deleteIn(['projects', change.id, 'contact'])
+                else {
+                    // Only the fields that are set, so a blank one is no key rather than a null in the file
+                    const node = doc.createNode(Object.fromEntries(Object.entries(change.contact).filter(([, value]) => value !== null)))
+                    node.flow = true
+                    doc.setIn(['projects', change.id, 'contact'], node)
+                }
             }
 
             for (const [name, branch] of branches) {

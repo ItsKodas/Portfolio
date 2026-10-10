@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
-import { MIN_PASSWORD_LENGTH, clientDetailsSchema, codeSchema, emailSchema, passwordSchema, siteSchema } from './schema'
+import { MIN_PASSWORD_LENGTH, clientDetailsSchema, codeSchema, emailSchema, passwordSchema, publicContactSchema, siteSchema } from './schema'
 
 const ok = (schema: { safeParse: (value: unknown) => { success: boolean } }, value: unknown) =>
     schema.safeParse(value).success
@@ -76,5 +76,20 @@ describe('siteSchema', () => {
 
     it.each(['hostd', 'mail', 'horizons'])('refuses the reserved project id %j', projectId => {
         expect(ok(siteSchema, { projectId, name: 'Site' })).toBe(false)
+    })
+})
+
+describe('publicContactSchema', () => {
+    it('turns blank fields into null and lower-cases the email', () => {
+        expect(publicContactSchema.parse({ name: ' Acme Bakery ', email: 'Hello@Acme.COM', phone: '' }))
+            .toEqual({ name: 'Acme Bakery', email: 'hello@acme.com', phone: null })
+        expect(publicContactSchema.parse({ name: '', email: '', phone: '' })).toEqual({ name: null, email: null, phone: null })
+    })
+
+    // The same rules hostd's registry holds them to, so a saved contact is never one hostd refuses
+    it('refuses an email or a phone number hostd would not take', () => {
+        expect(ok(publicContactSchema, { name: null, email: 'not an address', phone: null })).toBe(false)
+        expect(ok(publicContactSchema, { name: null, email: null, phone: 'call me' })).toBe(false)
+        expect(ok(publicContactSchema, { name: null, email: null, phone: '+61 (08) 9000-0000' })).toBe(true)
     })
 })

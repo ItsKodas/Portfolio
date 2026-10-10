@@ -24,6 +24,9 @@ export type SiteSettings = {
     // Whether each environment serves the site on port 80 for a CDN in Flexible mode. Rewrites the vhost
     // exactly as websockets does.
     flexibleSsl?: Record<string, boolean>
+    // Who the site's holding page tells a visitor to reach while it is down; null takes it away. Sent by
+    // server/sites/holdingContact.ts, never by the Settings form.
+    contact?: { name: string | null, email: string | null, phone: string | null } | null
 }
 
 // Matches hostd's registry id rule
