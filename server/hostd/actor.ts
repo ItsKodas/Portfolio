@@ -26,9 +26,12 @@ export function callerForAdmin(email: string): Caller {
 // hostd's project id grammar (hostd/src/shared/formats.ts), which X-Hostd-Sites is refused whole without
 const PROJECT_ID = /^[a-z0-9][a-z0-9-]{1,30}$/
 
-export function callerForClient(clientId: string, sites: string[]): Caller {
+// user is who hostd's audit line names. It is the client themselves, except when the operator is viewing as
+// them: then hostd holds the client's line on access and still records the operator as the one asking.
+export function callerForClient(clientId: string, sites: string[], user: string = clientId): Caller {
     if (!CLIENT_ID_PATTERN.test(clientId)) throw new Error('hostd: not one of our client ids')
+    if (!USER_ID.test(user)) throw new Error('hostd: not a usable user id')
     // A site the portal holds under an id hostd would never accept cannot be one hostd serves, so it is left
     // out rather than allowed to make hostd refuse every request this client makes.
-    return { actor: `client:${clientId}`, user: clientId, sites: sites.filter(site => PROJECT_ID.test(site)) }
+    return { actor: `client:${clientId}`, user, sites: sites.filter(site => PROJECT_ID.test(site)) }
 }

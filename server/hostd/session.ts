@@ -12,6 +12,10 @@ import { callerForAdmin, callerForClient, type Caller } from './actor'
 export type Who = {
     caller: Caller
     clientId: string | null
+    // Set only while the operator is viewing as a client: everything else about this caller is that client's,
+    // and this is who is really asking, for the banner and for anything that records who did what.
+    impersonatedBy?: string
+    clientName?: string
 }
 
 export type SessionSources = {
@@ -21,6 +25,9 @@ export type SessionSources = {
     // The projects a client has been given access to, read on every request so a grant taken away stops
     // working at once rather than when the session ends
     clientSites: (clientId: string) => Promise<string[]>
+    // The client the operator has chosen to view as, if any. Only ever asked once the admin session has
+    // been checked, so on its own the cookie behind it makes nobody anybody.
+    impersonating: (adminEmail: string) => Promise<{ id: string, name: string } | null>
 }
 
 // Imported where they are used rather than at the top of the file: server/auth builds a NextAuth instance on
@@ -40,6 +47,10 @@ const liveSources = (): SessionSources => ({
         const { sitesOf } = await import('../sites/access')
         return sitesOf(clientId)
     },
+    impersonating: async adminEmail => {
+        const { impersonatedClient } = await import('../clients/impersonating')
+        return impersonatedClient(adminEmail)
+    },
 })
 
 export async function callerFromSession(sources: SessionSources = liveSources()): Promise<Who | null> {
@@ -47,7 +58,22 @@ export async function callerFromSession(sources: SessionSources = liveSources())
     // there is nothing a second lookup could add.
     const session = await sources.adminSession()
     const email = session?.user?.email
-    if (email && isAdminSession(session, sources.adminEmail)) return { caller: callerForAdmin(email), clientId: null }
+    if (email && isAdminSession(session, sources.adminEmail)) {
+        // Viewing as a client makes the operator that client in every respect the portal and hostd check,
+        // read from the same grants the client's own session would be, so what shows is what they would see.
+        // Only hostd's audit line still names the operator.
+        const viewing = await sources.impersonating(email)
+        if (viewing) {
+            const sites = await sources.clientSites(viewing.id)
+            return {
+                caller: callerForClient(viewing.id, sites, email),
+                clientId: viewing.id,
+                impersonatedBy: email,
+                clientName: viewing.name,
+            }
+        }
+        return { caller: callerForAdmin(email), clientId: null }
+    }
 
     const client = await sources.clientSession()
     if (client) {

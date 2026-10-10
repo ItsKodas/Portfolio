@@ -1,0 +1,20 @@
+/* Every colour is a token, which is what ui/palette.test.ts asks of a stylesheet: that test walks ui/ and
+   does not reach this file, so the rule is kept here by hand. */
+
+.banner {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 8px 14px;
+    padding: 8px 18px;
+    border-bottom: 1px solid color-mix(in srgb, var(--warn) 45%, transparent);
+    background: color-mix(in srgb, var(--warn) 12%, var(--night));
+    font-size: 12.5px;
+}
+
+.text { color: var(--ink-2); flex: 1 1 auto; }
+.text strong { color: var(--warn); font-weight: 600; }
+
+@media (max-width: 760px) {
+    .banner { padding: 8px 16px; }
+}

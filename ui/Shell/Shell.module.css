@@ -1,13 +1,17 @@
+/* The bar and any notice under it, stuck to the top together */
+.top {
+    position: sticky;
+    top: env(safe-area-inset-top, 0px);
+    z-index: 20;
+    flex: none;
+}
 .bar {
     display: flex;
     align-items: center;
     gap: 14px;
     padding: 10px 18px;
     border-bottom: 1px solid var(--rule);
-    position: sticky;
-    top: env(safe-area-inset-top, 0px);
     background: var(--night);
-    z-index: 20;
 }
 .brand { flex: none; font-weight: 600; font-size: 14.5px; letter-spacing: -.01em; }
 .barExtra { margin-left: auto; display: flex; align-items: center; gap: 12px; }

@@ -6,6 +6,7 @@ import { requireAdmin } from '@/server/auth'
 import { repo } from '@/server/clients/wiring'
 import { getDb } from '@/server/db'
 import { quoteRepo } from '@/server/quotes/repo'
+import { Button } from '@/ui/Button/Button'
 import { Chip } from '@/ui/Chip/Chip'
 import { formatWhen } from '../../format'
 import PortalHeader from '../../header'
@@ -16,6 +17,7 @@ import {
     ResendInviteButton, ResetTwoFactorButton, SendResetButton, SuspendButton,
 } from '../controls'
 import { STATE_TONES, clientState } from '../state'
+import { startViewingAsAction } from '../../viewAs/actions'
 import styles from './client.module.css'
 
 export const metadata: Metadata = { title: 'Client' }
@@ -55,6 +57,20 @@ export default async function ClientPage({ params }: { params: Promise<{ id: str
                     <Chip tone={STATE_TONES[state]}>{state}</Chip>
                 </div>
                 <div className={frame.subBlock}><ClientId id={client.id} /></div>
+
+                {/* Not offered for a suspended client: they cannot sign in, so there is nothing of theirs to see */}
+                {!client.suspendedAt && (
+                    <section className={frame.panel}>
+                        <h2 className={frame.section}>View as client</h2>
+                        <p className={frame.empty}>
+                            See the portal exactly as {client.name} does: their sites, the tabs and controls their
+                            access allows, and nothing else. Their password and two-step sign-in stay out of reach.
+                        </p>
+                        <form action={startViewingAsAction.bind(null, client.id)} className={frame.controls}>
+                            <Button type="submit">View as client</Button>
+                        </form>
+                    </section>
+                )}
 
                 <section className={frame.panel}>
                     <ClientForm clientId={client.id} initial={{ name: client.name, company: client.company, email: client.email }} />

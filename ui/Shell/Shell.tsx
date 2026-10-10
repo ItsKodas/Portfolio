@@ -15,6 +15,8 @@ type Props = {
     // column, so the page's own panel can take the height left over instead of ending where its content
     // does. Opt-in, because it changes how margins between blocks collapse on the pages that are blocks.
     fill?: boolean
+    // A strip under the bar that stays with it, for something true of every page until it is undone
+    notice?: ReactNode
     children: ReactNode
 }
 
@@ -22,24 +24,30 @@ type BarProps = {
     brand: ReactNode
     tabs?: ReactNode
     bar?: ReactNode
+    notice?: ReactNode
     // Ahead of the brand: Shell's menu button, which only a page with a site list has
     children?: ReactNode
 }
 
 // The bar on its own, for the pages that have no zones under it. They draw this same element rather than
 // a lookalike, so moving between them and a Shell page leaves the bar exactly where it was.
-export function ShellBar({ brand, tabs, bar, children }: BarProps) {
+export function ShellBar({ brand, tabs, bar, notice, children }: BarProps) {
+    // The notice sits inside the sticky element rather than after it, so on a phone, where the document
+    // scrolls, it stays in view with the bar instead of scrolling away under it.
     return (
-        <header className={styles.bar}>
-            {children}
-            <span className={styles.brand}>{brand}</span>
-            {tabs}
-            {bar && <span className={styles.barExtra}>{bar}</span>}
-        </header>
+        <div className={styles.top}>
+            <header className={styles.bar}>
+                {children}
+                <span className={styles.brand}>{brand}</span>
+                {tabs}
+                {bar && <span className={styles.barExtra}>{bar}</span>}
+            </header>
+            {notice}
+        </div>
     )
 }
 
-export function Shell({ brand, tabs, bar, nav, rail, fill, children }: Props) {
+export function Shell({ brand, tabs, bar, nav, rail, fill, notice, children }: Props) {
     const [open, setOpen] = useState(false)
     const menuRef = useRef<HTMLButtonElement>(null)
     const navRef = useRef<HTMLElement>(null)
@@ -73,7 +81,7 @@ export function Shell({ brand, tabs, bar, nav, rail, fill, children }: Props) {
     return (
         <>
             <div className={styles.frame}>
-                <ShellBar brand={brand} tabs={tabs} bar={bar}>
+                <ShellBar brand={brand} tabs={tabs} bar={bar} notice={notice}>
                     <button
                         ref={menuRef}
                         type="button"
