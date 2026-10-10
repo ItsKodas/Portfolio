@@ -45,7 +45,7 @@ beforeEach(() => {
 describe('SiteAnalytics', () => {
     it('shows the totals, the chart and what was read most, for the live environment', async () => {
         getAnalytics.mockResolvedValue(report())
-        render(await SiteAnalytics({ id: 'asot', isAdmin: false }))
+        render(await SiteAnalytics({ id: 'asot', isAdmin: false, side: <p>containers</p> }))
 
         expect(getAnalytics.mock.calls[0]?.[2]).toBe('asot')
         expect(getAnalytics.mock.calls[0]?.[3]).toBe('live')
@@ -56,27 +56,34 @@ describe('SiteAnalytics', () => {
         expect(screen.getByText('Australia')).toBeTruthy()
     })
 
+    it('puts the log under the chart and the containers beside it, and draws both when visits fail', async () => {
+        getAnalytics.mockResolvedValue({ ok: false, code: 'unavailable', message: 'down' })
+        render(await SiteAnalytics({ id: 'asot', isAdmin: false, logs: <p>the log</p>, side: <p>containers</p> }))
+        expect(screen.getByText('the log')).toBeTruthy()
+        expect(screen.getByText('containers')).toBeTruthy()
+    })
+
     it('leaves the countries out for a site hostd cannot tell them for', async () => {
         getAnalytics.mockResolvedValue(report({ countries: [] }))
-        render(await SiteAnalytics({ id: 'asot', isAdmin: false }))
+        render(await SiteAnalytics({ id: 'asot', isAdmin: false, side: <p>containers</p> }))
         expect(screen.queryByText('Countries')).toBeNull()
     })
 
     it('says the site is not being counted rather than drawing an empty chart', async () => {
         getAnalytics.mockResolvedValue(report({ logging: false, since: null }))
-        render(await SiteAnalytics({ id: 'asot', isAdmin: false }))
-        expect(screen.getByText('Not being counted yet')).toBeTruthy()
+        render(await SiteAnalytics({ id: 'asot', isAdmin: false, side: <p>containers</p> }))
+        expect(screen.getByText('Visits are not being counted yet')).toBeTruthy()
         expect(screen.queryByRole('img')).toBeNull()
     })
 
     it('tells the operator hostd\'s own words and a client a fixed sentence when the read fails', async () => {
         getAnalytics.mockResolvedValue({ ok: false, code: 'unavailable', message: 'analytics are not configured' })
         callerFromSession.mockResolvedValue(admin)
-        render(await SiteAnalytics({ id: 'asot', isAdmin: true }))
+        render(await SiteAnalytics({ id: 'asot', isAdmin: true, side: <p>containers</p> }))
         expect(screen.getByText(/analytics are not configured/)).toBeTruthy()
 
         callerFromSession.mockResolvedValue(client)
-        render(await SiteAnalytics({ id: 'asot', isAdmin: false }))
+        render(await SiteAnalytics({ id: 'asot', isAdmin: false, side: <p>containers</p> }))
         expect(screen.getByText(/temporarily unavailable/)).toBeTruthy()
     })
 })

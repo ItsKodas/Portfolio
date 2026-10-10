@@ -10,8 +10,8 @@ import type { AnalyticsDay } from '@/server/hostd/analytics'
 import { count, dayLabel, scaleFor } from './analyticsView'
 import styles from './analytics.module.css'
 
-const HEIGHT = 190
-const PAD = { top: 10, right: 12, bottom: 24, left: 40 }
+const HEIGHT = 150
+const PAD = { top: 8, right: 12, bottom: 22, left: 40 }
 
 type Props = {
     days: AnalyticsDay[]

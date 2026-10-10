@@ -30,32 +30,8 @@
    inside a dialog or a pane keeps its own look. */
 .block h2, .block > h3, .block > h4 { font-size: 13px; margin: 0 0 10px; }
 
-/* The log and what is producing it, side by side, taking whatever height the panel has left. The log is
-   the thing being read, so it gets the room; the containers are a dozen words that change once a day and
-   get a bar. */
-.split {
-    margin-top: 22px;
-    flex: 1 0 auto;
-    display: grid;
-    grid-template-columns: minmax(0, 1fr) 216px;
-    grid-template-rows: minmax(0, 1fr);
-    gap: 20px;
-}
-
-.splitMain {
-    display: flex;
-    flex-direction: column;
-    min-width: 0;
-}
-
-/* Narrow enough that two columns would leave the log unreadable, so the bar goes under it. Under rather
-   than over: what is being read stays where the eye already is. */
-@media (max-width: 900px) {
-    .split { grid-template-columns: minmax(0, 1fr); grid-template-rows: minmax(0, 1fr) auto; }
-}
-
-.env { border-left: 1px solid var(--rule); padding-left: 16px; min-width: 0; }
-.envName { font-size: 13px; margin: 0 0 12px; }
+.env { min-width: 0; }
+.envName { font-size: 12px; margin: 0 0 8px; color: var(--ink-2); font-weight: 500; }
 .envList { list-style: none; margin: 0; padding: 0; }
 
 .envItem {
@@ -454,8 +430,8 @@
 
 /* The Deploys tab is two columns on a wide screen and one on a narrow one. The column is always here,
    not only while a deploy runs: one that came and went would reflow the page twice per deploy, with the
-   history moving under the operator's cursor both times. Gap matches .split, the log/sidebar layout this
-   mirrors; there is no spacing token in ui/tokens.css to name instead. */
+   history moving under the operator's cursor both times. The 20px gap is the one the Overview's log
+   and side column used to share; there is no spacing token in ui/tokens.css to name instead. */
 .deployLayout {
     display: grid;
     grid-template-columns: minmax(0, 1fr);
@@ -611,8 +587,6 @@
     .panel { flex: 1 1 0; min-height: 0; overflow-y: auto; }
     /* The panel clips now, so the focus ring goes inside its edge rather than outside it */
     .panel:focus-visible { outline-offset: -2px; }
-
-    .split { flex: 1 1 0; min-height: 0; }
 
     .deployLayout { flex: 1 1 0; min-height: 0; grid-template-rows: minmax(0, 1fr); }
     .deployMain { display: flex; flex-direction: column; min-height: 0; }

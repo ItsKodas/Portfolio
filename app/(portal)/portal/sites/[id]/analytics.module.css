@@ -1,23 +1,61 @@
-/* The Overview's analytics panel. Every colour is a token or a neutral overlay, the rule ui/palette.test.ts
+/* The Overview body and its analytics. Every colour is a token or a neutral overlay, the rule ui/palette.test.ts
    keeps for ui/ and site.module.css keeps by hand. The two series are --chart-1 (visits) and --chart-2
    (unique visitors), always in that order. */
 
-.panel { margin-top: 22px; }
-.panel h2 { font-size: 13px; margin: 0 0 10px; }
-
-.head { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; }
-.note { color: var(--ink-3); font-size: 11.5px; margin: 0 0 10px; }
-
-.legend {
-    list-style: none;
-    display: flex;
-    gap: 16px;
-    margin: 14px 0 6px;
-    padding: 0;
-    font-size: 11.5px;
-    color: var(--ink-2);
+/* The Overview's body. Chart and log down the main column, the lists and the containers in a column beside
+   them. On a desktop the frame fixes the height (ui/Shell's fill) and this takes what is left of it, so
+   the log grows into the space and nothing scrolls; the side column never pushes the page longer, and
+   scrolls inside itself instead. */
+.overview {
+    margin-top: 18px;
+    flex: 1 0 auto;
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) 272px;
+    grid-template-rows: minmax(0, 1fr);
+    gap: 22px;
 }
-.legend li { display: flex; align-items: center; gap: 6px; }
+
+.main { display: flex; flex-direction: column; gap: 16px; min-width: 0; }
+/* The log's own header and pane, the pane taking the height the chart leaves */
+.logs { display: flex; flex-direction: column; flex: 1 1 auto; min-width: 0; min-height: 0; }
+
+/* Height 0 and at least the row: it adds nothing to the row's height, then fills it */
+.side {
+    border-left: 1px solid var(--rule);
+    padding-left: 16px;
+    min-width: 0;
+    height: 0;
+    min-height: 100%;
+    overflow-y: auto;
+    display: flex;
+    flex-direction: column;
+    gap: 18px;
+}
+
+/* Where ui/Shell fixes the frame to the window, site.module.css fixes the panel to the height left under the
+   tab strip, and the Overview takes exactly that rather than at least its content's, the way the Deploys
+   tab does. The log is what gives way, down to its own minimum. */
+@media (min-width: 1081px) {
+    .overview { flex: 1 1 0; min-height: 0; }
+    .main { min-height: 0; }
+}
+
+/* Narrow enough that the side column would squeeze the log, so it goes under, and the page scrolls */
+@media (max-width: 900px) {
+    .overview { grid-template-columns: minmax(0, 1fr); grid-template-rows: auto; }
+    .side { height: auto; min-height: 0; overflow: visible; border-left: 0; padding-left: 0; }
+}
+
+.visits { flex: none; }
+
+.head { display: flex; align-items: baseline; justify-content: space-between; gap: 6px 18px; flex-wrap: wrap; margin-bottom: 6px; }
+.head h2 { font-size: 13px; margin: 0; }
+.note { color: var(--ink-3); font-size: 11.5px; font-weight: 400; }
+
+.totals { display: flex; flex-wrap: wrap; gap: 4px 18px; margin: 0; font-size: 11.5px; }
+.totals div { display: flex; align-items: baseline; gap: 6px; }
+.totals dt { color: var(--ink-3); display: flex; align-items: center; gap: 5px; }
+.totals dd { margin: 0; font-family: var(--font-mono), monospace; font-variant-numeric: tabular-nums; color: var(--ink); font-size: 13px; }
 
 .keyViews, .keyVisitors {
     display: inline-block;
@@ -68,16 +106,36 @@
 .tipRow { margin: 2px 0 0; display: flex; align-items: center; gap: 6px; color: var(--ink-2); }
 .tipRow b { margin-left: auto; padding-left: 12px; color: var(--ink); font-weight: 500; font-family: var(--font-mono), monospace; }
 
-.table { margin-top: 8px; font-size: 12px; }
-.table summary { cursor: pointer; color: var(--ink-3); font-size: 11.5px; padding: 4px 0; }
+.table { font-size: 12px; }
+.table summary { cursor: pointer; color: var(--ink-3); font-size: 11px; padding: 2px 0; width: max-content; }
 .table summary:hover { color: var(--ink-2); }
+.table[open] { max-height: 260px; overflow-y: auto; }
 
-.tops {
-    margin-top: 18px;
-    display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
-    gap: 20px;
+.top h3 { font-size: 12px; margin: 0 0 6px; color: var(--ink-2); font-weight: 500; }
+.topList { list-style: none; margin: 0; padding: 0; }
+.topRow {
+    position: relative;
+    display: flex;
+    gap: 10px;
+    align-items: baseline;
+    padding: 3px 6px;
+    font-size: 11.5px;
 }
-.top { min-width: 0; }
-.top h3 { font-size: 12px; margin: 0 0 8px; color: var(--ink-2); font-weight: 500; }
-.topKey { font-family: var(--font-mono), monospace; font-size: 12px; overflow-wrap: anywhere; }
+/* Its share of the list's top row, as a faint bar behind the row */
+.topBar {
+    position: absolute;
+    inset: 1px auto 1px 0;
+    background: rgba(255, 255, 255, .045);
+    border-radius: var(--radius-chip);
+}
+.topKey {
+    position: relative;
+    flex: 1;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-family: var(--font-mono), monospace;
+    color: var(--ink);
+}
+.topCount { position: relative; font-family: var(--font-mono), monospace; font-variant-numeric: tabular-nums; color: var(--ink-3); }

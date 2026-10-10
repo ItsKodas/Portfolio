@@ -95,10 +95,10 @@ function restartsOf(services: ServiceStatus[]): string {
     return String(counted.reduce((total, count) => total + count, 0))
 }
 
-// One environment's containers, as a slim bar beside the log rather than a block under it: it is a
-// dozen words that change once a day, and the log is the thing being read. Written as a component taking
-// its own name and its own services, so the day hostd answers a project's environments the second one is
-// another call to this and not a rewrite.
+// One environment's containers, at the foot of the Overview's side column rather than a block under the
+// log: it is a dozen words that change once a day, and the log is the thing being read. Written as a
+// component taking its own name and its own services, so the day hostd answers a project's environments
+// the second one is another call to this and not a rewrite.
 function Environment({ name, services, trouble }: { name: string, services: ServiceStatus[], trouble: string | null }) {
     return (
         <aside className={styles.env}>
@@ -387,24 +387,19 @@ export default async function SitePage({ params, searchParams }: Props) {
                                 <Lifecycle id={view.id} enabled={view.capabilities.includes('lifecycle')} state={current} />
                             )}
 
-                            {/* Who has been visiting, out of the web server's own log: anyone who may
-                                see the site may see this, like its status. */}
-                            <SiteAnalytics id={view.id} isAdmin={view.isAdmin} />
-
-                            {/* What the site is doing right now, which is the log, with what it is made of
-                                beside it. The Logs tab is the same view given the whole panel, for when the
-                                thing being read is longer than a glance. A client not given the logs sees
-                                what it is made of alone. */}
-                            {may('LOGS')
-                                ? (
-                                    <div className={styles.split}>
-                                        <div className={styles.splitMain}>
-                                            <SiteLogs id={view.id} services={view.services.map(service => service.service)} />
-                                        </div>
-                                        <Environment name={LIVE} services={view.services} trouble={view.trouble} />
-                                    </div>
-                                )
-                                : <Environment name={LIVE} services={view.services} trouble={view.trouble} />}
+                            {/* Who has been visiting (out of the web server's own log, so anyone who may
+                                see the site may see it, like its status), and what the site is doing right
+                                now, which is the log, with what it is made of beside them. Laid out to fit
+                                the window on a desktop: see ./analytics. The Logs tab is the same log given
+                                the whole panel. A client not given the logs sees the rest without it. */}
+                            <SiteAnalytics
+                                id={view.id}
+                                isAdmin={view.isAdmin}
+                                logs={may('LOGS')
+                                    ? <SiteLogs id={view.id} services={view.services.map(service => service.service)} />
+                                    : undefined}
+                                side={<Environment name={LIVE} services={view.services} trouble={view.trouble} />}
+                            />
                         </>
                     )}
 
