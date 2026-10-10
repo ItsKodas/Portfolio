@@ -23,6 +23,15 @@ export const cookieOptions = (secure: boolean) => ({
     path: '/',
 })
 
+// What clearing the cookie sends: the same attributes it was set with, because a browser refuses a Set-Cookie
+// for a __Secure- name that is not itself Secure, and a bare delete(name) is not
+export const expiredCookie = (secure: boolean) => ({
+    ...cookieOptions(secure),
+    name: cookieName(secure),
+    value: '',
+    expires: new Date(0),
+})
+
 export const newSessionToken = (random: (bytes: number) => Buffer = randomBytes) => random(32).toString('base64url')
 
 // Only the hash is stored, so reading the table doesn't let anyone resume a session

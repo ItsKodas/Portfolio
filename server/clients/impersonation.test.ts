@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
-import { IMPERSONATION_MS, impersonationEntry, readImpersonation, signImpersonation } from './impersonation'
+import { IMPERSONATION_MS, expiredImpersonationCookie, impersonationEntry, readImpersonation, signImpersonation } from './impersonation'
 
 const KEY = 'a-test-secret-that-is-long-enough'
 const ADMIN = 'koda@horizons.gg'
@@ -66,5 +66,17 @@ describe('impersonationEntry', () => {
             kind: 'client.viewAsStop',
             summary: 'Stopped viewing the portal as cl_8F2K1ABC',
         })
+    })
+})
+
+// The bug this guards: clearing a __Secure- cookie without Secure is refused by the browser, so "Stop viewing
+// as client" did nothing in production
+describe('expiredImpersonationCookie', () => {
+    it('clears the cookie under the attributes it was set with', () => {
+        expect(expiredImpersonationCookie(true)).toEqual({
+            name: '__Secure-horizons-view-as', value: '', expires: new Date(0),
+            httpOnly: true, secure: true, sameSite: 'lax', path: '/',
+        })
+        expect(expiredImpersonationCookie(false)).toMatchObject({ name: 'horizons-view-as', secure: false, path: '/' })
     })
 })

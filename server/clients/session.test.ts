@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
-import { activeExpiry, cookieName, cookieOptions, hashSessionToken, isPending, isUsable, newSessionToken, pendingExpiry, shouldTouch } from './session'
+import { activeExpiry, cookieName, cookieOptions, expiredCookie, hashSessionToken, isPending, isUsable, newSessionToken, pendingExpiry, shouldTouch } from './session'
 
 const now = new Date('2026-09-20T10:00:00Z')
 const minutes = (count: number) => new Date(now.getTime() + count * 60_000)
@@ -89,5 +89,13 @@ describe('usability', () => {
         const expiredPending = { mfaAt: null, expiresAt: minutes(-1) }
         expect(isUsable(expiredPending, now)).toBe(false)
         expect(isPending(expiredPending, now)).toBe(false)
+    })
+})
+
+describe('expiredCookie', () => {
+    // A browser refuses to clear a __Secure- cookie with a Set-Cookie that is not itself Secure
+    it('clears the session cookie under the attributes it was set with', () => {
+        expect(expiredCookie(true)).toEqual({ ...cookieOptions(true), name: '__Secure-horizons-client', value: '', expires: new Date(0) })
+        expect(expiredCookie(false)).toMatchObject({ name: 'horizons-client', secure: false })
     })
 })

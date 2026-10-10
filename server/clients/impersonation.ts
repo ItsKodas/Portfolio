@@ -26,6 +26,16 @@ export const impersonationCookieOptions = (secure: boolean) => ({
     path: '/',
 })
 
+// What clearing the cookie sends. It has to repeat the attributes it was set with: a browser refuses any
+// Set-Cookie for a __Secure- name that is not itself Secure, so a bare delete(name) is silently dropped in
+// production and the operator stays viewing as the client.
+export const expiredImpersonationCookie = (secure: boolean) => ({
+    ...impersonationCookieOptions(secure),
+    name: impersonationCookieName(secure),
+    value: '',
+    expires: new Date(0),
+})
+
 // The admin's email is inside the MAC rather than inside the cookie: the cookie only holds for the admin
 // it was made for, without saying who that is to anyone who reads it.
 const mac = (clientId: string, expiresAt: number, admin: string, key: string) =>
