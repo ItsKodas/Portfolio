@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest'
 
-import { hasAccess, getProject, lifecycle, LIFECYCLE_TIMEOUT_MS, listEnvironments, listProjects } from './projects'
+import { hasAccess, getEnvironmentStatus, getProject, lifecycle, LIFECYCLE_TIMEOUT_MS, listEnvironments, listProjects } from './projects'
 
 const config = { url: 'http://hostd-api:8080', token: 'a'.repeat(32) }
 const admin = { actor: 'admin', user: 'koda@horizons.gg' }
@@ -108,9 +108,15 @@ describe('listEnvironments', () => {
 describe('lifecycle', () => {
     it('posts the action to the project', async () => {
         const { fetchImpl, calls } = fakeFetch({ ok: true })
-        await lifecycle(config, admin, 'acme-bakery', 'restart', fetchImpl)
+        await lifecycle(config, admin, 'acme-bakery', 'restart', 'live', fetchImpl)
         expect(calls[0].url).toBe('http://hostd-api:8080/projects/acme-bakery/restart')
         expect(calls[0].method).toBe('POST')
+    })
+
+    it('posts another environment\'s action under its name', async () => {
+        const { fetchImpl, calls } = fakeFetch({ ok: true })
+        await lifecycle(config, admin, 'acme-bakery', 'stop', 'uat1', fetchImpl)
+        expect(calls[0].url).toBe('http://hostd-api:8080/projects/acme-bakery/uat1/stop')
     })
 
     // hostd answers once compose has finished, and a stop alone waits out a ten second grace period per
@@ -119,7 +125,7 @@ describe('lifecycle', () => {
     it('waits as long as hostd itself may take, rather than the default ten seconds', async () => {
         const timeout = vi.spyOn(AbortSignal, 'timeout')
         const { fetchImpl } = fakeFetch({ ok: true })
-        await lifecycle(config, admin, 'acme-bakery', 'stop', fetchImpl)
+        await lifecycle(config, admin, 'acme-bakery', 'stop', 'live', fetchImpl)
         expect(timeout).toHaveBeenCalledWith(LIFECYCLE_TIMEOUT_MS)
         // Past hostd's own 150 second call timeout, so its answer, refusal or not, always arrives first
         expect(LIFECYCLE_TIMEOUT_MS).toBeGreaterThan(150_000)
@@ -128,9 +134,18 @@ describe('lifecycle', () => {
 
     it('refuses a project id hostd would not recognise', async () => {
         const { fetchImpl, calls } = fakeFetch({ ok: true })
-        const result = await lifecycle(config, admin, '../../etc', 'restart', fetchImpl)
+        const result = await lifecycle(config, admin, '../../etc', 'restart', 'live', fetchImpl)
         expect(result).toEqual({ ok: false, code: 'not-found', message: 'no such project' })
         expect(calls).toHaveLength(0)
+    })
+})
+
+describe('getEnvironmentStatus', () => {
+    it('reads one environment\'s services', async () => {
+        const services = [{ service: 'web', role: 'site', state: 'running', health: null, startedAt: null, restartCount: 0, image: null }]
+        const { fetchImpl, calls } = fakeFetch({ ok: true, services })
+        expect(await getEnvironmentStatus(config, admin, 'acme-bakery', 'uat1', fetchImpl)).toEqual({ ok: true, value: services })
+        expect(calls[0].url).toBe('http://hostd-api:8080/projects/acme-bakery/uat1/status')
     })
 })
 

@@ -211,6 +211,8 @@
 
 .envTabDetail { min-width: 0; }
 .envTabName { font-family: var(--font-mono), monospace; font-size: 15px; margin: 0; }
+/* The name with what the environment is doing beside it, over its start, stop and restart */
+.envTabHead { display: flex; align-items: center; gap: 12px; margin-bottom: 10px; font-size: 13px; }
 
 /* Each section after the Summary, set apart by a rule so the Domains' and Env files' own headings read as
    inside it */

@@ -960,4 +960,21 @@ describe('lifecycleAction', () => {
         expect((await lifecycleAction('acme', 'start')).ok).toBe(true)
         expect(hasAccess).not.toHaveBeenCalled()
     })
+    it('runs on another environment the site has, with the same permission', async () => {
+        callerFromSession.mockResolvedValue(CLIENT)
+        listEnvironments.mockResolvedValue({ ok: true, value: [env('live'), env('uat1')] })
+        lifecycle.mockResolvedValue({ ok: true, value: { ok: true } })
+        expect(await lifecycleAction('acme', 'stop', 'uat1')).toEqual({
+            ok: true, message: 'Stopping. uat1 will show its holding page until it is started again.',
+        })
+        expect(hasAccess.mock.calls[0][3]).toBe('LIFECYCLE')
+        expect(lifecycle.mock.calls[0].slice(2)).toEqual(['acme', 'stop', 'uat1'])
+    })
+
+    it('refuses an environment the site does not have, before hostd is asked to act', async () => {
+        callerFromSession.mockResolvedValue(ADMIN)
+        expect(await lifecycleAction('acme', 'start', 'staging')).toEqual({ ok: false, error: 'This site has no staging environment.' })
+        expect(await lifecycleAction('acme', 'start', '../x')).toEqual({ ok: false, error: 'That is not something this page can do.' })
+        expect(lifecycle).not.toHaveBeenCalled()
+    })
 })

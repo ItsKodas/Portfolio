@@ -35,7 +35,7 @@ export function composeBase(project: ComposeLocation): string[] {
     ]
 }
 
-export function lifecycleArgv(project: ProjectEntry, action: LifecycleAction): string[] {
+export function lifecycleArgv(project: ComposeLocation, action: LifecycleAction): string[] {
     return [...composeBase(project), ...LIFECYCLE_ARGS[action]]
 }
 
@@ -165,7 +165,7 @@ export function tail(text: string, bytes = OUTPUT_TAIL_BYTES): string {
 
 export type LifecycleResult = { ok: true, output: string } | { ok: false, message: string, output: string }
 
-export async function runLifecycle(project: ProjectEntry, action: LifecycleAction, run: Runner): Promise<LifecycleResult> {
+export async function runLifecycle(project: ComposeLocation, action: LifecycleAction, run: Runner): Promise<LifecycleResult> {
     const result = await run('docker', lifecycleArgv(project, action), LIFECYCLE_TIMEOUT_MS)
     // Compose splits itself across both streams, so both are the output. A spike against compose v5.1.3
     // found the build progress on stdout and only the closing summary on stderr, so neither stream on its

@@ -8,6 +8,7 @@ const listProjects = vi.fn()
 const listDeploys = vi.fn()
 const listDomains = vi.fn()
 const getProject = vi.fn()
+const getEnvironmentStatus = vi.fn()
 const accessOf = vi.fn()
 const callerFromSession = vi.fn()
 
@@ -23,6 +24,7 @@ vi.mock('@/server/hostd/session', () => ({ callerFromSession: () => callerFromSe
 vi.mock('@/server/hostd/projects', () => ({
     listProjects: (...args: unknown[]) => listProjects(...args),
     getProject: (...args: unknown[]) => getProject(...args),
+    getEnvironmentStatus: (...args: unknown[]) => getEnvironmentStatus(...args),
 }))
 vi.mock('@/server/sites/access', () => ({ accessOf: (...args: unknown[]) => accessOf(...args) }))
 // The Access tab reads the portal's database itself; access.test.tsx is where it is rendered
@@ -94,6 +96,7 @@ beforeEach(() => {
     callerFromSession.mockResolvedValue({ caller: { actor: 'admin', user: 'koda@horizons.gg' }, clientId: null })
     listProjects.mockResolvedValue({ ok: true, value: [{ id: 'asot', name: 'ASOT', valid: true, capabilities: ['lifecycle', 'logs'] }] })
     getProject.mockResolvedValue({ ok: true, value: [service('running')] })
+    getEnvironmentStatus.mockResolvedValue({ ok: true, value: [service('running')] })
     listDomains.mockResolvedValue({ ok: true, value: [] })
     accessOf.mockResolvedValue(['LOGS', 'LIFECYCLE', 'ENVIRONMENTS', 'DEPLOYS'])
     listBranches.mockResolvedValue({ ok: true, value: [] })
@@ -401,6 +404,34 @@ describe('the environments tab', () => {
         expect(screen.getByRole('heading', { level: 2, name: 'uat1' })).toBeInTheDocument()
         expect(listDomains.mock.calls[0]?.[3]).toBe('uat1')
         expect(screen.getByText('env files of uat1 at .env')).toBeInTheDocument()
+    })
+
+    // Every environment can be started, stopped and restarted from its own detail, not only live
+    it('gives the environment shown its own controls, over its own reading', async () => {
+        withEnvironments()
+        getEnvironmentStatus.mockResolvedValue({ ok: true, value: [] })
+        render(await page({ tab: 'environments', env: 'uat1' }))
+        expect(getEnvironmentStatus.mock.calls[0]?.slice(2)).toEqual(['asot', 'uat1'])
+        // No containers at all is an environment whose compose is not up, which is asking to be started
+        expect(screen.getByText('stopped')).toBeInTheDocument()
+        expect(screen.getByRole('button', { name: 'Start' })).toBeEnabled()
+        expect(screen.getByRole('button', { name: 'Restart' })).toBeEnabled()
+    })
+
+    it('draws live\'s controls on the tab from the page\'s own reading, asking nothing more', async () => {
+        withEnvironments()
+        render(await page({ tab: 'environments' }))
+        expect(getEnvironmentStatus).not.toHaveBeenCalled()
+        expect(screen.getByRole('button', { name: 'Restart' })).toBeInTheDocument()
+    })
+
+    it('leaves the controls off the tab for a client not given start and stop', async () => {
+        withEnvironments()
+        callerFromSession.mockResolvedValue(client)
+        accessOf.mockResolvedValue(['ENVIRONMENTS'])
+        render(await page({ tab: 'environments', env: 'uat1' }))
+        expect(getEnvironmentStatus).not.toHaveBeenCalled()
+        expect(screen.queryByRole('button', { name: 'Restart' })).toBeNull()
     })
 
     it('falls back to live for an environment the site does not have', async () => {
