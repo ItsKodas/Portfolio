@@ -24,7 +24,10 @@ const GAP = 20
 const TEXT_WIDTH = 800
 const ICON = { size: 140, top: 30.3 }
 const TITLE = { size: 128, weight: 700 as const, tracking: 10, lineHeight: 1.167 }
-const SUBTITLE = { size: 36, weight: 300 as const, tracking: 11, lineHeight: 1.2, top: 133.4, indent: 8 }
+// The subtitle's tracking and indent are the hero's fit for the current tagline (fitSubtitle in app/(landing)/logo),
+// which spreads it to the title's exact width. This renderer can't measure the letters, so change the tagline and
+// these need copying across again from the hero.
+const SUBTITLE = { size: 36, weight: 300 as const, tracking: 18.77, lineHeight: 1.2, top: 133.4, indent: 6 }
 // The row sits a little above centre, in the gap the mountains leave in the sky
 const RISE = 46
 
@@ -72,7 +75,7 @@ export async function renderShareImage() {
                             {title}
                         </div>
 
-                        <div style={{ position: 'absolute', left: ICON.size + GAP + SUBTITLE.indent, top: SUBTITLE.top, width: TEXT_WIDTH, fontSize: SUBTITLE.size, fontWeight: SUBTITLE.weight, letterSpacing: SUBTITLE.tracking, lineHeight: SUBTITLE.lineHeight, textShadow: '0 2px 16px rgba(11,16,31,0.8)' }}>
+                        <div style={{ position: 'absolute', left: ICON.size + GAP + SUBTITLE.indent, top: SUBTITLE.top, width: TEXT_WIDTH, fontSize: SUBTITLE.size, fontWeight: SUBTITLE.weight, letterSpacing: SUBTITLE.tracking, lineHeight: SUBTITLE.lineHeight, whiteSpace: 'nowrap', textShadow: '0 2px 16px rgba(11,16,31,0.8)' }}>
                             {SITE.tagline}
                         </div>
                     </div>
