@@ -27,6 +27,9 @@ export type PasswordStepDeps = {
     rehash(password: string): Promise<string>
     setPassword(id: string, passwordHash: string, now: Date): Promise<void>
     createSession(clientId: string, tokenHash: string, expiresAt: Date, userAgent: string | null): Promise<{ id: string }>
+    completeMfa(sessionId: string, mfaAt: Date, expiresAt: Date): Promise<void>
+    recordSuccess(id: string, now: Date): Promise<void>
+    prune(clientId: string, now: Date): Promise<void>
     newToken(): string
     hashToken(token: string): string
     now(): Date
@@ -36,6 +39,8 @@ export type PasswordStepDeps = {
 
 export type PasswordStepResult =
     | { ok: true, next: 'code' | 'setup', token: string, expiresAt: Date }
+    // Signed in outright, so the caller can say who in the activity log
+    | { ok: true, next: 'home', token: string, expiresAt: Date, client: ClientRecord }
     | { ok: false, error: string }
 
 export async function passwordStep(
@@ -82,10 +87,22 @@ export async function passwordStep(
     }
 
     const token = deps.newToken()
-    const expiresAt = pendingExpiry(now)
+    const pending = pendingExpiry(now)
     // mfaAt stays null: this creates a session that can reach the second factor and nothing else
-    await deps.createSession(client.id, deps.hashToken(token), expiresAt, input.userAgent)
-    return { ok: true, next: client.totpConfirmedAt ? 'code' : 'setup', token, expiresAt }
+    const session = await deps.createSession(client.id, deps.hashToken(token), pending, input.userAgent)
+
+    // The operator has excused this client from two-step sign-in, so the password is the whole of it. Any
+    // authenticator they enrolled earlier is kept but not asked for, so turning the requirement back on
+    // brings it straight back.
+    if (!client.totpRequired) {
+        const expiresAt = activeExpiry(now, now)
+        await deps.completeMfa(session.id, now, expiresAt)
+        await deps.recordSuccess(client.id, now)
+        await deps.prune(client.id, now)
+        return { ok: true, next: 'home', token, expiresAt, client }
+    }
+
+    return { ok: true, next: client.totpConfirmedAt ? 'code' : 'setup', token, expiresAt: pending }
 }
 
 export type CodeStepDeps = {

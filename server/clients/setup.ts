@@ -36,6 +36,8 @@ export type CompleteInviteDeps = {
     setPassword(id: string, passwordHash: string, now: Date): Promise<void>
     useToken(id: string, now: Date): Promise<void>
     createSession(clientId: string, tokenHash: string, expiresAt: Date, userAgent: string | null): Promise<{ id: string }>
+    completeMfa(sessionId: string, mfaAt: Date, expiresAt: Date): Promise<void>
+    recordSuccess(id: string, now: Date): Promise<void>
     newToken(): string
     hashToken(token: string): string
     now(): Date
@@ -45,7 +47,7 @@ export type CompleteInviteDeps = {
 export async function completeInvite(
     input: { tokenHash: string, password: string, userAgent: string | null },
     deps: CompleteInviteDeps,
-): Promise<{ ok: true, token: string, expiresAt: Date } | { ok: false, error: string }> {
+): Promise<{ ok: true, next: 'setup' | 'home', token: string, expiresAt: Date } | { ok: false, error: string }> {
     const now = deps.now()
     const token = await deps.tokenByHash(input.tokenHash)
     const problem = tokenProblem(token, 'INVITE', now)
@@ -59,9 +61,19 @@ export async function completeInvite(
 
     // Still pending: mfaAt is not set here, so this session can reach enrolment and nothing else
     const sessionToken = deps.newToken()
-    const expiresAt = pendingExpiry(now)
-    await deps.createSession(token.client.id, deps.hashToken(sessionToken), expiresAt, input.userAgent)
-    return { ok: true, token: sessionToken, expiresAt }
+    const pending = pendingExpiry(now)
+    const session = await deps.createSession(token.client.id, deps.hashToken(sessionToken), pending, input.userAgent)
+
+    // Unless the operator has excused this client from two-step sign-in: then there is nothing to enrol, and
+    // the password they just chose is the whole of signing in, exactly as it is in passwordStep
+    if (!token.client.totpRequired) {
+        const expiresAt = activeExpiry(now, now)
+        await deps.completeMfa(session.id, now, expiresAt)
+        await deps.recordSuccess(token.client.id, now)
+        return { ok: true, next: 'home', token: sessionToken, expiresAt }
+    }
+
+    return { ok: true, next: 'setup', token: sessionToken, expiresAt: pending }
 }
 
 export type BeginEnrolmentDeps = {
@@ -128,7 +140,7 @@ export type AcknowledgeDeps = {
     now(): Date
 }
 
-// The third and last place mfaAt is written, and reachable only once confirmEnrolment has succeeded
+// One of the places mfaAt is written, and reachable only once confirmEnrolment has succeeded
 export async function acknowledgeRecoveryCodes(session: SessionWithClient, deps: AcknowledgeDeps): Promise<void> {
     const now = deps.now()
     await deps.completeMfa(session.id, now, activeExpiry(session.createdAt, now))

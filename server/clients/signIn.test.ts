@@ -24,6 +24,7 @@ const client = (overrides: Record<string, unknown> = {}) => ({
     publicEmail: null,
     publicPhone: null,
     publicContactListed: false,
+    totpRequired: true,
     ...overrides,
 })
 
@@ -37,6 +38,9 @@ const passwordDeps = (overrides: Record<string, unknown> = {}) => ({
     rehash: vi.fn(async () => 'new-hash'),
     setPassword: vi.fn(async () => {}),
     createSession: vi.fn(async () => ({ id: 'session1' })),
+    completeMfa: vi.fn(async () => {}),
+    recordSuccess: vi.fn(async () => {}),
+    prune: vi.fn(async () => {}),
     newToken: vi.fn(() => 'raw-token'),
     hashToken: vi.fn((token: string) => `hashed:${token}`),
     now: () => now,
@@ -59,6 +63,40 @@ describe('passwordStep', () => {
     it('sends a client with no authenticator to enrolment instead', async () => {
         const deps = passwordDeps({ findByEmail: vi.fn(async () => client({ totpConfirmedAt: null })) })
         expect(await passwordStep(input, deps)).toMatchObject({ ok: true, next: 'setup' })
+    })
+
+    // The password step must never finish a sign-in on its own unless the operator excused the client from
+    // two-step sign-in, which is the next test
+    it('never marks the second factor as done for a client who must use two-step sign-in', async () => {
+        const deps = passwordDeps()
+        await passwordStep(input, deps)
+        expect(deps.completeMfa).not.toHaveBeenCalled()
+    })
+
+    it('signs a client excused from two-step sign-in straight in, enrolled or not', async () => {
+        for (const totpConfirmedAt of [null, now]) {
+            const deps = passwordDeps({ findByEmail: vi.fn(async () => client({ totpRequired: false, totpConfirmedAt })) })
+            const result = await passwordStep(input, deps)
+
+            expect(result).toMatchObject({ ok: true, next: 'home', token: 'raw-token', expiresAt: new Date('2026-09-21T10:00:00Z') })
+            expect(deps.completeMfa).toHaveBeenCalledWith('session1', now, new Date('2026-09-21T10:00:00Z'))
+            expect(deps.recordSuccess).toHaveBeenCalledWith('cl_ABCDEFGH', now)
+        }
+    })
+
+    // Excusing the code excuses nothing else: the password, the lock and suspension all still stand
+    it('still refuses a wrong password, a lock or a suspension for a client excused from two-step sign-in', async () => {
+        const wrong = passwordDeps({
+            findByEmail: vi.fn(async () => client({ totpRequired: false })),
+            verifyPassword: vi.fn(async () => ({ ok: false, needsRehash: false })),
+        })
+        const locked = passwordDeps({ findByEmail: vi.fn(async () => client({ totpRequired: false, lockedUntil: new Date('2026-09-20T10:05:00Z') })) })
+        const suspended = passwordDeps({ findByEmail: vi.fn(async () => client({ totpRequired: false, suspendedAt: now })) })
+
+        expect(await passwordStep(input, wrong)).toEqual({ ok: false, error: GENERIC_ERROR })
+        expect(await passwordStep(input, locked)).toEqual({ ok: false, error: LOCKED_ERROR })
+        expect(await passwordStep(input, suspended)).toEqual({ ok: false, error: GENERIC_ERROR })
+        for (const deps of [wrong, locked, suspended]) expect(deps.completeMfa).not.toHaveBeenCalled()
     })
 
     // The expensive path must sit behind the cheap one, or the form is a memory lever
@@ -121,13 +159,6 @@ describe('passwordStep', () => {
         const deps = passwordDeps({ verifyPassword: vi.fn(async () => ({ ok: true, needsRehash: true })) })
         await passwordStep(input, deps)
         expect(deps.setPassword).toHaveBeenCalledWith('cl_ABCDEFGH', 'new-hash', now)
-    })
-
-    // The password step must never finish a sign-in on its own
-    it('never marks the second factor as done', async () => {
-        const deps = passwordDeps()
-        await passwordStep(input, deps)
-        expect(deps).not.toHaveProperty('completeMfa')
     })
 })
 

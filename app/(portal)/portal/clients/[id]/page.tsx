@@ -14,7 +14,7 @@ import frame from '../../frame.module.css'
 import { AccessRow, GrantSiteForm } from '../../access/controls'
 import {
     ClearLockButton, ClientForm, ClientId, DeleteClientButton,
-    ResendInviteButton, ResetTwoFactorButton, SendResetButton, SuspendButton,
+    ResendInviteButton, ResetTwoFactorButton, SendResetButton, SuspendButton, TwoFactorRequiredButton,
 } from '../controls'
 import { STATE_TONES, clientState } from '../state'
 import { savePublicContactAction } from '../actions'
@@ -91,6 +91,7 @@ export default async function ClientPage({ params }: { params: Promise<{ id: str
                 <section className={frame.panel}>
                     <h2 className={frame.section}>Account</h2>
                     <div className={frame.stack}>
+                        <Detail label="Two-step sign-in">{client.totpRequired ? 'Required' : 'Off: password only'}</Detail>
                         <Detail label="Last sign-in">{client.lastSignInAt ? formatWhen(client.lastSignInAt) : 'Never'}</Detail>
                         <Detail label="Recovery codes remaining">{unusedRecoveryCodes}</Detail>
                         <Detail label="Sessions">
@@ -110,6 +111,7 @@ export default async function ClientPage({ params }: { params: Promise<{ id: str
                     <div className={frame.controls}>
                         {!client.passwordHash && <ResendInviteButton clientId={client.id} />}
                         <SendResetButton clientId={client.id} />
+                        <TwoFactorRequiredButton clientId={client.id} required={client.totpRequired} />
                         <ResetTwoFactorButton clientId={client.id} />
                         <SuspendButton clientId={client.id} suspended={!!client.suspendedAt} />
                         {client.lockedUntil && client.lockedUntil.getTime() > now.getTime() && <ClearLockButton clientId={client.id} />}

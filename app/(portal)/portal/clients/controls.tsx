@@ -11,7 +11,8 @@ import { Dialog } from '@/ui/Dialog/Dialog'
 import { Field } from '@/ui/Field/Field'
 import { ContentCopy } from '@/ui/icons'
 import {
-    clearLockAction, createClientAction, deleteClientAction, resendInviteAction, resetTwoFactorAction, sendResetAction, setSuspendedAction, updateClientAction,
+    clearLockAction, createClientAction, deleteClientAction, resendInviteAction, resetTwoFactorAction, sendResetAction, setSuspendedAction,
+    setTwoFactorRequiredAction, updateClientAction,
     type AdminResult,
 } from './actions'
 import styles from './controls.module.css'
@@ -182,6 +183,38 @@ export function ResetTwoFactorButton({ clientId }: { clientId: string }) {
                 <p className={styles.dialogText}>
                     This wipes the authenticator, every recovery code and every open session. The client will
                     need to set up a new authenticator app next time they sign in.
+                </p>
+            </Dialog>
+        </div>
+    )
+}
+
+export function TwoFactorRequiredButton({ clientId, required }: { clientId: string, required: boolean }) {
+    const { pending, error, run } = useAction()
+    const [confirming, setConfirming] = useState(false)
+    const label = required ? 'Turn off 2FA' : 'Require 2FA'
+    return (
+        <div>
+            <Button className={required ? styles.warn : styles.good} disabled={pending} onClick={() => setConfirming(true)}>{label}</Button>
+            <Problem error={error} />
+            <Dialog
+                open={confirming}
+                onClose={() => setConfirming(false)}
+                title={required ? 'Let this client sign in without 2FA?' : 'Require two-factor authentication?'}
+                footer={
+                    <>
+                        <Button onClick={() => setConfirming(false)}>Cancel</Button>
+                        <Button className={required ? styles.warn : styles.good} disabled={pending}
+                            onClick={() => run(() => setTwoFactorRequiredAction(clientId, !required), () => setConfirming(false))}>
+                            {label}
+                        </Button>
+                    </>
+                }
+            >
+                <p className={styles.dialogText}>
+                    {required
+                        ? 'They will sign in with their email and password alone, and a password reset will not ask for a code. Anyone who learns their password can get in. An authenticator they already set up is kept, ready for if you turn this back on.'
+                        : 'This signs them out everywhere. Next time they sign in they will be asked for a code from their authenticator app, or to set one up if they have not yet.'}
                 </p>
             </Dialog>
         </div>

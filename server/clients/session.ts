@@ -49,9 +49,10 @@ type SessionState = { mfaAt: Date | null, expiresAt: Date }
 
 export const isExpired = (session: SessionState, now: Date) => session.expiresAt.getTime() <= now.getTime()
 
-// A session is usable only once the second factor is done. Only three code paths write mfaAt, and each is
-// reached only after a verified TOTP code, a verified recovery code, or completed enrolment. That is what
-// makes mandatory 2FA a property of the data rather than a check somebody can forget to write.
+// A session is usable only once the second factor is done. Only a few code paths write mfaAt, and each is
+// reached only after a verified TOTP code, a verified recovery code, or completed enrolment, or, for a client
+// the operator has excused from two-step sign-in (totpRequired off), after the password alone. That is what
+// makes 2FA a property of the data rather than a check somebody can forget to write.
 export const isUsable = (session: SessionState, now: Date) => !!session.mfaAt && !isExpired(session, now)
 
 export const isPending = (session: SessionState, now: Date) => !session.mfaAt && !isExpired(session, now)

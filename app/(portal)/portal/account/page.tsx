@@ -85,11 +85,15 @@ export default async function PortalAccountPage() {
                     {sessions.length > 1 && <SignOutElsewhereButton />}
                 </section>
 
-                <section className={frame.panel}>
-                    <h2 className={frame.section}>Recovery codes</h2>
-                    <p className={styles.count}>{unusedCodes} of {RECOVERY_CODE_COUNT} unused</p>
-                    <RegenerateCodesForm />
-                </section>
+                {/* Recovery codes stand in for the authenticator, so they mean nothing to a client who is not
+                    asked for one */}
+                {client.totpRequired && (
+                    <section className={frame.panel}>
+                        <h2 className={frame.section}>Recovery codes</h2>
+                        <p className={styles.count}>{unusedCodes} of {RECOVERY_CODE_COUNT} unused</p>
+                        <RegenerateCodesForm />
+                    </section>
+                )}
             </div>
         </>
     )

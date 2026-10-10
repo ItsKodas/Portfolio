@@ -70,6 +70,8 @@ export const KINDS = {
     'client.invite': 'Invite sent again',
     'client.reset': 'Reset link sent',
     'client.twoFactorReset': 'Authenticator reset',
+    'client.twoFactorRequired': 'Two-step sign-in required',
+    'client.twoFactorOptional': 'Two-step sign-in turned off',
     'client.suspend': 'Client suspended',
     'client.unsuspend': 'Client restored',
     'client.unlock': 'Lock cleared',

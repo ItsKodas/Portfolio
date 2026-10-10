@@ -269,6 +269,25 @@ export async function resetTwoFactorAction(clientId: string): Promise<AdminResul
     return { ok: true }
 }
 
+// Whether this client is asked for an authenticator code when signing in. Off is for a client who cannot
+// manage an authenticator; the operator's own sign-in is untouched by it either way.
+export async function setTwoFactorRequiredAction(clientId: string, required: boolean): Promise<AdminResult> {
+    const actor = adminActor(await requireAdmin())
+    if (!id.safeParse(clientId).success || typeof required !== 'boolean') return INVALID
+    const client = await repo().byId(clientId)
+    if (!client) return FAILED
+    return change(
+        clientId,
+        () => repo().setTotpRequired(clientId, required),
+        () => record({
+            kind: required ? 'client.twoFactorRequired' : 'client.twoFactorOptional', actor, target: asTarget(client),
+            summary: required
+                ? `Required two-step sign-in for ${client.name} and signed them out everywhere`
+                : `Let ${client.name} sign in with their password alone`,
+        }),
+    )
+}
+
 export async function setSuspendedAction(clientId: string, suspended: boolean): Promise<AdminResult> {
     const actor = adminActor(await requireAdmin())
     if (!id.safeParse(clientId).success || typeof suspended !== 'boolean') return INVALID
