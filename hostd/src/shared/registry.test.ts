@@ -628,7 +628,7 @@ ${extra}
         assert.match(registry.invalid.get('acme') ?? '', /already this environment's domain/)
     })
 
-    it('refuses more hostnames than maxDomains allows, counting the primary', () => {
+    it('accepts more hostnames than maxDomains, which nothing enforces', () => {
         const registry = parseRegistry(`
 projects:
   acme:
@@ -643,7 +643,8 @@ projects:
         domain: acme.com
         aliases: [www.acme.com, shop.acme.com]
 `)
-        assert.match(registry.invalid.get('acme') ?? '', /at most 2 hostnames/)
+        assert.equal(registry.invalid.has('acme'), false)
+        assert.deepEqual(registry.projects.get('acme')?.environments.get('live')?.aliases, ['www.acme.com', 'shop.acme.com'])
     })
 
     it('refuses an alias another project already uses', () => {

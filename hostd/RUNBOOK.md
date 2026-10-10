@@ -818,7 +818,8 @@ no domain at all, still has no primary: the first hostname added to it (choose i
 tab's list and add the name in its Domains section, or `POST /projects/<id>/<env>/domains` with
 `{"hostname":"..."}`) becomes its primary: it is set the way
 Settings sets a domain, its first vhost is written, and it is verified as the primary. Every hostname
-after that is an alias, as before, and `maxDomains` counts per environment.
+after that is an alias, as before. There is no limit on how many: adding a hostname is admin-only, and
+`maxDomains` in projects.yaml is still accepted but no longer enforced.
 
 ### Deleting one
 
