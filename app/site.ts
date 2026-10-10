@@ -33,12 +33,12 @@ export const SOCIALS = [
 ] as const
 
 // Everything in use across Dakoda's repositories, roughly from the web stack outwards: languages, frameworks, data,
-// tooling and infrastructure, then apps, bots and games
+// tooling and infrastructure, then apps, bots and games. Each one has a logo in (landing)/toolkitLogos.ts
 export const SKILLS = [
     'TypeScript', 'JavaScript', 'React', 'Next.js', 'Tailwind CSS', 'MUI', 'Vite',
     'Node.js', 'Deno', 'Express', 'Socket.IO', 'Payload CMS',
     'PostgreSQL', 'MongoDB', 'Prisma',
-    'Vitest', 'Playwright', 'Docker', 'Caddy', 'GitHub Actions', 'Git',
+    'Vitest', 'Playwright', 'Docker', 'Caddy', 'Linux', 'Windows Server', 'GitHub Actions', 'Git', 'Claude',
     'React Native', 'Expo', 'Discord.js', 'Three.js', 'Leaflet',
     'C#', '.NET', 'C++', 'Python', 'Unreal Engine', 'Godot', 'Arma 3 (SQF)',
 ]
