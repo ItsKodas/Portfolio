@@ -14,6 +14,7 @@ import { billing } from '@/server/invoices/wiring'
 export type PayResult = { ok: true, url?: string } | { ok: false, error: string }
 
 const id = z.string().min(1).max(64)
+const method = z.enum(['paypal', 'card'])
 const INVALID: PayResult = { ok: false, error: 'That request was not valid.' }
 const NOT_YOURS: PayResult = { ok: false, error: 'Only the client can do this. You are viewing as them.' }
 
@@ -24,18 +25,20 @@ async function payer(): Promise<{ clientId: string, name: string } | PayResult> 
     return viewer
 }
 
-export async function payInvoiceAction(invoiceId: string): Promise<PayResult> {
-    if (!id.safeParse(invoiceId).success) return INVALID
+export async function payInvoiceAction(invoiceId: string, how: unknown = 'paypal'): Promise<PayResult> {
+    const chosen = method.safeParse(how)
+    if (!id.safeParse(invoiceId).success || !chosen.success) return INVALID
     const who = await payer()
     if ('ok' in who) return who
-    return billing().startCheckout(invoiceId, who.clientId)
+    return billing().startCheckout(invoiceId, who.clientId, chosen.data)
 }
 
-export async function startAutopayAction(planId: string): Promise<PayResult> {
-    if (!id.safeParse(planId).success) return INVALID
+export async function startAutopayAction(planId: string, how: unknown = 'paypal'): Promise<PayResult> {
+    const chosen = method.safeParse(how)
+    if (!id.safeParse(planId).success || !chosen.success) return INVALID
     const who = await payer()
     if ('ok' in who) return who
-    return billing().startAutopay(planId, who.clientId)
+    return billing().startAutopay(planId, who.clientId, chosen.data)
 }
 
 export async function stopAutopayAction(planId: string): Promise<PayResult> {

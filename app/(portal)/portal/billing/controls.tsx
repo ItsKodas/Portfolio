@@ -40,13 +40,24 @@ const Problem = ({ error }: { error: string | null }) => (
     error ? <div className={styles.problem}><Callout tone="crit" title={error}>{null}</Callout></div> : null
 )
 
+// Two ways through PayPal: a card on PayPal's own page, which needs no PayPal account, or signing in to PayPal
 export function PayButton({ invoiceId, amount, disabled }: { invoiceId: string, amount: string, disabled?: boolean }) {
     const { pending, error, go } = useGo()
+    const [chosen, setChosen] = useState<'card' | 'paypal' | null>(null)
+    const pay = (how: 'card' | 'paypal') => {
+        setChosen(how)
+        go(() => payInvoiceAction(invoiceId, how))
+    }
     return (
         <div>
-            <Button variant="primary" disabled={pending || disabled} onClick={() => go(() => payInvoiceAction(invoiceId))}>
-                {pending ? 'Opening PayPal...' : `Pay ${amount} with PayPal or card`}
-            </Button>
+            <div className={styles.payChoices}>
+                <Button variant="primary" disabled={pending || disabled} onClick={() => pay('card')}>
+                    {pending && chosen === 'card' ? 'Opening the card form...' : `Pay ${amount} by card`}
+                </Button>
+                <Button disabled={pending || disabled} onClick={() => pay('paypal')}>
+                    {pending && chosen === 'paypal' ? 'Opening PayPal...' : 'Pay with PayPal'}
+                </Button>
+            </div>
             <Problem error={error} />
         </div>
     )
@@ -55,6 +66,11 @@ export function PayButton({ invoiceId, amount, disabled }: { invoiceId: string, 
 export function AutopayButton({ planId, price, disabled }: { planId: string, price: string, disabled?: boolean }) {
     const { pending, error, go } = useGo()
     const [open, setOpen] = useState(false)
+    const [chosen, setChosen] = useState<'card' | 'paypal' | null>(null)
+    const start = (how: 'card' | 'paypal') => {
+        setChosen(how)
+        go(() => startAutopayAction(planId, how))
+    }
     return (
         <div>
             <Button disabled={pending || disabled} onClick={() => setOpen(true)}>Pay automatically</Button>
@@ -66,15 +82,21 @@ export function AutopayButton({ planId, price, disabled }: { planId: string, pri
                 footer={
                     <>
                         <Button onClick={() => setOpen(false)}>Cancel</Button>
-                        <Button variant="primary" disabled={pending} onClick={() => go(() => startAutopayAction(planId))}>
-                            {pending ? 'Opening PayPal...' : 'Continue to PayPal'}
+                        <Button disabled={pending} onClick={() => start('paypal')}>
+                            {pending && chosen === 'paypal' ? 'Opening PayPal...' : 'Use PayPal'}
+                        </Button>
+                        <Button variant="primary" disabled={pending} onClick={() => start('card')}>
+                            {pending && chosen === 'card' ? 'Opening the card form...' : 'Use a card'}
                         </Button>
                     </>
                 }
             >
                 <p className={styles.dialogText}>
                     PayPal takes {price} now, which settles any invoice from this plan that is waiting, and again each period after
-                    that. You get a receipt each time, and you can stop it here or in your PayPal account whenever you like.
+                    that. You get a receipt each time, and you can stop it here whenever you like.
+                </p>
+                <p className={styles.dialogText}>
+                    With a card, PayPal holds it to charge each period, and may ask you to save it to a free PayPal account.
                 </p>
             </Dialog>
         </div>

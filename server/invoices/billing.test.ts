@@ -37,7 +37,7 @@ function fakePaypal() {
         createOrder: async input => {
             const id = `ORDER-${next++}`
             orders.set(id, { id, status: 'PAYER_ACTION_REQUIRED', purchase_units: [{ custom_id: input.invoiceId, amount: { currency_code: input.currency, value: input.value } }] })
-            calls.push(`createOrder ${input.value}`)
+            calls.push(`createOrder ${input.value}${input.method === 'card' ? ' by card' : ''}`)
             return { id, approveUrl: `https://paypal.example/approve/${id}` }
         },
         getOrder: async id => structuredClone(orders.get(id)!),
@@ -178,7 +178,8 @@ describe.skipIf(!url)('billing', () => {
         it('leaves the invoice owing when PayPal declines', async () => {
             const { id } = await draft()
             await billing.send(id, billTo, ADMIN)
-            await billing.startCheckout(id, 'cl_ANN00001')
+            await billing.startCheckout(id, 'cl_ANN00001', 'card')
+            expect(fake.calls).toContain('createOrder 1450.00 by card')
             fake.approve('ORDER-1')
             fake.declineNext()
             expect(await billing.settleOrder('ORDER-1')).toMatchObject({ kind: 'failed', invoiceId: id, error: 'INSTRUMENT_DECLINED' })

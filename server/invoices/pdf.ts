@@ -388,7 +388,7 @@ export async function invoicePdf(invoice: PdfInvoice, business: Business, option
 
     if (invoice.notes) block('Notes', invoice.notes, INK_3)
     if (invoice.standing === 'due' || invoice.standing === 'overdue') {
-        block('How to pay', `Pay online with PayPal or a card by ${formatDay(invoice.dueOn)}. For any other kind of payment, please quote ${number}.`, LAKE, options.payUrl)
+        block('How to pay', `Pay online by ${formatDay(invoice.dueOn)}, by card (no PayPal account needed) or with PayPal. For any other kind of payment, please quote ${number}.`, LAKE, options.payUrl)
     }
 
     if (y - 34 > BOTTOM) text('Thank you for your business.', MARGIN, y - 34, { size: 9.5, color: INK_2 })

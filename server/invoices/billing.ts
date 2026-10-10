@@ -7,7 +7,7 @@ import 'server-only'
 
 import { BILLING_RUN, PAYPAL, type Actor, type AuditEntry } from '../audit/record'
 import type { Email } from '../emails/layout'
-import type { Order, Paypal } from '../paypal/api'
+import type { Order, PayMethod, Paypal } from '../paypal/api'
 import { captureOf, invoiceIdOf, PaypalError } from '../paypal/api'
 import type { PaypalMode } from '../paypal/config'
 import type { Business } from './business'
@@ -359,7 +359,7 @@ export function createBilling(deps: BillingDeps) {
         },
 
         // The client pressing Pay: a PayPal order for what is owed, and where to send them to approve it
-        async startCheckout(invoiceId: string, clientId: string): Promise<{ ok: true, url: string } | { ok: false, error: string }> {
+        async startCheckout(invoiceId: string, clientId: string, method: PayMethod = 'paypal'): Promise<{ ok: true, url: string } | { ok: false, error: string }> {
             const paypal = deps.paypal()
             if (!paypal) return { ok: false, error: 'Online payment is not available right now. Reply to the invoice email and I will sort it out.' }
             const invoice = await deps.invoices.get(invoiceId)
@@ -378,10 +378,12 @@ export function createBilling(deps: BillingDeps) {
                     returnUrl: `${siteUrl}/api/paypal/return`,
                     cancelUrl: `${siteUrl}/portal/billing/${invoice.id}?payment=cancelled`,
                     requestId: `order-${invoice.id}-${deps.now().getTime()}`,
+                    method,
                 })
                 await deps.record({
                     kind: 'billing.checkout', actor: payerOf(invoice), target: target(invoice),
-                    summary: `${invoice.billToName} started paying ${number} with PayPal`, detail: { orderId: order.id, mode: paypal.mode },
+                    summary: `${invoice.billToName} started paying ${number} ${method === 'card' ? 'by card through PayPal' : 'with PayPal'}`,
+                    detail: { orderId: order.id, mode: paypal.mode, method },
                 })
                 return { ok: true, url: order.approveUrl }
             } catch (error) {
@@ -391,7 +393,7 @@ export function createBilling(deps: BillingDeps) {
         },
 
         // The client choosing to have a plan pay itself: a PayPal subscription at the plan's price
-        async startAutopay(planId: string, clientId: string): Promise<{ ok: true, url: string } | { ok: false, error: string }> {
+        async startAutopay(planId: string, clientId: string, method: PayMethod = 'paypal'): Promise<{ ok: true, url: string } | { ok: false, error: string }> {
             const paypal = deps.paypal()
             const mode = deps.mode()
             if (!paypal || !mode) return { ok: false, error: 'Automatic payment is not available right now.' }
@@ -413,6 +415,7 @@ export function createBilling(deps: BillingDeps) {
                     returnUrl: `${siteUrl}/api/paypal/subscribed?plan=${encodeURIComponent(plan.id)}`,
                     cancelUrl: `${siteUrl}/portal/billing?autopay=cancelled`,
                     requestId: `subscription-${plan.id}-${deps.now().getTime()}`,
+                    method,
                 })
                 await deps.plans.setSubscription(plan.id, subscription.id, 'APPROVAL_PENDING', mode)
                 return { ok: true, url: subscription.approveUrl }

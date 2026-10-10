@@ -39,7 +39,16 @@ describe('createPaypal', () => {
         expect(calls[1].url).toBe('https://api-m.sandbox.paypal.com/v2/checkout/orders')
         expect(header(calls[1], 'PayPal-Request-Id')).toBe('r1')
         expect(body(calls[1]).purchase_units[0]).toMatchObject({ custom_id: 'inv1', invoice_id: 'INV-0001', amount: { currency_code: 'AUD', value: '49.00' } })
-        expect(body(calls[1]).payment_source.paypal.experience_context).toMatchObject({ shipping_preference: 'NO_SHIPPING', user_action: 'PAY_NOW' })
+        expect(body(calls[1]).payment_source.paypal.experience_context).toMatchObject({ shipping_preference: 'NO_SHIPPING', user_action: 'PAY_NOW', landing_page: 'LOGIN' })
+    })
+
+    it('opens straight on the card form for a client paying by card', async () => {
+        const { calls, fetchImpl } = stub([{ body: { id: 'O', status: 'PAYER_ACTION_REQUIRED', links: [{ rel: 'payer-action', href: 'https://a' }] } }])
+        await createPaypal(config, fetchImpl).createOrder({
+            invoiceId: 'inv1', invoiceNumber: 'INV-0001', description: 'd', value: '49.00', currency: 'AUD',
+            returnUrl: 'https://r', cancelUrl: 'https://c', requestId: 'r1', method: 'card',
+        })
+        expect(body(calls[1]).payment_source.paypal.experience_context.landing_page).toBe('GUEST_ONLY')
     })
 
     it('reuses its access token', async () => {
@@ -82,6 +91,16 @@ describe('createPaypal', () => {
         expect(result).toEqual({ id: 'I-1', approveUrl: 'https://paypal.example/sub' })
         expect(body(calls[1]).subscriber).toEqual({ name: { given_name: 'Ann', surname: 'van Lee' }, email_address: 'ann@example.com' })
         expect(body(calls[1]).custom_id).toBe('plan1')
+        expect(body(calls[1]).application_context.landing_page).toBe('LOGIN')
+    })
+
+    it('opens a subscription on the card form for a client paying by card', async () => {
+        const { calls, fetchImpl } = stub([{ body: { id: 'I-1', status: 'APPROVAL_PENDING', links: [{ rel: 'approve', href: 'https://a' }] } }])
+        await createPaypal(config, fetchImpl).createSubscription({
+            planId: 'P-1', customId: 'plan1', subscriber: { name: 'Ann', email: 'ann@example.com' },
+            returnUrl: 'https://r', cancelUrl: 'https://c', requestId: 's', method: 'card',
+        })
+        expect(body(calls[1]).application_context.landing_page).toBe('BILLING')
     })
 
     it('verifies a webhook with PayPal, against the configured webhook', async () => {
