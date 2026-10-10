@@ -196,19 +196,12 @@ describe('setAliases', () => {
         assert.match(result.ok === false ? result.message : '', /already this environment's domain/)
     })
 
-    it('refuses more hostnames than the project allows, counting the primary', async () => {
+    // Only the admin can add hostnames, and the admin is not held to maxDomains
+    it('writes more hostnames than maxDomains', async () => {
         const { deps, project, environment } = setup()
         const capped = { ...project, maxDomains: 2 }
+        deps.reloadRegistry = async () => reloaded(['a.acme.com', 'b.acme.com'])
         const result = await setAliases(deps, capped, environment, ['a.acme.com', 'b.acme.com'], 'abc123')
-        assert.equal(result.ok, false)
-        assert.match(result.ok === false ? result.message : '', /at most 2 hostnames/)
-    })
-
-    it('allows exactly the cap, counting the primary, which is the boundary an off-by-one would miss', async () => {
-        const { deps, project, environment } = setup()
-        const capped = { ...project, maxDomains: 2 }
-        deps.reloadRegistry = async () => reloaded(['a.acme.com'])
-        const result = await setAliases(deps, capped, environment, ['a.acme.com'], 'abc123')
         assert.equal(result.ok, true)
     })
 

@@ -651,12 +651,9 @@ function parseProject(id: string, raw: unknown, rules: HostRules): ParsedProject
         else maxDomains = value
     }
 
-    for (const environment of environments.values()) {
-        const hostnames = hostnamesOf(environment)
-        if (hostnames.length > maxDomains) {
-            problems.push(`environments.${environment.name} has ${hostnames.length} hostnames, and this project allows at most ${maxDomains} hostnames`)
-        }
-    }
+    // maxDomains is still read so an entry that sets it stays valid, but nothing enforces it: adding a
+    // hostname is admin-only, and the admin may give an environment as many as they like. It is kept for
+    // the day clients can add their own, which is who a cap would be for.
 
     let maxKeep = DEFAULT_MAX_KEEP
     if (raw.backups !== undefined) {

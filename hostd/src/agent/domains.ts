@@ -153,10 +153,8 @@ export async function setAliases(
     if (aliases.includes(environment.domain)) {
         return refuse('bad-request', `${environment.domain} is already this environment's domain`)
     }
-    // The project's own cap, which the grammar's blanket ceiling could not know.
-    if (1 + aliases.length > project.maxDomains) {
-        return refuse('bad-request', `${project.id} allows at most ${project.maxDomains} hostnames per environment`)
-    }
+    // No maxDomains check. Adding a hostname is admin-only (see ADMIN_ONLY in api's policy.ts), and the
+    // admin may give an environment as many as they like.
 
     // parseRegistry's own uniqueness rule sees hostd's entries and nothing else, so it cannot know that a
     // hand-written vhost in sites-enabled already serves one of these hostnames; findClaims is what does.

@@ -1553,6 +1553,42 @@ describe('POST /projects/:id/:env/domains, on an environment with no primary yet
     })
 })
 
+describe('POST /projects/:id/:env/domains past maxDomains', () => {
+    // acme live already at its maxDomains of 2: the primary and one alias. Adding a hostname is admin-only
+    // (policy.ts), and the admin is not held to maxDomains.
+    const fullRegistry = parseRegistry(`
+projects:
+  acme:
+    client: cl_1
+    name: Acme
+    maxDomains: 2
+    services: { web: { role: site } }
+    capabilities: [domains]
+    environments:
+      live: { dir: /var/www/acme, port: 5010, domain: acme.example, aliases: [www.acme.example] }
+`)
+
+    function full<T>(run: () => Promise<T>): Promise<T> {
+        const original = handler
+        handler = createHandler({
+            token: TOKEN, registry: () => fullRegistry, refreshRegistry: async () => false,
+            agent, audit, schedules, domains, verifier, keepaliveMs: 60_000,
+        })
+        return run().finally(() => { handler = original })
+    }
+
+    it('lets the admin add another hostname', async () => {
+        await seedDomains([domainRecord({ token: TOKEN_IN_PLACE, state: 'active' })])
+        agent.reply = () => WRITTEN
+        const response = await full(() => request('/projects/acme/live/domains', { method: 'POST', actor: 'admin', body: { hostname: 'shop.acme.example' } }))
+        assert.equal(response.status, 200)
+        assert.deepEqual(agent.calls, [{
+            verb: 'domains', project: 'acme',
+            args: { action: 'set-aliases', environment: 'live', aliases: ['www.acme.example', 'shop.acme.example'], token: TOKEN_IN_PLACE },
+        }])
+    })
+})
+
 describe('DELETE /projects/:id/:env/domains/:hostname', () => {
     it('refuses the primary outright, because the only way out of it is removing the environment', async () => {
         const response = await request('/projects/acme/live/domains/acme.example', { method: 'DELETE', actor: 'admin' })

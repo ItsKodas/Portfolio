@@ -191,10 +191,9 @@ export type RestoreRequest = { verb: 'restore', project: string, args: RestoreAr
 export type RestoreListReply = { ok: true, restores: RestoreRecord[], running: boolean }
 export type RestoreRunReply = { ok: true, restore: RestoreRecord | null, running: boolean }
 
-// The registry's own ceiling on maxDomains. A list longer than this cannot be valid for any project, so
-// it is refused here before the registry is even read; the real per-project cap is checked in the agent,
-// which is what knows which project this is.
-export const MAX_ALIASES = 20
+// A sanity ceiling on one request, not a policy: it keeps a set-aliases line far inside the agent's 64 KB
+// request limit (100 hostnames of 253 characters is about 26 KB).
+export const MAX_ALIASES = 100
 
 export type DomainsWriteArgs = { action: 'write', environment: EnvironmentName, token: string }
 export type DomainsRemoveArgs = { action: 'remove', environment: EnvironmentName }
@@ -858,9 +857,7 @@ export function parseDomainsArgs(args: unknown): { ok: true, args: DomainsArgs }
             if (value === null) return refuse('bad-request', 'token must be lowercase hex')
             const list = args.aliases
             if (!Array.isArray(list)) return refuse('bad-request', 'aliases must be a list of hostnames')
-            // maxDomains caps at 20 per project, so a longer list cannot be valid for any project and is
-            // refused before the registry is even read. The real per-project cap is checked in the agent,
-            // which is what knows which project this is.
+            // See MAX_ALIASES: a ceiling on the request, not a per-project cap
             if (list.length > MAX_ALIASES) return refuse('bad-request', `at most ${MAX_ALIASES} aliases`)
             const aliases: string[] = []
             for (const entry of list) {

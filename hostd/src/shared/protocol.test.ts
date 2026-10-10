@@ -1,7 +1,7 @@
 import { describe, it } from 'node:test'
 import assert from 'node:assert/strict'
 import {
-    parseAgentRequest, checkStructure, parseDomainsArgs, parseConfigureArgs, VERB_CAPABILITY, MAX_REQUEST_BYTES, MAX_COMMITS, DEFAULT_COMMITS, SNAPSHOT_ID,
+    parseAgentRequest, checkStructure, parseDomainsArgs, parseConfigureArgs, VERB_CAPABILITY, MAX_REQUEST_BYTES, MAX_COMMITS, DEFAULT_COMMITS, SNAPSHOT_ID, MAX_ALIASES,
     type ProjectRequest,
 } from './protocol.ts'
 import { parseRegistry } from './registry.ts'
@@ -573,9 +573,15 @@ describe('parseDomainsArgs', () => {
         assert.deepEqual(parsed.ok && parsed.args.action === 'set-aliases' && parsed.args.aliases, ['www.acme.com'])
     })
 
-    it('refuses a list longer than any project could allow, before the registry is read', () => {
-        const many = Array.from({ length: 21 }, (_, i) => `a${i}.acme.com`)
+    it('refuses a list past the request ceiling, before the registry is read', () => {
+        const many = Array.from({ length: MAX_ALIASES + 1 }, (_, i) => `a${i}.acme.com`)
         assert.equal(parseDomainsArgs({ action: 'set-aliases', environment: 'live', aliases: many, token: 'abc123' }).ok, false)
+    })
+
+    // The admin is not held to maxDomains, so the ceiling has to sit well above any project's cap
+    it('accepts a list longer than any maxDomains, up to the ceiling', () => {
+        const many = Array.from({ length: MAX_ALIASES }, (_, i) => `a${i}.acme.com`)
+        assert.equal(parseDomainsArgs({ action: 'set-aliases', environment: 'live', aliases: many, token: 'abc123' }).ok, true)
     })
 })
 
