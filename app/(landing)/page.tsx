@@ -74,6 +74,12 @@ const projects: { name: string, year?: string, blurb: string, website?: string, 
         github: 'https://github.com/KL-Designs/ASOT',
     },
     {
+        name: 'Tax Assistant',
+        year: '2024',
+        blurb: 'An iOS and Android app for keeping receipts and invoices at tax time: snap a receipt and OCR reads its date and total, sort everything into folders and categories, and export a date range to CSV.',
+        github: 'https://github.com/ItsKodas/Tax-Assistant',
+    },
+    {
         name: "Arby's Auto Glass",
         year: '2022',
         blurb: 'Service website for a Western Australian auto glass business, with a dynamic pricing table, a validated quote form and a Google Maps service area.',
