@@ -40,6 +40,8 @@ services:
       HOSTD_ORIGIN_KEY: /etc/ssl/hostd/origin.key
       HOSTD_ACME_WEBROOT: /var/www/hostd-acme
       HOSTD_MAINTENANCE_ROOT: /var/www/hostd-maintenance
+      HOSTD_ACCESS_LOG_DIR: /var/log/apache2
+      HOSTD_ANALYTICS_DIR: /var/lib/hostd/analytics
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
       # The same path inside as outside: compose hands bind mount sources to the daemon as host paths.
@@ -89,6 +91,11 @@ services:
       # The Origin certificate the vhosts present. Read-only, and never named by anything that arrives
       # over the wire.
       - /etc/ssl/hostd:/etc/ssl/hostd:ro
+      # Apache's logs, for the portal's analytics. Every vhost hostd writes logs its requests to a file of
+      # its own in here, and logrotate's rule for this directory rotates it with Apache's own. Read-only:
+      # Apache is what writes these, and the agent only counts them. The same path inside as outside,
+      # because the vhost names the file and the agent reads that name back.
+      - /var/log/apache2:/var/log/apache2:ro
     healthcheck:
       test: ["CMD", "node", "--import", "tsx", "src/shared/healthcheck.ts", "/tmp/hostd-status.json"]
       interval: 60s

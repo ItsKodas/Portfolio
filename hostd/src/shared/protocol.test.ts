@@ -26,6 +26,7 @@ const environmentRequests = (environment: string): unknown[] => [
     { verb: 'deploy', project: 'acme', args: { action: 'deploy', environment } },
     { verb: 'deploy', project: 'acme', args: { action: 'set-branch', environment, branch: 'main' } },
     { verb: 'deploy-watch', project: 'acme', args: { environment } },
+    { verb: 'analytics', project: 'acme', args: { environment, days: 30 } },
     { verb: 'port', project: 'acme', args: { environment, port: 5012 } },
     { verb: 'copy', project: 'acme', args: { action: 'start', environment } },
     { verb: 'copy', project: 'acme', args: { action: 'list', environment } },
@@ -461,6 +462,25 @@ describe('the credentials verb', () => {
     it('takes nothing else', () => {
         const parsed = parseAgentRequest(JSON.stringify({ verb: 'credentials', project: 'acme' }))
         assert.deepEqual(parsed, { ok: false, code: 'bad-request', message: 'credentials takes no other keys' })
+    })
+})
+
+describe('the analytics verb', () => {
+    it('parses an environment and a window', () => {
+        assert.deepEqual(
+            parsed({ verb: 'analytics', project: 'acme', args: { environment: 'live', days: 30 } }),
+            { ok: true, request: { verb: 'analytics', project: 'acme', args: { environment: 'live', days: 30 } } },
+        )
+    })
+
+    it('refuses a window out of range and anything extra', () => {
+        assert.match(refusalOf({ verb: 'analytics', project: 'acme', args: { environment: 'live', days: 0 } }), /days must be/)
+        assert.match(refusalOf({ verb: 'analytics', project: 'acme', args: { environment: 'live', days: 91 } }), /days must be/)
+        assert.match(refusalOf({ verb: 'analytics', project: 'acme', args: { environment: 'live', days: 30, path: '/var/log' } }), /takes only/)
+    })
+
+    it('needs no capability, as status does', () => {
+        assert.equal(VERB_CAPABILITY.analytics, null)
     })
 })
 

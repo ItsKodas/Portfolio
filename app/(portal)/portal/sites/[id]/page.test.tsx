@@ -59,6 +59,8 @@ vi.mock('@/server/hostd/environments', () => ({ listDeletedEnvironments: (...arg
 
 // An async server component like the deploy panel; backupPanel.test.tsx renders it on its own
 vi.mock('./backupPanel', () => ({ BackupPanel: ({ id }: { id: string }) => <p>{`backups of ${id}`}</p> }))
+// The same for the Overview's analytics; analytics.test.tsx renders it on its own
+vi.mock('./analytics', () => ({ SiteAnalytics: ({ id }: { id: string }) => <p>{`visits to ${id}`}</p> }))
 
 const { default: SitePage } = await import('./page')
 

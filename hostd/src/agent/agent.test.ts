@@ -1339,6 +1339,7 @@ function fakeDomains(registry: Registry) {
             acmeWebroot: '/var/www/hostd-acme',
             maintenanceFlagDir: '/run/hostd/maintenance',
             maintenancePageDir: '/var/www/hostd-maintenance',
+            accessLogDir: '/var/log/apache2',
         },
     }
     return { domains, sent, reload }
@@ -1596,14 +1597,34 @@ projects:
             registry: () => moved('acme.com'),
             domains: { ...context.domains, readFile: async () => current },
         })
-        assert.deepEqual(await agent.pointVhostsAtHoldingPages(), [])
+        assert.deepEqual(await agent.refreshStaleVhosts(), [])
         assert.equal(context.sent.length, 1)
         const text = context.sent[0]?.write?.text ?? ''
         assert.match(text, /\/var\/www\/hostd-maintenance\/sites\/acme-live\.html/)
         assert.match(text, /\/\.well-known\/hostd\/abc123def456/)
 
         current = text
-        assert.deepEqual(await agent.pointVhostsAtHoldingPages(), [])
+        assert.deepEqual(await agent.refreshStaleVhosts(), [])
+        assert.equal(context.sent.length, 1)
+    })
+
+    // A vhost from before analytics names its holding page but logs nowhere the portal can count, so it
+    // is rewritten once to add the access log, with the token it already carries
+    it('adds the access log to a vhost written before analytics, once', async () => {
+        const context = fakeDomains(moved('acme.com'))
+        let current = EXISTING_VHOST + '\nAlias "/.hostd-maintenance" "/var/www/hostd-maintenance/sites/acme-live.html"\n'
+        const { agent } = setup({
+            registry: () => moved('acme.com'),
+            domains: { ...context.domains, readFile: async () => current },
+        })
+        assert.deepEqual(await agent.refreshStaleVhosts(), [])
+        assert.equal(context.sent.length, 1)
+        const text = context.sent[0]?.write?.text ?? ''
+        assert.match(text, /CustomLog "\/var\/log\/apache2\/hostd-acme-live\.access\.log"/)
+        assert.match(text, /\/\.well-known\/hostd\/abc123def456/)
+
+        current = text
+        assert.deepEqual(await agent.refreshStaleVhosts(), [])
         assert.equal(context.sent.length, 1)
     })
 

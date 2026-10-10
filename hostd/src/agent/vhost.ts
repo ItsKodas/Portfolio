@@ -6,6 +6,7 @@
 
 import { posix } from 'node:path'
 import type { EnvironmentName } from '../shared/registry.ts'
+import { ACCESS_LOG_FORMAT } from './analytics.ts'
 
 export type VhostInput = {
     id: string
@@ -23,6 +24,8 @@ export type VhostInput = {
     // page can name the site and say why it is down
     holdingPage: string
     acmeWebroot: string
+    // The file this environment's requests are logged to, for the portal's analytics (see analytics.ts)
+    accessLog: string
 }
 
 export function vhostPath(dir: string, id: string, environment: EnvironmentName): string {
@@ -163,6 +166,10 @@ function servingBody(input: VhostInput, unproxied: string[]): string {
         Header always set X-Hostd-Token "${input.token}"
         Redirect 204
     </Location>
+
+    # The site's visits, counted for the portal's analytics. Only the serving blocks log here: a
+    # redirect is not a visit, and the alias blocks only ever redirect.
+    CustomLog "${input.accessLog}" "${ACCESS_LOG_FORMAT}"
 
     DocumentRoot "${input.maintenanceDir}"
     Alias "${HOLDING_PAGE}" "${input.holdingPage}"

@@ -55,6 +55,7 @@ function describe(request: AgentRequest): string {
     switch (request.verb) {
         case 'health': return 'health'
         case 'status': return `status ${request.project}`
+        case 'analytics': return `analytics ${request.project} ${request.args.environment} ${request.args.days}d`
         // A count, not the ids: this line is written for every dashboard render, and the ids are already
         // in the registry the operator can read.
         case 'statuses': return `statuses (${request.projects.length} projects)`

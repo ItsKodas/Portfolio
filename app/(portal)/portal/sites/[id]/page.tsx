@@ -17,6 +17,7 @@ import { Shell } from '@/ui/Shell/Shell'
 import { Dashboard } from '@/ui/icons'
 import { StatusDot } from '@/ui/StatusDot/StatusDot'
 import { SiteAccessPanel } from './access'
+import { SiteAnalytics } from './analytics'
 import { BackupPanel } from './backupPanel'
 import { DeployPanel } from './deployPanel'
 import { EnvironmentsTab } from './environmentsTab'
@@ -385,6 +386,10 @@ export default async function SitePage({ params, searchParams }: Props) {
                             {may('LIFECYCLE') && (
                                 <Lifecycle id={view.id} enabled={view.capabilities.includes('lifecycle')} state={current} />
                             )}
+
+                            {/* Who has been visiting, out of the web server's own log: anyone who may
+                                see the site may see this, like its status. */}
+                            <SiteAnalytics id={view.id} isAdmin={view.isAdmin} />
 
                             {/* What the site is doing right now, which is the log, with what it is made of
                                 beside it. The Logs tab is the same view given the whole panel, for when the

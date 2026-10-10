@@ -1,0 +1,83 @@
+/* The Overview's analytics panel. Every colour is a token or a neutral overlay, the rule ui/palette.test.ts
+   keeps for ui/ and site.module.css keeps by hand. The two series are --chart-1 (visits) and --chart-2
+   (unique visitors), always in that order. */
+
+.panel { margin-top: 22px; }
+.panel h2 { font-size: 13px; margin: 0 0 10px; }
+
+.head { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; }
+.note { color: var(--ink-3); font-size: 11.5px; margin: 0 0 10px; }
+
+.legend {
+    list-style: none;
+    display: flex;
+    gap: 16px;
+    margin: 14px 0 6px;
+    padding: 0;
+    font-size: 11.5px;
+    color: var(--ink-2);
+}
+.legend li { display: flex; align-items: center; gap: 6px; }
+
+.keyViews, .keyVisitors {
+    display: inline-block;
+    width: 12px;
+    height: 2px;
+    border-radius: 1px;
+    flex: none;
+}
+.keyViews { background: var(--chart-1); }
+.keyVisitors { background: var(--chart-2); }
+
+/* The chart takes the panel's width; the component measures it and draws to fit */
+.chart { position: relative; width: 100%; min-width: 0; }
+.chart svg { display: block; touch-action: pan-y; }
+.chart svg:focus-visible { outline: 2px solid var(--lake); outline-offset: 2px; border-radius: var(--radius-chip); }
+
+.grid { stroke: var(--rule); stroke-width: 1; }
+.axis {
+    fill: var(--ink-3);
+    font-size: 10px;
+    font-family: var(--font-mono), monospace;
+    font-variant-numeric: tabular-nums;
+}
+
+.area { fill: var(--chart-1); opacity: .08; }
+.views, .visitors { fill: none; stroke-width: 2; stroke-linejoin: round; stroke-linecap: round; }
+.views { stroke: var(--chart-1); }
+.visitors { stroke: var(--chart-2); }
+
+.cross { stroke: var(--ink-3); stroke-width: 1; stroke-dasharray: 2 3; }
+/* The ring in the panel's colour keeps a dot apart from the line it sits on and from the other dot */
+.dotViews, .dotVisitors { stroke: var(--panel); stroke-width: 2; }
+.dotViews { fill: var(--chart-1); }
+.dotVisitors { fill: var(--chart-2); }
+
+.tip {
+    position: absolute;
+    top: 0;
+    pointer-events: none;
+    background: var(--panel-hi);
+    border: 1px solid var(--rule-hi);
+    border-radius: var(--radius-control);
+    padding: 7px 10px;
+    font-size: 11.5px;
+    white-space: nowrap;
+}
+.tipDate { margin: 0 0 4px; color: var(--ink-2); }
+.tipRow { margin: 2px 0 0; display: flex; align-items: center; gap: 6px; color: var(--ink-2); }
+.tipRow b { margin-left: auto; padding-left: 12px; color: var(--ink); font-weight: 500; font-family: var(--font-mono), monospace; }
+
+.table { margin-top: 8px; font-size: 12px; }
+.table summary { cursor: pointer; color: var(--ink-3); font-size: 11.5px; padding: 4px 0; }
+.table summary:hover { color: var(--ink-2); }
+
+.tops {
+    margin-top: 18px;
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+    gap: 20px;
+}
+.top { min-width: 0; }
+.top h3 { font-size: 12px; margin: 0 0 8px; color: var(--ink-2); font-weight: 500; }
+.topKey { font-family: var(--font-mono), monospace; font-size: 12px; overflow-wrap: anywhere; }

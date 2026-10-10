@@ -10,7 +10,7 @@ import {
     type ProvisionCreateArgs, type ProvisionDeleteEnvironmentArgs, type ProvisionRemoveArgs, type ProvisionRestoreEnvironmentArgs,
     type ProvisionTrashArgs, type Refusal, type RestoreArgs, type RestoreRecord, type ServiceStatus, type StatusesReply,
 } from '../shared/protocol.ts'
-import { environmentOf, ENVIRONMENT_FLAGS, type EnvironmentFlag, type EnvironmentName, type ProjectEntry, type Registry } from '../shared/registry.ts'
+import { environmentOf, hostnamesOf, ENVIRONMENT_FLAGS, type EnvironmentFlag, type EnvironmentName, type ProjectEntry, type Registry } from '../shared/registry.ts'
 import { describeError } from '../shared/formats.ts'
 import {
     deployKey, detailsOf, lastHealthyCommit, MAX_DEPLOY_CHANGES, MAX_WATCH_BYTES, type DeployDetails, type DeployEvent, type DeployRecord,
@@ -38,6 +38,7 @@ import type { BackupStore } from './backup-state.ts'
 import { repoPath, type Restic } from './restic.ts'
 import { tokenFromVhost, vhostPath } from './vhost.ts'
 import { holdingPagePath } from './holding-pages.ts'
+import { accessLogPath, type Analytics } from './analytics.ts'
 import { copyRefusal, runCopy, type CopyFs } from './copy-run.ts'
 import type { IoHelper } from './io-helper.ts'
 import type { CopyStore } from './copy-store.ts'
@@ -110,6 +111,9 @@ export type AgentDeps = {
     // Required rather than optional, unlike domains itself: health must always answer with a railAge,
     // even one that stayed null because nothing ever configured the rail, so no caller can forget it.
     railAge: () => number | null
+    // Page views and visitors out of the access logs. Absent until the production entrypoint wires the
+    // log directory: the analytics verb then refuses unavailable instead of crashing.
+    analytics?: Pick<Analytics, 'report'>
     // Absent exactly like provision and deploys until the production entrypoint wires the fetcher socket:
     // the branches verb then refuses unavailable instead of crashing. Separate from provision's and
     // deploys' own copies of the same FetchClient (they need it for a lot more than this one call), and
@@ -273,6 +277,16 @@ export class Agent {
         switch (request.verb) {
             case 'status':
                 return reply({ ok: true, services: await this.status(checked.project) })
+            case 'analytics': {
+                if (!this.deps.analytics) return reply(refuse('unavailable', 'analytics are not configured'))
+                // checkStructure has already refused an environment the project does not have
+                const environment = environmentOf(checked.project, request.args.environment)!
+                try {
+                    return reply(await this.deps.analytics.report(checked.project.id, environment.name, hostnamesOf(environment), request.args.days))
+                } catch (error) {
+                    return reply(refuse('failed', `the access logs could not be read: ${describeError(error)}`))
+                }
+            }
             case 'lifecycle':
                 return reply(await this.lifecycle(checked.project, request.args.action))
             case 'logs':
@@ -967,11 +981,12 @@ export class Agent {
         }
     }
 
-    // Brings every vhost hostd wrote before per-site holding pages existed up to date, so it serves its own
-    // page rather than the shared fallback. Run once at boot; a vhost that already names its page is left
-    // alone, so after the first boot of this version it changes nothing. Each rewrite goes through
+    // Brings every vhost hostd wrote with an older template up to date: one from before per-site holding
+    // pages, which serves the shared fallback page, or one from before analytics, which logs nowhere the
+    // portal can count. Run once at boot; a vhost that already names both its page and its access log is
+    // left alone, so after the first boot of this version it changes nothing. Each rewrite goes through
     // rewriteMovedVhost, which keeps the file's own token and puts the old file back if Apache refuses.
-    async pointVhostsAtHoldingPages(): Promise<string[]> {
+    async refreshStaleVhosts(): Promise<string[]> {
         if (!this.deps.domains) return []
         const domains = this.deps.domains
         const problems: string[] = []
@@ -986,7 +1001,10 @@ export class Agent {
                     problems.push(`${path} could not be read: ${describeError(error)}.`)
                     continue
                 }
-                if (text === null || text.includes(holdingPagePath(domains.config.maintenancePageDir, project.id, environment.name))) continue
+                if (text === null) continue
+                const current = text.includes(holdingPagePath(domains.config.maintenancePageDir, project.id, environment.name))
+                    && text.includes(accessLogPath(domains.config.accessLogDir, project.id, environment.name))
+                if (current) continue
                 const result = await this.rewriteMovedVhost(project.id, environment.name)
                 if (result.problem !== null) problems.push(result.problem)
             }

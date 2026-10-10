@@ -15,6 +15,7 @@ import {
 } from '../shared/registry.ts'
 import { envPathProblem } from '../shared/envfiles.ts'
 import { parseSchedule } from '../shared/backups.ts'
+import { DEFAULT_ANALYTICS_DAYS, MAX_ANALYTICS_DAYS } from '../shared/analytics.ts'
 import { normaliseHostname } from '../shared/hostnames.ts'
 import { authenticate, actorLabel, type Actor, type Caller } from './auth.ts'
 import { authorize, visibleProjects, type PolicyVerb } from './policy.ts'
@@ -96,6 +97,7 @@ export type Route =
     | { verb: 'copy-runs', project: string, environment: EnvironmentName }
     | { verb: 'copy-run', project: string, environment: EnvironmentName, run: string }
     | { verb: 'deploys', project: string, environment: EnvironmentName }
+    | { verb: 'analytics', project: string, environment: EnvironmentName }
     | { verb: 'commits', project: string, environment: EnvironmentName }
     | { verb: 'backups', project: string }
     | { verb: 'backup-run', project: string }
@@ -240,6 +242,7 @@ export function matchRoute(method: string, pathname: string): Route {
                 case 'copy-from-live': return only('POST', { verb: 'copy-from-live', project, environment })
                 case 'copy-runs': return only('GET', { verb: 'copy-runs', project, environment })
                 case 'deploys': return only('GET', { verb: 'deploys', project, environment })
+                case 'analytics': return only('GET', { verb: 'analytics', project, environment })
                 case 'commits': return only('GET', { verb: 'commits', project, environment })
                 case 'domains':
                     if (method === 'GET') return { verb: 'domains-list', project, environment }
@@ -476,6 +479,13 @@ function parseCommitsLimit(params: URLSearchParams): number | null {
     if (raw === null) return DEFAULT_COMMITS
     const limit = /^\d{1,4}$/.test(raw) ? Number(raw) : 0
     return limit >= 1 && limit <= MAX_COMMITS ? limit : null
+}
+
+function parseAnalyticsDays(params: URLSearchParams): number | null {
+    const raw = params.get('days')
+    if (raw === null) return DEFAULT_ANALYTICS_DAYS
+    const days = /^\d{1,3}$/.test(raw) ? Number(raw) : 0
+    return days >= 1 && days <= MAX_ANALYTICS_DAYS ? days : null
 }
 
 // Both halves of own or neither: a port checked for "some environment" would not know which port is its own.
@@ -1487,6 +1497,19 @@ export function createHandler(deps: ApiDeps): (req: IncomingMessage, res: Server
                     return refuseRoute(404, 'not-found', `no copy ${route.run} of ${route.project} ${route.environment}`, route.project, 'provision', target)
                 }
                 return sendJson(res, 200, reply.record)
+            }
+
+            case 'analytics': {
+                // The status policy verb: anyone who may see the site may see how many people visit it,
+                // and like status it is read on every overview render, so it is not audited either.
+                const target = `${route.environment} analytics`
+                if (!(await decide(route.project, 'status', target))) return
+                const days = parseAnalyticsDays(url.searchParams)
+                if (days === null) return refuseRoute(400, 'bad-request', `days must be a whole number from 1 to ${MAX_ANALYTICS_DAYS}`, route.project, 'status', target)
+                const reply = await callAgent({ verb: 'analytics', project: route.project, args: { environment: route.environment, days } })
+                if (!reply) return
+                if (!reply.ok) return refuseRoute(AGENT_STATUS[reply.code], reply.code, reply.message, route.project, 'status', target)
+                return sendJson(res, 200, reply)
             }
 
             case 'deploys':

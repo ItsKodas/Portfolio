@@ -13,6 +13,7 @@ import type { ApacheRail } from './apache-rail.ts'
 import { blindWarning, findClaims, readNothing, servesHttpOnly, type Claim, type SitesEnabled } from './sites-enabled.ts'
 import { renderVhost, upstreamFor, vhostPath } from './vhost.ts'
 import { holdingPagePath } from './holding-pages.ts'
+import { accessLogPath } from './analytics.ts'
 
 export type DomainsConfig = {
     includeDir: string
@@ -22,6 +23,8 @@ export type DomainsConfig = {
     acmeWebroot: string
     maintenanceFlagDir: string
     maintenancePageDir: string
+    // Where each environment's access log is written: Apache's own log directory, so logrotate keeps it
+    accessLogDir: string
 }
 
 export type DomainsDeps = {
@@ -60,6 +63,7 @@ function render(deps: DomainsDeps, project: ProjectEntry, environment: Environme
         maintenanceFlag: posix.join(deps.config.maintenanceFlagDir, `${project.id}-${environment.name}`),
         holdingPage: holdingPagePath(deps.config.maintenancePageDir, project.id, environment.name),
         acmeWebroot: deps.config.acmeWebroot,
+        accessLog: accessLogPath(deps.config.accessLogDir, project.id, environment.name),
     })
 }
 

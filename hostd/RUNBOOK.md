@@ -2204,6 +2204,30 @@ the adoption that would have produced it rather than leave one behind.
 | An adoption is refused `these cannot be read well enough to adopt: <path> (Include is used, so the hostnames this file serves cannot be read here)` (or `IncludeOptional`, or `Use`) | The existing vhost pulls in another file, or uses a `mod_macro Use`, that could define a hostname `hostd/src/agent/sites-enabled.ts` cannot see. Resolve or inline whatever that file defines by hand, outside hostd, before adopting; nothing here will half-understand it for you. |
 | `/health` warns `waiting for Let's Encrypt support: <project> <env>` | That environment's `certificate` is set to `letsencrypt`, but 4a serves the Cloudflare Origin certificate to every vhost regardless of this setting: the environment works today over the Origin cert, and this warning is only saying certbot itself (4b) is not built yet. Nothing to fix; it clears once 4b lands. |
 
+## Analytics
+
+Each site's Overview shows visits and unique visitors per day for the last 30 days, its top pages, the sites
+that sent visitors, and (behind Cloudflare) their countries. Nothing is added to the client's site: every
+vhost hostd writes logs its serving block to `/var/log/apache2/hostd-<id>-<environment>.access.log`, and the
+agent counts that file (mounted read-only) when the portal asks.
+
+- **Turning it on.** Nothing to do. The first boot of an agent with analytics rewrites every vhost hostd
+  owns to add the log line, keeping its token, and Apache reloads once per vhost. A site still served by a
+  hand-written vhost logs nowhere hostd can see, and its Overview says it is not being counted until it is
+  adopted.
+- **What counts.** A page view is a successful `GET` that asked for HTML (or a Next.js page change), from
+  something that is not a known bot. Scripts, images, API calls, prefetches, hostd's own probes and the
+  holding page are left out. A visitor is a hash of the address and user agent, held in memory while a day
+  is counted and never written down. Days are Brisbane days (`HOSTD_ANALYTICS_TIMEZONE` changes that).
+- **How far back.** logrotate keeps fourteen days of these logs with the rest of `/var/log/apache2`. Each
+  finished day is also kept in `/var/lib/hostd/analytics/<id>-<environment>.json` (the agent's state
+  volume), so the 30 day chart keeps filling after the logs have rotated away. The numbers start from the
+  day the log line went in, and the panel says so.
+- **Checking it.** `sudo tail -f /var/log/apache2/hostd-<id>-live.access.log` while loading a page shows
+  one tab-separated line per request. An empty or missing file means Apache is not writing it: check that
+  `/etc/apache2/hostd/<id>-live.conf` has a `CustomLog` line, and `docker compose logs agent` for a vhost
+  that could not be brought up to date.
+
 ## Troubleshooting
 
 | Symptom | Cause |

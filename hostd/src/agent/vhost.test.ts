@@ -20,6 +20,7 @@ const input = (over: Partial<VhostInput> = {}): VhostInput => ({
     maintenanceFlag: '/run/hostd/maintenance/acme-live',
     holdingPage: '/var/www/hostd-maintenance/sites/acme-live.html',
     acmeWebroot: '/var/www/hostd-acme',
+    accessLog: '/var/log/apache2/hostd-acme-live.access.log',
     ...over,
 })
 
@@ -80,6 +81,28 @@ describe('renderVhost', () => {
 
     it('leaves the ProxyPass plain when it does not', () => {
         assert.doesNotMatch(renderVhost(input()), /upgrade=websocket/)
+    })
+
+    // A redirect is not a visit, so only the block that serves the site logs for analytics
+    it('logs the serving block to the environment\'s access log, and no redirect block', () => {
+        const text = renderVhost(input())
+        const logged = (block: string) => block.includes('CustomLog "/var/log/apache2/hostd-acme-live.access.log"')
+        assert.deepEqual(blocksOf(text, 443).map(logged), [true, false])
+        assert.deepEqual(blocksOf(text, 80).map(logged), [false])
+    })
+
+    it('logs on the port 80 block that serves the site under Flexible SSL', () => {
+        const text = renderVhost(input({ flexibleSsl: true }))
+        assert.deepEqual(blocksOf(text, 80).map(block => block.includes('CustomLog')), [true, false])
+    })
+
+    // The format sits inside one double-quoted argument, so a quote in it would end the argument early, and
+    // a real tab would be written into the file where mod_log_config expects the two characters \t
+    it('writes the log format as one quoted argument with escaped tabs', () => {
+        const line = renderVhost(input()).split('\n').find(row => row.includes('CustomLog')) ?? ''
+        assert.match(line, /^    CustomLog "[^"]+" "[^"]+"$/)
+        assert.doesNotMatch(line, /\t/)
+        assert.match(line, /%\{sec\}t\\t%a\\t/)
     })
 })
 
