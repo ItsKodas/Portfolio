@@ -3,13 +3,14 @@
 
 export type ClientState = 'Invited' | 'Setup incomplete' | 'Suspended' | 'Locked' | 'Active'
 
-type Fields = { passwordHash: string | null, totpConfirmedAt: Date | null, suspendedAt: Date | null, lockedUntil: Date | null }
+type Fields = { passwordHash: string | null, totpConfirmedAt: Date | null, totpRequired: boolean, suspendedAt: Date | null, lockedUntil: Date | null }
 
 export function clientState(client: Fields, now: Date): ClientState {
     // First, because it is the one that stops everything regardless of the rest
     if (client.suspendedAt) return 'Suspended'
     if (!client.passwordHash) return 'Invited'
-    if (!client.totpConfirmedAt) return 'Setup incomplete'
+    // A client excused from two-step sign-in has nothing left to set up once the password is chosen
+    if (client.totpRequired && !client.totpConfirmedAt) return 'Setup incomplete'
     if (client.lockedUntil && client.lockedUntil.getTime() > now.getTime()) return 'Locked'
     return 'Active'
 }

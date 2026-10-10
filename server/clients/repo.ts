@@ -15,17 +15,17 @@ const ATTEMPT_TTL_MS = 60 * 60 * 1000
 
 const listColumns = {
     id: true, name: true, company: true, email: true, createdAt: true, lastSignInAt: true,
-    passwordHash: true, totpConfirmedAt: true, suspendedAt: true, lockedUntil: true,
+    passwordHash: true, totpConfirmedAt: true, totpRequired: true, suspendedAt: true, lockedUntil: true,
     _count: { select: { siteAccess: true } },
 } as const
 
 export function clientRepo(db: PrismaClient) {
     const repo = {
         // One transaction: a client who exists with no way to accept the invite is worse than no client at all
-        createWithInvite: (details: ClientDetails, id: string, token: { tokenHash: string, expiresAt: Date }) =>
+        createWithInvite: (details: ClientDetails, id: string, token: { tokenHash: string, expiresAt: Date }, totpRequired = true) =>
             db.client.create({
                 data: {
-                    id, ...details,
+                    id, ...details, totpRequired,
                     tokens: { create: { purpose: 'INVITE', tokenHash: token.tokenHash, expiresAt: token.expiresAt } },
                 },
             }),
@@ -76,6 +76,16 @@ export function clientRepo(db: PrismaClient) {
                 db.client.update({ where: { id }, data: { totpSecret: null, totpConfirmedAt: null } }),
                 db.clientRecoveryCode.deleteMany({ where: { clientId: id } }),
                 db.clientSession.deleteMany({ where: { clientId: id } }),
+            ])
+        },
+
+        // Turning it on signs the client out everywhere: a session opened on the password alone must not
+        // outlive the rule that allowed it. Turning it off leaves sessions alone, since none of them was
+        // opened with less than it now needs.
+        setTotpRequired: async (id: string, totpRequired: boolean) => {
+            await db.$transaction([
+                db.client.update({ where: { id }, data: { totpRequired } }),
+                ...(totpRequired ? [db.clientSession.deleteMany({ where: { clientId: id } })] : []),
             ])
         },
 

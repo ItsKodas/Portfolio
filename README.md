@@ -121,8 +121,12 @@ outright if it is running unattended with no way to ask. `--dry-run` prints the 
 
 Clients get their own sign-in at `/portal`, separate from the admin area. From a client's page in the admin area
 (or from a won quote, see below) "Create client" sends an invite email with a link that lets them set a password.
-The authenticator step (TOTP, with recovery codes to save) is mandatory and cannot be skipped: a client who hasn't
-finished it is sent back to setup on every request, not just signed out. The design is in
+The authenticator step (TOTP, with recovery codes to save) is on for every client and cannot be skipped: a client who
+hasn't finished it is sent back to setup on every request, not just signed out. For a client who can't manage an
+authenticator app, untick "Require 2FA" when creating them, or use "Turn off 2FA" on their page in the admin area,
+and they sign in with their password alone; "Require 2FA" on their page turns it back on and signs them out
+everywhere. Both are in the activity log. The operator's own sign-in always
+asks for a code. The design is in
 `docs/superpowers/specs/2026-09-20-client-accounts-design.md`.
 
 Marking a quote "Won" shows a "Create client from this quote" button on it, which opens the new client form

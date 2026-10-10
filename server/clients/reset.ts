@@ -116,10 +116,12 @@ export async function completeReset(
 
     // A client with an authenticator must use it: an email compromise alone must not be enough. A client who
     // has never enrolled has nothing to give, and is forced through enrolment before the session is usable.
+    // A client the operator has excused from two-step sign-in is not asked either: their password alone signs
+    // them in, so asking for a code here would guard nothing and could lock out someone who lost the app.
     // totpConfirmedAt alone, not totpSecret as well: a row with the flag set and no secret is corrupted,
     // and the safe reading of a corrupted second factor is "refuse", not "there isn't one". The exemption
     // below is only for a client who genuinely never enrolled.
-    if (client.totpConfirmedAt) {
+    if (needsCodeToReset(client)) {
         const accepted = await acceptSecondFactor(client, input.code, deps, now)
         if (!accepted) {
             // Against the IP only. A per-account failure here would be a counter nothing reads, per the note
@@ -145,6 +147,10 @@ export async function completeReset(
 
     return { ok: true }
 }
+
+// Shared with the reset page, so the form asks for a code exactly when this step will want one
+export const needsCodeToReset = (client: { totpRequired: boolean, totpConfirmedAt: Date | null }) =>
+    client.totpRequired && !!client.totpConfirmedAt
 
 async function acceptSecondFactor(client: ClientRecord, code: string, deps: CompleteResetDeps, now: Date): Promise<boolean> {
     // Reached only when totpConfirmedAt is set, so a missing secret here means the row is corrupted, not that

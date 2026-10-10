@@ -39,9 +39,10 @@ export async function currentClient(): Promise<{ client: ClientRecord, sessionId
 export async function requireClient(): Promise<{ client: ClientRecord, sessionId: string }> {
     const current = await currentClient()
     if (current) return current
-    // A half-finished sign-in goes back to the step it stopped at rather than to the beginning
+    // A half-finished sign-in goes back to the step it stopped at rather than to the beginning. One begun
+    // before the operator turned two-step sign-in off has no step left to go back to, so it starts over.
     const session = await readSession()
-    if (session && isPending(session, new Date()) && !session.client.suspendedAt) {
+    if (session && isPending(session, new Date()) && !session.client.suspendedAt && session.client.totpRequired) {
         redirect(session.client.totpConfirmedAt ? CODE_PATH : SETUP_PATH)
     }
     redirect(SIGN_IN_PATH)

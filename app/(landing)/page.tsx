@@ -5,7 +5,7 @@
 
 import Link from 'next/link'
 import Image from 'next/image'
-import { GitHub, LinkedIn, YouTube, Instagram, NorthEast, ArrowForward } from '@/ui/icons'
+import { GitHub, LinkedIn, YouTube, Instagram, NorthEast, ArrowForward, EpicGames, Steam } from '@/ui/icons'
 
 import PMPC_Group from '../../public/images/clients/pmpc.svg'
 import SpotOnDrones from '../../public/images/clients/spotondrones-mono.png'
@@ -13,6 +13,7 @@ import Arbys from '../../public/images/clients/arbys-mark.png'
 import ASOT from '../../public/images/clients/asot.svg'
 
 import { SKILLS as skills, SOCIALS } from '../site'
+import { TOOLKIT_LOGOS } from './toolkitLogos'
 
 // Logos as light marks on the night, each sized so they carry about the same visual weight. The single-colour SVGs are
 // turned white here; Spot On Drones and Arby's have prepared white versions (two-tone, and the mark lifted off its
@@ -40,8 +41,19 @@ function QuoteLink({ className = '' }: { className?: string }) {
 const ICONS = { GitHub, LinkedIn, YouTube, Instagram }
 const socials = SOCIALS.map(s => ({ ...s, icon: ICONS[s.label] }))
 
-// Projects, each with a short blurb and links to where it lives: the live site and/or the code (either can be left out)
-const projects: { name: string, year?: string, blurb: string, website?: string, github?: string }[] = [
+// Projects, each with a short blurb and links to where it lives: the live site and/or the code (either can be left out),
+// and for a game the stores it's on. A store without an href is shown greyed out as coming soon.
+type Store = { name: string, icon: typeof EpicGames, href?: string }
+const projects: { name: string, year?: string, blurb: string, website?: string, github?: string, stores?: Store[] }[] = [
+    {
+        name: 'Blastyard',
+        year: '2026',
+        blurb: 'A third-person team arena shooter: sprint, slide, wall run and jetpack around the arena as a toy robot, and play team deathmatch with friends in lobbies anyone can host.',
+        stores: [
+            { name: 'Epic Games Store', icon: EpicGames, href: 'https://store.epicgames.com/p/blastyard-b6300d' },
+            { name: 'Steam', icon: Steam },
+        ],
+    },
     {
         name: 'The Back Room',
         year: '2026',
@@ -50,11 +62,23 @@ const projects: { name: string, year?: string, blurb: string, website?: string, 
         github: 'https://github.com/ItsKodas/the-back-room',
     },
     {
+        name: '1st CANZUK Brigade',
+        year: '2026',
+        blurb: 'Website and staff area for a Hell Let Loose community unit, with Discord sign-in, an enlistment form that fills in from Steam, ORBAT role sync to Discord and a scheduled importer for the unit\'s spreadsheets.',
+        website: 'https://1stcanzukbrigade.com/',
+    },
+    {
         name: 'ASOT Milsim',
         year: '2024',
         blurb: 'Community platform for a military simulation unit, with real-time collaborative briefings, automated MILPAC generation, Discord role permissions and 3D terrain visualisation.',
         website: 'https://www.asotmilsim.com/',
         github: 'https://github.com/KL-Designs/ASOT',
+    },
+    {
+        name: 'Tax Assistant',
+        year: '2024',
+        blurb: 'An iOS and Android app for keeping receipts and invoices at tax time: snap a receipt and OCR reads its date and total, sort everything into folders and categories, and export a date range to CSV.',
+        github: 'https://github.com/ItsKodas/Tax-Assistant',
     },
     {
         name: "Arby's Auto Glass",
@@ -132,7 +156,7 @@ export default function Landing() {
                     <p className="mb-6 text-lg font-medium text-[#f19bb3]">Fullstack Developer</p>
                     <p className="max-w-xl text-base leading-relaxed text-[#b4c3dc]/80">
                         Building modern digital experiences with clean code and thoughtful design. Specialising in fullstack
-                        web development, from scalable backends to polished, performant frontends.
+                        development, from scalable backends to polished, performant frontends.
                     </p>
                     <QuoteLink className="mt-8" />
                 </div>
@@ -164,6 +188,21 @@ export default function Landing() {
                             </div>
                             <p className="mb-6 text-sm leading-relaxed text-[#b4c3dc]/75">{p.blurb}</p>
                             <div className="mt-auto flex flex-wrap gap-2">
+                                {p.stores?.map(({ name, icon: Icon, href }) => href
+                                    ? (
+                                        <Link key={name} href={href} target="_blank" rel="noopener noreferrer"
+                                            className="group inline-flex items-center gap-2 rounded-full border border-[#8fd4f5]/20 bg-[#8fd4f5]/[0.06] px-4 py-2 text-sm font-medium text-[#bfe6fb] transition-colors hover:border-[#8fd4f5]/45 hover:text-white">
+                                            <Icon size={16} /> {name}
+                                            <NorthEast size={14} className="opacity-60 transition-transform group-hover:-translate-y-0.5 group-hover:translate-x-0.5" />
+                                        </Link>
+                                    )
+                                    : (
+                                        <span key={name} aria-disabled="true" title={`${name}: coming soon`}
+                                            className="inline-flex cursor-not-allowed items-center gap-2 rounded-full border border-white/10 bg-white/[0.03] px-4 py-2 text-sm font-medium text-[#8fa3c7]/70">
+                                            <Icon size={16} /> {name}
+                                            <span className="text-xs uppercase tracking-wider text-[#8fa3c7]/60">Coming soon</span>
+                                        </span>
+                                    ))}
                                 {p.website && (
                                     <Link href={p.website} target="_blank" rel="noopener noreferrer"
                                         className="group inline-flex items-center gap-1.5 rounded-full border border-[#8fd4f5]/20 bg-[#8fd4f5]/[0.06] px-4 py-2 text-sm font-medium text-[#bfe6fb] transition-colors hover:border-[#8fd4f5]/45 hover:text-white">
@@ -187,11 +226,20 @@ export default function Landing() {
             <section className="mt-32">
                 <SectionTitle eyebrow="Toolkit" title="What I work with" />
                 <div className="flex flex-wrap gap-3">
-                    {skills.map(s => (
-                        <span key={s} className="rounded-2xl border border-[#8fd4f5]/[0.12] bg-[#111a38]/55 px-5 py-3 text-sm font-medium text-[#dbe6f7] backdrop-blur-md transition-colors hover:border-[#8fd4f5]/30 hover:text-white">
-                            {s}
-                        </span>
-                    ))}
+                    {skills.map(s => {
+                        const logo = TOOLKIT_LOGOS[s]
+                        return (
+                            <span key={s} className="group inline-flex items-center gap-2.5 rounded-2xl border border-[#8fd4f5]/[0.12] bg-[#111a38]/55 px-4 py-2.5 text-sm font-medium text-[#dbe6f7] backdrop-blur-md transition-colors hover:border-[#8fd4f5]/30 hover:text-white">
+                                {logo && (
+                                    <svg viewBox={logo.viewBox} fill="currentColor" aria-hidden="true" focusable="false"
+                                        className="h-[18px] w-[18px] shrink-0 text-[#a9e0fc] transition-colors group-hover:text-white">
+                                        <path d={logo.d} />
+                                    </svg>
+                                )}
+                                {s}
+                            </span>
+                        )
+                    })}
                 </div>
             </section>
 

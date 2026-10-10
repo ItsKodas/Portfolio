@@ -3,7 +3,7 @@ import { describe, expect, it } from 'vitest'
 import { STATE_TONES, clientState, type ClientState } from './state'
 
 const now = new Date('2026-09-20T10:00:00Z')
-const base = { passwordHash: null, totpConfirmedAt: null, suspendedAt: null, lockedUntil: null }
+const base = { passwordHash: null, totpConfirmedAt: null, totpRequired: true, suspendedAt: null, lockedUntil: null }
 
 describe('clientState', () => {
     it('reads invited when there is no password yet', () => {
@@ -12,6 +12,11 @@ describe('clientState', () => {
 
     it('reads setup incomplete when the password is set but the authenticator is not', () => {
         expect(clientState({ ...base, passwordHash: 'x' }, now)).toBe('Setup incomplete')
+    })
+
+    it('reads active with only a password for a client excused from two-step sign-in', () => {
+        expect(clientState({ ...base, passwordHash: 'x', totpRequired: false }, now)).toBe('Active')
+        expect(clientState({ ...base, totpRequired: false }, now)).toBe('Invited')
     })
 
     it('reads active once both are done', () => {

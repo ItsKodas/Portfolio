@@ -6,14 +6,17 @@
 // controls; what changes is how much of the machinery is named. A client reads "copies" and days, the
 // operator also gets restic's ids, who started each run and hostd's own reasons.
 //
-// Putting a copy back over live is the operator's alone (hostd's backup-restore verb is admin-only): each
-// copy gets a Restore button for the operator, behind a typed confirmation, and a client is told to ask.
+// Putting a copy back over live is the operator's, and a client's only when they were given Restore backups
+// on this site (hostd's backup-restore verb is admin-only but for the sites the portal names for them): each
+// copy then gets a Restore button behind a typed confirmation, and any other client is told to ask.
 
 import {
     listBackups, listRestores, getSchedule, type BackupList, type BackupRecord, type Restores, type Schedule,
     type Snapshot,
 } from '@/server/hostd/backups'
 import { readHostd } from '@/server/hostd/config'
+import { hasAccess } from '@/server/hostd/projects'
+import { accessOf } from '@/server/sites/access'
 import { forAdmin, forClient } from '@/server/hostd/errors'
 import { callerFromSession } from '@/server/hostd/session'
 import { Callout } from '@/ui/Callout/Callout'
@@ -46,8 +49,8 @@ type CopyProps = {
     snapshot: Snapshot
     record: BackupRecord | null
     isAdmin: boolean
-    // The operator's restore: the site's name to type back, and why it is refused right now. null for a
-    // client, or when hostd's restores could not be read.
+    // The restore: the site's name to type back, and why it is refused right now. null for a client not
+    // given it, or when hostd's restores could not be read.
     restore: { name: string, block: string | null } | null
 }
 
@@ -65,7 +68,7 @@ function Copy({ id, snapshot, record, isAdmin, restore }: CopyProps) {
                     meta={record ? formatDuration(record.durationMs) : undefined}
                 />
                 <BackupRowActions id={id} snapshot={snapshot.id} label={label}>
-                    {restore && <RestoreButton id={id} name={restore.name} snapshot={snapshot.id} label={label} block={restore.block} />}
+                    {restore && <RestoreButton id={id} name={restore.name} snapshot={snapshot.id} label={label} block={restore.block} isAdmin={isAdmin} />}
                 </BackupRowActions>
             </div>
             {record?.disruptive && (
@@ -96,7 +99,7 @@ function Failure({ record, isAdmin }: { record: BackupRecord, isAdmin: boolean }
 
 type Props = {
     id: string
-    // The site's name, which the operator types back to restore a copy
+    // The site's name, which is typed back to restore a copy
     name: string
 }
 
@@ -104,6 +107,7 @@ export async function BackupPanel({ id, name }: Props) {
     const who = await callerFromSession()
     if (!who) return null
     const isAdmin = who.clientId === null
+    const canRestore = who.clientId === null || await hasAccess(who.clientId, id, accessOf, 'RESTORE_BACKUPS')
 
     const problems: string[] = []
     const config = readHostd(process.env, problems)
@@ -115,11 +119,11 @@ export async function BackupPanel({ id, name }: Props) {
 
     // Two reads, side by side: the schedule lives in hostd's api and the copies in its agent, so either
     // can fail without the other, and each says so in its own place.
-    // The operator also reads the restores; hostd refuses them to a client.
+    // The restores are read only by whoever may start one; hostd refuses them to any other client.
     const [listed, scheduled, restored] = await Promise.all([
         listBackups(config, who.caller, id),
         getSchedule(config, who.caller, id),
-        isAdmin ? listRestores(config, who.caller, id) : Promise.resolve(null),
+        canRestore ? listRestores(config, who.caller, id) : Promise.resolve(null),
     ])
 
     if (!listed.ok) {
@@ -163,11 +167,16 @@ export async function BackupPanel({ id, name }: Props) {
 
                 {failure && <Failure record={failure} isAdmin={isAdmin} />}
 
-                {restores && <RestoreStatus id={id} restores={restores.restores} running={restores.running} />}
+                {restores && <RestoreStatus
+                    id={id}
+                    restores={isAdmin ? restores.restores : restores.restores.map(one => ({ ...one, reason: null }))}
+                    running={restores.running}
+                    isAdmin={isAdmin}
+                />}
                 {restored && !restored.ok && (
                     <div className={styles.said}>
                         <Callout tone="warn" title="Restores could not be read">
-                            {forAdmin(restored.code, restored.message)}
+                            {isAdmin ? forAdmin(restored.code, restored.message) : forClient(restored.code)}
                         </Callout>
                     </div>
                 )}
@@ -214,7 +223,11 @@ export async function BackupPanel({ id, name }: Props) {
                             + 'a fresh copy of live is made first, and the site is paused while its databases and '
                             + 'stored files are replaced. Sites without a known engine are still the runbook '
                             + 'procedure in hostd/RUNBOOK.md.'
-                        : 'Ask Koda, who does it and checks it with you first.'}
+                        : canRestore
+                            ? 'Restore on a copy above does it: you type the site\'s name to confirm, a fresh copy of '
+                                + 'the live site is made first so it can be undone, and the site is paused for a few '
+                                + 'minutes while its data is put back.'
+                            : 'Ask Koda, who does it and checks it with you first.'}
                 </p>
                 <p className={styles.note}>
                     Only the live site is backed up. Test and staging environments are not.

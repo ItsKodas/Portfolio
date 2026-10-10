@@ -63,6 +63,9 @@ export const passwordStepDeps = (ipHash: string) => {
         rehash: (password: string) => hashPassword(password),
         setPassword: clients.setPassword,
         createSession: clients.createSession,
+        completeMfa: clients.completeMfa,
+        recordSuccess: clients.recordSuccess,
+        prune: clients.prune,
         newToken: () => newSessionToken(),
         hashToken: hashSessionToken,
         now, log, ipHash,
@@ -96,6 +99,8 @@ export const completeInviteDeps = () => {
         setPassword: clients.setPassword,
         useToken: clients.useToken,
         createSession: clients.createSession,
+        completeMfa: clients.completeMfa,
+        recordSuccess: clients.recordSuccess,
         newToken: () => newSessionToken(),
         hashToken: hashSessionToken,
         now, log,
@@ -206,14 +211,14 @@ export const regenerateDeps = () => {
 export { runChangePassword, runRegenerate }
 
 // Retries on the unique key rather than hoping 40 bits never collides
-export async function newClientWithInvite(details: ClientDetails): Promise<{ client: ClientRecord, token: string }> {
+export async function newClientWithInvite(details: ClientDetails, totpRequired = true): Promise<{ client: ClientRecord, token: string }> {
     const token = newSessionToken()
     const expiresAt = new Date(Date.now() + INVITE_TTL_MS)
     for (let attempt = 0; attempt < 5; attempt += 1) {
         const id = newClientId()
         if (!CLIENT_ID_PATTERN.test(id)) continue
         try {
-            const client = await repo().createWithInvite(details, id, { tokenHash: hashSessionToken(token), expiresAt })
+            const client = await repo().createWithInvite(details, id, { tokenHash: hashSessionToken(token), expiresAt }, totpRequired)
             return { client, token }
         } catch (error) {
             // A duplicate email is the caller's problem and must not be retried; only an id clash is

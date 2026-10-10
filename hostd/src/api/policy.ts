@@ -18,9 +18,10 @@ import type { Actor } from './auth.ts'
 // half rather than the read one because it writes the record it checks.
 //
 // 'backup-restore' is putting a backup back over live, and reading what earlier restores did. It needs the
-// same capability as the rest of backups, but it is the operator's alone: it replaces the live site's data,
-// and the restore records name services and folders on the dedi. A client keeps listing, taking, deleting
-// and downloading their own backups through 'backup' and 'backup-read'.
+// same capability as the rest of backups, but it is the operator's unless the portal has given a client that
+// one project's restores (X-Hostd-Restore-Sites): it replaces the live site's data, so owning the backups is
+// not enough. A client keeps listing, taking, deleting and downloading their own backups through 'backup'
+// and 'backup-read' either way.
 //
 // 'remove' is deleting a whole project, split from 'provision' so it needs no capability: see its entry
 // below.
@@ -56,14 +57,22 @@ const POLICY_CAPABILITY: Record<PolicyVerb, Capability | null> = {
     configure: null,
 }
 
-// What only the admin may ever do, whatever the registry says and whoever owns the project. env has one way
-// past it, below: a client the portal has given that one project's env files (X-Hostd-Env-Sites).
+// What only the admin may ever do, whatever the registry says and whoever owns the project. env and
+// backup-restore each have one way past it, below: a client the portal has given that one project's env
+// files (X-Hostd-Env-Sites) or its restores (X-Hostd-Restore-Sites).
 const ADMIN_ONLY: PolicyVerb[] = ['provision', 'remove', 'env', 'deploy', 'backup-restore', 'domains', 'configure']
 
 // Whether the portal has given this client the env files of this project. Ownership is still checked after,
 // so a project named here that is not also among their sites is refused like any other.
 function mayEditEnv(actor: Actor, projectId: string): boolean {
     return actor.kind === 'client' && actor.envSites !== undefined && actor.envSites.has(projectId)
+}
+// The same for restoring this project's backups over live
+function mayRestore(actor: Actor, projectId: string): boolean {
+    return actor.kind === 'client' && actor.restoreSites !== undefined && actor.restoreSites.has(projectId)
+}
+function granted(actor: Actor, projectId: string, verb: PolicyVerb): boolean {
+    return (verb === 'env' && mayEditEnv(actor, projectId)) || (verb === 'backup-restore' && mayRestore(actor, projectId))
 }
 // Whether a client may reach this project at all. The portal's list when it sent one: a site is shared by
 // as many clients as the operator gives it to, and the registry's single client field cannot say that. The
@@ -86,8 +95,9 @@ export function authorize(registry: Registry, actor: Actor, projectId: string, v
     // ownership: a client who owns the project, even one where the registry happens to list the
     // provision or env capability, must see exactly the same 404 as for a project that is not theirs,
     // so neither ownership nor a stray capability entry can ever grant any of them. Env files are the one
-    // exception, and only where the portal named this project in the client's env sites.
-    if (ADMIN_ONLY.includes(verb) && actor.kind !== 'admin' && !(verb === 'env' && mayEditEnv(actor, projectId))) {
+    // exception, and only where the portal named this project in the client's env sites, and so are restores
+    // where it named it in their restore sites.
+    if (ADMIN_ONLY.includes(verb) && actor.kind !== 'admin' && !granted(actor, projectId, verb)) {
         return { ok: false, status: 404, code: 'not-found', message: `no project ${projectId}` }
     }
     const project = registry.projects.get(projectId)

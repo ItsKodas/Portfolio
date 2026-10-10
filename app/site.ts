@@ -9,17 +9,17 @@
 
 // The two lines the hero opens on, kept here so the page, the title tag and the share image cannot drift apart
 const name = 'Horizons'
-const tagline = 'Fullstack Web Development'
+const tagline = 'Fullstack Development'
 
 export const SITE = {
     url: process.env.NEXT_PUBLIC_SITE_URL ?? 'https://www.horizons.gg',
     name,
     tagline,
     author: 'Dakoda Lancelot',
-    role: 'Fullstack Web Developer',
+    role: 'Fullstack Developer',
     title: `${name} · ${tagline}`,
     // First person, and plainly put: it is my own site, so it says what I build rather than how well I build it
-    description: "I'm Koda, a fullstack web developer. I build websites and web apps with Next.js, React, TypeScript and Node.js, from the backend through to the frontend.",
+    description: "I'm Koda, a fullstack developer. I build websites and web apps with Next.js, React, TypeScript and Node.js, from the backend through to the frontend.",
     // The scene's navy, for browser chrome and the share image
     colour: '#0b101f',
     locale: 'en_AU',
@@ -32,4 +32,13 @@ export const SOCIALS = [
     { label: 'Instagram', href: 'https://www.instagram.com/itskodas' },
 ] as const
 
-export const SKILLS = ['Next.js', 'React', 'TypeScript', 'Node.js', 'Tailwind CSS', 'PostgreSQL', 'MongoDB', 'Docker', 'Prisma', 'MUI', 'Git']
+// Everything in use across Dakoda's repositories, roughly from the web stack outwards: languages, frameworks, data,
+// tooling and infrastructure, then apps, bots and games. Each one has a logo in (landing)/toolkitLogos.ts
+export const SKILLS = [
+    'TypeScript', 'JavaScript', 'React', 'Next.js', 'Tailwind CSS', 'MUI', 'Vite',
+    'Node.js', 'Deno', 'Express', 'Socket.IO', 'Payload CMS',
+    'PostgreSQL', 'MongoDB', 'Prisma',
+    'Vitest', 'Playwright', 'Docker', 'Caddy', 'Linux', 'Windows Server', 'GitHub Actions', 'Git', 'Claude',
+    'React Native', 'Expo', 'Discord.js', 'Three.js', 'Leaflet',
+    'C#', '.NET', 'C++', 'Python', 'Unreal Engine', 'Godot', 'Arma 3 (SQF)',
+]

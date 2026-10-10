@@ -881,14 +881,31 @@ describe('restoreBackupAction', () => {
         }))
     })
 
-    it('refuses a client, even one with the Backups permission, before hostd is asked', async () => {
+    it('refuses a client without the Restore backups permission before hostd is asked', async () => {
         callerFromSession.mockResolvedValue(CLIENT)
+        hasAccess.mockResolvedValue(false)
 
         expect(await restoreBackupAction('asot', '4f1c2a9b', 'A State of Trance')).toEqual({ ok: false, error: 'This is not set up yet.' })
         expect(await restoresAction('asot')).toEqual({ ok: false, error: 'This is not set up yet.' })
+        expect(hasAccess.mock.calls.map(call => call[3])).toEqual(['RESTORE_BACKUPS', 'RESTORE_BACKUPS'])
         expect(restoreBackup).not.toHaveBeenCalled()
         expect(listRestores).not.toHaveBeenCalled()
         expect(record).not.toHaveBeenCalled()
+    })
+
+    it('lets a client with it restore, and reads them the restores without hostd\'s reason', async () => {
+        callerFromSession.mockResolvedValue(CLIENT)
+        restoreBackup.mockResolvedValue({ ok: true, value: { run: 'abcdef012345' } })
+        const failed = {
+            run: 'r1', actor: 'cl_1', startedAt: '2026-10-10T00:00:00Z', durationMs: 1, outcome: 'failed',
+            step: 'load:db', reason: 'psql exited 3 in /var/www/asot', snapshot: '4f1c2a9b', safety: '9e8d7c6b',
+        }
+        listRestores.mockResolvedValue({ ok: true, value: { restores: [failed], running: false } })
+
+        expect(await restoreBackupAction('asot', '4f1c2a9b', 'A State of Trance')).toMatchObject({ ok: true, run: 'abcdef012345' })
+        expect(restoreBackup).toHaveBeenCalledWith(expect.anything(), CLIENT.caller, 'asot', '4f1c2a9b', 'A State of Trance')
+        expect(record).toHaveBeenCalledWith(expect.objectContaining({ kind: 'backup.restore', site: 'asot' }))
+        expect(await restoresAction('asot')).toEqual({ ok: true, restores: [{ ...failed, reason: null }], running: false })
     })
 
     it('refuses something that is not a snapshot id, or a confirmation that is not text, before the session is read', async () => {

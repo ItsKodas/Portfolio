@@ -27,6 +27,7 @@ const client = (overrides: Record<string, unknown> = {}) => ({
     publicEmail: null,
     publicPhone: null,
     publicContactListed: false,
+    totpRequired: true,
     ...overrides,
 })
 
@@ -185,6 +186,19 @@ describe('completeReset', () => {
             })),
         })
         expect(await completeReset({ ...input, code: '' }, deps)).toEqual({ ok: true })
+        expect(deps.setPassword).toHaveBeenCalled()
+    })
+
+    // Their password alone signs them in, so a code here would guard nothing
+    it('accepts the token alone for a client excused from two-step sign-in, even one who enrolled', async () => {
+        const deps = completeDeps({
+            tokenByHash: vi.fn(async () => ({
+                id: 'token1', purpose: 'PASSWORD_RESET' as const, usedAt: null, expiresAt: later(1000),
+                client: client({ totpRequired: false }),
+            })),
+        })
+        expect(await completeReset({ ...input, code: '' }, deps)).toEqual({ ok: true })
+        expect(deps.verifyTotp).not.toHaveBeenCalled()
         expect(deps.setPassword).toHaveBeenCalled()
     })
 

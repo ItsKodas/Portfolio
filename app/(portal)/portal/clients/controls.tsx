@@ -11,7 +11,8 @@ import { Dialog } from '@/ui/Dialog/Dialog'
 import { Field } from '@/ui/Field/Field'
 import { ContentCopy } from '@/ui/icons'
 import {
-    clearLockAction, createClientAction, deleteClientAction, resendInviteAction, resetTwoFactorAction, sendResetAction, setSuspendedAction, updateClientAction,
+    clearLockAction, createClientAction, deleteClientAction, resendInviteAction, resetTwoFactorAction, sendResetAction, setSuspendedAction,
+    setTwoFactorRequiredAction, updateClientAction,
     type AdminResult,
 } from './actions'
 import styles from './controls.module.css'
@@ -82,13 +83,14 @@ export function ClientForm({ fromQuoteId, initial, clientId }: {
     const [name, setName] = useState(initial?.name ?? '')
     const [company, setCompany] = useState(initial?.company ?? '')
     const [email, setEmail] = useState(initial?.email ?? '')
+    const [totpRequired, setTotpRequired] = useState(true)
 
     function submit() {
         const input = { name, company: company || null, email }
         // createClientAction redirects the browser on success, which the framework handles on its own; an
         // ok:false result here always means the email address is a duplicate or the email failed to send
         if (clientId) run(() => updateClientAction(clientId, input))
-        else run(() => createClientAction(input, fromQuoteId))
+        else run(() => createClientAction(input, fromQuoteId, totpRequired))
     }
 
     return (
@@ -97,6 +99,13 @@ export function ClientForm({ fromQuoteId, initial, clientId }: {
                 <Field label="Name" value={name} onChange={event => setName(event.target.value)} required />
                 <Field label="Company" value={company} onChange={event => setCompany(event.target.value)} />
                 <Field label="Email" type="email" value={email} onChange={event => setEmail(event.target.value)} required />
+                {/* Only when creating: an existing client's setting has its own button, with a warning, on their page */}
+                {!clientId && (
+                    <label className={styles.check}>
+                        <input type="checkbox" checked={totpRequired} onChange={event => setTotpRequired(event.target.checked)} />
+                        Require 2FA (untick for a client who can&apos;t use an authenticator app)
+                    </label>
+                )}
                 <div>
                     <Button type="submit" variant="primary" disabled={pending}>{clientId ? 'Save' : 'Create client'}</Button>
                 </div>
@@ -182,6 +191,38 @@ export function ResetTwoFactorButton({ clientId }: { clientId: string }) {
                 <p className={styles.dialogText}>
                     This wipes the authenticator, every recovery code and every open session. The client will
                     need to set up a new authenticator app next time they sign in.
+                </p>
+            </Dialog>
+        </div>
+    )
+}
+
+export function TwoFactorRequiredButton({ clientId, required }: { clientId: string, required: boolean }) {
+    const { pending, error, run } = useAction()
+    const [confirming, setConfirming] = useState(false)
+    const label = required ? 'Turn off 2FA' : 'Require 2FA'
+    return (
+        <div>
+            <Button className={required ? styles.warn : styles.good} disabled={pending} onClick={() => setConfirming(true)}>{label}</Button>
+            <Problem error={error} />
+            <Dialog
+                open={confirming}
+                onClose={() => setConfirming(false)}
+                title={required ? 'Let this client sign in without 2FA?' : 'Require two-factor authentication?'}
+                footer={
+                    <>
+                        <Button onClick={() => setConfirming(false)}>Cancel</Button>
+                        <Button className={required ? styles.warn : styles.good} disabled={pending}
+                            onClick={() => run(() => setTwoFactorRequiredAction(clientId, !required), () => setConfirming(false))}>
+                            {label}
+                        </Button>
+                    </>
+                }
+            >
+                <p className={styles.dialogText}>
+                    {required
+                        ? 'They will sign in with their email and password alone, and a password reset will not ask for a code. Anyone who learns their password can get in. An authenticator they already set up is kept, ready for if you turn this back on.'
+                        : 'This signs them out everywhere. Next time they sign in they will be asked for a code from their authenticator app, or to set one up if they have not yet.'}
                 </p>
             </Dialog>
         </div>

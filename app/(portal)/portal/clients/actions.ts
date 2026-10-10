@@ -53,10 +53,13 @@ async function change(clientId: string, work: () => Promise<void>, recorded: () 
     return { ok: true }
 }
 
-export async function createClientAction(input: unknown, fromQuoteId?: string): Promise<AdminResult> {
+// totpRequired is the create form's "Require 2FA" box, ticked unless the operator unticks it. The same setting
+// lives on the client's page afterwards (setTwoFactorRequiredAction).
+export async function createClientAction(input: unknown, fromQuoteId?: string, totpRequired: unknown = true): Promise<AdminResult> {
     const actor = adminActor(await requireAdmin())
     const parsed = clientDetailsSchema.safeParse(input)
     if (!parsed.success) return { ok: false, error: parsed.error.issues[0]?.message ?? INVALID.error }
+    if (typeof totpRequired !== 'boolean') return INVALID
 
     const existing = await repo().byEmail(parsed.data.email)
     // Offering to link is better than creating a second account on the same address
@@ -64,7 +67,7 @@ export async function createClientAction(input: unknown, fromQuoteId?: string): 
 
     let created
     try {
-        created = await newClientWithInvite(parsed.data)
+        created = await newClientWithInvite(parsed.data, totpRequired)
     } catch (error) {
         log('Creating a client failed', error)
         return { ok: false, error: 'That did not work. Please try again.' }
@@ -72,8 +75,8 @@ export async function createClientAction(input: unknown, fromQuoteId?: string): 
 
     await record({
         kind: 'client.create', actor, target: asTarget(created.client),
-        summary: `Created ${created.client.name} (${created.client.email})`,
-        detail: fromQuoteId ? { fromQuote: fromQuoteId } : undefined,
+        summary: `Created ${created.client.name} (${created.client.email})${totpRequired ? '' : ', signing in with their password alone'}`,
+        detail: { ...(fromQuoteId && { fromQuote: fromQuoteId }), totpRequired },
     })
 
     if (fromQuoteId && id.safeParse(fromQuoteId).success) {
@@ -268,6 +271,25 @@ export async function resetTwoFactorAction(clientId: string): Promise<AdminResul
     }
     refresh(clientId)
     return { ok: true }
+}
+
+// Whether this client is asked for an authenticator code when signing in. Off is for a client who cannot
+// manage an authenticator; the operator's own sign-in is untouched by it either way.
+export async function setTwoFactorRequiredAction(clientId: string, required: boolean): Promise<AdminResult> {
+    const actor = adminActor(await requireAdmin())
+    if (!id.safeParse(clientId).success || typeof required !== 'boolean') return INVALID
+    const client = await repo().byId(clientId)
+    if (!client) return FAILED
+    return change(
+        clientId,
+        () => repo().setTotpRequired(clientId, required),
+        () => record({
+            kind: required ? 'client.twoFactorRequired' : 'client.twoFactorOptional', actor, target: asTarget(client),
+            summary: required
+                ? `Required two-step sign-in for ${client.name} and signed them out everywhere`
+                : `Let ${client.name} sign in with their password alone`,
+        }),
+    )
 }
 
 export async function setSuspendedAction(clientId: string, suspended: boolean): Promise<AdminResult> {

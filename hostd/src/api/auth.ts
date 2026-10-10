@@ -8,6 +8,7 @@
 //
 // X-Hostd-Env-Sites is the part of that list where the portal has also given the client their env files to
 // read and edit. It is read, and trusted, the same way, and policy.ts still asks for ownership on top of it.
+// X-Hostd-Restore-Sites is the same again for putting a backup back over live.
 
 import { createHash, timingSafeEqual } from 'node:crypto'
 import type { IncomingHttpHeaders } from 'node:http'
@@ -15,8 +16,11 @@ import { CLIENT_ID, PROJECT_ID, USER_ID } from '../shared/formats.ts'
 
 // sites is the projects the portal says this client may reach. Optional rather than nullable so an actor
 // built without it reads as the older portal it stands for (see policy.ts, ownsProject). envSites is the
-// projects whose env files they may read and edit; absent is none, which is what every client had before it.
-export type Actor = { kind: 'admin' } | { kind: 'client', client: string, sites?: ReadonlySet<string>, envSites?: ReadonlySet<string> }
+// projects whose env files they may read and edit, and restoreSites those whose backups they may restore over
+// live; absent is none, which is what every client had before each existed.
+export type Actor =
+    | { kind: 'admin' }
+    | { kind: 'client', client: string, sites?: ReadonlySet<string>, envSites?: ReadonlySet<string>, restoreSites?: ReadonlySet<string> }
 export type Caller = { actor: Actor, user: string }
 export type AuthFailure = {
     ok: false
@@ -87,13 +91,18 @@ export function authenticate(headers: IncomingHttpHeaders, token: string): { ok:
         if (!sites) {
             return { ok: false, status: 400, code: 'bad-request', message: 'X-Hostd-Sites must be a comma separated list of project ids', label: actorLabel(actor), user: userLabel }
         }
-        const envHeader = headers['x-hostd-env-sites']
-        if (envHeader === undefined) return { ok: true, caller: { actor: { ...actor, sites }, user: userHeader } }
-        const envSites = typeof envHeader === 'string' ? parseSites(envHeader) : null
-        if (!envSites) {
-            return { ok: false, status: 400, code: 'bad-request', message: 'X-Hostd-Env-Sites must be a comma separated list of project ids', label: actorLabel(actor), user: userLabel }
+        // The narrower grants, each optional and each refused whole when malformed, like the list itself
+        const grants: { envSites?: ReadonlySet<string>, restoreSites?: ReadonlySet<string> } = {}
+        for (const [key, name] of [['envSites', 'X-Hostd-Env-Sites'], ['restoreSites', 'X-Hostd-Restore-Sites']] as const) {
+            const header = headers[name.toLowerCase()]
+            if (header === undefined) continue
+            const parsed = typeof header === 'string' ? parseSites(header) : null
+            if (!parsed) {
+                return { ok: false, status: 400, code: 'bad-request', message: `${name} must be a comma separated list of project ids`, label: actorLabel(actor), user: userLabel }
+            }
+            grants[key] = parsed
         }
-        return { ok: true, caller: { actor: { ...actor, sites, envSites }, user: userHeader } }
+        return { ok: true, caller: { actor: { ...actor, sites, ...grants }, user: userHeader } }
     }
     return { ok: true, caller: { actor, user: userHeader } }
 }

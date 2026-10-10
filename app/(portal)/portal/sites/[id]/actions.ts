@@ -696,8 +696,9 @@ export async function deleteBackupAction(id: string, snapshot: string): Promise<
     return { ok: true, message: 'Deleted.' }
 }
 
-// Putting a copy back over live. The operator's alone, even for a client with the Backups permission: it
-// replaces everything live has saved since, and hostd puts it under its admin-only backup-restore verb. The
+// Putting a copy back over live. The operator's, and a client's only where they were given RESTORE_BACKUPS on
+// this site: Backups alone is not enough, because it replaces everything live has saved since. hostd holds the
+// same line, refusing backup-restore to every client except on the sites named in X-Hostd-Restore-Sites. The
 // site's name has to be typed back, and is sent to hostd as typed, so hostd's comparison is the
 // confirmation, as it is for deleting the site. hostd takes a fresh copy of live before it changes anything.
 export async function restoreBackupAction(id: string, snapshot: string, confirm: string): Promise<RestoreStartResult> {
@@ -705,7 +706,7 @@ export async function restoreBackupAction(id: string, snapshot: string, confirm:
         return { ok: false, error: 'That is not something this page can do.' }
     }
 
-    const allowed = await allow(id, true)
+    const allowed = await allow(id, false, 'RESTORE_BACKUPS')
     if (!allowed.ok) return allowed
 
     const result = await restoreBackup(allowed.config, allowed.caller, id, snapshot, confirm)
@@ -725,16 +726,18 @@ export async function restoreBackupAction(id: string, snapshot: string, confirm:
     }
 }
 
-// Reading only, which the Backups tab polls while a restore runs, so it does not revalidate. Admin only all
-// the same: the records name services and folders, and hostd refuses a client them too.
+// Reading only, which the Backups tab polls while a restore runs, so it does not revalidate. Held to the same
+// grant as starting one. hostd's reason for a failed restore names paths and services on the dedi, so a client
+// gets the record without it, the same way a failed backup is told to them.
 export async function restoresAction(id: string): Promise<RestoresResult> {
-    const allowed = await allow(id, true)
+    const allowed = await allow(id, false, 'RESTORE_BACKUPS')
     if (!allowed.ok) return allowed
 
     const result = await listRestores(allowed.config, allowed.caller, id)
     if (!result.ok) return refused(`restores of ${id}`, allowed.isAdmin, result)
 
-    return { ok: true, restores: result.value.restores, running: result.value.running }
+    const restores = allowed.isAdmin ? result.value.restores : result.value.restores.map(one => ({ ...one, reason: null }))
+    return { ok: true, restores, running: result.value.running }
 }
 
 export type ScheduleSaveResult = { ok: true, message: string, schedule: Schedule } | { ok: false, error: string }
