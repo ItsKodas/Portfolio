@@ -191,6 +191,27 @@ describe('applyChange', () => {
         assert.match(result.text, /# do not reuse this port/)
     })
 
+    // Promoting an alias swaps it with the primary, so both names are still served and only the
+    // redirect between them turns round.
+    it('swaps the primary with an alias when the new domain is one of its aliases', () => {
+        const withAliases = NO_DOMAIN.replace(
+            '        domain: acme.com\n',
+            '        domain: acme.com\n        aliases: [shop.acme.com, www.acme.com]\n',
+        )
+        const result = applyChange(withAliases, { kind: 'set-domain', id: 'acme', environment: 'live', domain: 'www.acme.com' })
+        assert.ok(result.ok)
+        const live = parseRegistry(result.text).projects.get('acme')!.environments.get('live')!
+        assert.equal(live.domain, 'www.acme.com')
+        assert.deepEqual(live.aliases, ['shop.acme.com', 'acme.com'])
+    })
+
+    it('leaves no empty aliases list when the only alias is promoted on an environment with no domain', () => {
+        const aliasOnly = NO_DOMAIN.replace('        port: 5012 # do not reuse this port\n', '        port: 5012 # do not reuse this port\n        aliases: [backroom.co.uk]\n')
+        const result = applyChange(aliasOnly, { kind: 'set-domain', id: 'backroom', environment: 'live', domain: 'backroom.co.uk' })
+        assert.ok(result.ok)
+        assert.doesNotMatch(result.text, /aliases/)
+    })
+
     it('refuses a domain on an environment that does not exist', () => {
         const result = applyChange(NO_DOMAIN, { kind: 'set-domain', id: 'backroom', environment: 'test', domain: 'test.backroom.co.uk' })
         assert.deepEqual(result, { ok: false, problem: 'backroom has no test environment' })

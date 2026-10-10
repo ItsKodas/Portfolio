@@ -270,7 +270,24 @@ function edit(doc: Document, change: Change): EditResult {
             // whole document with parseRegistry below, which refuses a hostname that is not one and
             // refuses one already claimed elsewhere, so there is one rule about what a domain may be
             // rather than two that could drift.
-            doc.setIn(['projects', change.id, 'environments', change.environment, 'domain'], change.domain)
+            {
+                // Promoting one of the environment's own aliases is a swap, not a move: the old primary
+                // takes the alias's place in the list, so both names keep being served and only the
+                // direction of the redirect between them changes. Without this the re-parse refuses the
+                // write, because the new domain would also still be listed as an alias.
+                const path = ['projects', change.id, 'environments', change.environment]
+                const aliases = doc.getIn([...path, 'aliases'])
+                const old = doc.getIn([...path, 'domain'])
+                if (isSeq(aliases)) {
+                    const at = aliases.items.findIndex(item => (isScalar(item) ? item.value : item) === change.domain)
+                    if (at !== -1) {
+                        if (typeof old === 'string' && old !== '') aliases.set(at, old)
+                        else aliases.delete(at)
+                        if (aliases.items.length === 0) doc.deleteIn([...path, 'aliases'])
+                    }
+                }
+                doc.setIn([...path, 'domain'], change.domain)
+            }
             return null
         case 'set-aliases':
             if (!doc.hasIn(['projects', change.id, 'environments', change.environment])) {
