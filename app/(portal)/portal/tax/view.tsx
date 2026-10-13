@@ -12,6 +12,7 @@ import { formatMoney } from '@/server/invoices/money'
 import type { KeyDate } from '@/server/tax/dates'
 import type { Estimate } from '@/server/tax/estimate'
 import type { Share, YearSummary } from '@/server/tax/summary'
+import type { YearReports } from '@/server/tax/wiring'
 import { endOf, startOf, yearLabel } from '@/server/tax/year'
 import { Chip } from '@/ui/Chip/Chip'
 import { Meter } from '@/ui/Meter/Meter'
@@ -19,14 +20,16 @@ import { StatStrip } from '@/ui/StatStrip/StatStrip'
 import { Tabs } from '@/ui/Tabs/Tabs'
 import { MonthlyChart, ProfitChart } from './charts'
 import { DeleteEntry, EntryForm, YearForm } from './controls'
+import { ReportsPanel } from './reports'
 import styles from './tax.module.css'
 
-export type TaxTab = 'overview' | 'income' | 'expenses' | 'year'
+export type TaxTab = 'overview' | 'income' | 'expenses' | 'reports' | 'year'
 
 const TABS: { id: TaxTab, label: string }[] = [
     { id: 'overview', label: 'Overview' },
     { id: 'income', label: 'Income' },
     { id: 'expenses', label: 'Expenses' },
+    { id: 'reports', label: 'Reports' },
     { id: 'year', label: 'Dates and details' },
 ]
 
@@ -39,6 +42,7 @@ type Props = {
     dates: KeyDate[]
     coming: KeyDate[]
     reminders: { to: string | null, off: boolean, recent: { key: string, sentOn: Day }[] }
+    reports: YearReports
 }
 
 const dayMonth = (day: Day) => formatDayShort(day).replace(/\s\d{4}$/, '')
@@ -116,7 +120,7 @@ function Breakdown({ estimate, projected }: { estimate: Estimate, projected: Est
     )
 }
 
-export function TaxView({ tab, today, current, gstRegistered, summary, dates, coming, reminders }: Props) {
+export function TaxView({ tab, today, current, gstRegistered, summary, dates, coming, reminders, reports }: Props) {
     const [selected, setSelected] = useState<TaxTab>(tab)
     const { estimate, gst } = summary
     const year = summary.year
@@ -286,6 +290,8 @@ export function TaxView({ tab, today, current, gstRegistered, summary, dates, co
                         </aside>
                     </div>
                 )}
+
+                {selected === 'reports' && <ReportsPanel year={year} today={today} gstRegistered={gstRegistered} reports={reports} />}
 
                 {selected === 'year' && (
                     <div className={styles.split}>

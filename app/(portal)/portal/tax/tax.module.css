@@ -178,3 +178,51 @@
 .problem { margin-top: 4px; }
 .inlineError { color: var(--soft-red); font-size: 11.5px; }
 .dialogText { margin: 0 0 12px; color: var(--ink-2); font-size: 13px; line-height: 1.6; }
+
+/* Reports */
+
+.statement { max-width: 640px; }
+.statement thead th { position: sticky; top: 0; }
+.section th {
+    position: static;
+    padding: 16px 0 6px;
+    font-family: inherit;
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: .06em;
+    text-transform: uppercase;
+    color: var(--ink-2);
+    border-bottom: 1px solid var(--rule);
+    background: none;
+}
+.indent { padding-left: 12px !important; color: var(--ink-2); }
+.sum td { font-weight: 600; border-bottom: 1px solid var(--rule-hi); }
+.grand td { font-weight: 700; font-size: 13.5px; border-top: 2px solid var(--rule-hi); border-bottom: 0; padding-top: 10px; }
+
+.switch {
+    display: flex;
+    border: 1px solid var(--rule-hi);
+    border-radius: var(--radius-control);
+    padding: 2px;
+    gap: 2px;
+}
+.switchItem {
+    flex: 1;
+    font: inherit;
+    font-size: 12px;
+    font-weight: 500;
+    padding: 5px 6px;
+    border: 0;
+    border-radius: 5px;
+    background: none;
+    color: var(--ink-2);
+    cursor: pointer;
+    white-space: nowrap;
+}
+.switchItem:hover { color: var(--ink); background: var(--panel-hi); }
+.switchItem:focus-visible { outline: 2px solid var(--lake); outline-offset: 1px; }
+.switchOn, .switchOn:hover { background: var(--lake); color: var(--night); font-weight: 600; }
+
+.download { display: inline-block; margin-top: 10px; font-size: 12px; color: var(--lake); text-decoration: none; }
+.download:hover { text-decoration: underline; }
+.chipRow { display: flex; }

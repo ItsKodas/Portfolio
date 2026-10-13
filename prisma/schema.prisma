@@ -491,6 +491,25 @@ model TaxYear {
   lodgedOn         DateTime? @db.Date
 }
 
+enum TaxBalanceSide {
+  ASSET
+  LIABILITY
+}
+
+// A line the operator gives the balance sheet for one financial year, as it stood on the year's last day (or
+// today, while the year runs): the bank balance, equipment, a credit card. What is owed by clients and the
+// estimated income tax are worked out, not entered.
+model TaxBalanceItem {
+  id          String         @id @default(cuid())
+  createdAt   DateTime       @default(now())
+  year        Int
+  side        TaxBalanceSide
+  name        String
+  amountCents Int
+
+  @@index([year])
+}
+
 // Each tax reminder email, by a key naming it and its year, so the hourly run sends each one once
 model TaxReminder {
   key    String   @id

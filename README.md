@@ -205,6 +205,11 @@ dollar of profit to put aside. It also tracks turnover against the $75,000 GST r
 income, and tax already paid, can be added under Dates and details so the estimate is closer, and marking the return
 lodged there stops its reminders. The figures are estimates, and the page says so.
 
+The Reports tab has the year's profit and loss (against the year before), a balance sheet (what clients owe and the
+estimated tax are worked out; the bank balance, equipment and the like are added as lines) and the figures a business
+activity statement asks for, by quarter (G1, 1A, 1B and T1). Each downloads as a CSV for an accountant. A sole trader
+not registered for GST and with no employees does not lodge a BAS, and the tab says so.
+
 An hourly run emails the operator, between 9am and 6pm Brisbane time: 30 and 7 days before the year ends, once it has
 closed (with its final figures), 30 and 7 days before the 31 October return date, on the day and if it is late, and
 when turnover nears or reaches the GST threshold. They go to `TAX_NOTIFY_TO`, else `ADMIN_EMAIL`, and

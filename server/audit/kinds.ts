@@ -113,6 +113,8 @@ export const KINDS = {
     'tax.entryAdd': 'Tax entry added',
     'tax.entryDelete': 'Tax entry deleted',
     'tax.yearSave': 'Tax year details saved',
+    'tax.balanceAdd': 'Balance sheet line added',
+    'tax.balanceDelete': 'Balance sheet line deleted',
     'tax.reminder': 'Tax reminder sent',
 } as const satisfies Record<`${Category}.${string}`, string>
 

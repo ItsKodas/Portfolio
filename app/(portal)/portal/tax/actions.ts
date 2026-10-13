@@ -9,7 +9,7 @@ import { z } from 'zod'
 import { adminActor, record } from '@/server/audit/record'
 import { requireAdmin } from '@/server/auth'
 import { formatMoney } from '@/server/invoices/money'
-import { entrySchema, yearSchema } from '@/server/tax/schema'
+import { balanceSchema, entrySchema, yearSchema } from '@/server/tax/schema'
 import { log, tax } from '@/server/tax/wiring'
 import { yearLabel } from '@/server/tax/year'
 
@@ -74,6 +74,45 @@ export async function saveYearAction(input: unknown): Promise<TaxResult> {
     await record({
         kind: 'tax.yearSave', actor, target: { type: 'taxYear', id: String(parsed.data.year), name: label },
         summary: parsed.data.lodgedOn ? `Saved the ${label} tax year, return lodged ${parsed.data.lodgedOn}` : `Saved the ${label} tax year details`,
+    })
+    revalidatePath('/portal/tax')
+    return { ok: true }
+}
+
+export async function addBalanceItemAction(input: unknown): Promise<TaxResult> {
+    const actor = adminActor(await requireAdmin())
+    const parsed = balanceSchema.safeParse(input)
+    if (!parsed.success) return { ok: false, error: firstIssue(parsed.error) }
+    let created
+    try {
+        created = await tax().addBalanceItem(parsed.data)
+    } catch (error) {
+        log('Adding a balance sheet line failed', error)
+        return FAILED
+    }
+    await record({
+        kind: 'tax.balanceAdd', actor, target: { type: 'taxBalance', id: created.id, name: parsed.data.name },
+        summary: `Added ${parsed.data.side === 'ASSET' ? 'an asset' : 'a liability'} of ${formatMoney(parsed.data.amountCents)} to the ${yearLabel(parsed.data.year)} balance sheet: ${parsed.data.name}`,
+    })
+    revalidatePath('/portal/tax')
+    return { ok: true }
+}
+
+export async function deleteBalanceItemAction(id: unknown): Promise<TaxResult> {
+    const actor = adminActor(await requireAdmin())
+    const parsed = z.string().min(1).max(64).safeParse(id)
+    if (!parsed.success) return { ok: false, error: 'That request was not valid.' }
+    let removed
+    try {
+        removed = await tax().deleteBalanceItem(parsed.data)
+    } catch (error) {
+        log(`Deleting balance sheet line ${parsed.data} failed`, error)
+        return FAILED
+    }
+    if (!removed) return { ok: false, error: 'That line is already gone.' }
+    await record({
+        kind: 'tax.balanceDelete', actor, target: { type: 'taxBalance', id: removed.id, name: removed.name },
+        summary: `Deleted ${removed.name} from the ${yearLabel(removed.year)} balance sheet`,
     })
     revalidatePath('/portal/tax')
     return { ok: true }

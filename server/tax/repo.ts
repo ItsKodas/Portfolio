@@ -7,7 +7,8 @@ import 'server-only'
 import type { PrismaClient } from '../generated/prisma/client'
 import { addDays, dateOf, dayOf, todayIn, type Day } from '../invoices/days'
 import { invoiceNumber } from '../invoices/standing'
-import type { EntryInput, YearInput } from './schema'
+import type { BalanceItem } from './reports'
+import type { BalanceInput, EntryInput, YearInput } from './schema'
 import type { EntryRow, PaymentRow, YearSettings } from './summary'
 import { endOf, startOf, type FinancialYear } from './year'
 
@@ -40,6 +41,7 @@ export function taxRepo(db: PrismaClient) {
                     id: row.id,
                     day: todayIn(row.createdAt),
                     cents: netOfGst(row.amountCents, row.invoice),
+                    gstCents: row.amountCents - netOfGst(row.amountCents, row.invoice),
                     invoiceId: row.invoice.id,
                     invoiceNumber: invoiceNumber(row.invoice.number),
                     who: row.invoice.billToCompany || row.invoice.billToName,
@@ -100,6 +102,33 @@ export function taxRepo(db: PrismaClient) {
                 lodgedOn: input.lodgedOn ? dateOf(input.lodgedOn) : null,
             }
             await db.taxYear.upsert({ where: { year: input.year }, create: { year: input.year, ...data }, update: data })
+        },
+
+        // What clients owed on a day: invoices sent by then and not paid by its end. A part payment is not
+        // taken off, which overstates it a little until the rest arrives.
+        receivableAt: async (day: Day): Promise<number> => {
+            const endOfDay = dateOf(addDays(day, 1))
+            const rows = await db.invoice.findMany({
+                where: {
+                    issuedOn: { lte: dateOf(day) },
+                    status: { in: ['OPEN', 'PAID'] },
+                    OR: [{ paidAt: null }, { paidAt: { gte: new Date(endOfDay.getTime() - 10 * 3_600_000) } }],
+                },
+                select: { totalCents: true },
+            })
+            return rows.reduce((sum, row) => sum + row.totalCents, 0)
+        },
+
+        balanceItems: async (year: FinancialYear): Promise<BalanceItem[]> =>
+            db.taxBalanceItem.findMany({ where: { year }, orderBy: { createdAt: 'asc' }, select: { id: true, side: true, name: true, amountCents: true } }),
+
+        addBalanceItem: async (input: BalanceInput) => db.taxBalanceItem.create({ data: input, select: { id: true } }),
+
+        deleteBalanceItem: async (id: string) => {
+            const row = await db.taxBalanceItem.findUnique({ where: { id } })
+            if (!row) return null
+            await db.taxBalanceItem.delete({ where: { id } })
+            return row
         },
 
         // Claimed before the email goes, so two runs at once send it once. False when it was already sent.

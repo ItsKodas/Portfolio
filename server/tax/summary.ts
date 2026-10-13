@@ -11,6 +11,8 @@ export type PaymentRow = {
     id: string
     day: Day
     cents: number
+    // The GST in the payment, when its invoice charged any: never income, but a BAS reports it
+    gstCents?: number
     invoiceId: string
     invoiceNumber: string
     who: string
@@ -41,6 +43,7 @@ export type IncomeLine = {
     who: string
     source: string
     cents: number
+    gstCents: number
     invoiceId: string | null
     entryId: string | null
 }
@@ -125,11 +128,11 @@ export function summarise(input: {
     const allIncome: IncomeLine[] = [
         ...input.payments.map(payment => ({
             id: `payment:${payment.id}`, day: payment.day, description: payment.invoiceNumber, who: payment.who,
-            source: payment.method, cents: payment.cents, invoiceId: payment.invoiceId, entryId: null,
+            source: payment.method, cents: payment.cents, gstCents: payment.gstCents ?? 0, invoiceId: payment.invoiceId, entryId: null,
         })),
         ...input.entries.filter(entry => entry.kind === 'INCOME').map(entry => ({
             id: `entry:${entry.id}`, day: entry.day, description: entry.description, who: NOT_INVOICED,
-            source: entry.category, cents: entry.amountCents, invoiceId: null, entryId: entry.id,
+            source: entry.category, cents: entry.amountCents, gstCents: 0, invoiceId: null, entryId: entry.id,
         })),
     ]
     const income = allIncome.filter(line => within(line.day, year)).sort(byDayDesc)

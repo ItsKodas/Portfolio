@@ -76,3 +76,12 @@ export const yearSchema = z.object({
 })
 
 export type YearInput = z.infer<typeof yearSchema>
+
+export const balanceSchema = z.object({
+    year: z.coerce.number().int().min(2000).max(2100),
+    side: z.enum(['ASSET', 'LIABILITY'], 'Choose what it is.'),
+    name: z.string().trim().min(1, 'Name it, such as "Business bank account".').max(120),
+    amountCents: amount,
+})
+
+export type BalanceInput = z.infer<typeof balanceSchema>

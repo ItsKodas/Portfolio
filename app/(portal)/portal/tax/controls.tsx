@@ -13,7 +13,7 @@ import { Callout } from '@/ui/Callout/Callout'
 import { Dialog } from '@/ui/Dialog/Dialog'
 import { Field } from '@/ui/Field/Field'
 import { DeleteOutline } from '@/ui/icons'
-import { addEntryAction, deleteEntryAction, saveYearAction, type TaxResult } from './actions'
+import { addBalanceItemAction, addEntryAction, deleteBalanceItemAction, deleteEntryAction, saveYearAction, type TaxResult } from './actions'
 import styles from './tax.module.css'
 
 function useAction() {
@@ -80,7 +80,7 @@ export function EntryForm({ kind, defaultDay, min, max }: { kind: 'EXPENSE' | 'I
     )
 }
 
-export function DeleteEntry({ id, description }: { id: string, description: string }) {
+export function DeleteEntry({ id, description, line = false }: { id: string, description: string, line?: boolean }) {
     const { pending, error, run } = useAction()
     const [open, setOpen] = useState(false)
     return (
@@ -91,15 +91,15 @@ export function DeleteEntry({ id, description }: { id: string, description: stri
             <Dialog
                 open={open}
                 onClose={() => setOpen(false)}
-                title="Delete this entry?"
+                title={line ? 'Delete this line?' : 'Delete this entry?'}
                 footer={
                     <>
                         <Button onClick={() => setOpen(false)}>Cancel</Button>
-                        <Button variant="danger" disabled={pending} onClick={() => run(() => deleteEntryAction(id), () => setOpen(false))}>Delete</Button>
+                        <Button variant="danger" disabled={pending} onClick={() => run(() => (line ? deleteBalanceItemAction(id) : deleteEntryAction(id)), () => setOpen(false))}>Delete</Button>
                     </>
                 }
             >
-                <p className={styles.dialogText}>&ldquo;{description}&rdquo; comes off this year&rsquo;s figures.</p>
+                <p className={styles.dialogText}>&ldquo;{description}&rdquo; comes off this year&rsquo;s {line ? 'balance sheet' : 'figures'}.</p>
                 <Problem error={error} />
             </Dialog>
         </>
@@ -132,6 +132,34 @@ export function YearForm({ year, settings, returnOpen }: { year: number, setting
             <div className={styles.formActions}>
                 <Button type="submit" variant="primary" size="small" disabled={pending}>Save</Button>
                 {saved && <span className={styles.saved}>Saved</span>}
+            </div>
+            <Problem error={error} />
+        </form>
+    )
+}
+
+// A line of the balance sheet the portal can't work out: the bank balance, equipment, a credit card
+export function BalanceForm({ year }: { year: number }) {
+    const { pending, error, run } = useAction()
+    const blank = { side: 'ASSET', name: '', amount: '' }
+    const [form, setForm] = useState(blank)
+    const set = (patch: Partial<typeof form>) => setForm(current => ({ ...current, ...patch }))
+    return (
+        <form className={styles.form} onSubmit={event => {
+            event.preventDefault()
+            run(() => addBalanceItemAction({ year, side: form.side, name: form.name, amountCents: form.amount }), () => setForm({ ...blank, side: form.side }))
+        }}>
+            <Field label="Name" value={form.name} onChange={event => set({ name: event.target.value })}
+                placeholder={form.side === 'ASSET' ? 'Business bank account' : 'Credit card'} required maxLength={120} />
+            <div className={styles.formPair}>
+                <Field as="select" label="It is" value={form.side} onChange={event => set({ side: event.target.value })}>
+                    <option value="ASSET">Owned (asset)</option>
+                    <option value="LIABILITY">Owed (liability)</option>
+                </Field>
+                <Field label="Amount ($)" inputMode="decimal" placeholder="0.00" value={form.amount} onChange={event => set({ amount: event.target.value })} required />
+            </div>
+            <div>
+                <Button type="submit" variant="primary" size="small" disabled={pending}>Add line</Button>
             </div>
             <Problem error={error} />
         </form>

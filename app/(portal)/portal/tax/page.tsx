@@ -5,7 +5,7 @@ import { requireAdmin } from '@/server/auth'
 import { formatDayShort, todayIn } from '@/server/invoices/days'
 import { businessDetails } from '@/server/invoices/business'
 import { keyDates } from '@/server/tax/dates'
-import { reminderAddress, tax, yearSummary } from '@/server/tax/wiring'
+import { reminderAddress, tax, yearReports, yearSummary } from '@/server/tax/wiring'
 import { yearLabel, yearOf } from '@/server/tax/year'
 import { Chip } from '@/ui/Chip/Chip'
 import frame from '../frame.module.css'
@@ -15,7 +15,7 @@ import { TaxView, type TaxTab } from './view'
 
 export const metadata: Metadata = { title: 'Tax' }
 
-const TABS: TaxTab[] = ['overview', 'income', 'expenses', 'year']
+const TABS: TaxTab[] = ['overview', 'income', 'expenses', 'reports', 'year']
 
 // The operator's tax year at a glance: income from the invoices, expenses added by hand, the estimate and the
 // dates. Theirs alone, so it is behind requireAdmin like every operator page, and never in a client's tabs.
@@ -33,6 +33,7 @@ export default async function TaxPage({ searchParams }: { searchParams: Promise<
     const tab = TABS.includes(params.tab as TaxTab) ? (params.tab as TaxTab) : 'overview'
 
     const [summary, recent] = await Promise.all([yearSummary(year, today), repo.recentReminders()])
+    const reports = await yearReports(year, today, summary)
 
     // What is coming up next, across the year that is running and the one before it (whose return is due in this one)
     const [last, now] = await Promise.all([repo.settings(current - 1), repo.settings(current)])
@@ -75,6 +76,7 @@ export default async function TaxPage({ searchParams }: { searchParams: Promise<
                     summary={summary}
                     dates={keyDates(year, today, summary.settings.lodgedOn)}
                     coming={coming}
+                    reports={reports}
                     reminders={{
                         to: reminderAddress(),
                         off: /^(0|off|false)$/i.test(process.env.TAX_REMINDERS ?? ''),
