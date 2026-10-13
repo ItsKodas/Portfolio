@@ -64,6 +64,7 @@ const projects: { name: string, year?: string, blurb: string, website?: string, 
         name: 'Voxweave',
         year: '2026',
         blurb: 'A Windows app for real-time voice conversion: speak into your mic and a chosen voice comes out on a virtual microphone. It also records voice datasets, trains custom voice models on the GPU and turns typed text into speech, all on your own computer.',
+        github: 'https://github.com/ItsKodas/voxweave',
     },
     {
         name: 'The Back Room',
