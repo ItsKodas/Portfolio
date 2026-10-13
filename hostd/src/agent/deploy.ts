@@ -802,7 +802,7 @@ export async function runDeploy(
             return fail(resolvedNext.problem)
         }
         const bindRoots = [build.next, ...Object.values(project.storage).map(entry => entry.absolute)]
-        const unsafe = composeSafetyProblems(resolvedNext.resolved, bindRoots)
+        const unsafe = composeSafetyProblems(resolvedNext.resolved, bindRoots, project.networks)
         if (unsafe.length > 0) {
             await deps.fs.rmdir(build.next).catch(() => {})
             return fail(`the compose file is not allowed: ${unsafe.join('; ')}`)

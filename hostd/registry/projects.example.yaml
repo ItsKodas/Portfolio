@@ -62,6 +62,7 @@ projects:
   #   name: Widget Shop
   #   repo: git@github.com:ItsKodas/widget-shop.git    # ssh or https git URL; required if any environment sets branch
   #   portEnv: WEB_PORT                                # the env var the compose file reads its port from (default WEB_PORT)
+  #   networks: [ shared-network ]                     # external Docker networks its services may join; any other is refused (default none)
   #   limits:
   #     memory: 1g                                     # <number>(b|k|m|g), default 1g
   #     cpus: '1'                                      # <number>, default 1

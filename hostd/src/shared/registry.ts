@@ -95,6 +95,9 @@ export type ProjectEntry = {
     upstream: { host: string, port: number }
     portEnv: string
     limits: { memory: string | null, cpus: string | null }
+    // External Docker networks this project's services may join, by their real names. Empty for almost
+    // every project: the container-escape guard (agent/guard.ts) refuses any external network not named here.
+    networks: string[]
     environments: Map<EnvironmentName, EnvironmentEntry>
     services: Record<string, ServiceEntry>
     storage: Record<string, StorageEntry>
@@ -161,7 +164,7 @@ const DEFAULT_RESERVED = [HORIZONS_BASE]
 const TOP_KEYS = new Set(['reserved', 'allowed', 'openSubdomains', 'offsite', 'projects'])
 const PROJECT_KEYS = new Set([
     'client', 'name', 'dir', 'compose', 'upstream', 'services', 'storage', 'capabilities', 'maxDomains', 'backups',
-    'repo', 'credential', 'portEnv', 'limits', 'environments', 'contact', 'rootDomain',
+    'repo', 'credential', 'portEnv', 'limits', 'networks', 'environments', 'contact', 'rootDomain',
 ])
 const ENVIRONMENT_KEYS = new Set(['dir', 'compose', 'composeName', 'branch', 'domain', 'aliases', 'port', 'certificate', 'deployed', 'websockets', 'flexibleSsl'])
 const DIR = /^\/var\/www\/[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/
@@ -415,6 +418,24 @@ function parsePortEnv(raw: unknown, problems: string[]): string {
     return DEFAULT_PORT_ENV
 }
 
+// hostd's own network (hostd/docker-compose.yml), where its api listens. Nothing on a client's side of the
+// fence belongs on it, so no registry entry can sanction it, whoever wrote the entry.
+const HOSTD_NETWORK = 'hostd'
+const NETWORK_NAME = /^[A-Za-z0-9][A-Za-z0-9_.-]{0,62}$/
+
+function parseNetworks(raw: unknown, problems: string[]): string[] {
+    if (raw === undefined) return []
+    if (!Array.isArray(raw) || !raw.every(name => typeof name === 'string' && NETWORK_NAME.test(name))) {
+        problems.push('networks must be a list of Docker network names')
+        return []
+    }
+    if (raw.includes(HOSTD_NETWORK)) {
+        problems.push(`networks may not include ${HOSTD_NETWORK}, hostd's own network`)
+        return []
+    }
+    return [...new Set(raw as string[])]
+}
+
 function parseLimits(raw: unknown, problems: string[]): { memory: string | null, cpus: string | null } {
     const limits = { ...DEFAULT_LIMITS }
     if (raw === undefined) return limits
@@ -599,6 +620,7 @@ function parseProject(id: string, raw: unknown, rules: HostRules): ParsedProject
     const repo = parseRepo(raw.repo, problems)
     const credential = parseCredential(raw.credential, problems)
     const portEnv = parsePortEnv(raw.portEnv, problems)
+    const networks = parseNetworks(raw.networks, problems)
     const limits = parseLimits(raw.limits, problems)
 
     const usesEnvironments = raw.environments !== undefined
@@ -682,7 +704,7 @@ function parseProject(id: string, raw: unknown, rules: HostRules): ParsedProject
     if (problems.length > 0 || client === undefined || !name || !dir || !upstream || !composePaths || !composeName) return { problems }
     return {
         entry: {
-            id, client, name, repo, credential, dir, compose, composePaths, composeName, upstream, portEnv, limits, environments,
+            id, client, name, repo, credential, dir, compose, composePaths, composeName, upstream, portEnv, limits, networks, environments,
             services, storage, capabilities, maxDomains,
             backups: { maxKeep }, contact, rootDomain,
         },
