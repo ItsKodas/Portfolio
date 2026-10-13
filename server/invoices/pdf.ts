@@ -7,7 +7,7 @@ import 'server-only'
 import { PDFDocument, StandardFonts, rgb, type PDFFont, type PDFImage, type PDFPage, type RGB } from 'pdf-lib'
 
 import type { Business } from './business'
-import { formatDay, formatDayShort, type Day } from './days'
+import { dateOf, formatDay, formatDayShort, type Day } from './days'
 import { formatMoney, formatQuantity, GST_RATE } from './money'
 import { invoiceNumber, type Standing } from './standing'
 
@@ -119,6 +119,9 @@ function wrap(font: PDFFont, size: number, text: string, width: number): string[
     }
     return lines
 }
+
+// A day without its year, for the start of a period that ends in the same year
+const dayMonth = new Intl.DateTimeFormat('en-AU', { day: 'numeric', month: 'short', timeZone: 'UTC' })
 
 // Shortened with an ellipsis to fit, for the boxes that have room for one line only
 function fit(font: PDFFont, size: number, text: string, width: number): string {
@@ -240,10 +243,24 @@ export async function invoicePdf(invoice: PdfInvoice, business: Business, option
     // Three boxes: who it is for, when, and how much
     const gap = 10
     const cardWidth = (WIDTH - gap * 2) / 3
-    const cardHeight = 96
+    const inner = cardWidth - 28
+
+    // The dates, worked out first because a long period takes a second line and the boxes grow to fit it
+    const dates: [string, string[]][] = [
+        ['Issued', [invoice.issuedOn ? formatDayShort(invoice.issuedOn) : 'Not yet sent']],
+        ['Due', [formatDayShort(invoice.dueOn)]],
+    ]
+    if (invoice.periodStart && invoice.periodEnd) {
+        // The year once, at the end, when both ends share it: "1 Oct to 31 Oct 2026"
+        const sameYear = invoice.periodStart.slice(0, 4) === invoice.periodEnd.slice(0, 4)
+        const from = sameYear ? dayMonth.format(dateOf(invoice.periodStart)) : formatDayShort(invoice.periodStart)
+        const to = formatDayShort(invoice.periodEnd)
+        const whole = `${from} to ${to}`
+        dates.push(['Period', fonts.bold.widthOfTextAtSize(safe(fonts.bold, whole), 9) <= inner - 40 ? [whole] : [`${from} to`, to]])
+    }
+    const cardHeight = 96 + 15 * dates.reduce((extra, [, lines]) => extra + lines.length - 1, 0)
     const cardTop = y
     const cards = [0, 1, 2].map(index => MARGIN + index * (cardWidth + gap))
-    const inner = cardWidth - 28
     for (const x of cards) box(x, cardTop - cardHeight, cardWidth, cardHeight, PANEL, 9, RULE)
 
     {
@@ -266,20 +283,12 @@ export async function invoicePdf(invoice: PdfInvoice, business: Business, option
         let at = cardTop - 22
         label('Dates', x, at)
         at -= 19
-        const rows: [string, string][] = [
-            ['Issued', invoice.issuedOn ? formatDayShort(invoice.issuedOn) : 'Not yet sent'],
-            ['Due', formatDayShort(invoice.dueOn)],
-        ]
-        if (invoice.periodStart && invoice.periodEnd) {
-            // The year once, at the end, when both ends share it: "1 Oct to 31 Oct 2026"
-            const sameYear = invoice.periodStart.slice(0, 4) === invoice.periodEnd.slice(0, 4)
-            const from = formatDayShort(invoice.periodStart)
-            rows.push(['Period', `${sameYear ? from.replace(/\s*\d{4}$/, '') : from} to ${formatDayShort(invoice.periodEnd)}`])
-        }
-        for (const [name, value] of rows) {
+        for (const [name, lines] of dates) {
             text(name, x, at, { size: 9, color: INK_3 })
-            text(fit(fonts.bold, 9, value, inner - 40), right, at, { size: 9, bold: true, align: 'right' })
-            at -= 15
+            for (const line of lines) {
+                text(fit(fonts.bold, 9, line, inner - 40), right, at, { size: 9, bold: true, align: 'right' })
+                at -= 15
+            }
         }
     }
 
