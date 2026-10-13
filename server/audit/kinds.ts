@@ -12,6 +12,7 @@ export const CATEGORIES = {
     client: 'Clients',
     quote: 'Quotes',
     billing: 'Billing',
+    tax: 'Tax',
 } as const
 
 export type Category = keyof typeof CATEGORIES
@@ -108,6 +109,11 @@ export const KINDS = {
     'billing.planEnd': 'Plan ended',
     'billing.autopayStart': 'Automatic payments on',
     'billing.autopayStop': 'Automatic payments off',
+
+    'tax.entryAdd': 'Tax entry added',
+    'tax.entryDelete': 'Tax entry deleted',
+    'tax.yearSave': 'Tax year details saved',
+    'tax.reminder': 'Tax reminder sent',
 } as const satisfies Record<`${Category}.${string}`, string>
 
 export type Kind = keyof typeof KINDS

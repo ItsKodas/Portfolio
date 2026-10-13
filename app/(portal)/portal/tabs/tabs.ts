@@ -8,6 +8,7 @@ const ADMIN: Place[] = [
     { label: 'Quotes', href: '/portal/quotes', owns: ['/portal/quotes'] },
     { label: 'Clients', href: '/portal/clients', owns: ['/portal/clients'] },
     { label: 'Invoices', href: '/portal/invoices', owns: ['/portal/invoices'] },
+    { label: 'Tax', href: '/portal/tax', owns: ['/portal/tax'] },
     { label: 'Logs', href: '/portal/logs', owns: ['/portal/logs'] },
 ]
 
