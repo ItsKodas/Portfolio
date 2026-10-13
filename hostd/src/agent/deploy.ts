@@ -29,7 +29,8 @@ import type { RegistryWriter } from '../shared/registry-write.ts'
 import type { Commit } from '../shared/fetch-protocol.ts'
 import { maintenanceKey, type DeployRecord, type DeployTrigger } from '../shared/deploys.ts'
 import type { FetchClient } from './fetch-client.ts'
-import type { ComposeLocation, Runner } from './compose.ts'
+import { resolveCompose, type ComposeLocation, type Runner } from './compose.ts'
+import { composeSafetyProblems } from './guard.ts'
 import { isPortOverride, type PortOverrideResult } from './port-override.ts'
 import type { DockerApi } from './docker.ts'
 import { listEnvFiles, readEnvFile, writeEnvFile, type EnvFs } from './env-files.ts'
@@ -788,6 +789,24 @@ export async function runDeploy(
         // fetcher/index.ts): own only ever keeps an execute bit it is handed, never invents one.
         const like = await deps.fs.owner(trees.dir)
         await deps.fs.own(build.next, like)
+
+        // The container-escape guard, against the commit that is about to be built and brought up. The
+        // compose file is part of the client's repo, so this is the point a pushed privileged container,
+        // host mount, docker socket or external-network join is refused, before anything is built or run.
+        // The storage guard runs the same check against the live tree, but the poller deploys a new commit
+        // without passing through it, so the candidate must be checked here in its own right.
+        const candidate = { ...locationIn(environment, build.next), composeName: name }
+        const resolvedNext = await resolveCompose(candidate, deps.runner)
+        if (!resolvedNext.ok) {
+            await deps.fs.rmdir(build.next).catch(() => {})
+            return fail(resolvedNext.problem)
+        }
+        const bindRoots = [build.next, ...Object.values(project.storage).map(entry => entry.absolute)]
+        const unsafe = composeSafetyProblems(resolvedNext.resolved, bindRoots)
+        if (unsafe.length > 0) {
+            await deps.fs.rmdir(build.next).catch(() => {})
+            return fail(`the compose file is not allowed: ${unsafe.join('; ')}`)
+        }
 
         // Build. The site is still serving the old version throughout, and a failure here ends the
         // deploy with nothing of the running environment touched.

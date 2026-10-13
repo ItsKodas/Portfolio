@@ -148,6 +148,7 @@ const confirmDeps = (overrides: Record<string, unknown> = {}) => ({
     verifyTotp: vi.fn(() => 37037036n),
     recordTotpUse: vi.fn(async () => true),
     confirmTotp: vi.fn(async () => {}),
+    markEnrolled: vi.fn(async () => {}),
     newRecoveryCode: vi.fn(() => 'ABCDE-FGHJK'),
     hashRecoveryCode: vi.fn((code: string) => `hashed:${code}`),
     replaceRecoveryCodes: vi.fn(async () => {}),
@@ -165,6 +166,19 @@ describe('confirmEnrolment', () => {
         expect((result as { recoveryCodes: string[] }).recoveryCodes).toHaveLength(10)
         expect(deps.confirmTotp).toHaveBeenCalledWith('cl_ABCDEFGH', now)
         expect(deps.replaceRecoveryCodes).toHaveBeenCalledWith('cl_ABCDEFGH', expect.arrayContaining(['hashed:ABCDE-FGHJK']))
+        // Only this session is marked, so only it can finish sign-in at the acknowledge step
+        expect(deps.markEnrolled).toHaveBeenCalledWith('session1', now)
+    })
+
+    // An account that already has an authenticator signs in through the code step. Letting it re-enrol here
+    // would wipe the real client's recovery codes and hand fresh ones to whoever is holding the password.
+    it('refuses an account that is already enrolled, and confirms nothing', async () => {
+        const enrolled = { ...sessionBase, client: client({ totpSecret: 'encrypted', totpConfirmedAt: now }) } as never
+        const deps = confirmDeps()
+        expect(await confirmEnrolment({ session: enrolled, code: '123456' }, deps)).toMatchObject({ ok: false })
+        expect(deps.confirmTotp).not.toHaveBeenCalled()
+        expect(deps.replaceRecoveryCodes).not.toHaveBeenCalled()
+        expect(deps.markEnrolled).not.toHaveBeenCalled()
     })
 
     it('refuses a wrong code and confirms nothing', async () => {
@@ -192,10 +206,24 @@ describe('confirmEnrolment', () => {
 })
 
 describe('acknowledgeRecoveryCodes', () => {
-    // This is the third and last place mfaAt is written, and it is reachable only after confirmEnrolment
+    const enrolledSession = { ...sessionBase, enrolledAt: now } as never
+
+    // This is the last place mfaAt is written, reachable only on the session that confirmed enrolment
     it('is what finally makes the session usable', async () => {
         const completeMfa = vi.fn(async () => {})
-        await acknowledgeRecoveryCodes(session, { completeMfa, recordSuccess: vi.fn(async () => {}), now: () => now })
+        const ok = await acknowledgeRecoveryCodes(enrolledSession, { completeMfa, recordSuccess: vi.fn(async () => {}), now: () => now })
+        expect(ok).toBe(true)
         expect(completeMfa).toHaveBeenCalledWith('session1', now, expect.any(Date))
+    })
+
+    // A session that never confirmed enrolment (for example a fresh pending session on an already-enrolled
+    // account) must not be able to finish sign-in here without a code.
+    it('refuses a session that did not confirm enrolment, and writes nothing', async () => {
+        const completeMfa = vi.fn(async () => {})
+        const recordSuccess = vi.fn(async () => {})
+        const ok = await acknowledgeRecoveryCodes(session, { completeMfa, recordSuccess, now: () => now })
+        expect(ok).toBe(false)
+        expect(completeMfa).not.toHaveBeenCalled()
+        expect(recordSuccess).not.toHaveBeenCalled()
     })
 })

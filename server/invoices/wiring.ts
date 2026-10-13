@@ -44,6 +44,13 @@ export function paypal(): Paypal | null {
 // The mode PayPal is set up in, or null when it is not, so nothing is ever counted against a mode that is not running
 export const paypalMode = () => (readPaypal().ok ? modeOf() : null)
 
+// Whether a webhook is configured for the running mode. Automatic payment needs one, because a subscription's
+// payments and cancellation only ever arrive by webhook.
+export const webhookConfigured = () => {
+    const setup = readPaypal()
+    return setup.ok && !!setup.value.webhookId
+}
+
 // The site's mark, drawn white for a dark ground, as the invoice is. An invoice without it beats no invoice.
 let logo: Promise<Uint8Array | null> | null = null
 const logoBytes = () => (logo ??= readFile(path.join(process.cwd(), 'public/images/logo.png')).catch(error => {
@@ -63,6 +70,7 @@ export function billing() {
         business: () => businessDetails(),
         paypal,
         mode: paypalMode,
+        webhookConfigured,
         siteUrl: () => (process.env.AUTH_URL ?? '').trim().replace(/\/+$/, ''),
         send: async build => {
             const config = clientMailConfig()

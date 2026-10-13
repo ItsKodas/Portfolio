@@ -119,6 +119,10 @@ type SetupOptions = {
     copyFails?: boolean
     // Keyed by the compose subcommand: 'build', 'up', 'down'.
     composeResults?: Record<string, Partial<RunResult>>
+    // Makes `compose config` fail only for the live tree, not the candidate `.next` tree the safety guard
+    // reads before building. Lets a test exercise the post-swap read failure without the pre-build guard
+    // refusing the deploy first.
+    configFailsForLive?: boolean
     containerState?: { state: string, health?: string }
     // What Docker reports once the previous copy is back in place, so a rollback can be watched all the
     // way to the end. Defaults to a healthy container, which is the case a rollback exists for.
@@ -272,6 +276,9 @@ function setup(options: SetupOptions = {}) {
         const stdout = subcommand === 'config'
             ? JSON.stringify({ name: 'acme', services: Object.fromEntries((options.declared ?? ['web']).map(service => [service, {}])) })
             : ''
+        if (subcommand === 'config' && options.configFailsForLive && !args.some(arg => arg.includes('.next'))) {
+            return { exitCode: 1, stdout: '', stderr: 'yaml: line 3', timedOut: false }
+        }
         return { exitCode: 0, stdout, stderr: '', timedOut: false, ...(options.composeResults?.[subcommand] ?? {}) }
     }
 
@@ -670,6 +677,8 @@ describe('runDeploy, the swap', () => {
         assert.deepEqual(order, [
             // The one-time relocation of the repository, which is why a swap can rename the tree at all.
             'move /var/www/acme/.git /var/www/acme.git/.git',
+            // The safety guard reading the candidate's compose before it is built or run
+            'compose config',
             'compose build',
             'compose down',
             'move /var/www/acme /var/www/acme.prev',
@@ -778,7 +787,7 @@ describe('runDeploy, on a branch that runs fewer services than the registry list
     })
 
     it('rolls back when the compose file cannot be read after the swap', async () => {
-        const context = setup({ registryYaml: withMongo, composeResults: { config: { exitCode: 1, stderr: 'yaml: line 3' } } })
+        const context = setup({ registryYaml: withMongo, configFailsForLive: true })
         const record = await runDeploy(context.project(), context.environment(), { ...request, commit: TIP }, context.deps)
         assert.equal(record.outcome, 'rolled-back')
         assert.match(record.reason ?? '', /the environment's compose file could not be read/)
@@ -1255,6 +1264,7 @@ describe('storage across a deploy', () => {
         assert.equal(context.exists.has('/var/www/acme.prev/uploads/photo.jpg'), false)
         const order = context.calls.filter(call => call.startsWith('compose ') || (call.startsWith('move ') && !call.includes('.git')))
         assert.deepEqual(order, [
+            'compose config',
             'compose build',
             'compose down',
             'move /var/www/acme /var/www/acme.prev',

@@ -192,8 +192,27 @@ export type ResolvedService = {
     expose?: Array<string | number>
     // 'host' makes compose ignore ports altogether, so hostd cannot choose the port such a service binds
     network_mode?: string
+    // The container-escape directives the safety guard forbids. A client's repo controls the compose file,
+    // and a deploy brings it up with the host Docker daemon, so any of these would be root on the dedi or a
+    // reach into another tenant. `docker compose config --format json` writes them under these exact keys.
+    privileged?: boolean
+    pid?: string
+    ipc?: string
+    userns_mode?: string
+    cap_add?: string[]
+    devices?: Array<string | Record<string, unknown>>
+    security_opt?: string[]
+    // Config writes this as a map of network name to its (possibly null) per-service options
+    networks?: Record<string, unknown> | string[]
 }
-export type ResolvedCompose = { name: string, services: Record<string, ResolvedService> }
+// Config writes each top-level network with whether it is external; a service joining an external network
+// could reach hostd's own api or another tenant, so the safety guard needs to know which are external.
+export type ResolvedNetwork = { external?: boolean }
+export type ResolvedCompose = {
+    name: string
+    services: Record<string, ResolvedService>
+    networks?: Record<string, ResolvedNetwork | null>
+}
 
 export async function resolveCompose(
     project: ComposeLocation,

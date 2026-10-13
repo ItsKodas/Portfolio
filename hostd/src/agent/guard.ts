@@ -7,6 +7,70 @@ import { isWithin, overlaps } from '../shared/formats.ts'
 import { isComposeService, type ProjectEntry } from '../shared/registry.ts'
 import { composeNameProblem, type ResolvedCompose, type ResolvedService } from './compose.ts'
 
+function withoutTrailingSlashPath(path: string): string {
+    return path.length > 1 && path.endsWith('/') ? path.slice(0, -1) : path
+}
+
+// Every host directory this service bind-mounts, whatever its mode. Unlike bindSources below, which the
+// storage guard uses to find the site's declared storage, this is for confining mounts: a bind source that
+// is not inside the environment's own tree or one of its registered storage paths is a mount of somebody
+// else's files (or the host root, or the docker socket), which a client's repo must never be able to add.
+function serviceBindSources(service: ResolvedService): string[] {
+    return (service.volumes ?? [])
+        .filter(volume => volume.type === 'bind' && typeof volume.source === 'string')
+        .map(volume => withoutTrailingSlashPath(volume.source as string))
+}
+
+function networkNamesOf(service: ResolvedService): string[] {
+    const networks = service.networks
+    if (Array.isArray(networks)) return networks
+    if (networks && typeof networks === 'object') return Object.keys(networks)
+    return []
+}
+
+// The container-escape policy. A client's repo owns its compose file and a deploy brings it up with the
+// host Docker daemon, so without this a pushed compose could mount the host root or the docker socket, run
+// privileged, share the host's network, pid or ipc namespaces, add capabilities or devices, loosen its
+// seccomp or AppArmor profile, or join an external network that reaches hostd's own api. Any of those is
+// root on the dedi or a reach into another tenant. Bind sources are confined to the environment's own tree
+// and its registered storage; the flags are refused outright.
+export function composeSafetyProblems(resolved: ResolvedCompose, allowedBindRoots: string[]): string[] {
+    const problems: string[] = []
+    const roots = allowedBindRoots.map(withoutTrailingSlashPath)
+    const externalNetworks = new Set(
+        Object.entries(resolved.networks ?? {})
+            .filter(([, network]) => network?.external)
+            .map(([name]) => name),
+    )
+
+    for (const [name, service] of Object.entries(resolved.services)) {
+        const at = (problem: string) => problems.push(`service ${name} ${problem}`)
+
+        if (service.privileged) at('is privileged')
+        const mode = service.network_mode
+        if (mode && (mode === 'host' || mode.startsWith('host:') || mode.startsWith('container:'))) {
+            at(`uses network_mode ${mode}`)
+        }
+        if (service.pid === 'host' || service.pid?.startsWith('container:')) at(`shares the host or another container's pid namespace (${service.pid})`)
+        if (service.ipc === 'host' || service.ipc?.startsWith('container:')) at(`shares the host or another container's ipc namespace (${service.ipc})`)
+        if (service.userns_mode === 'host') at('uses userns_mode host')
+        if ((service.cap_add ?? []).length > 0) at(`adds capabilities (${(service.cap_add ?? []).join(', ')})`)
+        if ((service.devices ?? []).length > 0) at('maps host devices')
+        for (const option of service.security_opt ?? []) {
+            if (option.includes('unconfined') || option.includes('label:disable')) at(`loosens its security profile (${option})`)
+        }
+
+        for (const source of serviceBindSources(service)) {
+            if (!roots.some(root => isWithin(root, source))) at(`bind-mounts ${source}, which is outside its own files`)
+        }
+
+        for (const network of networkNamesOf(service)) {
+            if (externalNetworks.has(network)) at(`joins the external network ${network}`)
+        }
+    }
+    return problems
+}
+
 function withoutTrailingSlash(path: string): string {
     return path.length > 1 && path.endsWith('/') ? path.slice(0, -1) : path
 }
@@ -51,6 +115,12 @@ export function guardProblems(project: ProjectEntry, resolved: ResolvedCompose):
         if (entry.role === 'site') siteSources.push(...bindSources(service))
         else databaseSources.push(...bindSources(service))
     }
+
+    // The container-escape policy, against the project's own tree and its registered storage. The deploy
+    // pipeline runs the same check against the candidate tree before it builds, so a dangerous push is
+    // refused before it is brought up; this catch is for a live compose edited in place by hand.
+    const bindRoots = [project.dir, ...Object.values(project.storage).map(storage => storage.absolute)]
+    problems.push(...composeSafetyProblems(resolved, bindRoots))
 
     const reads = [...project.composePaths, posix.join(project.dir, '.env')]
     for (const service of Object.values(resolved.services)) reads.push(...readsOf(service))

@@ -1,6 +1,6 @@
 import { describe, it } from 'node:test'
 import assert from 'node:assert/strict'
-import { guardProblems, guardAdvisories } from './guard.ts'
+import { guardProblems, guardAdvisories, composeSafetyProblems } from './guard.ts'
 import type { ResolvedCompose } from './compose.ts'
 import { parseRegistry, type ProjectEntry } from '../shared/registry.ts'
 
@@ -179,5 +179,65 @@ projects:
 `)
         const project = registry.projects.get('acme')!
         assert.deepEqual(guardAdvisories(project), [])
+    })
+})
+
+describe('composeSafetyProblems', () => {
+    const roots = ['/var/www/acme', '/var/www/acme/uploads']
+    const safe = (service: Record<string, unknown>): ResolvedCompose =>
+        ({ name: 'acme', services: { web: service } as ResolvedCompose['services'] })
+
+    it('passes an ordinary service with only its own and its storage bind mounts', () => {
+        const resolved = safe({ volumes: [bind('/var/www/acme/data'), bind('/var/www/acme/uploads'), { type: 'volume', source: 'cache' }] })
+        assert.deepEqual(composeSafetyProblems(resolved, roots), [])
+    })
+
+    // The escape a client's repo could reach for: each is root on the dedi or into another tenant.
+    it('refuses a privileged container', () => {
+        assert.deepEqual(composeSafetyProblems(safe({ privileged: true }), roots), ['service web is privileged'])
+    })
+
+    it('refuses sharing the host network, pid, ipc or user namespace', () => {
+        assert.ok(composeSafetyProblems(safe({ network_mode: 'host' }), roots).length === 1)
+        assert.ok(composeSafetyProblems(safe({ pid: 'host' }), roots).length === 1)
+        assert.ok(composeSafetyProblems(safe({ ipc: 'host' }), roots).length === 1)
+        assert.ok(composeSafetyProblems(safe({ userns_mode: 'host' }), roots).length === 1)
+    })
+
+    it('refuses joining another container\'s network or pid namespace', () => {
+        assert.ok(composeSafetyProblems(safe({ network_mode: 'container:other' }), roots).length === 1)
+        assert.ok(composeSafetyProblems(safe({ pid: 'container:other' }), roots).length === 1)
+    })
+
+    it('refuses added capabilities, mapped devices and a loosened security profile', () => {
+        assert.ok(composeSafetyProblems(safe({ cap_add: ['SYS_ADMIN'] }), roots).length === 1)
+        assert.ok(composeSafetyProblems(safe({ devices: ['/dev/sda:/dev/sda'] }), roots).length === 1)
+        assert.ok(composeSafetyProblems(safe({ security_opt: ['seccomp:unconfined'] }), roots).length === 1)
+        assert.ok(composeSafetyProblems(safe({ security_opt: ['apparmor:unconfined'] }), roots).length === 1)
+    })
+
+    it('refuses a bind mount of the host root, the docker socket or any path outside its own files', () => {
+        assert.deepEqual(composeSafetyProblems(safe({ volumes: [bind('/')] }), roots),
+            ['service web bind-mounts /, which is outside its own files'])
+        assert.deepEqual(composeSafetyProblems(safe({ volumes: [bind('/var/run/docker.sock')] }), roots),
+            ['service web bind-mounts /var/run/docker.sock, which is outside its own files'])
+        assert.deepEqual(composeSafetyProblems(safe({ volumes: [bind('/var/www/other/.env')] }), roots),
+            ['service web bind-mounts /var/www/other/.env, which is outside its own files'])
+    })
+
+    it('refuses joining an external network, but allows an internal one', () => {
+        const external: ResolvedCompose = {
+            name: 'acme',
+            services: { web: { networks: { hostd: null } } } as ResolvedCompose['services'],
+            networks: { hostd: { external: true } },
+        }
+        assert.deepEqual(composeSafetyProblems(external, roots), ['service web joins the external network hostd'])
+
+        const internal: ResolvedCompose = {
+            name: 'acme',
+            services: { web: { networks: ['private'] } } as ResolvedCompose['services'],
+            networks: { private: { external: false } },
+        }
+        assert.deepEqual(composeSafetyProblems(internal, roots), [])
     })
 })

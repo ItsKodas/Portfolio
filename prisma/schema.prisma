@@ -187,6 +187,10 @@ model ClientSession {
   // Null means the second factor is still outstanding. requireClient() demands this, which is what makes
   // mandatory 2FA a property of the data rather than a check someone can forget.
   mfaAt      DateTime?
+  // Set only on the session that actually confirmed an authenticator enrolment. acknowledgeRecoveryCodes
+  // completes the second factor off this, not off the client's totpConfirmedAt, so a fresh pending session on
+  // an already-enrolled account cannot finish sign-in by calling the acknowledge step without a code.
+  enrolledAt DateTime?
   userAgent  String?
   client     Client    @relation(fields: [clientId], references: [id], onDelete: Cascade)
   clientId   String

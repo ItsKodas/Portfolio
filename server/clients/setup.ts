@@ -96,6 +96,7 @@ export type ConfirmEnrolmentDeps = {
     verifyTotp(secret: Buffer, code: string, now: Date): bigint | null
     recordTotpUse(clientId: string, step: bigint): Promise<boolean>
     confirmTotp(id: string, now: Date): Promise<void>
+    markEnrolled(sessionId: string, now: Date): Promise<void>
     newRecoveryCode(): string
     hashRecoveryCode(code: string): string
     replaceRecoveryCodes(clientId: string, codeHashes: string[]): Promise<void>
@@ -112,6 +113,10 @@ export async function confirmEnrolment(
     const now = deps.now()
     const client = input.session.client
     if (!client.totpSecret) return { ok: false, error: WRONG_CODE }
+    // Enrolment is only ever the first confirmation of an authenticator. A client who already has one signs in
+    // through the code step, so refusing here stops a second enrolment that would wipe and reissue their
+    // recovery codes, and removes any point in guessing the code of an account the attacker does not control.
+    if (client.totpConfirmedAt || !client.totpRequired) return { ok: false, error: WRONG_CODE }
 
     let secret: Buffer
     try {
@@ -127,6 +132,8 @@ export async function confirmEnrolment(
     if (!await deps.recordTotpUse(client.id, step)) return { ok: false, error: WRONG_CODE }
 
     await deps.confirmTotp(client.id, now)
+    // This session, and only this session, may now finish sign-in at the acknowledge step
+    await deps.markEnrolled(input.session.id, now)
 
     // Generated once and shown once. Only the keyed hashes are kept.
     const recoveryCodes = Array.from({ length: RECOVERY_CODE_COUNT }, () => deps.newRecoveryCode())
@@ -140,9 +147,13 @@ export type AcknowledgeDeps = {
     now(): Date
 }
 
-// One of the places mfaAt is written, and reachable only once confirmEnrolment has succeeded
-export async function acknowledgeRecoveryCodes(session: SessionWithClient, deps: AcknowledgeDeps): Promise<void> {
+// One of the places mfaAt is written. Only the session that confirmed enrolment may reach it: without that
+// bind, a fresh pending session on an already-enrolled account could finish sign-in here with no code,
+// because the client's totpConfirmedAt is already set from the original enrolment.
+export async function acknowledgeRecoveryCodes(session: SessionWithClient, deps: AcknowledgeDeps): Promise<boolean> {
+    if (!session.enrolledAt) return false
     const now = deps.now()
     await deps.completeMfa(session.id, now, activeExpiry(session.createdAt, now))
     await deps.recordSuccess(session.client.id, now)
+    return true
 }
