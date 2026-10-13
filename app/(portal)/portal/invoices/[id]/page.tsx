@@ -45,7 +45,7 @@ export default async function InvoicePage({ params }: { params: Promise<{ id: st
                 <p className={[frame.sub, frame.subBlock].join(' ')}>
                     {formatMoney(invoice.totalCents, invoice.currency)} for{' '}
                     {invoice.client ? <Link href={`/portal/clients/${invoice.client.id}`} className={frame.link}>{invoice.billToName}</Link> : invoice.billToName}
-                    {invoice.plan && <> from the plan {invoice.plan.description}</>}
+                    {invoice.plan && <> from the plan <Link href={`/portal/invoices/plans/${invoice.plan.id}`} className={frame.link}>{invoice.plan.description}</Link></>}
                 </p>
 
                 <section className={frame.panel}>

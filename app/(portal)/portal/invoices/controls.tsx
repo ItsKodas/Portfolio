@@ -300,9 +300,9 @@ export function PlanForm({ clientId, planId, sites, initial, onSaved, billed }: 
     )
 }
 
-export function EditPlan(props: Omit<Parameters<typeof PlanForm>[0], 'onSaved'>) {
+export function EditPlan({ size = 'small', ...props }: Omit<Parameters<typeof PlanForm>[0], 'onSaved'> & { size?: 'small' | 'regular' }) {
     const [editing, setEditing] = useState(false)
-    if (!editing) return <Button size="small" onClick={() => setEditing(true)}>Edit</Button>
+    if (!editing) return <Button size={size === 'small' ? 'small' : undefined} onClick={() => setEditing(true)}>Edit plan</Button>
     return (
         <div className={styles.document}>
             <PlanForm {...props} onSaved={() => setEditing(false)} />

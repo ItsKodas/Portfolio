@@ -160,7 +160,7 @@ export default async function ClientPage({ params }: { params: Promise<{ id: str
                                         <div className={invoiceStyles.plan}>
                                             <div>
                                                 <p className={invoiceStyles.planName}>
-                                                    {plan.description}{' '}
+                                                    <Link href={`/portal/invoices/plans/${plan.id}`} className={frame.plainLink}>{plan.description}</Link>{' '}
                                                     {plan.amountCents === 0 ? 'Not charged' : `${formatMoney(plan.amountCents)} a ${INTERVAL_LABELS[plan.interval]}`}
                                                 </p>
                                                 <p className={invoiceStyles.planMeta}>
