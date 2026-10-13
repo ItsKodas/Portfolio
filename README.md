@@ -163,8 +163,10 @@ on the day it starts. A client can set a plan to **pay automatically**, which ma
 on each PayPal payment raises that period's invoice already paid, and stopping it (from either side) goes back to
 invoices.
 
-An hourly run inside the site raises plan invoices, sends a reminder three days before an invoice is due (when it
-gave more than three days to pay), and overdue notices 1, 7 and 14 days after, between 9am and 6pm Brisbane time.
+An hourly run inside the site raises plan invoices, sends a reminder three days before an invoice is due (or on the
+day itself, when it gave three days or fewer to pay), and overdue notices 1, 7 and 14 days after, between 9am and 6pm
+Brisbane time. Every payment, through PayPal, automatic or marked paid by hand, emails the client a receipt with the
+invoice attached as a PDF marked paid.
 `BILLING_SCHEDULE=off` stops it. Every invoice, payment and email lands in the Logs page under Billing.
 
 ### PayPal
