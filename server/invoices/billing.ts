@@ -42,6 +42,9 @@ export type BillingDeps = {
     // Null when PayPal is not set up, which stops online payment and nothing else
     paypal: () => Paypal | null
     mode: () => PaypalMode | null
+    // Whether a webhook is configured for the running mode. Without one the site never hears a subscription's
+    // payments or cancellation, so automatic payment must not be offered.
+    webhookConfigured: () => boolean
     siteUrl: () => string
     send: (build: (options: MailOptions) => Email) => Promise<void>
     pdf: (invoice: PdfInvoice) => Promise<Buffer>
@@ -407,6 +410,9 @@ export function createBilling(deps: BillingDeps) {
             const paypal = deps.paypal()
             const mode = deps.mode()
             if (!paypal || !mode) return { ok: false, error: 'Automatic payment is not available right now.' }
+            // No webhook means PayPal cannot tell the site when the subscription pays or stops, so the plan
+            // would quietly stop being invoiced while the client could cancel at PayPal and pay nothing.
+            if (!deps.webhookConfigured()) return { ok: false, error: 'Automatic payment is not available right now.' }
             const plan = await deps.plans.get(planId)
             if (!plan || plan.clientId !== clientId || plan.endedAt) return { ok: false, error: 'That plan could not be found.' }
             if (plan.amountCents <= 0) return { ok: false, error: 'There is nothing to pay on that plan.' }
@@ -438,9 +444,18 @@ export function createBilling(deps: BillingDeps) {
         // The client back from approving a subscription. PayPal's own record decides, never the address bar.
         async confirmSubscription(subscriptionId: string, planId: string): Promise<{ ok: boolean }> {
             const paypal = deps.paypal()
-            if (!paypal) return { ok: false }
+            const mode = deps.mode()
+            if (!paypal || !mode) return { ok: false }
+            const plan = await deps.plans.get(planId)
+            if (!plan) return { ok: false }
             const subscription = await paypal.getSubscription(subscriptionId)
+            // PayPal's own record decides, never the address bar. It is not enough that the subscription names
+            // this plan in custom_id: it must be for the PayPal plan the site created for it, at its real price
+            // in the running mode. Without the plan_id check a client could approve a subscription to a cheaper
+            // PayPal plan while carrying the custom_id of an expensive one, and have the expensive plan go
+            // active and bill as paid at the cheaper price.
             if (subscription.custom_id !== planId) return { ok: false }
+            if (plan.paypalMode !== mode || !plan.paypalPlanId || subscription.plan_id !== plan.paypalPlanId) return { ok: false }
             return { ok: await subscriptionChanged(subscriptionId, subscription.status, planId) }
         },
 

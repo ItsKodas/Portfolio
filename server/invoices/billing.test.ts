@@ -67,6 +67,9 @@ function fakePaypal() {
         paypal, calls,
         approve: (id: string) => { orders.get(id)!.status = 'APPROVED' },
         activate: (id: string) => { subscriptions.get(id)!.status = 'ACTIVE' },
+        // Pretend the subscription is really for a different PayPal plan than the one the site created, as a
+        // client crafting their own subscription with someone else's custom_id would be
+        retarget: (id: string, planId: string) => { subscriptions.get(id)!.plan_id = planId },
         declineNext: () => { decline = true },
     }
 }
@@ -101,6 +104,7 @@ describe.skipIf(!url)('billing', () => {
             business: () => business,
             paypal: () => fake.paypal,
             mode: () => 'sandbox',
+            webhookConfigured: () => true,
             siteUrl: () => 'https://www.horizons.gg',
             send: async build => { sent.push(build({ from: 'from@example.com', replyTo: 'reply@example.com', siteUrl: 'https://www.horizons.gg' })) },
             pdf: invoice => invoicePdf(invoice, business, { payUrl: 'www.horizons.gg/portal/billing' }),
@@ -326,6 +330,29 @@ describe.skipIf(!url)('billing', () => {
             await billing.subscriptionChanged(subscriptionId, 'SUSPENDED')
             now = at('2026-12-10')
             expect((await billing.run()).raised).toBe(1)
+        })
+
+        it('refuses a subscription that is for a different PayPal plan than the one the site made', async () => {
+            const { id: planId } = await plans.create('cl_ANN00001', { description: 'Website hosting', amountCents: 4_900, interval: 'MONTHLY', startsOn: '2026-10-10', dueDays: 14, siteId: null })
+            await billing.startAutopay(planId, 'cl_ANN00001')
+            const subscriptionId = (await plans.get(planId))!.subscriptionId!
+            fake.activate(subscriptionId)
+            // custom_id still names this plan, but the subscription is really for a cheaper PayPal plan
+            fake.retarget(subscriptionId, 'P-someone-cheaper')
+            expect(await billing.confirmSubscription(subscriptionId, planId)).toEqual({ ok: false })
+            expect((await plans.get(planId))!.subscriptionStatus).toBe('APPROVAL_PENDING')
+        })
+
+        it('does not offer automatic payment when no webhook is configured', async () => {
+            const { id: planId } = await plans.create('cl_ANN00001', { description: 'Website hosting', amountCents: 4_900, interval: 'MONTHLY', startsOn: '2026-10-10', dueDays: 14, siteId: null })
+            const noWebhook = createBilling({
+                invoices, plans, business: () => business, paypal: () => fake.paypal, mode: () => 'sandbox',
+                webhookConfigured: () => false, siteUrl: () => 'https://www.horizons.gg',
+                send: async () => {}, pdf: invoice => invoicePdf(invoice, business, { payUrl: 'x' }),
+                record: async () => {}, now: () => now, log: () => {},
+            })
+            expect(await noWebhook.startAutopay(planId, 'cl_ANN00001')).toMatchObject({ ok: false })
+            expect((await plans.get(planId))!.subscriptionId).toBeNull()
         })
 
         it('takes a new price to PayPal, and cancels there when it stops', async () => {
