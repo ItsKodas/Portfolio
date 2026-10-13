@@ -55,6 +55,17 @@ const projects: { name: string, year?: string, blurb: string, website?: string, 
         ],
     },
     {
+        name: 'Atomic Sandbox',
+        year: '2026',
+        blurb: 'A 3D sandbox that simulates matter from the atoms up, written from scratch in Rust and wgpu: electrons are solved with density functional theory on the GPU, so bonds and shapes emerge rather than being hardcoded. Drag atoms around and watch molecules vibrate live.',
+        github: 'https://github.com/ItsKodas/atomic-sandbox',
+    },
+    {
+        name: 'Voxweave',
+        year: '2026',
+        blurb: 'A Windows app for real-time voice conversion: speak into your mic and a chosen voice comes out on a virtual microphone. It also records voice datasets, trains custom voice models on the GPU and turns typed text into speech, all on your own computer.',
+    },
+    {
         name: 'The Back Room',
         year: '2026',
         blurb: 'A card and dice room in the browser for playing with friends: multiplayer Greed (Farkle) and Blackjack with room codes, bots, Discord sign-in and a chips-only economy.',
