@@ -22,8 +22,9 @@ const id = z.string().min(1).max(64)
 const INVALID = { ok: false, error: 'That request was not valid.' } as const
 const FAILED: InvoiceResult = { ok: false, error: 'That did not work. Reload the page and try again.' }
 
+// The layout form takes in every page under it: each invoice, the plans list and each plan's own page
 const refresh = (invoiceId?: string, clientId?: string | null) => {
-    revalidatePath('/portal/invoices')
+    revalidatePath('/portal/invoices', 'layout')
     if (invoiceId) revalidatePath(`/portal/invoices/${invoiceId}`)
     if (clientId) revalidatePath(`/portal/clients/${clientId}`)
     revalidatePath('/portal/billing', 'layout')
@@ -167,7 +168,6 @@ export async function createPlanAction(clientId: string, input: unknown): Promis
         detail: { amountCents: parsed.data.amountCents, interval: parsed.data.interval, startsOn: parsed.data.startsOn },
     })
     refresh(undefined, clientId)
-    revalidatePath('/portal/invoices/plans')
     return { ok: true }
 }
 
@@ -191,7 +191,6 @@ export async function updatePlanAction(planId: string, input: unknown): Promise<
         detail: { from: before.amountCents, to: parsed.data.amountCents, interval: parsed.data.interval },
     })
     refresh(undefined, before.clientId)
-    revalidatePath('/portal/invoices/plans')
     // A plan paying automatically takes its new price to PayPal too
     const repriced = await billing().repricePaypal(planId)
     if (!repriced.ok) return repriced
@@ -205,7 +204,6 @@ export async function endPlanAction(planId: string): Promise<InvoiceResult> {
     const plan = await plans().get(planId)
     const result = await billing().endPlan(planId, actor)
     refresh(undefined, plan?.clientId)
-    revalidatePath('/portal/invoices/plans')
     return result
 }
 
@@ -215,7 +213,6 @@ export async function stopAutopayAction(planId: string): Promise<InvoiceResult> 
     const plan = await plans().get(planId)
     const result = await billing().stopAutopay(planId, actor)
     refresh(undefined, plan?.clientId)
-    revalidatePath('/portal/invoices/plans')
     return result
 }
 

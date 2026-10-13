@@ -31,7 +31,7 @@ export default async function PlansPage() {
         const automatic = autopayActive(plan, mode)
         return {
             client: <Link href={`/portal/clients/${plan.client.id}`} className={frame.plainLink}>{plan.client.name}</Link>,
-            plan: <>{plan.description}{plan.site && <span className={frame.mono}> {plan.site.projectId}</span>}</>,
+            plan: <><Link href={`/portal/invoices/plans/${plan.id}`} className={frame.plainLink}>{plan.description}</Link>{plan.site && <span className={frame.mono}> {plan.site.projectId}</span>}</>,
             price: plan.amountCents === 0 ? 'Free' : `${formatMoney(plan.amountCents)} / ${INTERVAL_LABELS[plan.interval]}`,
             next: plan.endedAt ? 'Ended' : plan.amountCents === 0 ? '' : automatic ? 'Automatic' : formatDayShort(nextBillingDay(plan)),
             payment: plan.endedAt

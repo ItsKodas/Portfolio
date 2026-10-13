@@ -265,3 +265,13 @@
 .planMeta { color: var(--ink-3); font-size: 12px; margin: 2px 0 0; }
 
 .inlineNote { color: var(--ink-3); font-size: 12px; margin: 8px 0 0; }
+
+.planFacts {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+    gap: 12px 24px;
+    margin: 0;
+}
+.planFact dt { color: var(--ink-3); font-size: 12px; margin-bottom: 2px; }
+.planFact dd { margin: 0; color: var(--ink); font-weight: 600; font-size: 14px; }
+.planTotals { margin: -6px 0 12px; }

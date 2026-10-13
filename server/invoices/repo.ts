@@ -236,11 +236,12 @@ export function invoiceRepo(db: PrismaClient, options: { firstNumber?: number } 
         voidInvoice: async (id: string, now: Date): Promise<boolean> =>
             (await db.invoice.updateMany({ where: { id, status: 'OPEN' }, data: { status: 'VOID', voidedAt: now } })).count > 0,
 
-        list: async (filter: { standing: Standing | null, clientId?: string, visibleToClient?: boolean }, today: Day): Promise<InvoiceListItem[]> => {
+        list: async (filter: { standing: Standing | null, clientId?: string, planId?: string, visibleToClient?: boolean }, today: Day): Promise<InvoiceListItem[]> => {
             const rows = await db.invoice.findMany({
                 where: {
                     ...whereStanding(filter.standing, today),
                     ...(filter.clientId && { clientId: filter.clientId }),
+                    ...(filter.planId && { planId: filter.planId }),
                     // A client never sees a draft: it is not theirs until it is sent
                     ...(filter.visibleToClient && { status: { not: 'DRAFT' as const } }),
                 },
