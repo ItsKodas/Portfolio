@@ -1,0 +1,14 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="2.6 2.6 58.8 58.8" role="img" aria-label="Horizons">
+  <defs>
+    <clipPath id="hz-inner"><circle cx="32" cy="32" r="22.5"/></clipPath>
+    <mask id="hz-horizon" maskUnits="userSpaceOnUse" x="0" y="0" width="64" height="64"><rect width="64" height="64" fill="#fff"/><rect y="45" width="64" height="2.6" fill="#000"/></mask>
+  </defs>
+  <circle cx="32" cy="32" r="27.5" fill="#0b101f" fill-opacity=".7" stroke="#f4f9ff" stroke-width="3.4"/>
+  <g clip-path="url(#hz-inner)">
+    <circle cx="23" cy="21" r="3.6" fill="#f4f9ff"/>
+    <g mask="url(#hz-horizon)">
+      <path d="M4 60 L24 27 L44 60 Z" fill="#8fa3c7"/>
+      <path d="M20 60 L41 23 L64 60 Z" fill="#8fd4f5"/>
+    </g>
+  </g>
+</svg>

@@ -1,0 +1,11 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="2.6 2.6 58.8 58.8" role="img" aria-label="Horizons">
+  <defs><clipPath id="hz-inner"><circle cx="32" cy="32" r="22.5"/></clipPath></defs>
+  <circle cx="32" cy="32" r="27.5" fill="none" stroke="#ffffff" stroke-width="3.4"/>
+  <g clip-path="url(#hz-inner)" fill="none" stroke="#ffffff" stroke-width="2.8" stroke-linecap="round" stroke-linejoin="round">
+    <circle cx="23" cy="21" r="3.4" fill="#ffffff" stroke="none"/>
+    <path d="M12.5 46 L24 27 L31.6 39.55"/>
+    <path d="M27.9 46 L41 23 L55.3 46"/>
+    <path d="M0 46 H64"/>
+    <path d="M25 51.5 H39"/>
+  </g>
+</svg>
