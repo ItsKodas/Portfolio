@@ -133,6 +133,12 @@ export function clientRepo(db: PrismaClient) {
             await db.clientSession.update({ where: { id: sessionId }, data: { mfaAt, expiresAt, lastUsedAt: mfaAt } })
         },
 
+        // Marks this session as the one that confirmed an authenticator enrolment. Only this session may then
+        // finish sign-in at the acknowledge-recovery-codes step.
+        markEnrolled: async (sessionId: string, enrolledAt: Date) => {
+            await db.clientSession.update({ where: { id: sessionId }, data: { enrolledAt } })
+        },
+
         touchSession: async (sessionId: string, lastUsedAt: Date, expiresAt: Date) => {
             await db.clientSession.update({ where: { id: sessionId }, data: { lastUsedAt, expiresAt } })
         },

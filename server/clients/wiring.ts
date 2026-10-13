@@ -125,6 +125,7 @@ export const confirmEnrolmentDeps = () => {
         verifyTotp,
         recordTotpUse: clients.recordTotpUse,
         confirmTotp: clients.confirmTotp,
+        markEnrolled: clients.markEnrolled,
         newRecoveryCode: () => newRecoveryCode(),
         // The same normalisation the verifying side uses, rather than a second one that only happens to agree
         // with it: they sit on the two halves of one comparison, so there must only be one of them.

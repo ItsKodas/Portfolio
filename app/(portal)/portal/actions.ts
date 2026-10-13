@@ -110,10 +110,12 @@ export async function confirmEnrolmentAction(code: string): Promise<CodesResult>
 
 export async function acknowledgeCodesAction(): Promise<PortalResult> {
     const session = await requirePendingSession()
-    // Only reachable once the authenticator is confirmed, which is what makes this a safe place to finish
-    if (!session.client.totpConfirmedAt) return INVALID
+    // This must be the session that just confirmed enrolment, not merely a session for a client who happens to
+    // have an authenticator: acknowledgeRecoveryCodes refuses any other, so whoever has only the password
+    // cannot finish sign-in here without ever entering a code.
+    if (!session.enrolledAt) return INVALID
     try {
-        await acknowledgeRecoveryCodes(session, acknowledgeDeps())
+        if (!await acknowledgeRecoveryCodes(session, acknowledgeDeps())) return INVALID
         await record({
             kind: 'auth.enrolled', actor: clientActor(session.client),
             summary: `${session.client.name} set up their authenticator and signed in`,
