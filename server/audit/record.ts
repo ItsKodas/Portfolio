@@ -34,6 +34,7 @@ export type AuditEntry = {
 export const VISITOR: Actor = { type: 'VISITOR' }
 export const BILLING_RUN: Actor = { type: 'SYSTEM', id: 'billing', name: 'Billing run' }
 export const PAYPAL: Actor = { type: 'SYSTEM', id: 'paypal', name: 'PayPal' }
+export const TAX_RUN: Actor = { type: 'SYSTEM', id: 'tax', name: 'Tax reminders' }
 
 export const adminActor = (session: Session): Actor => ({
     type: 'ADMIN',

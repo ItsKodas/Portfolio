@@ -454,3 +454,45 @@ model BillingPlan {
   @@index([clientId])
   @@index([endedAt])
 }
+
+// Tax tracking, for the operator only. Income from invoices is read from InvoicePayment, so nothing here copies
+// it; these tables hold what the portal can't know on its own.
+
+enum TaxEntryKind {
+  INCOME
+  EXPENSE
+}
+
+// Money that moved outside the invoices: a business expense, or income that never had an invoice here
+model TaxEntry {
+  id              String       @id @default(cuid())
+  createdAt       DateTime     @default(now())
+  kind            TaxEntryKind
+  // The calendar day it was paid or received, which decides the financial year it counts in
+  occurredOn      DateTime     @db.Date
+  description     String
+  category        String
+  amountCents     Int
+  // The business share of an expense that is partly private, such as a phone or the internet. Always 100 for income.
+  businessPercent Int          @default(100)
+
+  @@index([occurredOn])
+}
+
+// What the operator tells the portal about one financial year, keyed by the year it ends: 2027 is 2026-27
+model TaxYear {
+  year             Int       @id
+  updatedAt        DateTime  @updatedAt
+  // Wages or anything else taxed alongside the business, since the rate on the business depends on it
+  otherIncomeCents Int       @default(0)
+  // Tax already taken out of that other income, or paid as instalments
+  withheldCents    Int       @default(0)
+  // Set once the return is lodged, which stops the reminders for it
+  lodgedOn         DateTime? @db.Date
+}
+
+// Each tax reminder email, by a key naming it and its year, so the hourly run sends each one once
+model TaxReminder {
+  key    String   @id
+  sentAt DateTime @default(now())
+}

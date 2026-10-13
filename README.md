@@ -191,6 +191,25 @@ Without PayPal set up, invoices still send and can be marked paid by hand; the I
 about the business (see `.env.example`). GST is off unless `GST_REGISTERED=1`, because only a GST-registered business
 may charge it or issue a tax invoice.
 
+## Tax
+
+**Tax** in the portal is the operator's alone: the financial year (1 July to 30 June) at a glance, for a sole trader
+who is not registered for GST. Income is read straight from invoice payments (refunds and sandbox payments left
+out, GST taken off when an invoice charged it), so it never needs entering twice. Expenses, and any income that never
+had an invoice here, are added by hand under the Expenses and Income tabs, with a business-use percentage for
+something that is partly private.
+
+The Overview tab charts income and expenses by month and the running profit, and estimates the year's income tax at
+resident rates (with the Medicare levy, the low income offset and the small business offset), with how much of each
+dollar of profit to put aside. It also tracks turnover against the $75,000 GST registration threshold. Wages or other
+income, and tax already paid, can be added under Dates and details so the estimate is closer, and marking the return
+lodged there stops its reminders. The figures are estimates, and the page says so.
+
+An hourly run emails the operator, between 9am and 6pm Brisbane time: 30 and 7 days before the year ends, once it has
+closed (with its final figures), 30 and 7 days before the 31 October return date, on the day and if it is late, and
+when turnover nears or reaches the GST threshold. They go to `TAX_NOTIFY_TO`, else `ADMIN_EMAIL`, and
+`TAX_REMINDERS=off` stops them. Each one sent is in the Logs page under Tax.
+
 ## Wallpaper Engine
 
 The hero scene is also a [Wallpaper Engine](https://www.wallpaperengine.io/) web wallpaper (`app/wallpaper`, viewable at

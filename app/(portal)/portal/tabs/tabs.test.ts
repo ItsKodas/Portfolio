@@ -6,8 +6,8 @@ const active = (admin: boolean, pathname: string) =>
     tabsFor(admin, pathname).filter(tab => tab.active).map(tab => tab.label)
 
 describe('tabsFor', () => {
-    it('gives the operator the sites, the quotes, the clients, the invoices and the logs', () => {
-        expect(tabsFor(true, '/portal').map(tab => tab.label)).toEqual(['Sites', 'Quotes', 'Clients', 'Invoices', 'Logs'])
+    it('gives the operator the sites, the quotes, the clients, the invoices, tax and the logs', () => {
+        expect(tabsFor(true, '/portal').map(tab => tab.label)).toEqual(['Sites', 'Quotes', 'Clients', 'Invoices', 'Tax', 'Logs'])
     })
 
     it('gives a client their overview, their billing and their account, and nothing of the operator\'s', () => {
@@ -24,6 +24,7 @@ describe('tabsFor', () => {
         expect(active(true, '/portal/clients/new')).toEqual(['Clients'])
         expect(active(true, '/portal/logs/emails/abc')).toEqual(['Logs'])
         expect(active(true, '/portal/invoices/plans')).toEqual(['Invoices'])
+        expect(active(true, '/portal/tax')).toEqual(['Tax'])
         expect(active(false, '/portal/billing/abc')).toEqual(['Billing'])
     })
 
