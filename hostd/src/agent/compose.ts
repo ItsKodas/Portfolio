@@ -207,7 +207,8 @@ export type ResolvedService = {
 }
 // Config writes each top-level network with whether it is external; a service joining an external network
 // could reach hostd's own api or another tenant, so the safety guard needs to know which are external.
-export type ResolvedNetwork = { external?: boolean }
+// name is the network Docker actually joins; the key it sits under is only the compose file's own label.
+export type ResolvedNetwork = { name?: string, external?: boolean }
 export type ResolvedCompose = {
     name: string
     services: Record<string, ResolvedService>
