@@ -246,6 +246,17 @@ describe.skipIf(!url)('billing', () => {
             expect(sent.at(-1)?.subject).toBe('Reminder: invoice INV-0100 is due 24 October 2026')
         })
 
+        it('reminds on the day itself when there was too little time for a reminder three days out', async () => {
+            const { id } = await draft('2026-10-12')
+            await billing.send(id, billTo, ADMIN)
+            now = at('2026-10-11')
+            expect((await billing.run()).reminders).toBe(0)
+            now = at('2026-10-12')
+            expect((await billing.run()).reminders).toBe(1)
+            expect((await billing.run()).reminders).toBe(0)
+            expect(sent.at(-1)?.subject).toBe('Reminder: invoice INV-0100 is due today')
+        })
+
         it('sends three overdue notices at most, spaced out even after a long silence', async () => {
             const { id } = await draft('2026-10-24')
             await billing.send(id, billTo, ADMIN)
@@ -268,6 +279,8 @@ describe.skipIf(!url)('billing', () => {
             const { id } = await draft('2026-10-24')
             await billing.send(id, billTo, ADMIN)
             await billing.markPaid(id, null, ADMIN)
+            // Paid by hand still thanks the client, with the paid copy attached
+            expect(sent.at(-1)).toMatchObject({ subject: 'Payment received for invoice INV-0100', attachments: [expect.objectContaining({ filename: 'INV-0100.pdf' })] })
             now = at('2026-11-01')
             expect(await billing.run()).toEqual({ raised: 0, reminders: 0, notices: 0 })
         })
@@ -306,6 +319,8 @@ describe.skipIf(!url)('billing', () => {
             expect(list).toHaveLength(2)
             expect(list[0]).toMatchObject({ number: 101, periodStart: '2026-11-10', periodEnd: '2026-12-09' })
             expect(sent.filter(email => email.subject.startsWith('Payment received'))).toHaveLength(2)
+            // An invoice raised already paid is never emailed on its own, so its receipt carries the PDF
+            expect(sent.at(-1)?.attachments?.[0]).toMatchObject({ filename: 'INV-0101.pdf' })
 
             // PayPal giving up on a payment puts the plan back on invoices
             await billing.subscriptionChanged(subscriptionId, 'SUSPENDED')

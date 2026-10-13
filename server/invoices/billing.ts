@@ -12,7 +12,7 @@ import { captureOf, invoiceIdOf, PaypalError } from '../paypal/api'
 import type { PaypalMode } from '../paypal/config'
 import type { Business } from './business'
 import { addDays, daysBetween, hourIn, todayIn, type Day } from './days'
-import { invoiceEmail, overdueEmail, receiptEmail, reminderEmail, type EmailInvoice } from './emails'
+import { invoiceEmail, overdueEmail, receiptEmail, reminderEmail, type EmailInvoice, type ReceiptMethod } from './emails'
 import { centsFromValue, formatMoney, paypalValue, totalsOf } from './money'
 import type { PdfInvoice } from './pdf'
 import { autopayActive, INTERVAL_MONTHS, periodOf, planDue } from './plans'
@@ -136,10 +136,19 @@ export function createBilling(deps: BillingDeps) {
         return mail(`Invoice ${invoice.id}`, options => invoiceEmail(emailInvoiceOf(invoice), business, { ...options, pdf }))
     }
 
-    async function receipt(invoice: InvoiceView, amountCents: number, automatic: boolean) {
+    // The receipt carries the invoice as it now stands, marked paid, so a plan that pays itself (whose invoices
+    // are raised already paid, and never emailed on their own) still leaves the client a copy of each one
+    async function receipt(invoice: InvoiceView, amountCents: number, method: ReceiptMethod) {
         const business = deps.business()
+        const current = (await deps.invoices.get(invoice.id)) ?? invoice
+        let pdf: Buffer | null = null
+        try {
+            pdf = await deps.pdf(pdfInvoiceOf(current, today()))
+        } catch (error) {
+            deps.log(`Drawing the PDF of ${invoice.id} for its receipt failed`, error)
+        }
         await mail(`Receipt for ${invoice.id}`, options =>
-            receiptEmail(emailInvoiceOf(invoice), business, { ...options, amountCents, paidOn: today(), automatic }))
+            receiptEmail(emailInvoiceOf(current), business, { ...options, amountCents, paidOn: today(), method, pdf }))
     }
 
     // A PayPal payment arriving, from whichever direction it came. Kept once, however often it is reported.
@@ -160,7 +169,7 @@ export function createBilling(deps: BillingDeps) {
             summary: `${invoice.billToName} paid ${formatMoney(payment.amountCents, invoice.currency)} on ${number}${payment.automatic ? ' automatically' : ''} with PayPal${odd}`,
             detail: { paypalId: payment.paypalId, mode: deps.mode() },
         })
-        await receipt(invoice, payment.amountCents, payment.automatic)
+        await receipt(invoice, payment.amountCents, payment.automatic ? 'automatic' : 'paypal')
         return 'paid'
     }
 
@@ -348,6 +357,7 @@ export function createBilling(deps: BillingDeps) {
                 kind: 'billing.markedPaid', actor, target: target(invoice),
                 summary: `Marked ${invoiceNumber(invoice.number)} paid (${formatMoney(owing, invoice.currency)})${note ? `: ${note}` : ''}`,
             })
+            await receipt(invoice, owing, 'direct')
             return { ok: true }
         },
 
@@ -484,7 +494,7 @@ export function createBilling(deps: BillingDeps) {
                 summary: `${plan.client.name} paid ${formatMoney(cents)} automatically for ${plan.description}, as ${invoiceNumber(invoice.number)}`,
                 detail: { paypalId: saleId, subscriptionId, mode: deps.mode() },
             })
-            await receipt(invoice, cents, true)
+            await receipt(invoice, cents, 'automatic')
         },
 
         async refunded(captureId: string): Promise<void> {
@@ -575,9 +585,12 @@ export function createBilling(deps: BillingDeps) {
                 if (invoice.dueOn >= day) {
                     const left = daysBetween(day, invoice.dueOn)
                     const gave = invoice.issuedOn ? daysBetween(invoice.issuedOn, invoice.dueOn) : 0
-                    if (left > REMINDER_DAYS_BEFORE || gave <= REMINDER_DAYS_BEFORE || invoice.reminderSentAt) continue
+                    // Given more than three days: a reminder three days out. Given fewer (but some): one on the day
+                    // it is due. Due the day it was sent: the invoice email was the reminder.
+                    const dueToday = gave <= REMINDER_DAYS_BEFORE
+                    if (invoice.reminderSentAt || gave === 0 || (dueToday ? left !== 0 : left > REMINDER_DAYS_BEFORE)) continue
                     if (!(await deps.invoices.claimReminder(invoice.id, now))) continue
-                    const sent = await mail(`Reminder for ${invoice.id}`, options => reminderEmail(emailInvoiceOf(invoice), business, options))
+                    const sent = await mail(`Reminder for ${invoice.id}`, options => reminderEmail(emailInvoiceOf(invoice), business, { ...options, dueToday }))
                     reminders++
                     await deps.record({
                         kind: 'billing.reminder', actor: BILLING_RUN, target: target(invoice),

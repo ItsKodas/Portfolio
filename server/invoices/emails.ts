@@ -86,15 +86,18 @@ export function invoiceEmail(invoice: EmailInvoice, business: Business, options:
     })
 }
 
-export function reminderEmail(invoice: EmailInvoice, business: Business, options: Options): Email {
+export function reminderEmail(invoice: EmailInvoice, business: Business, options: Options & { dueToday?: boolean }): Email {
     const number = invoiceNumber(invoice.number)
+    const when = options.dueToday ? 'today' : formatDay(invoice.dueOn)
     return build(invoice, options, {
-        subject: `Reminder: invoice ${number} is due ${formatDay(invoice.dueOn)}`,
-        preheader: `${amount(invoice)} to ${business.name}, due ${formatDay(invoice.dueOn)}.`,
+        subject: `Reminder: invoice ${number} is due ${when}`,
+        preheader: `${amount(invoice)} to ${business.name}, due ${when}.`,
         eyebrow: 'Payment reminder',
-        heading: `Invoice ${number} is due soon`,
+        heading: options.dueToday ? `Invoice ${number} is due today` : `Invoice ${number} is due soon`,
         blocks: [
-            paragraph(`Just a reminder that invoice ${number} is due on ${formatDay(invoice.dueOn)}.`),
+            paragraph(options.dueToday
+                ? `Just a reminder that invoice ${number} is due today.`
+                : `Just a reminder that invoice ${number} is due on ${formatDay(invoice.dueOn)}.`),
             details(invoice),
             button('View and pay', link(invoice, options)),
             paragraph('If you have already paid it, thank you, and you can ignore this email.'),
@@ -121,25 +124,40 @@ export function overdueEmail(invoice: EmailInvoice, business: Business, options:
     })
 }
 
-export function receiptEmail(invoice: EmailInvoice, business: Business, options: Options & { amountCents: number, paidOn: Day, automatic: boolean }): Email {
+// How a payment arrived: through PayPal, through a plan paying itself, or straight to the business (a bank
+// transfer, say) and recorded by hand
+export type ReceiptMethod = 'paypal' | 'automatic' | 'direct'
+
+const METHODS: Record<ReceiptMethod, string> = {
+    paypal: 'PayPal',
+    automatic: 'PayPal, automatic payment',
+    direct: 'Paid directly',
+}
+
+export function receiptEmail(invoice: EmailInvoice, business: Business, options: Options & {
+    amountCents: number, paidOn: Day, method: ReceiptMethod, pdf?: Buffer | null,
+}): Email {
     const number = invoiceNumber(invoice.number)
     return build(invoice, options, {
         subject: `Payment received for invoice ${number}`,
-        preheader: `${formatMoney(options.amountCents, invoice.currency)} received. Thank you.`,
+        preheader: `${formatMoney(options.amountCents, invoice.currency)} received. Thank you.${options.pdf ? ' A paid copy of the invoice is attached.' : ''}`,
         eyebrow: 'Receipt',
         heading: 'Payment received, thank you',
         blocks: [
-            paragraph(options.automatic
+            paragraph(`${options.method === 'automatic'
                 ? `Your automatic payment for invoice ${number} has gone through.`
-                : `Your payment for invoice ${number} has gone through.`),
+                : options.method === 'direct'
+                    ? `Your payment for invoice ${number} has been received.`
+                    : `Your payment for invoice ${number} has gone through.`}${options.pdf ? ' A copy of the invoice marked paid is attached for your records.' : ''}`),
             fields([
                 ['Invoice', number],
                 ['Paid', `${formatMoney(options.amountCents, invoice.currency)} ${invoice.currency}`],
                 ['On', formatDay(options.paidOn)],
-                ['Method', options.automatic ? 'PayPal, automatic payment' : 'PayPal'],
+                ['Method', METHODS[options.method]],
                 ['To', `${business.name}, ABN ${business.abn}`],
             ]),
             button('View the invoice', link(invoice, options)),
         ],
+        ...(options.pdf && { attachments: [pdfAttachment(invoice, options.pdf)] }),
     })
 }

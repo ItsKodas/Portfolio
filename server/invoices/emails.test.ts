@@ -25,16 +25,24 @@ describe('invoice emails', () => {
         expect(reminderEmail(invoice, business, options).subject).toBe('Reminder: invoice INV-0007 is due 15 October 2026')
         expect(overdueEmail(invoice, business, { ...options, notice: 1 }).text).toContain('has not been paid yet')
         expect(overdueEmail(invoice, business, { ...options, notice: 2 }).text).toContain('is still unpaid')
-        const receipt = receiptEmail(invoice, business, { ...options, amountCents: 4_900, paidOn: '2026-10-03', automatic: true })
+        const receipt = receiptEmail(invoice, business, { ...options, amountCents: 4_900, paidOn: '2026-10-03', method: 'automatic' })
         expect(receipt.text).toContain('automatic payment')
         expect(receipt.text).toContain('ABN 23 545 335 026')
+    })
+
+    it('says due today on the day, and attaches the paid copy to a receipt', () => {
+        expect(reminderEmail(invoice, business, { ...options, dueToday: true }).subject).toBe('Reminder: invoice INV-0007 is due today')
+        const receipt = receiptEmail(invoice, business, { ...options, amountCents: 4_900, paidOn: '2026-10-03', method: 'direct', pdf: Buffer.from('%PDF') })
+        expect(receipt.attachments?.[0]).toMatchObject({ filename: 'INV-0007.pdf', contentType: 'application/pdf' })
+        expect(receipt.text).toContain('Paid directly')
+        expect(receiptEmail(invoice, business, { ...options, amountCents: 1, paidOn: '2026-10-03', method: 'paypal' }).attachments).toBeUndefined()
     })
 
     it('never uses an em dash', () => {
         const all = [
             invoiceEmail(invoice, business, { ...options, pdf: Buffer.from('') }), reminderEmail(invoice, business, options),
             overdueEmail(invoice, business, { ...options, notice: 3 }),
-            receiptEmail(invoice, business, { ...options, amountCents: 1, paidOn: '2026-10-03', automatic: false }),
+            receiptEmail(invoice, business, { ...options, amountCents: 1, paidOn: '2026-10-03', method: 'paypal' }),
         ]
         for (const email of all) expect(`${email.subject}${email.text}${email.html}`).not.toMatch(/\u2014|&mdash;/)
     })
