@@ -22,6 +22,11 @@ describe('invoicePdf', () => {
         expect(await text(pdf)).toBe('Invoice INV-0042')
     })
 
+    it('draws a plan period that crosses into a new year', async () => {
+        const pdf = await invoicePdf({ ...invoice, periodStart: '2026-12-13', periodEnd: '2027-01-12' }, business, { payUrl: 'x' })
+        expect(await text(pdf)).toBe('Invoice INV-0042')
+    })
+
     it('calls itself a tax invoice only when GST was charged', async () => {
         const pdf = await invoicePdf({ ...invoice, gst: true, gstCents: 12_000, totalCents: 132_000 }, business, { payUrl: 'x' })
         expect(await text(pdf)).toBe('Tax invoice INV-0042')
