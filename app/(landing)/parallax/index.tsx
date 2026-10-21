@@ -291,7 +291,7 @@ export default function ParallaxView({ children }: Readonly<{ children: React.Re
 
                 {/* ── Content ────────────────────────────────────────── */}
 
-                <ContentLayer speed={CONTENT_SPEED} className='absolute inset-x-0' style={{ top: `${CONTENT_OFFSET * 100}svh`, willChange: 'transform' }}>
+                <ContentLayer speed={CONTENT_SPEED} className='absolute inset-x-0 [overflow-anchor:none]' style={{ top: `${CONTENT_OFFSET * 100}svh`, willChange: 'transform' }}>
                     {/* Sized by the content itself (the page height is worked out from it), plus room for the scene the page ends on */}
                     <div ref={setContent} className='relative'>
                         <div className='absolute inset-0' style={fadeIn}>
