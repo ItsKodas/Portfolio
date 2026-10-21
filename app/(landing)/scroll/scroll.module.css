@@ -22,9 +22,10 @@
     border-radius: 12px;
 }
 
-/* Each line is an svg of letter outlines, sized by its height (the paths are drawn at a font size of 100) */
+/* Each line is an svg of letter outlines, sized by its height (the paths are drawn at a font size of 100). The first
+   line's box runs deeper for the descender in "something", so it is about 13% taller to keep its letters the same size. */
 .line1 {
-    height: clamp(26px, 2.5vw, 40px);
+    height: clamp(29px, 2.82vw, 45px);
     width: auto;
     overflow: visible;
 }

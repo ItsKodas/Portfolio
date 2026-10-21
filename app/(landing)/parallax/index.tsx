@@ -24,6 +24,7 @@ import PerfDebug from '@/app/perf/debug'
 import ScrollbarTint from './scrollbarTint'
 import SceneCurtain, { useRevealed } from './curtain'
 import WallpaperLink from './wallpaperLink'
+import { CONTENT_OFFSET, CONTENT_SPEED } from './content'
 import styles from './parallax.module.css'
 
 import Sky from './sky.svg'
@@ -31,9 +32,6 @@ import MountainsFar from './mountainsFar.svg'
 import MountainsNear from './mountainsNear.svg'
 import Valley from './valley.svg'
 import Forest from './forest.svg'
-
-const CONTENT_OFFSET = 0.96 // screens from the top where the content starts
-const CONTENT_SPEED  = 1
 
 const fadeIn = {
     maskImage: 'linear-gradient(to bottom, transparent 0, black 10rem)',
@@ -281,7 +279,9 @@ export default function ParallaxView({ children }: Readonly<{ children: React.Re
             <PerfDebug />
             <WallpaperLink />
             <SceneCurtain />
-            <div className='relative overflow-hidden bg-[#0b101f]' style={{ height: pageHeight ?? '100svh' }}>
+            {/* overflow-clip, not hidden: a hidden wrapper can still be scrolled by the browser itself (an anchor link,
+                or focus moving to a link further down), which strands the page where no wheel or swipe can undo it */}
+            <div className='relative overflow-clip bg-[#0b101f]' style={{ height: pageHeight ?? '100svh' }}>
 
                 {/* ── Hero scene ─────────────────────────────────────── */}
 
@@ -291,7 +291,7 @@ export default function ParallaxView({ children }: Readonly<{ children: React.Re
 
                 {/* ── Content ────────────────────────────────────────── */}
 
-                <ContentLayer speed={CONTENT_SPEED} className='absolute inset-x-0' style={{ top: `${CONTENT_OFFSET * 100}svh`, willChange: 'transform' }}>
+                <ContentLayer speed={CONTENT_SPEED} className='absolute inset-x-0 [overflow-anchor:none]' style={{ top: `${CONTENT_OFFSET * 100}svh`, willChange: 'transform' }}>
                     {/* Sized by the content itself (the page height is worked out from it), plus room for the scene the page ends on */}
                     <div ref={setContent} className='relative'>
                         <div className='absolute inset-0' style={fadeIn}>
