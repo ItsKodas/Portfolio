@@ -4,7 +4,7 @@ import { ImageResponse } from 'next/og'
 
 import { SITE } from './site'
 
-// The white logo on the scene's navy, for home screens, the web app manifest and search results (see icon.tsx and
+// The logo on the scene's navy, for home screens, the web app manifest and search results (see icon.tsx and
 // apple-icon.tsx). Made once, at build time.
 export async function renderAppIcon(size: number, rounded: boolean) {
     const logo = `data:image/png;base64,${(await readFile(join(process.cwd(), 'public/images/logo.png'))).toString('base64')}`

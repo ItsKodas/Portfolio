@@ -51,7 +51,7 @@ export async function renderShareImage() {
     const title = SITE.name.toUpperCase()
     const [backdrop, logo, bold, light] = await Promise.all([
         dataUrl('app/scene.jpg', 'image/jpeg'),
-        dataUrl('public/images/logo.png', 'image/png'),
+        dataUrl('public/images/logo-outline.png', 'image/png'),
         montserrat(TITLE.weight, title),
         montserrat(SUBTITLE.weight, SITE.tagline),
     ])
