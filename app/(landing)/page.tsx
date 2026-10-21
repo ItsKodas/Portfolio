@@ -14,6 +14,7 @@ import ASOT from '../../public/images/clients/asot.svg'
 
 import { SKILLS as skills, SOCIALS } from '../site'
 import { TOOLKIT_LOGOS } from './toolkitLogos'
+import { Panel } from '@/app/showcase/Panel'
 
 // Logos as light marks on the night, each sized so they carry about the same visual weight. The single-colour SVGs are
 // turned white here; Spot On Drones and Arby's have prepared white versions (two-tone, and the mark lifted off its
@@ -119,15 +120,6 @@ const projects: { name: string, year?: string, blurb: string, website?: string, 
 ]
 
 // ─── Building blocks ──────────────────────────────────────────────────────────────
-
-// Frosted panel in the night's navy, catching a little of the lake's light along its edge
-function Panel({ children, className = '' }: { children: React.ReactNode, className?: string }) {
-    return (
-        <div className={`rounded-3xl border border-[#8fd4f5]/10 bg-[#111a38]/55 backdrop-blur-md shadow-[inset_0_1px_0_rgba(255,255,255,0.04),0_20px_60px_-30px_rgba(0,0,0,0.6)] ${className}`}>
-            {children}
-        </div>
-    )
-}
 
 function SectionTitle({ eyebrow, title }: { eyebrow: string, title: string }) {
     return (
