@@ -65,6 +65,7 @@ describe('the projects', () => {
     it('labels years', () => {
         expect(yearsLabel(getProject('voxweave')!)).toBe('2026')
         expect(yearsLabel(getProject('asot-milsim')!)).toBe('2024 to 2026')
+        expect(yearsLabel(getProject('pmpc-group')!)).toBe('2025')
     })
 
     it('makes monograms', () => {

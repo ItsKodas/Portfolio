@@ -74,7 +74,7 @@ export const PROJECTS: Project[] = [
     {
         slug: 'pmpc-group',
         name: 'PMPC Group',
-        years: [2025, 2026],
+        years: [2025, 2025],
         category: 'website',
         context: 'client',
         featured: 1,
