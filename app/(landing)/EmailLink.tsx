@@ -64,7 +64,7 @@ export default function EmailLink({ className = '' }: { className?: string }) {
                 Email me
             </button>
 
-            <Dialog open={state.at !== 'closed'} onClose={close} title="Email me">
+            <Dialog open={state.at !== 'closed'} onClose={close} title="Email me" closeOnBackdrop>
                 <div className="text-left text-sm leading-relaxed">
                     {state.at === 'loading' && <p>Just a moment...</p>}
 

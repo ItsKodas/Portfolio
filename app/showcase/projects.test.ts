@@ -147,4 +147,8 @@ describe('the projects', () => {
         expect(text).toMatch(/from source/)
         expect(text).not.toMatch(/shipped/i)
     })
+
+    it("doesn't credit the PMPC director with my own footer signature", () => {
+        expect(strings(getProject('pmpc-group')!).join(' ')).not.toMatch(/director's signature/i)
+    })
 })

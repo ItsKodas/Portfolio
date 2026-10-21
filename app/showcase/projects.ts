@@ -81,7 +81,7 @@ export const PROJECTS: Project[] = [
         line: 'Corporate website for a project management and project controls consultancy.',
         summary: "A corporate website for PMPC Group, a project management and project controls consultancy, built to look as established as the firm behind it.",
         body: [
-            "The home page scrolls through autoplaying city and construction video, then leads into the solutions, about, services and contact pages, with the company's history and the director's signature on the about page.",
+            "The home page scrolls through autoplaying city and construction video, then leads into the solutions, about, services and contact pages, with the company's history on the about page.",
             "I built it in Next.js as a static site in early 2025 and later moved it onto a Next server, running in Docker behind Apache and Cloudflare. The client has since pointed their domain at a different site, so both my original build and the redesign I made in 2026 live on at horizons.gg.",
         ],
         highlights: [

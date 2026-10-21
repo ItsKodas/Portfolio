@@ -11,9 +11,12 @@ type Props = {
     title: string
     children: ReactNode
     footer?: ReactNode
+    // Close when the darkened page around the dialog is clicked. Off by default: a confirmation should not vanish
+    // because a click landed a little wide.
+    closeOnBackdrop?: boolean
 }
 
-export function Dialog({ open, onClose, title, children, footer }: Props) {
+export function Dialog({ open, onClose, title, children, footer, closeOnBackdrop = false }: Props) {
     const ref = useRef<HTMLDialogElement>(null)
     const titleId = useId()
 
@@ -48,6 +51,9 @@ export function Dialog({ open, onClose, title, children, footer }: Props) {
             // The platform fires cancel for Escape and close when the dialog closes by any route
             onCancel={event => { event.preventDefault(); onClose() }}
             onClose={onClose}
+            // A modal dialog's backdrop belongs to the dialog element, and its content fills the element edge to edge,
+            // so a click whose target is the dialog itself landed on the backdrop
+            onClick={closeOnBackdrop ? event => { if (event.target === event.currentTarget) onClose() } : undefined}
         >
             <div className={styles.head}>
                 <h2 className={styles.title} id={titleId}>{title}</h2>
