@@ -27,9 +27,11 @@ describe('a project page', () => {
         expect(screen.getByText('By hand from 2024, with Claude since late 2025')).toBeInTheDocument()
     })
 
-    it('shows the placeholder for a project without screenshots', async () => {
+    it('shows the video in place of the gallery when a project has one', async () => {
         await page('ai-culler')
-        expect(screen.getByTestId('cover-placeholder')).toBeInTheDocument()
+        expect(screen.getByRole('button', { name: 'Play video: AIC | Engagement Performance Test' })).toBeInTheDocument()
+        expect(screen.queryByTestId('cover-placeholder')).not.toBeInTheDocument()
+        expect(screen.getByRole('link', { name: /YouTube/ })).toHaveAttribute('href', 'https://www.youtube.com/watch?v=Gz_TsMQTI4g')
     })
 
     it('labels PMPC as my build', async () => {
@@ -66,10 +68,10 @@ describe('a project page', () => {
         expect(tw.card).toBe('summary_large_image')
     })
 
-    it("falls back to the site's share image for a project without screenshots", async () => {
+    it("shares AI Culler with its video's thumbnail", async () => {
         const m = await generateMetadata({ params: Promise.resolve({ slug: 'ai-culler' }) })
         const og = m.openGraph as { title?: string, images?: { url: string }[] }
         expect(og.title).toBe('AI Culler')
-        expect(og.images?.[0].url).toBe('/opengraph-image')
+        expect(og.images?.[0].url).toBe('/projects/ai-culler/01.webp')
     })
 })

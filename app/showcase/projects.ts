@@ -57,6 +57,7 @@ export interface Project {
     builtNote?: string
     logo?: { src: string, background: 'light' | 'dark' }
     screenshots: Shot[]            // the first desktop one is the cover; none shows a placeholder
+    video?: { youtubeId: string, title: string }   // shown on the project page in place of the first screenshot
     links: {
         website?: string
         websiteLabel?: string
@@ -350,7 +351,10 @@ export const PROJECTS: Project[] = [
         tech: ['SQF', 'Arma 3', 'CBA_A3', 'PowerShell'],
         built: 'claude',
         logo: { src: '/projects/ai-culler/logo.png', background: 'dark' },
-        screenshots: [],
+        screenshots: [
+            { src: '/projects/ai-culler/01.webp', alt: 'AI Culler on and off side by side in the performance test video', device: 'desktop' },
+        ],
+        video: { youtubeId: 'Gz_TsMQTI4g', title: 'AIC | Engagement Performance Test' },
         links: {
             workshop: 'https://steamcommunity.com/sharedfiles/filedetails/?id=3744994173',
             github: 'https://github.com/ItsKodas/ai-culler',

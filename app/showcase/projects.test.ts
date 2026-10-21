@@ -106,9 +106,13 @@ describe('the projects', () => {
         }
     })
 
-    it('has a cover screenshot for every project except AI Culler', () => {
-        const without = PROJECTS.filter(p => !p.screenshots.some(s => s.device === 'desktop')).map(p => p.slug).sort()
-        expect(without).toEqual(['ai-culler'])
+    it('has a cover screenshot for every project', () => {
+        const without = PROJECTS.filter(p => !p.screenshots.some(s => s.device === 'desktop')).map(p => p.slug)
+        expect(without).toEqual([])
+    })
+
+    it("embeds AI Culler's performance test video", () => {
+        expect(getProject('ai-culler')!.video).toEqual({ youtubeId: 'Gz_TsMQTI4g', title: 'AIC | Engagement Performance Test' })
     })
 
     it("gives every project with a real logo its logo (Voxweave only has Tauri's default icons)", () => {

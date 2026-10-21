@@ -2,7 +2,7 @@ import type { Metadata } from 'next'
 import Link from 'next/link'
 import { notFound } from 'next/navigation'
 
-import { ArrowBack, ArrowForward, GitHub, NorthEast, EpicGames, Steam } from '@/ui/icons'
+import { ArrowBack, ArrowForward, GitHub, NorthEast, EpicGames, Steam, YouTube } from '@/ui/icons'
 import { Cover } from '@/app/showcase/Cover'
 import { Panel } from '@/app/showcase/Panel'
 import { ProjectLogo } from '@/app/showcase/ProjectLogo'
@@ -13,6 +13,7 @@ import {
 import { SITE } from '@/app/site'
 
 import { Gallery } from './Gallery'
+import { VideoEmbed } from './VideoEmbed'
 
 // A page per project, for anyone who wants more than the card on the home page: its screenshots, what it does, the
 // hard parts, what it is built with and how, and every link it has. Sits outside the (landing) group, so it loads
@@ -71,6 +72,7 @@ function Links({ project }: { project: Project }) {
                     )
             })}
             {workshop && <a href={workshop} {...external} className={lake}><Steam size={16} /> Steam Workshop {out}</a>}
+            {project.video && <a href={`https://www.youtube.com/watch?v=${project.video.youtubeId}`} {...external} className={lake}><YouTube size={16} /> YouTube {out}</a>}
             {download && <a href={download} {...external} className={lake}>Download {out}</a>}
             {gameSite && <Link href={gameSite} className={lake}>Game website</Link>}
         </div>
@@ -111,10 +113,15 @@ export default async function ProjectPage({ params }: Props) {
                 <p className="mb-6 max-w-3xl text-lg leading-relaxed text-[#dbe6f7]">{project.summary}</p>
                 <Links project={project} />
 
-                <div className="mt-10">
-                    {project.screenshots.length > 0
-                        ? <Gallery shots={project.screenshots} name={project.name} />
-                        : <div className="relative aspect-[16/10] overflow-hidden rounded-2xl border border-[#8fd4f5]/10"><Cover project={project} sizes="896px" /></div>}
+                {/* A video takes the first screenshot's place (that screenshot is its thumbnail), with any others below it */}
+                <div className="mt-10 space-y-3">
+                    {project.video && project.screenshots[0] && <VideoEmbed video={project.video} poster={project.screenshots[0]} />}
+                    {(() => {
+                        const shots = project.video ? project.screenshots.slice(1) : project.screenshots
+                        if (shots.length) return <Gallery shots={shots} name={project.name} />
+                        if (project.video) return null
+                        return <div className="relative aspect-[16/10] overflow-hidden rounded-2xl border border-[#8fd4f5]/10"><Cover project={project} sizes="896px" /></div>
+                    })()}
                 </div>
 
                 <Section title="What it does">

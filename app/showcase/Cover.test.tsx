@@ -12,9 +12,14 @@ describe('Cover', () => {
     })
 
     it('shows a placeholder with the logo when there are no screenshots', () => {
-        render(<div className="relative"><Cover project={getProject('ai-culler')!} sizes="50vw" /></div>)
+        render(<div className="relative"><Cover project={{ ...getProject('ai-culler')!, screenshots: [], video: undefined }} sizes="50vw" /></div>)
         expect(screen.getByTestId('cover-placeholder')).toBeInTheDocument()
         expect(screen.getByRole('img', { name: 'AI Culler logo' })).toBeInTheDocument()
         expect(screen.getByText('Screenshots coming soon')).toBeInTheDocument()
+    })
+
+    it('marks a project with a video with a play badge', () => {
+        render(<div className="relative"><Cover project={getProject('ai-culler')!} sizes="50vw" /></div>)
+        expect(screen.getByTestId('play-badge')).toBeInTheDocument()
     })
 })

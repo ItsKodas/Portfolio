@@ -440,5 +440,11 @@
     "out": "logo.png",
     "kind": "logo",
     "gh": "KL-Designs/SpotOnDrones:public/livery/logo.png?ref=livery-redesign"
+  },
+  {
+    "slug": "ai-culler",
+    "out": "01.webp",
+    "kind": "desktop",
+    "from": "ai-culler/video-thumbnail.jpg"
   }
 ]
