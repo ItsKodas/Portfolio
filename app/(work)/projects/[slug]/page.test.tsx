@@ -30,10 +30,15 @@ describe('a project page', () => {
         expect(screen.getByRole('link', { name: /YouTube/ })).toHaveAttribute('href', 'https://www.youtube.com/watch?v=Gz_TsMQTI4g')
     })
 
-    it('links both versions of the PMPC site I built', async () => {
+    it('links both versions of the PMPC site I built, the original first and standing out', async () => {
         await page('pmpc-group')
-        expect(screen.getByRole('link', { name: /View the redesign/ })).toHaveAttribute('href', 'https://pmpcgroup.horizons.gg/')
-        expect(screen.getByRole('link', { name: /View the original/ })).toHaveAttribute('href', 'https://pmpcold.horizons.gg/')
+        const original = screen.getByRole('link', { name: /View the original/ })
+        const redesign = screen.getByRole('link', { name: /View the redesign/ })
+        expect(original).toHaveAttribute('href', 'https://pmpcold.horizons.gg/')
+        expect(redesign).toHaveAttribute('href', 'https://pmpcgroup.horizons.gg/')
+        expect(original.compareDocumentPosition(redesign) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+        expect(original).toHaveAttribute('data-primary')
+        expect(redesign).not.toHaveAttribute('data-primary')
     })
 
     it('links back to the projects section', async () => {

@@ -102,9 +102,9 @@ export const PROJECTS: Project[] = [
             { src: '/projects/pmpc-group/06.webp', alt: 'The service cards on a phone', device: 'mobile' },
         ],
         links: {
-            website: 'https://pmpcgroup.horizons.gg/',
-            websiteLabel: 'View the redesign',
-            moreSites: [{ href: 'https://pmpcold.horizons.gg/', label: 'View the original' }],
+            website: 'https://pmpcold.horizons.gg/',
+            websiteLabel: 'View the original',
+            moreSites: [{ href: 'https://pmpcgroup.horizons.gg/', label: 'View the redesign' }],
         },
     },
     {
