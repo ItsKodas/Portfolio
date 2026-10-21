@@ -61,6 +61,7 @@ export interface Project {
     links: {
         website?: string
         websiteLabel?: string
+        moreSites?: { href: string, label: string }[]   // other versions of the site, shown after the main one
         github?: string
         workshop?: string
         download?: string
@@ -81,7 +82,7 @@ export const PROJECTS: Project[] = [
         summary: "A corporate website for PMPC Group, a project management and project controls consultancy, built to look as established as the firm behind it.",
         body: [
             "The home page scrolls through autoplaying city and construction video, then leads into the solutions, about, services and contact pages, with the company's history and the director's signature on the about page.",
-            "I built it in Next.js as a static site in early 2025 and later moved it onto a Next server, running in Docker behind Apache and Cloudflare. The client has since pointed their domain at a different site, so my build lives on at pmpcgroup.horizons.gg.",
+            "I built it in Next.js as a static site in early 2025 and later moved it onto a Next server, running in Docker behind Apache and Cloudflare. The client has since pointed their domain at a different site, so both my original build and the redesign I made in 2026 live on at horizons.gg.",
         ],
         highlights: [
             "Autoplaying video backgrounds, with a still poster shown while each one loads",
@@ -91,7 +92,7 @@ export const PROJECTS: Project[] = [
         ],
         tech: ['Next.js', 'React', 'TypeScript', 'Tailwind CSS', 'Framer Motion', 'Docker'],
         built: 'hand',
-        logo: { src: '/projects/pmpc-group/logo.svg', background: 'dark' },
+        logo: { src: '/projects/pmpc-group/logo.svg', background: 'light' },
         screenshots: [
             { src: '/projects/pmpc-group/01.webp', alt: 'The home page hero: the PMPC Group logo over a city skyline in fog', device: 'desktop' },
             { src: '/projects/pmpc-group/02.webp', alt: 'The home page service cards, one lifting under the cursor', device: 'desktop' },
@@ -100,7 +101,11 @@ export const PROJECTS: Project[] = [
             { src: '/projects/pmpc-group/05.webp', alt: 'The home page hero on a phone', device: 'mobile' },
             { src: '/projects/pmpc-group/06.webp', alt: 'The service cards on a phone', device: 'mobile' },
         ],
-        links: { website: 'https://pmpcgroup.horizons.gg/', websiteLabel: 'View my build' },
+        links: {
+            website: 'https://pmpcgroup.horizons.gg/',
+            websiteLabel: 'View the redesign',
+            moreSites: [{ href: 'https://pmpcold.horizons.gg/', label: 'View the original' }],
+        },
     },
     {
         slug: 'spot-on-drones',
@@ -413,7 +418,7 @@ export const PROJECTS: Project[] = [
         ],
         tech: ['Next.js', 'React', 'TypeScript', 'Tailwind CSS', 'Docker'],
         built: 'both',
-        builtNote: 'By hand from 2022, with the 2026 redesign built with Claude',
+        builtNote: 'By hand from 2022, with Claude assisting the 2026 redesign',
         logo: { src: '/projects/arbys-auto-glass/logo.png', background: 'light' },
         screenshots: [
             { src: '/projects/arbys-auto-glass/01.webp', alt: 'The home page hero carousel', device: 'desktop' },
@@ -483,7 +488,7 @@ export const yearsLabel = (p: Project) => p.years[0] === p.years[1] ? String(p.y
 
 export function builtLine(p: Project) {
     if (p.built === 'hand') return 'Written by hand'
-    if (p.built === 'claude') return 'Built with Claude'
+    if (p.built === 'claude') return 'Assisted by Claude'
     return p.builtNote ?? ''
 }
 

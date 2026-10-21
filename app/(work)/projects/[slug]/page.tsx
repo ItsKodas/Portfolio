@@ -54,11 +54,12 @@ const lilac = `${chip} border-[#b597cc]/25 bg-[#b597cc]/[0.07] text-[#d9c6ea] ho
 const out = <NorthEast size={14} className="opacity-60 transition-transform group-hover:-translate-y-0.5 group-hover:translate-x-0.5" />
 
 function Links({ project }: { project: Project }) {
-    const { website, websiteLabel, github, workshop, download, gameSite, stores } = project.links
+    const { website, websiteLabel, moreSites, github, workshop, download, gameSite, stores } = project.links
     const external = { target: '_blank', rel: 'noopener noreferrer' }
     return (
         <div className="flex flex-wrap gap-2">
             {website && <a href={website} {...external} className={lake}>{websiteLabel ?? 'Visit site'} {out}</a>}
+            {moreSites?.map(({ href, label }) => <a key={href} href={href} {...external} className={lake}>{label} {out}</a>)}
             {github && <a href={github} {...external} className={lilac}><GitHub size={16} /> GitHub</a>}
             {stores?.map(({ name, href }) => {
                 const Icon = STORE_ICON[name]

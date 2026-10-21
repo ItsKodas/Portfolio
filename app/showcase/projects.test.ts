@@ -54,7 +54,7 @@ describe('the projects', () => {
 
     it('says how each project was built', () => {
         expect(builtLine(getProject('tax-assistant')!)).toBe('Written by hand')
-        expect(builtLine(getProject('voxweave')!)).toBe('Built with Claude')
+        expect(builtLine(getProject('voxweave')!)).toBe('Assisted by Claude')
         expect(builtLine(getProject('asot-milsim')!)).toBe('By hand from 2024, with Claude since late 2025')
     })
 
@@ -81,8 +81,9 @@ describe('the projects', () => {
 
     it('only links over https', () => {
         for (const p of PROJECTS) {
-            const { gameSite, websiteLabel, stores, ...rest } = p.links
-            for (const href of [...Object.values(rest), ...(stores ?? []).map(s => s.href)].filter(Boolean)) {
+            const { gameSite, websiteLabel, stores, moreSites, ...rest } = p.links
+            const hrefs = [...Object.values(rest), ...(stores ?? []).map(s => s.href), ...(moreSites ?? []).map(s => s.href)]
+            for (const href of hrefs.filter(Boolean)) {
                 expect(href).toMatch(/^https:\/\//)
             }
             if (gameSite) expect(gameSite).toMatch(/^\//)

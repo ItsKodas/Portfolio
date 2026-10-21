@@ -30,9 +30,10 @@ describe('a project page', () => {
         expect(screen.getByRole('link', { name: /YouTube/ })).toHaveAttribute('href', 'https://www.youtube.com/watch?v=Gz_TsMQTI4g')
     })
 
-    it('labels PMPC as my build', async () => {
+    it('links both versions of the PMPC site I built', async () => {
         await page('pmpc-group')
-        expect(screen.getByRole('link', { name: /View my build/ })).toHaveAttribute('href', 'https://pmpcgroup.horizons.gg/')
+        expect(screen.getByRole('link', { name: /View the redesign/ })).toHaveAttribute('href', 'https://pmpcgroup.horizons.gg/')
+        expect(screen.getByRole('link', { name: /View the original/ })).toHaveAttribute('href', 'https://pmpcold.horizons.gg/')
     })
 
     it('links back to the projects section', async () => {
@@ -80,7 +81,7 @@ describe('a project page', () => {
     it('credits Claude in the corner of "Built with" for a project built with it', async () => {
         await page('voxweave')
         const mark = screen.getByTestId('claude-mark')
-        expect(mark).toHaveTextContent('Built with Claude')
+        expect(mark).toHaveTextContent('Assisted by Claude')
         expect(mark.querySelector('svg')).toBeInTheDocument()
         expect(mark.closest('section, div')).toContainElement(screen.getByRole('heading', { name: 'Built with' }).parentElement!.querySelector('[data-testid="claude-mark"]'))
     })
