@@ -9,7 +9,7 @@ import FeaturedCard from './FeaturedCard'
 import ProjectRow from './ProjectRow'
 
 // The projects on the home page: the four strongest as large cards, then the rest as a compact list, with tabs to
-// narrow the list to one kind. Picking a kind drops the large cards and lists every project of that kind, the featured
+// narrow it to one kind. Picking a kind shows every project of that kind as large cards under the tabs, the featured
 // ones included, so a filtered view is never missing anything. The server renders the "All" view.
 export default function ProjectsSection() {
     const [category, setCategory] = useState<Category | 'all'>('all')
@@ -65,7 +65,6 @@ export default function ProjectsSection() {
         { id: 'all', label: 'All' },
         ...CATEGORIES.filter(c => categoriesInUse().includes(c.id)),
     ]
-    const rows = category === 'all' ? listed() : inCategory(category)
 
     return (
         <div ref={root}>
@@ -89,9 +88,17 @@ export default function ProjectsSection() {
                 })}
             </div>
 
-            <div className="divide-y divide-[#8fd4f5]/[0.08]">
-                {rows.map(p => <ProjectRow key={p.slug} project={p} />)}
-            </div>
+            {category === 'all'
+                ? (
+                    <div className="divide-y divide-[#8fd4f5]/[0.08]">
+                        {listed().map(p => <ProjectRow key={p.slug} project={p} />)}
+                    </div>
+                )
+                : (
+                    <div className="mt-2 grid gap-5 md:grid-cols-2">
+                        {inCategory(category).map(p => <FeaturedCard key={p.slug} project={p} />)}
+                    </div>
+                )}
         </div>
     )
 }

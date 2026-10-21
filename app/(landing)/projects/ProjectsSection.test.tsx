@@ -31,13 +31,23 @@ describe('ProjectsSection', () => {
         expect(within(group).getByRole('button', { name: 'All' })).toHaveAttribute('aria-pressed', 'true')
     })
 
-    it('hides the featured block in a category and lists featured projects of that kind', async () => {
+    it('shows a category as large cards under the tabs, featured projects of that kind included', async () => {
         render(<ProjectsSection />)
         await userEvent.click(screen.getByRole('button', { name: 'Desktop apps' }))
-        expect(screen.queryAllByTestId('featured-card')).toHaveLength(0)
-        expect(screen.getAllByTestId('project-row').map(r => r.getAttribute('href')))
-            .toEqual(['/projects/atomic-sandbox', '/projects/voxweave'])
+        expect(screen.queryAllByTestId('project-row')).toHaveLength(0)
+        const cards = screen.getAllByTestId('featured-card')
+        expect(cards.map(c => c.getAttribute('href'))).toEqual(['/projects/atomic-sandbox', '/projects/voxweave'])
+        const tabs = screen.getByRole('group', { name: 'Filter projects' })
+        for (const card of cards) expect(tabs.compareDocumentPosition(card) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
         expect(screen.getByRole('button', { name: 'Desktop apps' })).toHaveAttribute('aria-pressed', 'true')
+    })
+
+    it('goes back to the featured cards and the list on All', async () => {
+        render(<ProjectsSection />)
+        await userEvent.click(screen.getByRole('button', { name: 'Games' }))
+        await userEvent.click(screen.getByRole('button', { name: 'All' }))
+        expect(screen.getAllByTestId('featured-card')).toHaveLength(4)
+        expect(screen.getAllByTestId('project-row')).toHaveLength(8)
     })
 
     it('links every card to its project page', () => {
