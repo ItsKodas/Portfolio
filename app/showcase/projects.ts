@@ -136,7 +136,11 @@ export const PROJECTS: Project[] = [
             { src: '/projects/spot-on-drones/04.webp', alt: 'The home page on a phone', device: 'mobile' },
             { src: '/projects/spot-on-drones/05.webp', alt: 'The gallery on a phone', device: 'mobile' },
         ],
-        links: { website: 'https://www.spotondrones.com/' },
+        links: {
+            website: 'https://www.spotondrones.com/',
+            websiteLabel: 'View the original',
+            moreSites: [{ href: 'https://redesign.spotondrones.com/', label: 'View the redesign' }],
+        },
     },
     {
         slug: 'atomic-sandbox',

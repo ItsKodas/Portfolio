@@ -105,4 +105,14 @@ describe('a project page', () => {
         await page('tax-assistant')
         expect(screen.queryByTestId('claude-mark')).not.toBeInTheDocument()
     })
+
+    it('links both versions of the Spot On Drones site, the original first', async () => {
+        await page('spot-on-drones')
+        const original = screen.getByRole('link', { name: /View the original/ })
+        const redesign = screen.getByRole('link', { name: /View the redesign/ })
+        expect(original).toHaveAttribute('href', 'https://www.spotondrones.com/')
+        expect(redesign).toHaveAttribute('href', 'https://redesign.spotondrones.com/')
+        expect(original).toHaveAttribute('data-primary')
+        expect(original.compareDocumentPosition(redesign) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+    })
 })
