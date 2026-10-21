@@ -279,7 +279,9 @@ export default function ParallaxView({ children }: Readonly<{ children: React.Re
             <PerfDebug />
             <WallpaperLink />
             <SceneCurtain />
-            <div className='relative overflow-hidden bg-[#0b101f]' style={{ height: pageHeight ?? '100svh' }}>
+            {/* overflow-clip, not hidden: a hidden wrapper can still be scrolled by the browser itself (an anchor link,
+                or focus moving to a link further down), which strands the page where no wheel or swipe can undo it */}
+            <div className='relative overflow-clip bg-[#0b101f]' style={{ height: pageHeight ?? '100svh' }}>
 
                 {/* ── Hero scene ─────────────────────────────────────── */}
 
