@@ -19,7 +19,7 @@ export const SITE = {
     role: 'Fullstack Developer',
     title: `${name} · ${tagline}`,
     // First person, and plainly put: it is my own site, so it says what I build rather than how well I build it
-    description: "I'm Koda, a fullstack developer. I build websites and web apps with Next.js, React, TypeScript and Node.js, from the backend through to the frontend.",
+    description: "I'm Koda, a full-stack developer. I build websites and web apps with Next.js, React, TypeScript and Node.js, and also desktop apps, games and mods.",
     // The scene's navy, for browser chrome and the share image
     colour: '#0b101f',
     locale: 'en_AU',

@@ -16,6 +16,7 @@ import { SKILLS as skills, SOCIALS } from '../site'
 import { TOOLKIT_LOGOS } from './toolkitLogos'
 import { Panel } from '@/app/showcase/Panel'
 import ProjectsSection from './projects/ProjectsSection'
+import EmailLink from './EmailLink'
 
 // Logos as light marks on the night, each sized so they carry about the same visual weight. The single-colour SVGs are
 // turned white here; Spot On Drones and Arby's have prepared white versions (two-tone, and the mark lifted off its
@@ -23,7 +24,7 @@ import ProjectsSection from './projects/ProjectsSection'
 const WHITE: React.CSSProperties = { filter: 'brightness(0) invert(1)' }
 // Each logo links to the site built for that client (a logo without an href is shown but not clickable)
 const clients: { src: typeof PMPC_Group, name: string, href?: string, box: string, style?: React.CSSProperties }[] = [
-    { src: PMPC_Group, name: 'PMPC Group', href: 'http://pmpcgroup.com.au/', box: 'h-10 w-24', style: WHITE },
+    { src: PMPC_Group, name: 'PMPC Group', href: 'https://pmpcgroup.horizons.gg/', box: 'h-10 w-24', style: WHITE },
     { src: SpotOnDrones, name: 'Spot On Drones', href: 'https://spotondrones.com.au/', box: 'h-10 w-32' },
     { src: Arbys, name: "Arby's Auto Glass", href: 'https://arbysauto.com/', box: 'h-11 w-11' },
     { src: ASOT, name: 'ASOT', href: 'https://www.asotmilsim.com/', box: 'h-10 w-28', style: WHITE },
@@ -82,11 +83,19 @@ export default function Landing() {
                 <div>
                     <h1 className="mb-3 text-4xl font-bold tracking-tight text-white sm:text-5xl">Dakoda Lancelot</h1>
                     <p className="mb-6 text-lg font-medium text-[#f19bb3]">Fullstack Developer</p>
-                    <p className="max-w-xl text-base leading-relaxed text-[#b4c3dc]/80">
-                        Building modern digital experiences with clean code and thoughtful design. Specialising in fullstack
-                        development, from scalable backends to polished, performant frontends.
-                    </p>
-                    <QuoteLink className="mt-8" />
+                    <div className="max-w-xl space-y-4 text-base leading-relaxed text-[#b4c3dc]/80">
+                        <p>
+                            I&apos;m a full-stack developer: I&apos;ve spent years building websites and web apps for clients, from
+                            the database to the front end, written by hand. With AI tools in the mix I now build well past the web
+                            too: desktop apps, a game and mods. I use Claude as part of how I work. I decide what gets built and how
+                            it fits together, and I review and test everything that ships.
+                        </p>
+                        <p className="font-medium text-[#dbe6f7]">I&apos;m open to full-time roles as well as contract work.</p>
+                    </div>
+                    <div className="mt-8 flex flex-wrap gap-3">
+                        <QuoteLink />
+                        <EmailLink />
+                    </div>
                 </div>
 
                 <Panel className="p-6">
@@ -138,9 +147,9 @@ export default function Landing() {
             <section className="mt-32 text-center">
                 <h2 className="mb-4 text-3xl font-bold tracking-tight text-white sm:text-4xl">Let&apos;s build something</h2>
                 <p className="mx-auto mb-8 max-w-md text-base leading-relaxed text-[#b4c3dc]/75">
-                    Have a project in mind or just want to say hi? Reach out on any of these.
+                    Have a project in mind, or a role you think I&apos;d suit? Get in touch.
                 </p>
-                <div className="mb-8"><QuoteLink /></div>
+                <div className="mb-8 flex flex-wrap justify-center gap-3"><QuoteLink /><EmailLink /></div>
                 <div className="flex flex-wrap justify-center gap-3">
                     {socials.map(({ label, href, icon: Icon }) => (
                         <Link key={label} href={href} target="_blank" rel="me noopener noreferrer" aria-label={label}
