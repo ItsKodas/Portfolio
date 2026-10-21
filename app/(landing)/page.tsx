@@ -57,7 +57,7 @@ const projects: { name: string, year?: string, blurb: string, website?: string, 
     {
         name: 'Atomic Sandbox',
         year: '2026',
-        blurb: 'A 3D sandbox that simulates matter from the atoms up, written from scratch in Rust and wgpu: electrons are solved with density functional theory on the GPU, so bonds and shapes emerge rather than being hardcoded. Drag atoms around and watch molecules vibrate live.',
+        blurb: 'A real-time quantum chemistry sandbox, built from scratch in Rust. Its LIRA engine solves the electrons with density functional theory on any GPU, live, so bonds, shapes and reactions emerge from the physics instead of being scripted. Build molecules, pull atoms apart and watch them vibrate, while a machine-learned model trains itself in the background to make the simulation thousands of times faster.',
         github: 'https://github.com/ItsKodas/atomic-sandbox',
     },
     {
