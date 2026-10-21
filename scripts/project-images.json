@@ -1,0 +1,386 @@
+[
+  {
+    "slug": "pmpc-group",
+    "out": "01.webp",
+    "kind": "desktop",
+    "from": "PMPC Group/01-home-hero-desktop.png"
+  },
+  {
+    "slug": "pmpc-group",
+    "out": "02.webp",
+    "kind": "desktop",
+    "from": "PMPC Group/03-home-cards-hover-desktop.png"
+  },
+  {
+    "slug": "pmpc-group",
+    "out": "03.webp",
+    "kind": "desktop",
+    "from": "PMPC Group/05-about-desktop.png"
+  },
+  {
+    "slug": "pmpc-group",
+    "out": "04.webp",
+    "kind": "desktop",
+    "from": "PMPC Group/07-solutions-desktop.png"
+  },
+  {
+    "slug": "pmpc-group",
+    "out": "05.webp",
+    "kind": "mobile",
+    "from": "PMPC Group/09-home-hero-mobile.png"
+  },
+  {
+    "slug": "pmpc-group",
+    "out": "06.webp",
+    "kind": "mobile",
+    "from": "PMPC Group/10-home-cards-mobile.png"
+  },
+  {
+    "slug": "pmpc-group",
+    "out": "logo.svg",
+    "kind": "logo",
+    "gh": "KL-Designs/PMPC-Group:public/logo/logoWhite.svg"
+  },
+  {
+    "slug": "spot-on-drones",
+    "out": "01.webp",
+    "kind": "desktop",
+    "from": "spot-on-drones/desktop-01-home.png"
+  },
+  {
+    "slug": "spot-on-drones",
+    "out": "02.webp",
+    "kind": "desktop",
+    "from": "spot-on-drones/desktop-03-gallery.png"
+  },
+  {
+    "slug": "spot-on-drones",
+    "out": "03.webp",
+    "kind": "mobile",
+    "from": "spot-on-drones/mobile-01-home.png"
+  },
+  {
+    "slug": "spot-on-drones",
+    "out": "logo.png",
+    "kind": "logo",
+    "gh": "KL-Designs/SpotOnDrones:public/designs/LogoFulld.png"
+  },
+  {
+    "slug": "atomic-sandbox",
+    "out": "01.webp",
+    "kind": "desktop",
+    "from": "02-ethylene-orbitals.png"
+  },
+  {
+    "slug": "atomic-sandbox",
+    "out": "02.webp",
+    "kind": "desktop",
+    "from": "01-water-density-bonds.png"
+  },
+  {
+    "slug": "atomic-sandbox",
+    "out": "03.webp",
+    "kind": "desktop",
+    "from": "04-propene-camera-view.png"
+  },
+  {
+    "slug": "atomic-sandbox",
+    "out": "04.webp",
+    "kind": "desktop",
+    "from": "05-periodic-table.png"
+  },
+  {
+    "slug": "atomic-sandbox",
+    "out": "05.webp",
+    "kind": "desktop",
+    "from": "06-learned-model-training.png"
+  },
+  {
+    "slug": "atomic-sandbox",
+    "out": "06.webp",
+    "kind": "desktop",
+    "from": "03-ethylene-orbital-dots.png"
+  },
+  {
+    "slug": "asot-milsim",
+    "out": "01.webp",
+    "kind": "desktop",
+    "from": "ASOT/01-home-hero.png"
+  },
+  {
+    "slug": "asot-milsim",
+    "out": "02.webp",
+    "kind": "desktop",
+    "from": "ASOT/03-orbat.png"
+  },
+  {
+    "slug": "asot-milsim",
+    "out": "03.webp",
+    "kind": "desktop",
+    "from": "ASOT/05-milpacs.png"
+  },
+  {
+    "slug": "asot-milsim",
+    "out": "04.webp",
+    "kind": "desktop",
+    "from": "ASOT/06b-milpac-profile.png"
+  },
+  {
+    "slug": "asot-milsim",
+    "out": "05.webp",
+    "kind": "desktop",
+    "from": "ASOT/07-gallery.png"
+  },
+  {
+    "slug": "asot-milsim",
+    "out": "06.webp",
+    "kind": "mobile",
+    "from": "ASOT/30-mobile-home.png"
+  },
+  {
+    "slug": "asot-milsim",
+    "out": "07.webp",
+    "kind": "mobile",
+    "from": "ASOT/31-mobile-orbat.png"
+  },
+  {
+    "slug": "asot-milsim",
+    "out": "logo.png",
+    "kind": "logo",
+    "gh": "KL-Designs/ASOT:apps/web/public/ASOT-logo.png"
+  },
+  {
+    "slug": "blastyard",
+    "out": "01.webp",
+    "kind": "desktop",
+    "from": "Blastyard/skyrig-jetpack-above-the-clouds.png"
+  },
+  {
+    "slug": "blastyard",
+    "out": "02.webp",
+    "kind": "desktop",
+    "from": "Blastyard/neon-district-wall-run-signs.png"
+  },
+  {
+    "slug": "blastyard",
+    "out": "03.webp",
+    "kind": "desktop",
+    "from": "Blastyard/moon-base-low-gravity-jump.png"
+  },
+  {
+    "slug": "blastyard",
+    "out": "04.webp",
+    "kind": "desktop",
+    "from": "Blastyard/downtown-night-jetpack-over-street.png"
+  },
+  {
+    "slug": "blastyard",
+    "out": "05.webp",
+    "kind": "desktop",
+    "from": "Blastyard/armory-robot-customisation.png"
+  },
+  {
+    "slug": "blastyard",
+    "out": "06.webp",
+    "kind": "desktop",
+    "from": "Blastyard/main-menu.png"
+  },
+  {
+    "slug": "blastyard",
+    "out": "logo.svg",
+    "kind": "logo",
+    "gh": "ItsKodas/blastyard:brand/exports/icon/blastyard-icon.svg"
+  },
+  {
+    "slug": "voxweave",
+    "out": "01.webp",
+    "kind": "desktop",
+    "from": "Voxweave/01-live-voice-settings.png"
+  },
+  {
+    "slug": "voxweave",
+    "out": "02.webp",
+    "kind": "desktop",
+    "from": "Voxweave/02-live-effects.png"
+  },
+  {
+    "slug": "voxweave",
+    "out": "03.webp",
+    "kind": "desktop",
+    "from": "Voxweave/03-voices-record.png"
+  },
+  {
+    "slug": "voxweave",
+    "out": "04.webp",
+    "kind": "desktop",
+    "from": "Voxweave/04-voices-train.png"
+  },
+  {
+    "slug": "voxweave",
+    "out": "05.webp",
+    "kind": "desktop",
+    "from": "Voxweave/05-speak-text-to-speech.png"
+  },
+  {
+    "slug": "voxweave",
+    "out": "06.webp",
+    "kind": "desktop",
+    "from": "Voxweave/06-debug-voice-analysis.png"
+  },
+  {
+    "slug": "the-back-room",
+    "out": "01.webp",
+    "kind": "desktop",
+    "from": "The Back Room/desktop-01-floor.png"
+  },
+  {
+    "slug": "the-back-room",
+    "out": "02.webp",
+    "kind": "desktop",
+    "from": "The Back Room/desktop-07-poker-full-house.png"
+  },
+  {
+    "slug": "the-back-room",
+    "out": "03.webp",
+    "kind": "desktop",
+    "from": "The Back Room/desktop-04-uno-your-turn.png"
+  },
+  {
+    "slug": "the-back-room",
+    "out": "04.webp",
+    "kind": "desktop",
+    "from": "The Back Room/desktop-11-plinko.png"
+  },
+  {
+    "slug": "the-back-room",
+    "out": "05.webp",
+    "kind": "mobile",
+    "from": "The Back Room/phone-01-floor.png"
+  },
+  {
+    "slug": "the-back-room",
+    "out": "06.webp",
+    "kind": "mobile",
+    "from": "The Back Room/phone-03-uno-draw-two.png"
+  },
+  {
+    "slug": "the-back-room",
+    "out": "logo.svg",
+    "kind": "logo",
+    "gh": "ItsKodas/the-back-room:apps/web/public/favicon.svg"
+  },
+  {
+    "slug": "1st-canzuk-brigade",
+    "out": "01.webp",
+    "kind": "desktop",
+    "from": "1st-canzuk-brigade/desktop-02-orbat.png"
+  },
+  {
+    "slug": "1st-canzuk-brigade",
+    "out": "02.webp",
+    "kind": "desktop",
+    "from": "1st-canzuk-brigade/desktop-03-honours.png"
+  },
+  {
+    "slug": "1st-canzuk-brigade",
+    "out": "03.webp",
+    "kind": "desktop",
+    "from": "1st-canzuk-brigade/desktop-04-about.png"
+  },
+  {
+    "slug": "1st-canzuk-brigade",
+    "out": "04.webp",
+    "kind": "desktop",
+    "from": "1st-canzuk-brigade/desktop-01-home.png"
+  },
+  {
+    "slug": "1st-canzuk-brigade",
+    "out": "05.webp",
+    "kind": "mobile",
+    "from": "1st-canzuk-brigade/mobile-01-home.png"
+  },
+  {
+    "slug": "1st-canzuk-brigade",
+    "out": "logo.png",
+    "kind": "logo",
+    "gh": "ItsKodas/1st-canzuk-brigade:public/logo.png"
+  },
+  {
+    "slug": "arbys-auto-glass",
+    "out": "01.webp",
+    "kind": "desktop",
+    "from": "arbys-auto-glass/desktop-01-hero.png"
+  },
+  {
+    "slug": "arbys-auto-glass",
+    "out": "02.webp",
+    "kind": "desktop",
+    "from": "arbys-auto-glass/desktop-02-services.png"
+  },
+  {
+    "slug": "arbys-auto-glass",
+    "out": "03.webp",
+    "kind": "desktop",
+    "from": "arbys-auto-glass/desktop-03-service-area.png"
+  },
+  {
+    "slug": "arbys-auto-glass",
+    "out": "04.webp",
+    "kind": "desktop",
+    "from": "arbys-auto-glass/desktop-07-quote.png"
+  },
+  {
+    "slug": "arbys-auto-glass",
+    "out": "05.webp",
+    "kind": "mobile",
+    "from": "arbys-auto-glass/mobile-01-hero.png"
+  },
+  {
+    "slug": "arbys-auto-glass",
+    "out": "06.webp",
+    "kind": "mobile",
+    "from": "arbys-auto-glass/mobile-06-quote.png"
+  },
+  {
+    "slug": "arbys-auto-glass",
+    "out": "logo.png",
+    "kind": "logo",
+    "gh": "KL-Designs/Arbys:public/logo.png"
+  },
+  {
+    "slug": "horizons-portfolio",
+    "out": "01.webp",
+    "kind": "desktop",
+    "from": "horizons-portfolio/desktop-01-home.png"
+  },
+  {
+    "slug": "horizons-portfolio",
+    "out": "02.webp",
+    "kind": "desktop",
+    "from": "horizons-portfolio/desktop-02-quote.png"
+  },
+  {
+    "slug": "horizons-portfolio",
+    "out": "03.webp",
+    "kind": "mobile",
+    "from": "horizons-portfolio/mobile-01-home.png"
+  },
+  {
+    "slug": "horizons-portfolio",
+    "out": "logo.png",
+    "kind": "logo",
+    "local": "app/(landing)/logo/logo.png"
+  },
+  {
+    "slug": "ai-culler",
+    "out": "logo.png",
+    "kind": "logo",
+    "gh": "ItsKodas/ai-culler:icon.png"
+  },
+  {
+    "slug": "tax-assistant",
+    "out": "logo.png",
+    "kind": "logo",
+    "gh": "ItsKodas/Tax-Assistant:Mobile/assets/icon.png"
+  }
+]

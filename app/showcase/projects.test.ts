@@ -1,3 +1,6 @@
+import { existsSync } from 'node:fs'
+import { join } from 'node:path'
+
 import { describe, expect, it } from 'vitest'
 
 import {
@@ -93,5 +96,27 @@ describe('the projects', () => {
                 for (const word of BANNED) expect(s, `${p.slug}: ${s}`).not.toMatch(new RegExp(`\\b${word}\\b`, 'i'))
             }
         }
+    })
+
+    it('points only at image files that exist', () => {
+        for (const p of PROJECTS) {
+            for (const src of [...p.screenshots.map(s => s.src), ...(p.logo ? [p.logo.src] : [])]) {
+                expect(existsSync(join('public', src)), `${p.slug}: ${src}`).toBe(true)
+            }
+        }
+    })
+
+    it('has a cover screenshot for every project except AI Culler and Tax Assistant', () => {
+        const without = PROJECTS.filter(p => !p.screenshots.some(s => s.device === 'desktop')).map(p => p.slug).sort()
+        expect(without).toEqual(['ai-culler', 'tax-assistant'])
+    })
+
+    it('gives every project with a real logo its logo', () => {
+        const without = PROJECTS.filter(p => !p.logo).map(p => p.slug).sort()
+        expect(without).toEqual(['atomic-sandbox', 'voxweave'])
+    })
+
+    it('describes every screenshot', () => {
+        for (const p of PROJECTS) for (const s of p.screenshots) expect(s.alt.length, `${p.slug}: ${s.src}`).toBeGreaterThan(15)
     })
 })
