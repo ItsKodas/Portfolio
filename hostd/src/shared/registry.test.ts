@@ -582,6 +582,37 @@ projects:
         assert.deepEqual(registry.projects.get('acme')!.limits, { memory: '1g', cpus: '1' })
         assert.equal(registry.projects.get('acme')!.portEnv, 'WEB_PORT')
     })
+
+    it('reads the external networks a project may join, none by default', () => {
+        const project = (extra: string) => parseRegistry(`
+projects:
+  acme:
+    client: cl_1
+    name: Acme
+    dir: /var/www/acme
+    upstream: 127.0.0.1:5010
+    services: { web: { role: site } }
+${extra}`)
+        assert.deepEqual(project('').projects.get('acme')!.networks, [])
+        assert.deepEqual(project('    networks: [ horizons-network ]').projects.get('acme')!.networks, ['horizons-network'])
+        assert.match(project('    networks: horizons-network').invalid.get('acme') ?? '', /networks must be a list/)
+        assert.match(project('    networks: [ "bad name" ]').invalid.get('acme') ?? '', /networks must be a list/)
+    })
+
+    // hostd's own network reaches its api, which trusts whatever is on it. No entry may sanction that.
+    it('refuses the hostd network itself in networks', () => {
+        const registry = parseRegistry(`
+projects:
+  acme:
+    client: cl_1
+    name: Acme
+    dir: /var/www/acme
+    upstream: 127.0.0.1:5010
+    services: { web: { role: site } }
+    networks: [ hostd ]
+`)
+        assert.match(registry.invalid.get('acme') ?? '', /networks may not include hostd/)
+    })
 })
 
 // The name of a token in .env.fetcher, not a token. The grammar is exactly what an environment

@@ -3,7 +3,7 @@
 import styles from './scroll.module.css'
 import { NOTE_LINES } from './note'
 
-// A handwritten note in the hero pointing down to the work below, for anyone after a website. When the page loads each
+// A handwritten note in the hero pointing down to the work below, for anyone after something built (a site, an app, a game). When the page loads each
 // letter is traced in turn (its outline drawn with a pen stroke, then filled), then the arrow draws and bobs gently;
 // clicking the note scrolls down to the content. The letters are Caveat glyph outlines (see note.ts).
 
@@ -30,7 +30,7 @@ const ScrollIcon = () => {
     const scrollDown = () => window.scrollTo({ top: window.innerHeight * 0.55, behavior: 'smooth' })
 
     return (
-        <button type="button" onClick={scrollDown} className={styles.note} aria-label="Need a website? Take a look below">
+        <button type="button" onClick={scrollDown} className={styles.note} aria-label="Need something built? Take a look below">
             {NOTE_LINES.map((line, l) => (
                 <svg key={l} className={l === 0 ? styles.line1 : styles.line2} viewBox={line.viewBox} aria-hidden="true">
                     {line.glyphs.map((g, i) => (

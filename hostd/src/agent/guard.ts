@@ -34,13 +34,20 @@ function networkNamesOf(service: ResolvedService): string[] {
 // seccomp or AppArmor profile, or join an external network that reaches hostd's own api. Any of those is
 // root on the dedi or a reach into another tenant. Bind sources are confined to the environment's own tree
 // and its registered storage; the flags are refused outright.
-export function composeSafetyProblems(resolved: ResolvedCompose, allowedBindRoots: string[]): string[] {
+//
+// The one exception is an external network the operator has named on the project's own registry entry
+// (`networks`), for a site that shares a network with something hostd does not manage. The registry is the
+// operator's file and no client can write it, so this is the operator's decision and never the repo's. It
+// is matched on the network Docker really joins, not the key the compose file gives it, or a repo could
+// label hostd's own network with a sanctioned name.
+export function composeSafetyProblems(resolved: ResolvedCompose, allowedBindRoots: string[], allowedNetworks: string[] = []): string[] {
     const problems: string[] = []
     const roots = allowedBindRoots.map(withoutTrailingSlashPath)
-    const externalNetworks = new Set(
+    const refusedNetworks = new Map(
         Object.entries(resolved.networks ?? {})
             .filter(([, network]) => network?.external)
-            .map(([name]) => name),
+            .map(([key, network]) => [key, network?.name ?? key] as const)
+            .filter(([, name]) => !allowedNetworks.includes(name)),
     )
 
     for (const [name, service] of Object.entries(resolved.services)) {
@@ -65,7 +72,8 @@ export function composeSafetyProblems(resolved: ResolvedCompose, allowedBindRoot
         }
 
         for (const network of networkNamesOf(service)) {
-            if (externalNetworks.has(network)) at(`joins the external network ${network}`)
+            const refused = refusedNetworks.get(network)
+            if (refused !== undefined) at(`joins the external network ${refused}`)
         }
     }
     return problems
@@ -120,7 +128,7 @@ export function guardProblems(project: ProjectEntry, resolved: ResolvedCompose):
     // pipeline runs the same check against the candidate tree before it builds, so a dangerous push is
     // refused before it is brought up; this catch is for a live compose edited in place by hand.
     const bindRoots = [project.dir, ...Object.values(project.storage).map(storage => storage.absolute)]
-    problems.push(...composeSafetyProblems(resolved, bindRoots))
+    problems.push(...composeSafetyProblems(resolved, bindRoots, project.networks))
 
     const reads = [...project.composePaths, posix.join(project.dir, '.env')]
     for (const service of Object.values(resolved.services)) reads.push(...readsOf(service))

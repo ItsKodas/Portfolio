@@ -64,3 +64,28 @@ describe('Dialog', () => {
         expect(opener).toHaveFocus()
     })
 })
+
+describe('Dialog closeOnBackdrop', () => {
+    // A modal dialog's backdrop belongs to the dialog element itself, so a click there lands on <dialog> rather than
+    // on anything inside it
+    it('closes when the backdrop is clicked, if asked to', () => {
+        const onClose = vi.fn()
+        render(<Dialog open title="Email me" onClose={onClose} closeOnBackdrop>Body</Dialog>)
+        fireEvent.click(screen.getByRole('dialog'))
+        expect(onClose).toHaveBeenCalled()
+    })
+
+    it('stays open when its content is clicked', () => {
+        const onClose = vi.fn()
+        render(<Dialog open title="Email me" onClose={onClose} closeOnBackdrop>Body</Dialog>)
+        fireEvent.click(screen.getByText('Body'))
+        expect(onClose).not.toHaveBeenCalled()
+    })
+
+    it('ignores backdrop clicks by default', () => {
+        const onClose = vi.fn()
+        render(<Dialog open title="Roll back" onClose={onClose}>Body</Dialog>)
+        fireEvent.click(screen.getByRole('dialog'))
+        expect(onClose).not.toHaveBeenCalled()
+    })
+})

@@ -147,6 +147,21 @@ describe('guardProblems', () => {
     })
 })
 
+describe('guardProblems and sanctioned networks', () => {
+    const joined = (): ResolvedCompose => ({
+        ...resolved({ web: { volumes: [bind('/var/www/acme/uploads')], networks: { 'horizons-network': null } } }),
+        networks: { 'horizons-network': { name: 'horizons-network', external: true } },
+    })
+
+    it('refuses an external network the entry does not name', () => {
+        assert.deepEqual(guardProblems(entry(), joined()), ['service web joins the external network horizons-network'])
+    })
+
+    it('passes once the entry names it under networks', () => {
+        assert.deepEqual(guardProblems(entry('    networks: [ horizons-network ]'), joined()), [])
+    })
+})
+
 describe('guardAdvisories', () => {
     // A project with role: site on what is actually the database service (the exact state a freshly
     // provisioned project, or a hand enrollment, can be in before review) makes guardProblems's overlap
@@ -239,5 +254,27 @@ describe('composeSafetyProblems', () => {
             networks: { private: { external: false } },
         }
         assert.deepEqual(composeSafetyProblems(internal, roots), [])
+    })
+
+    // A site that was joined to a shared network before hostd managed it keeps working once the operator
+    // names that network on its registry entry. The registry is the operator's file, never the client's.
+    it('allows an external network the registry entry names, by its real name, and no other', () => {
+        const shared: ResolvedCompose = {
+            name: 'acme',
+            services: { web: { networks: { shared: null, other: null } } } as ResolvedCompose['services'],
+            networks: { shared: { name: 'horizons-network', external: true }, other: { external: true } },
+        }
+        assert.deepEqual(composeSafetyProblems(shared, roots, ['horizons-network']), ['service web joins the external network other'])
+    })
+
+    // The key is the compose file's own choice, so allowing by key would let a repo alias any network
+    // (hostd's included) to a sanctioned name.
+    it('refuses an external network that only borrows an allowed name as its key', () => {
+        const aliased: ResolvedCompose = {
+            name: 'acme',
+            services: { web: { networks: ['horizons-network'] } } as ResolvedCompose['services'],
+            networks: { 'horizons-network': { name: 'hostd', external: true } },
+        }
+        assert.deepEqual(composeSafetyProblems(aliased, roots, ['horizons-network']), ['service web joins the external network hostd'])
     })
 })
