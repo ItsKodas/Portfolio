@@ -42,30 +42,6 @@
     "gh": "KL-Designs/PMPC-Group:public/logo/logoWhite.svg"
   },
   {
-    "slug": "spot-on-drones",
-    "out": "01.webp",
-    "kind": "desktop",
-    "from": "spot-on-drones/desktop-01-home.png"
-  },
-  {
-    "slug": "spot-on-drones",
-    "out": "02.webp",
-    "kind": "desktop",
-    "from": "spot-on-drones/desktop-03-gallery.png"
-  },
-  {
-    "slug": "spot-on-drones",
-    "out": "03.webp",
-    "kind": "mobile",
-    "from": "spot-on-drones/mobile-01-home.png"
-  },
-  {
-    "slug": "spot-on-drones",
-    "out": "logo.png",
-    "kind": "logo",
-    "gh": "KL-Designs/SpotOnDrones:public/designs/LogoFulld.png"
-  },
-  {
     "slug": "atomic-sandbox",
     "out": "01.webp",
     "kind": "desktop",
@@ -147,7 +123,7 @@
     "slug": "asot-milsim",
     "out": "logo.png",
     "kind": "logo",
-    "gh": "KL-Designs/ASOT:apps/web/public/ASOT-logo.png"
+    "gh": "KL-Designs/ASOT:apps/web/public/logo.png"
   },
   {
     "slug": "blastyard",
@@ -428,5 +404,41 @@
     "out": "07.webp",
     "kind": "poster",
     "from": "tax assistant/6.7 Inch/Category Settings.png"
+  },
+  {
+    "slug": "spot-on-drones",
+    "out": "01.webp",
+    "kind": "desktop",
+    "from": "spot-on-drones/desktop-11-redesign-home.png"
+  },
+  {
+    "slug": "spot-on-drones",
+    "out": "02.webp",
+    "kind": "desktop",
+    "from": "spot-on-drones/desktop-12-redesign-gallery.png"
+  },
+  {
+    "slug": "spot-on-drones",
+    "out": "03.webp",
+    "kind": "desktop",
+    "from": "spot-on-drones/desktop-13-redesign-stream.png"
+  },
+  {
+    "slug": "spot-on-drones",
+    "out": "04.webp",
+    "kind": "mobile",
+    "from": "spot-on-drones/mobile-11-redesign-home.png"
+  },
+  {
+    "slug": "spot-on-drones",
+    "out": "05.webp",
+    "kind": "mobile",
+    "from": "spot-on-drones/mobile-12-redesign-gallery.png"
+  },
+  {
+    "slug": "spot-on-drones",
+    "out": "logo.png",
+    "kind": "logo",
+    "gh": "KL-Designs/SpotOnDrones:public/livery/logo.png?ref=livery-redesign"
   }
 ]
