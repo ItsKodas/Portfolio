@@ -22,10 +22,6 @@ describe('a project page', () => {
         await expect(ProjectPage({ params: Promise.resolve({ slug: 'nope' }) })).rejects.toThrow('NEXT_NOT_FOUND')
     })
 
-    it('says how it was built', async () => {
-        await page('asot-milsim')
-        expect(screen.getByText('By hand from 2024, with Claude since late 2025')).toBeInTheDocument()
-    })
 
     it('shows the video in place of the gallery when a project has one', async () => {
         await page('ai-culler')
@@ -75,21 +71,27 @@ describe('a project page', () => {
         expect(og.images?.[0].url).toBe('/projects/ai-culler/01.webp')
     })
 
-    it('marks a project built with Claude in the corner of "How it was built"', async () => {
+    it('has one full-width "Built with" panel, with no separate "How it was built"', async () => {
+        await page('voxweave')
+        expect(screen.getByRole('heading', { name: 'Built with' })).toBeInTheDocument()
+        expect(screen.queryByRole('heading', { name: 'How it was built' })).not.toBeInTheDocument()
+    })
+
+    it('credits Claude in the corner of "Built with" for a project built with it', async () => {
         await page('voxweave')
         const mark = screen.getByTestId('claude-mark')
         expect(mark).toHaveTextContent('Built with Claude')
         expect(mark.querySelector('svg')).toBeInTheDocument()
+        expect(mark.closest('section, div')).toContainElement(screen.getByRole('heading', { name: 'Built with' }).parentElement!.querySelector('[data-testid="claude-mark"]'))
     })
 
-    it('marks a project partly built with Claude as such', async () => {
+    it("uses a part hand-written project's own note as its credit", async () => {
         await page('asot-milsim')
-        expect(screen.getByTestId('claude-mark')).toHaveTextContent('Partly built with Claude')
+        expect(screen.getByTestId('claude-mark')).toHaveTextContent('By hand from 2024, with Claude since late 2025')
     })
 
-    it('leaves the mark off a project written by hand', async () => {
+    it('gives a project written by hand no Claude credit', async () => {
         await page('tax-assistant')
-        expect(screen.getByText('Written by hand')).toBeInTheDocument()
         expect(screen.queryByTestId('claude-mark')).not.toBeInTheDocument()
     })
 })

@@ -80,15 +80,17 @@ function Links({ project }: { project: Project }) {
     )
 }
 
-// A small mark in the corner of "How it was built" for work made with Claude: said plainly, once, on the project's own
-// page, rather than as a badge on every card
+// The credit for work made with Claude, at the foot of "Built with": said plainly, once, on the project's own page,
+// rather than as a badge on every card. A project that is part hand-written is credited with its own note, which says
+// how much; one written by hand gets none.
 function ClaudeMark({ project }: { project: Project }) {
     if (project.built === 'hand') return null
     const logo = TOOLKIT_LOGOS.Claude
     return (
-        <p data-testid="claude-mark" className="absolute bottom-4 right-5 flex items-center gap-1.5 text-xs font-medium text-[#8fa3c7]/80">
-            <svg viewBox={logo.viewBox} aria-hidden="true" focusable="false" className="h-3.5 w-3.5 fill-[#d97757]"><path d={logo.d} /></svg>
-            {project.built === 'claude' ? 'Built with Claude' : 'Partly built with Claude'}
+        <p data-testid="claude-mark" className="mt-6 text-right text-xs font-medium leading-relaxed text-[#8fa3c7]/80">
+            {/* inline, so a credit that wraps keeps the mark beside its first words */}
+            <svg viewBox={logo.viewBox} aria-hidden="true" focusable="false" className="mr-1.5 inline h-3.5 w-3.5 fill-[#d97757] align-[-2px]"><path d={logo.d} /></svg>
+            {builtLine(project)}
         </p>
     )
 }
@@ -155,19 +157,13 @@ export default async function ProjectPage({ params }: Props) {
                     </ul>
                 </Section>
 
-                <div className="mt-14 grid gap-5 sm:grid-cols-2">
-                    <Panel className="p-6">
-                        <h2 className="mb-4 text-lg font-bold text-white">Built with</h2>
-                        <div className="flex flex-wrap gap-2">
-                            {project.tech.map(t => <span key={t} className="rounded-full bg-white/[0.06] px-3 py-1 text-sm text-[#c9d4ee]">{t}</span>)}
-                        </div>
-                    </Panel>
-                    <Panel className={`relative p-6 ${project.built === 'hand' ? '' : 'pb-12'}`}>
-                        <h2 className="mb-4 text-lg font-bold text-white">How it was built</h2>
-                        <p className="text-base text-[#b4c3dc]/85">{builtLine(project)}</p>
-                        <ClaudeMark project={project} />
-                    </Panel>
-                </div>
+                <Panel className="mt-14 p-6">
+                    <h2 className="mb-4 text-lg font-bold text-white">Built with</h2>
+                    <div className="flex flex-wrap gap-2">
+                        {project.tech.map(t => <span key={t} className="rounded-full bg-white/[0.06] px-3 py-1 text-sm text-[#c9d4ee]">{t}</span>)}
+                    </div>
+                    <ClaudeMark project={project} />
+                </Panel>
 
                 <nav aria-label="More projects" className="mt-16 flex flex-wrap justify-between gap-4 border-t border-[#8fd4f5]/10 pt-8 text-sm">
                     {previous && (
