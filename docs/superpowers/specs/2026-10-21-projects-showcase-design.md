@@ -153,7 +153,7 @@ Top to bottom:
 7. "Highlights": three to six bullets of the hard or notable parts, with the README's numbers where they exist.
 8. "Built with": the tech as tags.
 9. "How it was built": one line from the split above, for example "Written by hand" or "Built with Claude, designed
-   and directed by me", and for ASOT "By hand from 2024, with Claude since late 2025". Only on the project page.
+   and directed by me", and for ASOT "By hand from 2024, with Claude since early 2026". Only on the project page.
 10. Next and previous project links, in the same order as the landing page.
 
 Blastyard already has a page at `/blastyard` (its store and Epic Developer Portal site, with a privacy policy and

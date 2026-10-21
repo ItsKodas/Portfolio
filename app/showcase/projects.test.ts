@@ -55,7 +55,7 @@ describe('the projects', () => {
     it('says how each project was built', () => {
         expect(builtLine(getProject('tax-assistant')!)).toBe('Written by hand')
         expect(builtLine(getProject('voxweave')!)).toBe('Assisted by Claude')
-        expect(builtLine(getProject('asot-milsim')!)).toBe('By hand from 2024, with Claude since late 2025')
+        expect(builtLine(getProject('asot-milsim')!)).toBe('By hand from 2024, with Claude since early 2026')
     })
 
     it('gives every "both" project its own note', () => {

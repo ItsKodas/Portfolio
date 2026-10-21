@@ -93,7 +93,7 @@ describe('a project page', () => {
 
     it("uses a part hand-written project's own note as its credit", async () => {
         await page('asot-milsim')
-        expect(screen.getByTestId('claude-mark')).toHaveTextContent('By hand from 2024, with Claude since late 2025')
+        expect(screen.getByTestId('claude-mark')).toHaveTextContent('By hand from 2024, with Claude since early 2026')
     })
 
     it('gives a project written by hand no Claude credit', async () => {

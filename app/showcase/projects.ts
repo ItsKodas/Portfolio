@@ -192,7 +192,7 @@ export const PROJECTS: Project[] = [
         ],
         tech: ['Next.js', 'React', 'TypeScript', 'MongoDB', 'Discord.js', 'Yjs', 'Playwright'],
         built: 'both',
-        builtNote: 'By hand from 2024, with Claude since late 2025',
+        builtNote: 'By hand from 2024, with Claude since early 2026',
         logo: { src: '/projects/asot-milsim/logo.png', background: 'dark' },
         screenshots: [
             { src: '/projects/asot-milsim/01.webp', alt: 'The public home page of the unit', device: 'desktop' },
