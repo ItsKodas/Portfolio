@@ -382,5 +382,51 @@
     "out": "logo.png",
     "kind": "logo",
     "gh": "ItsKodas/Tax-Assistant:Mobile/assets/icon.png"
+  },
+  {
+    "slug": "tax-assistant",
+    "out": "01.webp",
+    "kind": "collage",
+    "from": [
+      "tax assistant/6.7 Inch/New Receipt.png",
+      "tax assistant/6.7 Inch/Receipt List.png",
+      "tax assistant/6.7 Inch/Controller.png"
+    ]
+  },
+  {
+    "slug": "tax-assistant",
+    "out": "02.webp",
+    "kind": "poster",
+    "from": "tax assistant/6.7 Inch/Receipt List.png"
+  },
+  {
+    "slug": "tax-assistant",
+    "out": "03.webp",
+    "kind": "poster",
+    "from": "tax assistant/6.7 Inch/New Receipt.png"
+  },
+  {
+    "slug": "tax-assistant",
+    "out": "04.webp",
+    "kind": "poster",
+    "from": "tax assistant/6.7 Inch/Folders.png"
+  },
+  {
+    "slug": "tax-assistant",
+    "out": "05.webp",
+    "kind": "poster",
+    "from": "tax assistant/6.7 Inch/Controller.png"
+  },
+  {
+    "slug": "tax-assistant",
+    "out": "06.webp",
+    "kind": "poster",
+    "from": "tax assistant/6.7 Inch/Folder Settings.png"
+  },
+  {
+    "slug": "tax-assistant",
+    "out": "07.webp",
+    "kind": "poster",
+    "from": "tax assistant/6.7 Inch/Category Settings.png"
   }
 ]

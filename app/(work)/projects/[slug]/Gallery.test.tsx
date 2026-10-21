@@ -25,3 +25,14 @@ describe('Gallery', () => {
         expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
     })
 })
+
+describe('Gallery posters', () => {
+    it('shows a store poster whole, without a phone frame around it', () => {
+        const shots = getProject('tax-assistant')!.screenshots
+        const poster = shots.find(s => s.device === 'poster')!
+        render(<Gallery shots={shots} name="Tax Assistant" />)
+        const img = screen.getByRole('img', { name: poster.alt })
+        expect(img).toHaveClass('object-contain')
+        expect(img.closest('[data-phone-frame]')).toBeNull()
+    })
+})

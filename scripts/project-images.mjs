@@ -9,7 +9,9 @@
 //
 // Screenshots become WebP at quality 80: desktop ones at most 1600 px wide, phone ones at most 800 px. A full-page
 // capture far taller than it is wide is cut down to its top part first, since nothing shows a whole page at once.
-// Logos stay SVG when they are SVG, and otherwise become PNGs of at most 256 px.
+// Logos stay SVG when they are SVG, and otherwise become PNGs of at most 256 px. A `collage` sets several tall images
+// (`from` is then a list) side by side on the night's navy at 1600x1000, for a project whose only screenshots are
+// phone-shaped and so would make a poor wide cover. A `poster` is a tall image kept whole, like `mobile`.
 
 import { execFileSync } from 'node:child_process'
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs'
@@ -26,6 +28,7 @@ const from = fromArg === -1 ? null : process.argv[fromArg + 1]
 const LIMITS = {
     desktop: { width: 1600, tallest: 2, keep: 1 / 1.6 },   // keep: height as a share of width when cut down (16:10)
     mobile: { width: 800, tallest: 2.4, keep: 2.2 },
+    poster: { width: 800, tallest: 2.4, keep: 2.2 },
 }
 
 function source(job) {
@@ -39,7 +42,17 @@ function source(job) {
     return readFileSync(join(from, job.from))
 }
 
+async function collage(job) {
+    const W = 1600, H = 1000, tall = 880, gap = 48
+    const images = await Promise.all(job.from.map(f => sharp(source({ ...job, from: f })).resize({ height: tall }).toBuffer({ resolveWithObject: true })))
+    const total = images.reduce((sum, i) => sum + i.info.width, 0) + gap * (images.length - 1)
+    let left = Math.round((W - total) / 2)
+    const layers = images.map(i => { const layer = { input: i.data, left, top: Math.round((H - tall) / 2) }; left += i.info.width + gap; return layer })
+    return sharp({ create: { width: W, height: H, channels: 3, background: '#0e1530' } }).composite(layers).webp({ quality: 80 }).toBuffer()
+}
+
 async function build(job) {
+    if (job.kind === 'collage') return collage(job)
     const input = source(job)
     if (job.kind === 'logo') {
         if (job.out.endsWith('.svg')) return input

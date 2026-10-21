@@ -92,7 +92,7 @@ describe('the projects', () => {
     it('uses no em dash and no banned word in any string', () => {
         for (const p of PROJECTS) {
             for (const s of strings(p)) {
-                expect(s, `${p.slug}: ${s}`).not.toContain('—')
+                expect(s, `${p.slug}: ${s}`).not.toContain('\u2014')
                 for (const word of BANNED) expect(s, `${p.slug}: ${s}`).not.toMatch(new RegExp(`\\b${word}\\b`, 'i'))
             }
         }
@@ -106,9 +106,9 @@ describe('the projects', () => {
         }
     })
 
-    it('has a cover screenshot for every project except AI Culler and Tax Assistant', () => {
+    it('has a cover screenshot for every project except AI Culler', () => {
         const without = PROJECTS.filter(p => !p.screenshots.some(s => s.device === 'desktop')).map(p => p.slug).sort()
-        expect(without).toEqual(['ai-culler', 'tax-assistant'])
+        expect(without).toEqual(['ai-culler'])
     })
 
     it("gives every project with a real logo its logo (Voxweave only has Tauri's default icons)", () => {

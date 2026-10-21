@@ -7,18 +7,19 @@ import { ArrowBack, ArrowForward, Close } from '@/ui/icons'
 import type { Shot } from '@/app/showcase/projects'
 
 // A screenshot as a button that opens it in the lightbox. Desktop shots fill a 16:10 frame; phone shots sit in a
-// phone-shaped frame inside the same box, so a mixed row still lines up.
+// phone-shaped frame inside the same box, so a mixed row still lines up; posters, which frame themselves, are shown
+// whole in it.
 function Thumb({ shot, sizes, priority, onOpen }: { shot: Shot, sizes: string, priority?: boolean, onOpen: () => void }) {
     return (
         <button type="button" onClick={onOpen}
             className="group relative block aspect-[16/10] w-full overflow-hidden rounded-2xl border border-[#8fd4f5]/10 bg-[#0e1530] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#8fd4f5]/60">
-            {shot.device === 'desktop'
-                ? <Image src={shot.src} alt={shot.alt} fill sizes={sizes} priority={priority} className="object-cover object-top motion-safe:transition-transform motion-safe:duration-500 motion-safe:group-hover:scale-[1.02]" />
-                : (
-                    <span className="absolute inset-y-[6%] left-1/2 aspect-[9/19.5] -translate-x-1/2 overflow-hidden rounded-[18%/8%] border-[3px] border-[#2a3358] bg-black">
-                        <Image src={shot.src} alt={shot.alt} fill sizes="200px" className="object-cover object-top" />
-                    </span>
-                )}
+            {shot.device === 'desktop' && <Image src={shot.src} alt={shot.alt} fill sizes={sizes} priority={priority} className="object-cover object-top motion-safe:transition-transform motion-safe:duration-500 motion-safe:group-hover:scale-[1.02]" />}
+            {shot.device === 'mobile' && (
+                <span data-phone-frame className="absolute inset-y-[6%] left-1/2 aspect-[9/19.5] -translate-x-1/2 overflow-hidden rounded-[18%/8%] border-[3px] border-[#2a3358] bg-black">
+                    <Image src={shot.src} alt={shot.alt} fill sizes="200px" className="object-cover object-top" />
+                </span>
+            )}
+            {shot.device === 'poster' && <Image src={shot.src} alt={shot.alt} fill sizes="200px" className="object-contain py-[4%]" />}
         </button>
     )
 }

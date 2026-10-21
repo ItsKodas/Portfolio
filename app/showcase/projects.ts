@@ -38,7 +38,8 @@ export const CONTEXT_LABEL: Record<Context, string> = {
 // How it was made: written by hand, with Claude, or a mix (which then needs a note saying how)
 export type Built = 'hand' | 'claude' | 'both'
 
-export interface Shot { src: string, alt: string, device: 'desktop' | 'mobile' }
+// A poster is a tall image that already frames itself, like an App Store screenshot, so it is shown whole
+export interface Shot { src: string, alt: string, device: 'desktop' | 'mobile' | 'poster' }
 
 export interface Project {
     slug: string
@@ -374,7 +375,15 @@ export const PROJECTS: Project[] = [
         tech: ['React Native', 'Expo', 'TypeScript', 'Express', 'MongoDB', 'Tesseract.js'],
         built: 'hand',
         logo: { src: '/projects/tax-assistant/logo.png', background: 'dark' },
-        screenshots: [],
+        screenshots: [
+            { src: '/projects/tax-assistant/01.webp', alt: "Three App Store screenshots: adding a receipt, the receipt list and a folder's control panel", device: 'desktop' },
+            { src: '/projects/tax-assistant/02.webp', alt: 'The receipt list, with totals and GST for everything in the folder', device: 'poster' },
+            { src: '/projects/tax-assistant/03.webp', alt: 'Adding a new receipt, with its category, value and date', device: 'poster' },
+            { src: '/projects/tax-assistant/04.webp', alt: 'Folders that keep receipts and invoices for each purpose apart', device: 'poster' },
+            { src: '/projects/tax-assistant/05.webp', alt: "A folder's control panel, with receipts, invoices and the spreadsheet export", device: 'poster' },
+            { src: '/projects/tax-assistant/06.webp', alt: 'Settings for a folder, including its GST rate', device: 'poster' },
+            { src: '/projects/tax-assistant/07.webp', alt: 'Categories for adding receipts more quickly', device: 'poster' },
+        ],
         links: {},
     },
     {
