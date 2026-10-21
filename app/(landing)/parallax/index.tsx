@@ -24,6 +24,7 @@ import PerfDebug from '@/app/perf/debug'
 import ScrollbarTint from './scrollbarTint'
 import SceneCurtain, { useRevealed } from './curtain'
 import WallpaperLink from './wallpaperLink'
+import { CONTENT_OFFSET, CONTENT_SPEED } from './content'
 import styles from './parallax.module.css'
 
 import Sky from './sky.svg'
@@ -31,9 +32,6 @@ import MountainsFar from './mountainsFar.svg'
 import MountainsNear from './mountainsNear.svg'
 import Valley from './valley.svg'
 import Forest from './forest.svg'
-
-const CONTENT_OFFSET = 0.96 // screens from the top where the content starts
-const CONTENT_SPEED  = 1
 
 const fadeIn = {
     maskImage: 'linear-gradient(to bottom, transparent 0, black 10rem)',

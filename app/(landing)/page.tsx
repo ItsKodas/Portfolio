@@ -188,8 +188,8 @@ export default function Landing() {
                 </Panel>
             </section>
 
-            {/* Projects */}
-            <section className="mt-32">
+            {/* Projects (the hero's My Projects button scrolls here) */}
+            <section id="projects" className="mt-32">
                 <SectionTitle eyebrow="Projects" title="Things I've made" />
                 <div className="grid gap-5 md:grid-cols-2">
                     {projects.map(p => (
