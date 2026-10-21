@@ -41,9 +41,14 @@ describe('a project page', () => {
         expect(redesign).not.toHaveAttribute('data-primary')
     })
 
-    it('links back to the projects section', async () => {
+    it('links back to the projects section from the top and again from the bottom', async () => {
         await page('voxweave')
-        expect(screen.getByRole('link', { name: /Back to projects/ })).toHaveAttribute('href', '/#projects')
+        const links = screen.getAllByRole('link', { name: /Back to projects/ })
+        expect(links).toHaveLength(2)
+        for (const link of links) expect(link).toHaveAttribute('href', '/#projects')
+        // the second one comes after the links to the neighbouring projects, at the very end of the page
+        const next = screen.getByRole('link', { name: /Arby's Auto Glass/ })
+        expect(next.compareDocumentPosition(links[1]) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
     })
 
     it('shows a store without a link as coming soon', async () => {

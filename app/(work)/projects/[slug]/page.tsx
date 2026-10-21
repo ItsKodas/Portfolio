@@ -180,6 +180,13 @@ export default async function ProjectPage({ params }: Props) {
                         </Link>
                     )}
                 </nav>
+
+                {/* A second way back at the end, so a reader who has scrolled the whole page needn't scroll up for it */}
+                <div className="mt-10 flex justify-center">
+                    <Link href="/#projects" className={lake}>
+                        <ArrowBack size={16} /> Back to projects
+                    </Link>
+                </div>
             </div>
         </main>
     )
