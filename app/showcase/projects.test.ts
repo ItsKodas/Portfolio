@@ -111,12 +111,22 @@ describe('the projects', () => {
         expect(without).toEqual(['ai-culler', 'tax-assistant'])
     })
 
-    it('gives every project with a real logo its logo', () => {
+    it("gives every project with a real logo its logo (Voxweave only has Tauri's default icons)", () => {
         const without = PROJECTS.filter(p => !p.logo).map(p => p.slug).sort()
-        expect(without).toEqual(['atomic-sandbox', 'voxweave'])
+        expect(without).toEqual(['voxweave'])
     })
 
     it('describes every screenshot', () => {
         for (const p of PROJECTS) for (const s of p.screenshots) expect(s.alt.length, `${p.slug}: ${s.src}`).toBeGreaterThan(15)
+    })
+
+    it('gives every project a full write-up', () => {
+        for (const p of PROJECTS) {
+            expect(p.line.length, p.slug).toBeLessThanOrEqual(90)
+            expect(p.body.length, p.slug).toBeGreaterThanOrEqual(2)
+            expect(p.highlights.length, p.slug).toBeGreaterThanOrEqual(3)
+            expect(p.highlights.length, p.slug).toBeLessThanOrEqual(6)
+            expect(strings([p.body, p.highlights]).join(' '), p.slug).not.toMatch(/placeholder/i)
+        }
     })
 })
