@@ -43,6 +43,24 @@ export function Gallery({ shots, name }: { shots: Shot[], name: string }) {
         setOpen(null)
     }
     const move = (by: number) => setOpen(i => i === null ? i : (i + by + n) % n)
+
+    // Clicking the darkened space closes the lightbox, as it does anywhere else: the empty parts of the bars above and
+    // below the image, and the stage around it. The image is drawn object-contain, so its element spans the whole stage;
+    // only a click inside the part the picture is actually drawn in counts as clicking the image.
+    const closeUnlessButton = (e: React.MouseEvent) => {
+        if (!(e.target as HTMLElement).closest('button')) close()
+    }
+    const closeOffImage = (e: React.MouseEvent) => {
+        const img = e.currentTarget.querySelector('img')
+        if (img && img.naturalWidth && img.naturalHeight) {
+            const box = img.getBoundingClientRect()
+            const scale = Math.min(box.width / img.naturalWidth, box.height / img.naturalHeight)
+            const w = img.naturalWidth * scale, h = img.naturalHeight * scale
+            const left = box.left + (box.width - w) / 2, top = box.top + (box.height - h) / 2
+            if (e.clientX >= left && e.clientX <= left + w && e.clientY >= top && e.clientY <= top + h) return
+        }
+        close()
+    }
     const [first, ...rest] = shots
 
     return (
@@ -67,7 +85,7 @@ export function Gallery({ shots, name }: { shots: Shot[], name: string }) {
                     }}
                     className="m-0 h-full max-h-none w-full max-w-none bg-transparent p-0 text-white backdrop:bg-[#05080f]/95">
                     <div className="flex h-full flex-col">
-                        <div className="flex items-center gap-3 px-4 py-3">
+                        <div data-testid="lightbox-bar" onClick={closeUnlessButton} className="flex items-center gap-3 px-4 py-3">
                             <p className="min-w-0 flex-1 truncate text-sm text-[#b4c3dc]">{shots[open].alt}</p>
                             <span className="text-sm tabular-nums text-[#8fa3c7]">{open + 1} / {n}</span>
                             <button type="button" aria-label="Close" onClick={close}
@@ -75,11 +93,11 @@ export function Gallery({ shots, name }: { shots: Shot[], name: string }) {
                                 <Close size={22} />
                             </button>
                         </div>
-                        <div className="relative min-h-0 flex-1">
+                        <div data-testid="lightbox-stage" onClick={closeOffImage} className="relative min-h-0 flex-1">
                             <Image key={shots[open].src} src={shots[open].src} alt={shots[open].alt} fill sizes="100vw" className="object-contain" />
                         </div>
                         {n > 1 && (
-                            <div className="flex justify-center gap-3 py-4">
+                            <div onClick={closeUnlessButton} className="flex justify-center gap-3 py-4">
                                 <button type="button" aria-label="Previous screenshot" onClick={() => move(-1)}
                                     className="rounded-full border border-white/20 p-2.5 hover:bg-white/10 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#8fd4f5]/60">
                                     <ArrowBack size={20} />
