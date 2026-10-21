@@ -53,4 +53,23 @@ describe('a project page', () => {
         expect(m.alternates?.canonical).toBe('/projects/voxweave')
         expect(m.description).toBe(getProject('voxweave')!.summary)
     })
+
+    it('gives a shared link its own card', async () => {
+        const m = await generateMetadata({ params: Promise.resolve({ slug: 'voxweave' }) })
+        const og = m.openGraph as { url?: string, title?: string, siteName?: string, images?: { url: string }[] }
+        expect(og.url).toBe('/projects/voxweave')
+        expect(og.title).toBe('Voxweave')
+        expect(og.siteName).toBe('Horizons')
+        expect(og.images?.[0].url).toBe(getProject('voxweave')!.screenshots[0].src)
+        const tw = m.twitter as { title?: string, card?: string, images?: string[] }
+        expect(tw.title).toBe('Voxweave')
+        expect(tw.card).toBe('summary_large_image')
+    })
+
+    it("falls back to the site's share image for a project without screenshots", async () => {
+        const m = await generateMetadata({ params: Promise.resolve({ slug: 'ai-culler' }) })
+        const og = m.openGraph as { title?: string, images?: { url: string }[] }
+        expect(og.title).toBe('AI Culler')
+        expect(og.images?.[0].url).toBe('/opengraph-image')
+    })
 })

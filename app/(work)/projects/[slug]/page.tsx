@@ -10,6 +10,8 @@ import {
     CATEGORY_NAME, CONTEXT_LABEL, PROJECTS, builtLine, getProject, neighbours, yearsLabel, type Project,
 } from '@/app/showcase/projects'
 
+import { SITE } from '@/app/site'
+
 import { Gallery } from './Gallery'
 
 // A page per project, for anyone who wants more than the card on the home page: its screenshots, what it does, the
@@ -25,12 +27,20 @@ type Props = { params: Promise<{ slug: string }> }
 export async function generateMetadata({ params }: Props): Promise<Metadata> {
     const project = getProject((await params).slug)
     if (!project) return {}
+    // Complete objects, since a page's openGraph and twitter replace the root layout's rather than merging with them.
+    // A project without screenshots borrows the site's own share image.
     const cover = project.screenshots[0]
+    const url = `/projects/${project.slug}`
+    const image = cover ? { url: cover.src, alt: cover.alt } : { url: '/opengraph-image', alt: SITE.title }
     return {
         title: project.name,
         description: project.summary,
-        alternates: { canonical: `/projects/${project.slug}` },
-        openGraph: cover ? { images: [{ url: cover.src, alt: cover.alt }] } : undefined,
+        alternates: { canonical: url },
+        openGraph: {
+            type: 'website', url, siteName: SITE.name, locale: SITE.locale,
+            title: project.name, description: project.summary, images: [image],
+        },
+        twitter: { card: 'summary_large_image', title: project.name, description: project.summary, images: [image.url] },
     }
 }
 
