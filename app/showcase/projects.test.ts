@@ -129,4 +129,17 @@ describe('the projects', () => {
             expect(strings([p.body, p.highlights]).join(' '), p.slug).not.toMatch(/placeholder/i)
         }
     })
+
+    // Claims an interviewer could check against the repos (the spec's anti-goals)
+    it('only calls a project hand-built when it was', () => {
+        for (const p of PROJECTS.filter(p => p.built !== 'hand')) {
+            expect(strings([p.line, p.summary, p.body, p.highlights]).join(' '), p.slug).not.toMatch(/hand-built|built by hand/i)
+        }
+    })
+
+    it("says Voxweave's training and text to speech run from source for now, and never that the installer shipped", () => {
+        const text = strings([getProject('voxweave')!.body, getProject('voxweave')!.highlights]).join(' ')
+        expect(text).toMatch(/from source/)
+        expect(text).not.toMatch(/shipped/i)
+    })
 })

@@ -247,14 +247,14 @@ export const PROJECTS: Project[] = [
         summary: 'A Windows app for real-time voice conversion: speak into your mic and a chosen voice comes out on a virtual microphone. It also records voice datasets, trains custom voice models on the GPU and turns typed text into speech, all on your own computer.',
         body: [
             "Speak into your microphone and a chosen voice comes out of a virtual microphone that Discord, games or any other app can use, with an optional headphone monitor. You can make a voice of your own too: record or import audio, let it cut and transcribe the clips locally, then train a model of that voice on your own GPU.",
-            "The hard part was making the whole pipeline run on an AMD graphics card under Windows: DirectML for live conversion, ROCm PyTorch for training and text to speech, and patches to the upstream RVC code. The installer is small and sets up its own Python runtime on first launch.",
+            "The hard part was making the whole pipeline run on an AMD graphics card under Windows: DirectML for live conversion, ROCm PyTorch for training and text to speech, and patches to the upstream RVC code. The download covers live conversion; training and text to speech run from source for now.",
         ],
         highlights: [
             "Live voice conversion through DirectML and ONNX Runtime",
             "Native RVC voice training on an AMD GPU, with a patch that made training 3.4 times faster",
             "Text to speech in one of your own voices from a short clip, with F5-TTS",
             "A backend suite of 1,545 passing tests, plus GPU integration tests",
-            "Shipped as a 12 MB installer that bootstraps its own Python runtime on first launch",
+            "A 12 MB installer that sets up its own Python runtime on first run",
         ],
         tech: ['Tauri', 'React', 'TypeScript', 'Python', 'PyTorch', 'ONNX Runtime'],
         built: 'claude',
@@ -427,7 +427,7 @@ export const PROJECTS: Project[] = [
         years: [2019, 2026],
         category: 'website',
         context: 'personal',
-        line: 'This site: a hand-built parallax night scene, my projects, and a client portal.',
+        line: 'This site: a layered parallax night scene, my projects, and a client portal.',
         summary: "This site. Besides the parallax night scene at the top, it runs my quote form, an admin inbox and invoicing, and a portal where clients manage the sites I host for them.",
         body: [
             "The home page is a night scene drawn in layers: twinkling and shooting stars, clouds, mountains, a wind-blown forest, a lake with ripples and fog, and a campfire at the end of the page. Each layer moves at its own depth as you scroll.",
