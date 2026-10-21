@@ -11,6 +11,7 @@ import {
 } from '@/app/showcase/projects'
 
 import { SITE } from '@/app/site'
+import { TOOLKIT_LOGOS } from '@/app/(landing)/toolkitLogos'
 
 import { Gallery } from './Gallery'
 import { VideoEmbed } from './VideoEmbed'
@@ -76,6 +77,19 @@ function Links({ project }: { project: Project }) {
             {download && <a href={download} {...external} className={lake}>Download {out}</a>}
             {gameSite && <Link href={gameSite} className={lake}>Game website</Link>}
         </div>
+    )
+}
+
+// A small mark in the corner of "How it was built" for work made with Claude: said plainly, once, on the project's own
+// page, rather than as a badge on every card
+function ClaudeMark({ project }: { project: Project }) {
+    if (project.built === 'hand') return null
+    const logo = TOOLKIT_LOGOS.Claude
+    return (
+        <p data-testid="claude-mark" className="absolute bottom-4 right-5 flex items-center gap-1.5 text-xs font-medium text-[#8fa3c7]/80">
+            <svg viewBox={logo.viewBox} aria-hidden="true" focusable="false" className="h-3.5 w-3.5 fill-[#d97757]"><path d={logo.d} /></svg>
+            {project.built === 'claude' ? 'Built with Claude' : 'Partly built with Claude'}
+        </p>
     )
 }
 
@@ -148,9 +162,10 @@ export default async function ProjectPage({ params }: Props) {
                             {project.tech.map(t => <span key={t} className="rounded-full bg-white/[0.06] px-3 py-1 text-sm text-[#c9d4ee]">{t}</span>)}
                         </div>
                     </Panel>
-                    <Panel className="p-6">
+                    <Panel className={`relative p-6 ${project.built === 'hand' ? '' : 'pb-12'}`}>
                         <h2 className="mb-4 text-lg font-bold text-white">How it was built</h2>
                         <p className="text-base text-[#b4c3dc]/85">{builtLine(project)}</p>
+                        <ClaudeMark project={project} />
                     </Panel>
                 </div>
 

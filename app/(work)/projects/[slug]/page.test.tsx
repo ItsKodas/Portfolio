@@ -74,4 +74,22 @@ describe('a project page', () => {
         expect(og.title).toBe('AI Culler')
         expect(og.images?.[0].url).toBe('/projects/ai-culler/01.webp')
     })
+
+    it('marks a project built with Claude in the corner of "How it was built"', async () => {
+        await page('voxweave')
+        const mark = screen.getByTestId('claude-mark')
+        expect(mark).toHaveTextContent('Built with Claude')
+        expect(mark.querySelector('svg')).toBeInTheDocument()
+    })
+
+    it('marks a project partly built with Claude as such', async () => {
+        await page('asot-milsim')
+        expect(screen.getByTestId('claude-mark')).toHaveTextContent('Partly built with Claude')
+    })
+
+    it('leaves the mark off a project written by hand', async () => {
+        await page('tax-assistant')
+        expect(screen.getByText('Written by hand')).toBeInTheDocument()
+        expect(screen.queryByTestId('claude-mark')).not.toBeInTheDocument()
+    })
 })

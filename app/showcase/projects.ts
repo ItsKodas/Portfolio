@@ -483,7 +483,7 @@ export const yearsLabel = (p: Project) => p.years[0] === p.years[1] ? String(p.y
 
 export function builtLine(p: Project) {
     if (p.built === 'hand') return 'Written by hand'
-    if (p.built === 'claude') return 'Built with Claude, designed and directed by me'
+    if (p.built === 'claude') return 'I designed it and directed the work; the code was written with Claude.'
     return p.builtNote ?? ''
 }
 
