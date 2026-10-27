@@ -21,18 +21,13 @@ export const NOT_BUILT = 'files, backups and provision are designed but not buil
     + 'them, so ticking one here does not switch anything on. Provision, once it is built, will let this '
     + 'project be re-provisioned through the API. Deleting the site needs none of these.'
 
-// Each environment's render-only switches, in hostd's ENVIRONMENT_FLAGS order. The note is said under
-// each checkbox: what it does to a site hostd already serves, and what it does to one still on a
-// proxy host hostd did not make, because those are different and the operator may have either.
+// Each environment's render-only switches the portal offers, in hostd's ENVIRONMENT_FLAGS order. The note
+// is said under each checkbox: what it does to a site hostd already serves, and what it does to one still
+// on a proxy host hostd did not make, because those are different and the operator may have either.
+// websockets stays a registry flag but has no switch: every NPM proxy host hostd writes passes WebSockets
+// through, so the switch would change nothing.
 export type SwitchKey = 'websockets' | 'flexibleSsl'
 export const SWITCHES: ReadonlyArray<{ key: SwitchKey, label: string, note: string }> = [
-    {
-        key: 'websockets',
-        label: 'WebSockets',
-        note: 'Passes WebSocket connections (socket.io and the like) through to the site. On a site hostd '
-            + 'already serves, saving updates its NPM proxy host straight away. On a site still served by a proxy '
-            + 'host hostd did not make, it is recorded and applied when that host is adopted.',
-    },
     {
         key: 'flexibleSsl',
         label: 'Cloudflare Flexible SSL',

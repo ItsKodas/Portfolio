@@ -73,8 +73,8 @@ type Props = {
     projectName: string
     // The site's root domain, one of live's addresses, or null when it names none. Chosen on live alone.
     rootDomain: string | null
-    // The environment's render-only switches, drawn on its main address's row. Absent reads as off.
-    websockets?: boolean
+    // The environment's render-only switch, drawn on its main address's row. Absent reads as off. There is
+    // no WebSockets switch: every NPM proxy host hostd writes passes WebSockets through.
     flexibleSsl?: boolean
     // Why the list is empty, when it is empty because nobody could read it. hostd's own words for the
     // operator and a plain sentence for a client, decided before it reaches here.
@@ -104,7 +104,7 @@ function MainAddress({ environment, current, rootDomain }: { environment: Enviro
     )
 }
 
-export function DomainsPanel({ id, environment, domains, isAdmin, projectName, rootDomain, websockets = false, flexibleSsl = false, trouble }: Props) {
+export function DomainsPanel({ id, environment, domains, isAdmin, projectName, rootDomain, flexibleSsl = false, trouble }: Props) {
     const ordered = sortDomains(domains)
 
     // A client asked one question: does my website address work. They get the answer to it. No table, no
@@ -152,7 +152,6 @@ export function DomainsPanel({ id, environment, domains, isAdmin, projectName, r
         switches: domain.primary
             ? (
                 <span className={styles.rowActions}>
-                    <RowSwitch key={`ws:${websockets}`} id={id} environment={environment} flag="websockets" on={websockets} />
                     <RowSwitch key={`fx:${flexibleSsl}`} id={id} environment={environment} flag="flexibleSsl" on={flexibleSsl} />
                 </span>
             )

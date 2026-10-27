@@ -97,18 +97,18 @@ describe('DomainsPanel, for the operator', () => {
     })
 
     // The switches belong to the environment, so they sit on the main address's row alone
-    it('draws the WebSockets and Flexible switches on the main address\'s row and flips one', async () => {
+    // There is no WebSockets switch: NPM passes WebSockets through on every site hostd serves
+    it('draws the Flexible switch on the main address\'s row and flips it', async () => {
         render(<DomainsPanel {...props} flexibleSsl domains={[domain(), domain({ hostname: 'www.acme.com', primary: false })]} />)
         const flexible = screen.getByRole('switch', { name: 'live Cloudflare Flexible SSL' })
         expect(flexible).toHaveAttribute('aria-checked', 'true')
-        const sockets = screen.getByRole('switch', { name: 'live WebSockets' })
-        expect(sockets).toHaveAttribute('aria-checked', 'false')
-        expect(screen.getAllByRole('switch')).toHaveLength(2)
+        expect(screen.queryByRole('switch', { name: 'live WebSockets' })).toBeNull()
+        expect(screen.getAllByRole('switch')).toHaveLength(1)
         expect(screen.getByText('redirects to acme.com')).toBeInTheDocument()
 
-        fireEvent.click(sockets)
-        await vi.waitFor(() => expect(saveSettings).toHaveBeenCalledWith('acme', { websockets: { live: true } }))
-        expect(sockets).toHaveAttribute('aria-checked', 'true')
+        fireEvent.click(flexible)
+        await vi.waitFor(() => expect(saveSettings).toHaveBeenCalledWith('acme', { flexibleSsl: { live: false } }))
+        expect(flexible).toHaveAttribute('aria-checked', 'false')
     })
 
     // The swap: an alias row offers to become the main address, and the main address row does not.

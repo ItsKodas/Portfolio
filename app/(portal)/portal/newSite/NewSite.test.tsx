@@ -65,7 +65,8 @@ describe('the New site form', () => {
         await userEvent.click(screen.getByRole('button', { name: 'Add a compose file' }))
         await userEvent.type(screen.getByLabelText('Compose file 2'), 'docker-compose.prod.yml')
         await userEvent.click(within(screen.getByRole('group', { name: 'Features' })).getByRole('checkbox', { name: 'logs' }))
-        await userEvent.click(screen.getByRole('checkbox', { name: 'WebSockets' }))
+        // NPM passes WebSockets through on every site hostd serves, so there is no switch for it
+        expect(screen.queryByRole('checkbox', { name: 'WebSockets' })).toBeNull()
         await userEvent.type(screen.getByLabelText('Domain'), 'bakery.com')
         await userEvent.click(screen.getByRole('checkbox', { name: 'Deploy after creating' }))
         await waitFor(() => expect(screen.getByRole('button', { name: 'Create site' })).toBeEnabled())
@@ -76,7 +77,7 @@ describe('the New site form', () => {
             repo: 'git@github.com:ItsKodas/bakery.git', credential: 'acme', branch: 'main',
             compose: ['docker-compose.yml', 'docker-compose.prod.yml'],
             capabilities: ['lifecycle', 'domains', 'env', 'deploy'],
-            websockets: true, flexibleSsl: false, domain: 'bakery.com', certificate: 'letsencrypt', deploy: true,
+            websockets: false, flexibleSsl: false, domain: 'bakery.com', certificate: 'letsencrypt', deploy: true,
             port: '5012',
         })
         expect(push).toHaveBeenCalledWith('/portal/sites/the-bakery')
