@@ -1823,6 +1823,13 @@ full before the first domain change on a new setup, not only when something brea
 
 Do these in order. Nothing here changes a live site until step 6.
 
+**NPM became NPMplus on 2026-10-27** (CT 101, still 192.168.0.6, every host and certificate id kept).
+Where a step below differs on NPMplus (the user and its two-factor setting, where the log format goes,
+the certificate, the sign-in check before deploying), section 6 has the NPMplus version. Done on
+2026-10-27: the log format in `/opt/npmplus/custom_nginx/http_top.conf` (tested and reloaded), and
+`/var/log/hostd` with its logrotate rule on the VM. The VM's firewall is inactive, so the firewall rules
+were skipped.
+
 1. **The NPM user.** In the NPM UI, Users, add `hostd@horizons.gg`: not an admin; permissions visibility
    **All**, Proxy Hosts **Manage**, Redirection Hosts **Manage**, 404 Hosts **View**, Certificates **View**,
    everything else **Hidden**. ("All" visibility is what lets hostd see and adopt the hosts Koda created.
@@ -2251,7 +2258,18 @@ setting `HOSTD_NPM_FLAVOUR` and `HOSTD_NPM_URL` back and recreating `edge`.
    ```
 
 3. **NPMplus's admin certificate.** NPMplus serves its API on port 81 over https only, so `edge` must trust
-   its certificate. On the VM, save it next to `.env.edge`:
+   its certificate.
+
+   **The simpler route, and the one the repo's compose uses.** NPMplus proxies its own admin UI as proxy
+   host 3, `nginx.horizons.gg`, with the publicly trusted `*.horizons.gg` Let's Encrypt certificate, and
+   the VM reaches it (checked 2026-10-27: `curl https://nginx.horizons.gg/api/` from the VM answers 200
+   with a verified certificate). So `HOSTD_NPM_URL: https://nginx.horizons.gg/api` needs no exported
+   certificate, no mount, no `NODE_EXTRA_CA_CERTS` and no `DEFAULT_CERT_ID` change: skip the rest of this
+   step and the certificate parts of step 4. The cost is that `edge` then depends on proxy host 3 (and
+   the loop back in through the router's public address) staying up; if it is ever removed or broken,
+   every domain action fails until it is back or the direct route below is set up.
+
+   The direct route, to port 81 itself. On the VM, save the certificate next to `.env.edge`:
 
    ```bash
    openssl s_client -connect <npmplus-host>:81 -showcerts </dev/null | openssl x509 | sudo tee /opt/horizons/hostd/npm-ca.pem >/dev/null

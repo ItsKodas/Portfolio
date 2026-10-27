@@ -180,8 +180,10 @@ services:
       # NODE_EXTRA_CA_CERTS: /etc/hostd/npm-ca.pem here. The mount is not here already because the file
       # does not exist until then, and Docker would make a directory in its place. RUNBOOK.md, "6. Moving
       # to NPMplus", has the steps. HOSTD_NPM_ADDRESS becomes NPMplus's address too (its syslog source).
-      HOSTD_NPM_FLAVOUR: npm
-      HOSTD_NPM_URL: http://192.168.0.6:81/api
+      # NPMplus since 2026-10-27, reached through its own proxy host for nginx.horizons.gg, whose
+      # certificate is the publicly trusted *.horizons.gg one: that needs none of the certificate steps above.
+      HOSTD_NPM_FLAVOUR: npmplus
+      HOSTD_NPM_URL: https://nginx.horizons.gg/api
       HOSTD_NPM_ADDRESS: 192.168.0.6
       HOSTD_UPSTREAM_HOST: 192.168.0.8
       HOSTD_EDGE_HTTP_PORT: "8790"
