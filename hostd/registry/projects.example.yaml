@@ -43,7 +43,7 @@ projects:
                                   # order compose merges them. Name every file the site runs with:
                                   # hostd passes each as -f, which stops compose picking up an
                                   # override by itself.
-    upstream: 127.0.0.1:5010      # what the vhost will proxy to (phase 4)
+    upstream: 127.0.0.1:5010      # what the NPM proxy host will forward to (phase 4)
     services:
       web: { role: site }
       db: { role: database, engine: postgres }   # postgres | mysql | mariadb | mongodb | sqlite | redis | generic

@@ -32,43 +32,37 @@ const container = (project: string, service: string, State: string, Status = '')
 })
 
 describe('holdingStateOf', () => {
-    it('says upgrading while a deploy holds the flag, whatever the containers are doing', () => {
-        assert.equal(holdingStateOf(true, container('p', 'web', 'exited', 'Exited (1) 2 seconds ago')), 'upgrading')
-        assert.equal(holdingStateOf(true, undefined), 'upgrading')
-    })
-
     it('says switched off for a container docker stop took down, however the process took the signal', () => {
         for (const code of [0, 137, 143]) {
-            assert.equal(holdingStateOf(false, container('p', 'web', 'exited', `Exited (${code}) 3 minutes ago`)), 'stopped', String(code))
+            assert.equal(holdingStateOf(container('p', 'web', 'exited', `Exited (${code}) 3 minutes ago`)), 'stopped', String(code))
         }
-        assert.equal(holdingStateOf(false, undefined), 'stopped')
-        assert.equal(holdingStateOf(false, container('p', 'web', 'created')), 'stopped')
+        assert.equal(holdingStateOf(undefined), 'stopped')
+        assert.equal(holdingStateOf(container('p', 'web', 'created')), 'stopped')
     })
 
     it('says crashed for a crash loop, or a process that died on its own and stayed down', () => {
-        assert.equal(holdingStateOf(false, container('p', 'web', 'restarting', 'Restarting (1) 4 seconds ago')), 'crashed')
-        assert.equal(holdingStateOf(false, container('p', 'web', 'exited', 'Exited (1) 5 minutes ago')), 'crashed')
-        assert.equal(holdingStateOf(false, container('p', 'web', 'dead')), 'crashed')
+        assert.equal(holdingStateOf(container('p', 'web', 'restarting', 'Restarting (1) 4 seconds ago')), 'crashed')
+        assert.equal(holdingStateOf(container('p', 'web', 'exited', 'Exited (1) 5 minutes ago')), 'crashed')
+        assert.equal(holdingStateOf(container('p', 'web', 'dead')), 'crashed')
     })
 
     it('says back shortly for a site that is running but not answering', () => {
-        assert.equal(holdingStateOf(false, container('p', 'web', 'running', 'Up 2 hours')), 'unavailable')
+        assert.equal(holdingStateOf(container('p', 'web', 'running', 'Up 2 hours')), 'unavailable')
     })
 })
 
-function setup(containers: ContainerSummary[], flags: string[] = []) {
+function setup(containers: ContainerSummary[]) {
     const files = new Map<string, string>()
     const writes: string[] = []
     let now = Date.parse('2026-10-10T03:00:00Z')
     const pages = new HoldingPages({
         registry: () => REGISTRY,
         listContainers: async () => containers,
-        flagUp: async key => flags.includes(key),
         writeFile: async (path, text) => { files.set(path, text); writes.push(path) },
         pageDir: '/var/www/hostd-maintenance',
         now: () => now,
     })
-    return { pages, files, writes, containers, flags, advance: (ms: number) => { now += ms } }
+    return { pages, files, writes, containers, advance: (ms: number) => { now += ms } }
 }
 
 const LIVE = holdingPagePath('/var/www/hostd-maintenance', 'map-pies', 'live')
@@ -99,10 +93,12 @@ describe('HoldingPages', () => {
         assert.match(files.get(UAT) ?? '', /Back shortly/)
     })
 
-    it('says upgrading for an environment whose deploy holds the flag', async () => {
-        const { pages, files } = setup([container('map-pies', 'web', 'running', 'Up 2 hours')], ['map-pies-live'])
-        await pages.sweep()
+    it('says upgrading for an environment a deploy has refreshed to upgrading, until the next refresh', async () => {
+        const { pages, files } = setup([container('map-pies', 'web', 'running', 'Up 2 hours')])
+        await pages.refresh('map-pies', 'live', 'upgrading')
         assert.match(files.get(LIVE) ?? '', /A new version of Mappies is being put in place/)
+        await pages.refresh('map-pies', 'live')
+        assert.match(files.get(LIVE) ?? '', /Back shortly/)
     })
 
     it('does not rewrite a page that has not changed, and keeps since from when the state began', async () => {
@@ -133,7 +129,6 @@ describe('HoldingPages', () => {
         state.pages = new HoldingPages({
             registry: () => REGISTRY,
             listContainers: async () => { throw new Error('should not be asked') },
-            flagUp: async () => false,
             writeFile: async (path, text) => { state.files.set(path, text) },
             pageDir: '/var/www/hostd-maintenance',
             now: Date.now,
@@ -148,7 +143,6 @@ describe('HoldingPages', () => {
         const pages = new HoldingPages({
             registry: () => REGISTRY,
             listContainers: async () => { throw new Error('connect ENOENT /var/run/docker.sock') },
-            flagUp: async () => false,
             writeFile: async (path, text) => { files.set(path, text) },
             pageDir: '/var/www/hostd-maintenance',
             now: Date.now,

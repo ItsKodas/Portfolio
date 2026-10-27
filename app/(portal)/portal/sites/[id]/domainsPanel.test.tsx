@@ -175,20 +175,19 @@ describe('DomainsPanel, for the operator', () => {
         expect(screen.getByText(/cannot be read here/)).toBeInTheDocument()
     })
 
-    // A dangling symlink in sites-enabled fails Apache's own configuration test, and hostd runs that test
-    // before every reload, so the adopt this dialog is about will be refused while it is there. Naming it
-    // here is the difference between an operator fixing a link and an operator retrying a button.
-    it('names a file Apache lists but cannot open, and says it stops the change', async () => {
+    // A proxy host NPM lists but hostd cannot read could be one that serves this site's names, so naming
+    // it here is the difference between an operator looking at it and an operator retrying a button.
+    it('names an NPM proxy host that cannot be read, and says to look at it before adopting', async () => {
         adoptPreview.mockResolvedValue({
             ok: true,
-            preview: preview({ unreadable: ['/etc/apache2/sites-enabled/010-arbys.horizons.gg.conf'] }),
+            preview: preview({ unreadable: ['npm/proxy-host/12'] }),
         })
 
         render(<DomainsPanel {...props} domains={[domain({ state: 'unmanaged' })]} />)
         fireEvent.click(screen.getByRole('button', { name: /adopt/i }))
 
-        expect(await screen.findByText(/010-arbys\.horizons\.gg\.conf/)).toBeInTheDocument()
-        expect(screen.getByText(/no domain change on this server/i)).toBeInTheDocument()
+        expect(await screen.findByText(/npm\/proxy-host\/12/)).toBeInTheDocument()
+        expect(screen.getByText(/in Nginx Proxy Manager before adopting/i)).toBeInTheDocument()
     })
 
     // thebackroom.dev's shape: a file with no port 443 block, behind Cloudflare on Flexible. Adopting it

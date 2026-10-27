@@ -17,7 +17,7 @@ import { createSiteAction, newSiteOptionsAction, type NewSiteOptions } from './a
 import { newSiteSchema, slugOf, type NewSiteInput } from './schema'
 import styles from './newSite.module.css'
 
-// The four hostd can act on today, plus domains, which the first vhost needs
+// The four hostd can act on today, plus domains, which the first NPM proxy host needs
 const DEFAULT_CAPABILITIES = ['lifecycle', 'logs', 'domains', 'env', 'deploy']
 
 const blank = (): NewSiteInput => ({
@@ -299,7 +299,7 @@ function NewSiteDialog({ onClose }: { onClose: () => void }) {
                         <Field
                             label="Domain"
                             placeholder="example.com"
-                            hint="Optional. hostd writes its vhost once the site is created."
+                            hint="Optional. hostd sets up its NPM proxy host once the site is created."
                             value={values.domain}
                             onChange={event => set('domain', event.target.value)}
                             error={problem('domain')}
@@ -316,7 +316,7 @@ function NewSiteDialog({ onClose }: { onClose: () => void }) {
                         </Field>
                     </div>
                     {hasDomain && !values.capabilities.includes('domains') && (
-                        <p className={site.note}>The domains feature is off, so hostd will record the domain but cannot write its vhost.</p>
+                        <p className={site.note}>The domains feature is off, so hostd will record the domain but cannot set up its NPM proxy host.</p>
                     )}
                     <Field
                         label="Port"

@@ -123,7 +123,7 @@ describe('the New site form', () => {
     })
 
     it('keeps the dialog open to say what is left to do on a site that was created', async () => {
-        createSiteAction.mockResolvedValue({ ok: true, id: 'the-bakery', warnings: ['The vhost was not written: x.conf serves it.'] })
+        createSiteAction.mockResolvedValue({ ok: true, id: 'the-bakery', warnings: ['The NPM proxy host was not set up: another host serves it.'] })
         await open()
         await screen.findByDisplayValue('5012')
         await userEvent.type(screen.getByLabelText('Name'), 'The Bakery')
@@ -131,7 +131,7 @@ describe('the New site form', () => {
         await waitFor(() => expect(screen.getByRole('button', { name: 'Create site' })).toBeEnabled())
         await userEvent.click(screen.getByRole('button', { name: 'Create site' }))
 
-        expect(await screen.findByText('The vhost was not written: x.conf serves it.')).toBeInTheDocument()
+        expect(await screen.findByText('The NPM proxy host was not set up: another host serves it.')).toBeInTheDocument()
         expect(push).not.toHaveBeenCalled()
         await userEvent.click(screen.getByRole('button', { name: 'Open the site' }))
         expect(push).toHaveBeenCalledWith('/portal/sites/the-bakery')

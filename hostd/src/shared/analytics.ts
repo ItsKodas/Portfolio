@@ -1,13 +1,13 @@
 // What the portal's analytics panel is drawn from: one environment's page views and visitors per day,
-// read out of the access log Apache writes for it. Shared because api and the agent both name it, and
+// read out of the access log edge writes for it. Shared because api and the agent both name it, and
 // the portal mirrors it in server/hostd/analytics.ts.
 
 import { posix } from 'node:path'
 import type { EnvironmentName } from './registry.ts'
 
 export function accessLogName(id: string, environment: EnvironmentName): string {
-    // .log last, so Debian's logrotate rule for /var/log/apache2/*.log rotates it with Apache's own.
-    // Environment names have no hyphen, so the last hyphen always splits the two, as in vhostPath.
+    // .log last, so a logrotate rule for *.log rotates it. Environment names have no hyphen, so the
+    // last hyphen always splits the two.
     return `hostd-${id}-${environment}.access.log`
 }
 
@@ -41,7 +41,7 @@ export type AnalyticsReply = {
     // The first day anything was counted, or null when nothing ever has been. Lets the panel say that
     // the numbers start there rather than drawing the days before it as a site nobody visited.
     since: string | null
-    // Whether Apache is writing this environment's access log at all. False until hostd has rewritten
-    // its vhost with the log line, and for an environment served by a hand-written vhost.
+    // Whether NPM is logging this environment's requests at all. False until hostd has rewritten
+    // its proxy host with the log line, and for an environment served by a proxy host hostd did not make.
     logging: boolean
 }

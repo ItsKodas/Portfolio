@@ -1,10 +1,9 @@
-// Page views and visitors for one environment, counted from the access log Apache writes for it. No
+// Page views and visitors for one environment, counted from the access log edge writes for it. No
 // script goes into a client's site and nothing about a visitor leaves the dedi: the log is already there,
 // and all this keeps of it is counts.
 //
-// Every vhost hostd writes logs its serving blocks to accessLogPath() in ACCESS_LOG_FORMAT (see vhost.ts).
-// logrotate rotates that file with the rest of /var/log/apache2 (daily, fourteen kept, the older ones
-// gzipped), so the logs only reach back a fortnight. Each finished day is therefore also written to a
+// NPM sends every request to edge in NGINX_LOG_FORMAT over syslog, and edge appends it to accessLogPath().
+// logrotate rotates that file (daily, fourteen kept, the older ones gzipped), so the logs only reach back a fortnight. Each finished day is therefore also written to a
 // small record of its own, and a window longer than the logs comes out of that.
 //
 // What counts as a page view is deliberately narrow. A browser loading a page asks for text/html (or, for
@@ -21,10 +20,10 @@ import { createGunzip } from 'node:zlib'
 import { TOP_ROWS, accessLogName, accessLogPath, type AnalyticsCount, type AnalyticsDay, type AnalyticsReply } from '../shared/analytics.ts'
 import type { EnvironmentName } from '../shared/registry.ts'
 
-// Tab separated, because Apache escapes every control character in a logged value (a tab arrives as \t),
-// so a tab can only ever be a separator. The order is the field order parseLine reads. %{sec}t is the
-// request's time in seconds since the epoch, which needs no date parsing and has no time zone. %U is the
-// path without the query string, which is both what a page is and the part least likely to carry
+// Tab separated, because nginx escapes every control character in a logged value, so a tab can only ever
+// be a separator. The order is the field order parseLine reads, each named by the Apache log directive it
+// began as. The time is seconds since the epoch, which needs no date parsing and has no time zone. The
+// path is without the query string, which is both what a page is and the part least likely to carry
 // anything personal. A header that was not sent is logged as "-".
 //
 // The client's address three ways, because which one is true depends on what is in front of the site:
@@ -37,9 +36,6 @@ const FIELDS = [
 ] as const
 // accessLogName and accessLogPath moved to shared/analytics.ts so edge can name the same files.
 export { accessLogName, accessLogPath }
-
-// Written into the vhost as it stands here: a backslash and a t, which mod_log_config reads as a tab.
-export const ACCESS_LOG_FORMAT = FIELDS.join('\\t')
 
 // The same fifteen fields as nginx writes them for NPM, with $host in front: edge's syslog receiver uses
 // it to find the environment and strips it, so what lands in the per-environment file is the line
@@ -57,7 +53,7 @@ export type Hit = {
 
 const absent = (value: string | undefined): string | null => (value === undefined || value === '' || value === '-' ? null : value)
 
-// Apache's own escaping of a logged value, undone: \" and \\, and \xhh for anything unprintable.
+// nginx's escaping of a logged value (escape=default), undone: \" and \\, and \xhh for anything unprintable.
 function unescape(value: string): string {
     if (!value.includes('\\')) return value
     return value.replace(/\\(x[0-9a-fA-F]{2}|.)/g, (_, code: string) => {
@@ -259,7 +255,7 @@ export const realAnalyticsFs: AnalyticsFs = {
 }
 
 export type AnalyticsDeps = {
-    // Where Apache writes the access logs: the vhosts name files in it, and this reads them back
+    // Where edge writes the access logs, and where this reads them back
     logDir: string
     // Where the record of finished days is kept, one file per environment
     stateDir: string

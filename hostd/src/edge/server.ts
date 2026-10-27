@@ -18,7 +18,7 @@ const queues = new WeakMap<object, Promise<unknown>>()
 
 function serialised<T>(deps: object, run: () => Promise<T>): Promise<T> {
     const result = (queues.get(deps) ?? Promise.resolve()).then(run)
-    // The queue must not reject, or every later write inherits the failure (as ApacheRail.send does).
+    // The queue must not reject, or every later write inherits the failure (as the old Apache rail did).
     queues.set(deps, result.catch(() => undefined))
     return result
 }

@@ -233,8 +233,8 @@ export type AdoptPreview = {
     ok: true
     preview: {
         proposed: string
-        // text is the claiming file verbatim. The handful of directives this parser reads are not the
-        // whole of what a hand-written vhost does, and adoption replaces the file rather than merging
+        // text is the claiming NPM proxy host as JSON. The fields this parser reads are not the
+        // whole of what a hand-made proxy host does, and adoption replaces it rather than merging
         // with it, so the operator is shown all of it before they confirm. Spelled out here rather than
         // imported, because shared/ must never import from agent/.
         //
@@ -244,7 +244,7 @@ export type AdoptPreview = {
         // outage lasts an afternoon.
         claims: { path: string, text: string, names: string[], unsupported: string[] }[]
         extraNames: string[]
-        // Paths in sites-enabled that could not be opened at all, so nothing is known about them, not
+        // NPM proxy hosts that could not be read at all (always empty now, kept for the portal), so nothing is known about them, not
         // even whether they name one of these hostnames. Usually a symlink whose target has gone. They
         // block no write, since a file Apache cannot read serves nothing, but they do fail Apache's
         // configuration test, so the operator is shown them before adopting rather than after.

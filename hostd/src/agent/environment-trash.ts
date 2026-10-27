@@ -323,9 +323,9 @@ export async function restoreEnvironment(
             try {
                 const wrote = await deps.vhosts.write(current, restored, token)
                 if (wrote.ok) vhost = true
-                else warnings.push(`its vhost could not be written: ${wrote.message}`)
+                else warnings.push(`its NPM proxy host could not be written: ${wrote.message}`)
             } catch (error) {
-                warnings.push(`its vhost could not be written: ${describeError(error)}`)
+                warnings.push(`its NPM proxy host could not be written: ${describeError(error)}`)
             }
         }
         const up = await runCompose(upArgv(locationIn(restored, restored.dir), restored.composeName), SWAP_TIMEOUT_MS, deps.runner)

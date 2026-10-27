@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { gzipSync } from 'node:zlib'
 
-import { ACCESS_LOG_FORMAT, Analytics, NGINX_LOG_FORMAT, accessLogName, isBot, parseLine } from './analytics.ts'
+import { Analytics, NGINX_LOG_FORMAT, accessLogName, isBot, parseLine } from './analytics.ts'
 
 const CHROME = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/129.0 Safari/537.36'
 const HTML = 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8'
@@ -29,7 +29,7 @@ type Line = {
     country?: string
 }
 
-// One line as Apache would write it in ACCESS_LOG_FORMAT, "-" for anything not sent
+// One line as edge writes it once the host is stripped, "-" for anything not sent
 function line(over: Line = {}): string {
     const value = { time: '1760097600', peer: '203.0.113.9', method: 'GET', path: '/', status: '200', agent: CHROME, accept: HTML, ...over }
     return [
@@ -37,12 +37,6 @@ function line(over: Line = {}): string {
         value.accept, value.rsc, value.routerPrefetch, value.secPurpose, value.purpose, value.country,
     ].map(field => field ?? '-').join('\t')
 }
-
-describe('ACCESS_LOG_FORMAT', () => {
-    it('has a field for every column parseLine reads', () => {
-        assert.equal(ACCESS_LOG_FORMAT.split('\\t').length, line().split('\t').length)
-    })
-})
 
 describe('NGINX_LOG_FORMAT', () => {
     // nginx variable to the Apache field it stands in for, in the order FIELDS lists them
@@ -60,7 +54,7 @@ describe('NGINX_LOG_FORMAT', () => {
         assert.equal(fields.length, 16)
         assert.equal(fields[0], '$host')
         assert.deepEqual(fields.slice(1), EQUIVALENT.map(([nginx]) => nginx))
-        assert.deepEqual(ACCESS_LOG_FORMAT.split('\\t'), EQUIVALENT.map(([, apache]) => apache))
+        assert.equal(fields.length - 1, line().split('	').length)
     })
 })
 

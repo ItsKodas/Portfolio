@@ -30,15 +30,8 @@ services:
       HOSTD_SOCKET_GID: "1000"
       HOSTD_STATUS_FILE: /tmp/hostd-status.json
       HOSTD_DEPLOY_STATE_FILE: /var/lib/hostd/deploys.json
-      HOSTD_MAINTENANCE_DIR: /run/hostd/maintenance
       HOSTD_BACKUP_DIR: /backups
       HOSTD_BACKUP_STATE_FILE: /var/lib/hostd/backups.json
-      HOSTD_APACHE_RAIL_DIR: /etc/hostd/apache
-      HOSTD_APACHE_INCLUDE_DIR: /etc/apache2/hostd
-      HOSTD_APACHE_SITES_ENABLED: /etc/apache2/sites-enabled
-      HOSTD_ORIGIN_CERT: /etc/ssl/hostd/origin.pem
-      HOSTD_ORIGIN_KEY: /etc/ssl/hostd/origin.key
-      HOSTD_ACME_WEBROOT: /var/www/hostd-acme
       HOSTD_MAINTENANCE_ROOT: /var/www/hostd-maintenance
       HOSTD_EDGE_SOCKET: /run/hostd-edge/edge.sock
       # Where edge's holding pages and logs are reachable: the VM's own address, which NPM forwards to.
@@ -63,10 +56,6 @@ services:
       # survive a restart: an environment paused after three failed builds would otherwise come back
       # rebuilding every two minutes.
       - hostd-agent-state:/var/lib/hostd
-      # The maintenance flags, on the host's own /run so Apache can see them. Nested inside the volume
-      # above on purpose: the design names this exact path, and /run is a tmpfs, so a flag can never
-      # outlive the deploy that wrote it.
-      - /run/hostd/maintenance:/run/hostd/maintenance
       # Shared only with fetcher, never with api: api must never be able to reach the fetch protocol
       # directly, and fetcher must never be able to touch agent.sock (in hostd-sock) to impersonate the
       # agent to api. See fetcher's own volumes below for the other half of this.
@@ -74,34 +63,7 @@ services:
       # The host's backup disk. Its own bind mount rather than a volume: the operator chooses which disk
       # this is, and a restore has to be able to reach these files without Docker.
       - ${HOSTD_BACKUP_DIR:-/srv/backups/hostd}:/backups
-      # The handshake with the host's systemd unit. A directory of its own holding nothing but
-      # request.json and result.json, so neither container can see anything else through it.
-      - /etc/hostd/apache:/etc/hostd/apache
-      # hostd's own include directory, which Apache is configured to IncludeOptional. Writable, because
-      # this is the whole point: hostd owns every file in here and no file anywhere else.
-      - /etc/apache2/hostd:/etc/apache2/hostd
-      # Read-only, and it stays read-only. The agent reads this to refuse a hostname another vhost
-      # already claims; moving a file out of it during an adoption is the host unit's job, precisely so
-      # that a compromised agent cannot disable every site on the machine.
-      - /etc/apache2/sites-enabled:/etc/apache2/sites-enabled:ro
-      # Do NOT remove this as unused: no code path names this directory, and it is what makes the mount
-      # above readable at all. a2ensite fills sites-enabled with RELATIVE symlinks into sites-available
-      # (../sites-available/<name>.conf), so without this directory mounted beside it every one of those
-      # links dangles inside the container: readdir lists the entry and open() answers ENOENT, while the
-      # host reads the same file perfectly well. hostd would then read none of the hand-written vhosts,
-      # find no claim on any hostname, and adopt a site without displacing the file still serving it.
-      # Read-only for the same reason as sites-enabled: the agent only ever reads these, and moving one
-      # aside during an adoption is the host unit's job.
-      - /etc/apache2/sites-available:/etc/apache2/sites-available:ro
-      # The Origin certificate the vhosts present. Read-only, and never named by anything that arrives
-      # over the wire.
-      - /etc/ssl/hostd:/etc/ssl/hostd:ro
-      # Apache's logs, for the portal's analytics. Every vhost hostd writes logs its requests to a file of
-      # its own in here, and logrotate's rule for this directory rotates it with Apache's own. Read-only:
-      # Apache is what writes these, and the agent only counts them. The same path inside as outside,
-      # because the vhost names the file and the agent reads that name back.
-      - /var/log/apache2:/var/log/apache2:ro
-      # The access logs edge writes from NPM's syslog stream, which replace Apache's for the analytics.
+      # The access logs edge writes from NPM's syslog stream, for the analytics.
       # Read-only: edge is what writes these, and the agent only counts them. The same path inside as
       # outside, because edge names each file and the agent reads that name back.
       - /var/log/hostd:/var/log/hostd:ro

@@ -3,12 +3,11 @@
 
 import { createServer, createConnection } from 'node:net'
 import { createReadStream, createWriteStream } from 'node:fs'
-import { chmod, chown, constants, copyFile, lchown, lstat, mkdir, readdir, readFile, realpath, rename, rm, rmdir, stat, statfs, writeFile } from 'node:fs/promises'
+import { chmod, chown, constants, copyFile, lchown, lstat, mkdir, readdir, realpath, rename, rm, rmdir, stat, statfs, writeFile } from 'node:fs/promises'
 import { randomBytes } from 'node:crypto'
 import { posix } from 'node:path'
 import { RegistryStore, explainRegistryError } from '../shared/registry-store.ts'
 import { RegistryWriter } from '../shared/registry-write.ts'
-import { hostnamesOf } from '../shared/registry.ts'
 import { choosePort, portProblem } from '../shared/ports.ts'
 import { buildStatus, writeStatus } from '../shared/status.ts'
 import { readSystemUsage, systemSource, DEFAULT_SYSTEM_DISK_PATH } from '../shared/system.ts'
@@ -39,8 +38,6 @@ import { handleConnection } from './server.ts'
 import type { DomainsConfig, DomainsDeps } from './domains.ts'
 import { edgeClient } from './edge-client.ts'
 import { ADOPTED_DIR, adoptedStore } from './adopted-store.ts'
-import { SitesEnabledReader, findShadows, shadowWarnings } from './sites-enabled.ts'
-import { siblingDirProblem } from './boot-checks.ts'
 import { DeletedStore } from './deleted-store.ts'
 import { CopyStore, RESTORES } from './copy-store.ts'
 import { removeInterruptedStaging, type CopyFs } from './copy-run.ts'
@@ -69,9 +66,6 @@ const COPIES_FILE = process.env.HOSTD_COPIES_FILE ?? '/var/lib/hostd/copies.json
 // The record of backups put back over live, the last 20 of each project, beside the copies for the same
 // reason: a restart must be able to say which restore it interrupted.
 const RESTORES_FILE = process.env.HOSTD_RESTORES_FILE ?? '/var/lib/hostd/restores.json'
-// The flags Apache reads to serve the holding page. Bind-mounted from the host's own /run, which is a
-// tmpfs, so a reboot can never leave a site behind a maintenance page nobody remembers putting up.
-const MAINTENANCE_DIR = process.env.HOSTD_MAINTENANCE_DIR ?? '/run/hostd/maintenance'
 // The backup repository root and the run history that sits beside it, on their own volume for the same
 // reason the deploy state is: both have to survive a restart.
 const BACKUP_DIR = process.env.HOSTD_BACKUP_DIR ?? '/backups'
@@ -84,25 +78,10 @@ const UPSTREAM_HOST = process.env.HOSTD_UPSTREAM_HOST ?? '192.168.0.8'
 const EDGE_HTTP_PORT = Number(process.env.HOSTD_EDGE_HTTP_PORT ?? '8790')
 // The pre-adopt copy of each adopted NPM proxy host, in the agent's state volume so a restart keeps it
 const ADOPTED_STORE_DIR = process.env.HOSTD_ADOPTED_DIR ?? ADOPTED_DIR
-// Where Apache's own sites-enabled already has whatever an operator hand-wrote before hostd existed. Only
-// read for the health warnings below now; it goes with the rest of Apache.
-const APACHE_SITES_ENABLED = process.env.HOSTD_APACHE_SITES_ENABLED ?? '/etc/apache2/sites-enabled'
-// Where hostd-apache.sh moves a disabled site's sites-enabled entry during an adopt. Not read by this
-// process for anything but the boot check below: the host script is the one that actually moves files
-// there, and it reads the same env var itself. Kept in sync here purely so the two never drift apart
-// without hostd noticing at boot, before any adoption is mid-move.
-const APACHE_ADOPTED_DIR = process.env.HOSTD_APACHE_ADOPTED_DIR ?? '/etc/apache2/hostd-adopted'
-// The origin certificate every vhost's :443 block names. Not defaulted to a real path: a missing value is
-// caught by the boot gate below rather than silently producing a vhost Apache will refuse.
-const ORIGIN_CERT = process.env.HOSTD_ORIGIN_CERT ?? ''
-const ORIGIN_KEY = process.env.HOSTD_ORIGIN_KEY ?? ''
-// The holding page's DocumentRoot, which is NOT MAINTENANCE_DIR above: that one holds the per-environment
-// flag files a deploy writes and clears, this one holds the page Apache actually serves while a flag is
-// up. Crossing them makes the holding page silently never appear during a deploy.
+// Where the holding pages are written. edge reads them from the same path to serve while a site is down.
 const MAINTENANCE_ROOT = process.env.HOSTD_MAINTENANCE_ROOT ?? '/var/www/hostd-maintenance'
 // Where the access logs for the portal's analytics are: edge writes them from NPM's syslog datagrams and
-// the agent reads them back. The same path inside as outside, because the Apache vhosts (until they go)
-// name it too.
+// the agent reads them back.
 const ACCESS_LOG_DIR = process.env.HOSTD_ACCESS_LOG_DIR ?? '/var/log/hostd'
 // The record of each environment's finished days, which outlives the fortnight logrotate keeps
 const ANALYTICS_DIR = process.env.HOSTD_ANALYTICS_DIR ?? '/var/lib/hostd/analytics'
@@ -119,10 +98,6 @@ const GUARD_EVERY_MS = 10 * 60_000
 // Projects that are already invalid are re-checked much sooner, so a fix shows up in /projects in about a
 // minute instead of waiting out the full sweep. Only failing projects pay for the extra compose runs.
 const INVALID_EVERY_MS = 60_000
-// sites-enabled is a handful of small files, so a minute is cheap, and a dangling symlink is something
-// somebody put there by hand rather than something that appears on its own. A domain action re-reads the
-// directory anyway, so this clock only has to cover the stretches where nobody is doing anything.
-const SITES_ENABLED_EVERY_MS = 60_000
 // How often deleted environments past their 30 days are purged, and once at boot.
 const PURGE_EVERY_MS = 60 * 60_000
 // Roughly 75 seconds in total, as in mailops: long enough for a daemon still starting after a reboot.
@@ -158,25 +133,6 @@ async function main(): Promise<void> {
     if ((process.env.RESTIC_PASSWORD ?? '') === '') {
         failures.push('RESTIC_PASSWORD is not set; copy example.env.agent to .env.agent and fill it in, or every backup fails at restic init')
     }
-    // A vhost that names a certificate file which is not there fails Apache's configtest, so every
-    // domain action would fail at the last step with an error about SSL rather than about configuration.
-    // Better to refuse to start and say which file.
-    for (const [name, path] of [['HOSTD_ORIGIN_CERT', ORIGIN_CERT], ['HOSTD_ORIGIN_KEY', ORIGIN_KEY]]) {
-        if (!path) {
-            failures.push(`${name} is not set, and the domains capability needs it`)
-            continue
-        }
-        try {
-            if (!(await stat(path)).isFile()) failures.push(`${name} (${path}) is not a file`)
-        } catch {
-            failures.push(`${name} (${path}) does not exist`)
-        }
-    }
-    // hostd-apache.sh's disable loop moves a relative symlink; see boot-checks.ts for why that only
-    // survives the move when sites-enabled and the adopted directory are siblings. Caught here rather
-    // than left to surface as a dangling symlink discovered during a live adoption, months later.
-    const dirProblem = siblingDirProblem(APACHE_SITES_ENABLED, APACHE_ADOPTED_DIR)
-    if (dirProblem) failures.push(dirProblem)
     if (failures.length > 0) fail(failures)
 
     const docker = createDockerApi()
@@ -232,11 +188,10 @@ async function main(): Promise<void> {
 
     // Every environment's holding page, kept saying why that site is down (see holding-pages.ts). The
     // modes are set outright rather than left to the umask: the socket below sets one that would leave
-    // these unreadable to Apache, which runs as www-data and has to read them.
+    // these unreadable to edge, which has to read them.
     const holdingPages = new HoldingPages({
         registry: () => store.current(),
         listContainers: () => docker.listAllContainers(),
-        flagUp: key => exists(posix.join(MAINTENANCE_DIR, key)),
         writeFile: async (path, text) => {
             const dir = posix.dirname(path)
             await mkdir(dir, { recursive: true })
@@ -479,12 +434,6 @@ async function main(): Promise<void> {
     // left part way, with its services stopped; the record says so, for the operator to act on.
     await removeInterruptedRestoreStaging(await restoreStore.markInterrupted(Date.now()), store.current(), copyFs, log)
 
-    // One reader for the health sweep below, so an unreadable vhost is said out loud on a clock. Nothing
-    // in the domain verbs reads sites-enabled any more; this goes with the rest of Apache.
-    const sitesEnabled = new SitesEnabledReader(APACHE_SITES_ENABLED, {
-        readdir: path => readdir(path),
-        readFile: path => readFile(path, 'utf8'),
-    })
     const domainsConfig: DomainsConfig = { upstreamHost: UPSTREAM_HOST, edgeHost: UPSTREAM_HOST, edgeHttpPort: EDGE_HTTP_PORT }
     const domainsDeps: DomainsDeps = {
         // One connection per call to edge, which serialises the NPM writes behind it
@@ -510,18 +459,6 @@ async function main(): Promise<void> {
         ...restoreStore.warnings(),
         ...[...store.current().invalid].map(([id, problem]) => `project ${id} is invalid: ${problem}`),
         ...guard.warnings(),
-        // A file in sites-enabled that cannot be opened fails apache2ctl configtest, and hostd runs a
-        // configtest before every reload, so one of them stops every domain change on the whole server
-        // while Apache carries on serving what it loaded earlier. Nothing else notices, which is exactly
-        // why it belongs here rather than only in the reply to whoever tripped over it.
-        ...sitesEnabled.warnings(),
-        // A wildcard in a hand-written vhost that answers one of hostd's hostnames before hostd's own vhost
-        // can. Apache starts happily and the site shows whatever the wildcard proxies to, so this is the
-        // only place it is ever said.
-        ...shadowWarnings(findShadows(
-            sitesEnabled.files(),
-            [...store.current().projects.values()].flatMap(project => [...project.environments.values()].flatMap(hostnamesOf)),
-        )),
         ...(fetcherProblem ? [fetcherProblem] : []),
     ]
 
@@ -616,22 +553,9 @@ async function main(): Promise<void> {
     const bootedAt = Date.now()
     const lastPruned = new Map<string, number>()
     let lastWarnings = ''
-    // Zero rather than now, so the first pass runs before the first warnings are composed and /health is
-    // right from boot rather than a minute later.
-    let lastSitesEnabledRun = 0
-    // Zero for the same reason: the first sweep runs at boot.
+    // Zero rather than now: the first sweep runs at boot.
     let lastPurgeRun = 0
     for (;;) {
-        if (Date.now() - lastSitesEnabledRun >= SITES_ENABLED_EVERY_MS) {
-            lastSitesEnabledRun = Date.now()
-            // Logged rather than thrown: this loop is also the registry refresh, the guard, the deploy
-            // poller and the status file, and none of those should stop because a vhost could not be
-            // read. read() only throws on a read it deliberately refuses to treat as "nothing there",
-            // such as EACCES. The log line is not the only record of that: read() puts the failure into
-            // its own warnings before throwing, so /health carries it too, which is the whole point of
-            // sweeping on a clock rather than waiting for somebody to trip over it.
-            await sitesEnabled.read().catch(error => log(`could not read ${APACHE_SITES_ENABLED}: ${describeError(error)}`))
-        }
         if (Date.now() - lastPurgeRun >= PURGE_EVERY_MS) {
             lastPurgeRun = Date.now()
             // Through the agent, under the lock a delete and a restore take. Logged rather than thrown,

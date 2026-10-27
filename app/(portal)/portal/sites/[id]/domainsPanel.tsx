@@ -44,10 +44,10 @@ function when(iso: string | null): string {
 }
 
 // Why this row wants the operator. hostd's own sentence when it wrote one, and otherwise the fact that
-// a vhost was rolled back, which is the other thing needsYou counts.
+// an NPM proxy host was rolled back, which is the other thing needsYou counts.
 function why(domain: Domain): string {
     if (domain.error) return domain.error
-    if (domain.vhost && !domain.vhost.ok) return 'Apache refused the file, so hostd put the previous one back.'
+    if (domain.vhost && !domain.vhost.ok) return 'Nginx Proxy Manager refused the change, so hostd put the previous proxy host back.'
     return 'hostd gave no reason.'
 }
 
@@ -68,7 +68,7 @@ type Props = {
     environment: EnvironmentName
     domains: Domain[]
     isAdmin: boolean
-    // hostd makes an adoption name the project back before it will replace a live vhost, and it is the
+    // hostd makes an adoption name the project back before it will replace a live proxy host, and it is the
     // name it asks for rather than the id.
     projectName: string
     // The site's root domain, one of live's addresses, or null when it names none. Chosen on live alone.
@@ -161,12 +161,12 @@ export function DomainsPanel({ id, environment, domains, isAdmin, projectName, r
             ? (
                 <>
                     <span className={styles.stateBad}>{why(domain)}</span>
-                    {/* Apache's own words about a file it refused, folded away: it is the one thing an
+                    {/* Nginx Proxy Manager's own words about a change it refused, folded away: it is the one thing an
                         operator opens when a reload went wrong, and six lines of it in a table cell
                         would make every other row unreadable. */}
                     {domain.vhost && !domain.vhost.ok && (
                         <details className={styles.outputBlock}>
-                            <summary>What Apache said</summary>
+                            <summary>What Nginx Proxy Manager said</summary>
                             <Tail>{domain.vhost.output}</Tail>
                         </details>
                     )}

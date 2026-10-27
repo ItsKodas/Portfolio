@@ -1,7 +1,7 @@
 // Receives NPM's per-site access log over UDP syslog and files each line where the analytics reader
 // expects it. nginx sends `<PRI>Mmm dd hh:mm:ss hostd: <message>` (nohostname), and the message is the
 // hostd log format, whose first tab-separated field is $host. That field only says which site the line is
-// for; it is dropped, and the rest is what the Apache format used to leave in the file.
+// for; it is dropped, and the rest is what the old Apache format left in the file.
 
 import { createSocket, type Socket } from 'node:dgram'
 import { accessLogPath } from '../shared/analytics.ts'

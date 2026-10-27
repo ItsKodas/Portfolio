@@ -1121,8 +1121,8 @@ export function createHandler(deps: ApiDeps): (req: IncomingMessage, res: Server
                     if (record.state === 'broken') warnings.push(`${record.hostname} stopped answering (${record.project} ${record.environment})`)
                     if (record.vhost && !record.vhost.ok) rolledBack.add(`${record.project} ${record.environment}`)
                 }
-                for (const environment of rolledBack) warnings.push(`the vhost for ${environment} was rolled back`)
-                // The rail not answering means no domain action can work at all, and every one of them will look
+                for (const environment of rolledBack) warnings.push(`the NPM proxy host for ${environment} was rolled back`)
+                // edge not reaching NPM means no domain action can work at all, and every one of them will look
                 // like a hang rather than a failure until somebody tries one. railAge comes off the agent's health
                 // reply (Task 10), because lastSuccessAt lives in the agent and only api serves /health.
                 if (reply.railAge === null || reply.railAge > RAIL_STALE_MS) {
@@ -1658,9 +1658,9 @@ export function createHandler(deps: ApiDeps): (req: IncomingMessage, res: Server
                 }
 
                 const token = await tokenFor(entry.id, environment.name)
-                // adopt takes the files to disable rather than finding them itself, so the preview is
+                // adopt takes the NPM claim paths rather than finding them itself, so the preview is
                 // what chooses them, with the token the adopt will carry. The agent re-establishes every
-                // claim against sites-enabled as it is before it moves anything, so a preview that has
+                // claim against NPM as it is before it changes anything, so a preview that has
                 // gone stale in between is refused there rather than acted on.
                 const preview = await callAgentAudited(
                     { verb: 'domains', project: entry.id, args: { action: 'preview', environment: environment.name, token } },
@@ -1672,14 +1672,14 @@ export function createHandler(deps: ApiDeps): (req: IncomingMessage, res: Server
                     return refuseRoute(502, 'failed', 'the agent did not answer the preview with one', entry.id, 'domains', target)
                 }
 
-                // Whatever the preview found, including nothing. An environment nobody hand-wrote a file
-                // for has nothing to displace, and adopt is the only route to a vhost hostd owns: were
+                // Whatever the preview found, including nothing. An environment with no NPM proxy host
+                // yet has nothing to displace, and adopt is the only route to a proxy host hostd owns: were
                 // an empty list refused here, a newly provisioned site would sit with a domain in the
-                // registry and no vhost forever.
+                // registry and no proxy host forever.
                 const { claims, adoptable } = preview.preview
                 if (!adoptable) {
                     // Every reason of every file, rather than a count or the first one: the operator's
-                    // next move is to edit those files by hand, and each reason names a different edit.
+                    // next move is to edit those proxy hosts in NPM, and each reason names a different edit.
                     const blocked = claims
                         .filter(claim => claim.unsupported.length > 0)
                         .map(claim => `${claim.path}: ${claim.unsupported.join(' ')}`)
@@ -1710,7 +1710,7 @@ export function createHandler(deps: ApiDeps): (req: IncomingMessage, res: Server
                 )
                 if (!reply) return
 
-                // The rail said the configtest passed and the reload succeeded. That is exactly what it
+                // edge said the write succeeded and NPM reloaded. That is exactly what Apache
                 // said when thebackroom.dev went dark, so it is not the last word: ask the hostname.
                 if (reply.ok && checking !== null && before !== null) {
                     const after = await probeSite(deps.fetch ?? fetch, checking)
@@ -1727,8 +1727,8 @@ export function createHandler(deps: ApiDeps): (req: IncomingMessage, res: Server
                         // deliberately NOT recorded as written, because after the rollback hostd's
                         // vhost is gone and there is nothing for the verifier to prove against.
                         const message = rolledBackReason(checking, before, after, disable, problem)
-                        // Apache's own words only when there are any: this rollback's failure output,
-                        // never the adopt's, which was a configtest that passed and says nothing.
+                        // NPM's own words only when there are any: this rollback's failure output,
+                        // never the adopt's, which succeeded and says nothing.
                         const rolledBack: Refusal = undo.ok || undo.output === undefined
                             ? { ok: false, code: 'failed', message }
                             : { ok: false, code: 'failed', message, output: undo.output }

@@ -1,4 +1,4 @@
-// Did adopting this site leave it answering? Asked by requesting the hostname once before the vhost is
+// Did adopting this site leave it answering? Asked by requesting the hostname once before the proxy host is
 // replaced and once after, and comparing the two.
 //
 // This lives in api rather than in the agent for one reason: the agent runs network_mode: none. It has
@@ -7,11 +7,11 @@
 // network, it already reaches hostnames over https to verify them (see verify.ts), and it is already the
 // process that orchestrates an adoption: it previews, it decides, it calls the agent. So it takes the
 // baseline before it calls, and it asks again after. The rollback itself is still the agent's, because
-// only the agent can move a file on the host.
+// only the agent can talk to NPM, through edge.
 //
-// What this is NOT is verify.ts. Verification proves a hostname reaches THIS environment's vhost, by
-// asking for a token only that vhost serves, and no hand-written file has ever heard of that token. The
-// baseline has to be taken against the operator's own configuration, before hostd has written anything,
+// What this is NOT is verify.ts. Verification proves a hostname reaches THIS environment's proxy host, by
+// asking for a token only that proxy host serves, and no hand-made one has ever heard of that token. The
+// baseline has to be taken against the operator's own proxy host, before hostd has written anything,
 // so the only question that can be asked of it is the visitor's question: does this address answer.
 
 import { describeError } from '../shared/formats.ts'
@@ -20,11 +20,11 @@ export const PROBE_TIMEOUT_MS = 10_000
 
 // Ordered worst to best, and the order is the whole comparison. The names are what an operator reads.
 //
-// 4xx counts as answered on purpose. A hand-written vhost that returns 401 for a basic auth realm, or
+// 4xx counts as answered on purpose. A hand-made proxy host that returns 401 for a basic auth realm, or
 // 404 for the bare path this asks for, is answering: the question here is whether the site went dark,
 // not whether it said yes. A 3xx sits below it because a redirect where there was a page is exactly the
-// shape of this outage (the template's forced :80 to https redirect, bounced back by a CDN terminating
-// TLS on its own, forever) and is also what a request landing on the wrong vhost looks like.
+// shape of this outage (the forced :80 to https redirect, bounced back by a CDN terminating
+// TLS on its own, forever) and is also what a request landing on the wrong proxy host looks like.
 export const GRADES = ['unreachable', 'error', 'redirect', 'answered'] as const
 export type Grade = typeof GRADES[number]
 
@@ -85,14 +85,14 @@ export function rolledBackReason(
     hostname: string, before: Answer, after: Answer, restored: string[], problem: string | null,
 ): string {
     const files = restored.length === 0
-        ? 'There was no hand-written file to put back, so hostd only removed its own.'
-        : `hostd put ${restored.join(', ')} back and removed its own vhost.`
+        ? 'There was no NPM proxy host to put back, so hostd only removed its own.'
+        : `hostd put ${restored.join(', ')} back and removed its own proxy host.`
     const undone = problem === null
-        ? `${files} Apache has reloaded, so the site should be answering as it was.`
+        ? `${files} Nginx Proxy Manager has reloaded, so the site should be answering as it was.`
         : `${files} That did not fully work: ${problem}`
-    return `Adopting ${hostname} passed Apache's configuration test and reloaded, and then the site stopped `
+    return `Adopting ${hostname} went through in Nginx Proxy Manager, which reloaded, and then the site stopped `
         + `answering as it had. Before adopting, ${hostname} ${before.said}. Afterwards it ${after.said}. `
-        + `${undone} Nothing about the hostname's own records changed. Compare the two configurations in `
-        + 'the preview before trying again: the generated vhost cannot carry everything a hand-written '
+        + `${undone} Nothing about the hostname's own records changed. Compare the two proxy hosts in `
+        + 'the preview before trying again: the generated proxy host cannot carry everything a hand-made '
         + 'one can.'
 }

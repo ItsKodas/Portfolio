@@ -99,28 +99,28 @@ describe('rolledBackReason', () => {
     const before: Answer = { grade: 'answered', said: 'answered 200' }
     const after: Answer = { grade: 'redirect', said: 'answered 301 to https://thebackroom.dev/' }
 
-    it('says what was measured before and after, and names the file it put back', () => {
-        const said = rolledBackReason('thebackroom.dev', before, after, ['/etc/apache2/sites-enabled/backroom.conf'], null)
+    it('says what was measured before and after, and names the proxy host it put back', () => {
+        const said = rolledBackReason('thebackroom.dev', before, after, ['npm/proxy-host/12'], null)
         assert.match(said, /thebackroom\.dev/)
         assert.match(said, /answered 200/)
         assert.match(said, /answered 301 to https:\/\/thebackroom\.dev\//)
-        assert.match(said, /\/etc\/apache2\/sites-enabled\/backroom\.conf/)
+        assert.match(said, /npm\/proxy-host\/12/)
     })
 
-    it('says plainly that the configtest and the reload both passed, which is the confusing part', () => {
-        const said = rolledBackReason('thebackroom.dev', before, after, ['/etc/apache2/sites-enabled/backroom.conf'], null)
-        assert.match(said, /configuration test/)
+    it('says plainly that the write and the reload both succeeded, which is the confusing part', () => {
+        const said = rolledBackReason('thebackroom.dev', before, after, ['npm/proxy-host/12'], null)
+        assert.match(said, /Nginx Proxy Manager/)
         assert.match(said, /reloaded/)
     })
 
     it('does not claim the site is back when putting it back failed', () => {
-        const said = rolledBackReason('thebackroom.dev', before, after, ['/etc/apache2/sites-enabled/backroom.conf'], 'Apache would not reload')
-        assert.match(said, /Apache would not reload/)
+        const said = rolledBackReason('thebackroom.dev', before, after, ['npm/proxy-host/12'], 'NPM would not reload')
+        assert.match(said, /NPM would not reload/)
         assert.equal(said.includes('should be answering as it was'), false)
     })
 
     it('has no em dash in it, because this is what the operator reads instead of a working site', () => {
-        const said = rolledBackReason('thebackroom.dev', before, after, ['/etc/apache2/sites-enabled/backroom.conf'], null)
+        const said = rolledBackReason('thebackroom.dev', before, after, ['npm/proxy-host/12'], null)
         assert.equal(said.includes('—'), false)
     })
 })

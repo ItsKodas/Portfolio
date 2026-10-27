@@ -294,7 +294,7 @@ function DeleteSite({ id, name }: { id: string, name: string }) {
         <section className={styles.deleteSite}>
             <h3>Delete this site</h3>
             <p className={styles.note}>
-                Stops the site, removes it from hostd and takes its Apache configuration off, so it stops
+                Stops the site, removes it from hostd and takes its NPM proxy host off, so it stops
                 being served. Its folder, volumes and databases stay on the server.
             </p>
             <div>
