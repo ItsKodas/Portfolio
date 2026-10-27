@@ -87,10 +87,9 @@ that service names no container port (add `expose: ["3000"]` to it), or when it 
 
 To move an existing site onto a port the panel chose:
 
-1. If the domain is still served by a hand-written vhost, adopt it from the environment's Domains section
-   on the portal's Environments tab. A port change
-   refuses an environment whose domain hostd has no vhost file for (`<domain> is served by a
-   hand-written vhost; ...`), since Apache would go on proxying to the old port.
+1. If the domain is still served by an NPM host Koda made by hand, adopt it from the environment's Domains
+   section on the portal's Environments tab. A port change refuses an environment whose NPM host hostd does
+   not own, since NPM would go on forwarding to the old port.
 2. Change the port in Settings. For a site without `hostd.ports.yml` yet, this writes it and adds it to
    the environment's compose list, then recreates the containers.
 
@@ -365,7 +364,7 @@ Then remove the `hostd-test` entry from `registry/projects.yaml`.
    the mistake: hostd passes each file as `-f`, and an explicit `-f` stops compose loading an override
    by itself, so the entry would still validate while describing a different site from the one running.
    A `start` would then recreate the containers from the base file alone, dropping whatever the override
-   set, the published port Apache proxies to included. Sites with one compose file need no `compose` key
+   set, the published port NPM forwards to included. Sites with one compose file need no `compose` key
    at all; it defaults to `docker-compose.yml`.
 
 3. Add the entry. List every service in the merged compose configuration that you want visible, with its
@@ -387,11 +386,13 @@ Then remove the `hostd-test` entry from `registry/projects.yaml`.
 
 The portal's **New site** button (bottom of the sidebar, admin only) sends the same `create` as step 1
 below, with every field filled in: the folder under `/var/www`, the compose files, the capabilities, the
-two vhost switches and an optional client. Leave the client out and the site is yours alone: the entry
-has no `client:` key and no client can see it. When a domain is given, api also writes the site's first
-vhost straight after the create (an adopt with nothing to disable); if another file already serves that
-hostname, or Apache refuses, the site is still created and the reply's `vhost` says what is left to do
-from live's Domains section on the Environments tab.
+the Flexible SSL switch (the websockets switch is no longer read: every NPM host hostd writes allows
+upgrades) and an optional client. Leave the client out and the site is yours alone: the entry
+has no `client:` key and no client can see it. When a domain is given, the agent also asks `edge` for the
+site's NPM hosts straight after the create; if NPM already serves that hostname, the zone has no
+certificate in the registry's `certificates` map, or NPM refuses, the site is still created and the reply's
+`vhost` field (the name is kept, it now describes the NPM hosts) says what is left to do from live's
+Domains section on the Environments tab.
 
 `create` only clones the repo and notices which services the compose files resolve: each one is guessed
 site or database from its image name (postgres, mysql, mariadb, mongo or redis becomes database; anything
@@ -426,12 +427,14 @@ already correct whatever `create` left behind.
    ```bash
    hc -X POST http://hostd-api:8080/projects \
      -H 'Content-Type: application/json' \
-     -d '{"id":"acme-bakery","client":"cl_8f2k1","name":"Acme Bakery","repo":"git@github.com:ItsKodas/acme-bakery.git","branch":"main","domain":"acmebakery.com","certificate":"letsencrypt"}'
+     -d '{"id":"acme-bakery","client":"cl_8f2k1","name":"Acme Bakery","repo":"git@github.com:ItsKodas/acme-bakery.git","branch":"main","domain":"acmebakery.com","certificate":"cloudflare-origin"}'
    ```
 
    Optional fields: `dir` (the folder's name under `/var/www`, default the id), `compose` (a list of
    files relative to it, default `["docker-compose.yml"]`), `capabilities` (default none), `websockets`
-   and `flexibleSsl` (default false). `client` may be left out for a site of your own.
+   and `flexibleSsl` (default false). `client` may be left out for a site of your own. The domain's zone
+   (`acmebakery.com` here) needs an entry in the registry's `certificates` map unless the site is Flexible;
+   see **Domains**. `certificate` takes only `cloudflare-origin` now (`letsencrypt` is refused).
 
    Expect `{"ok":true,"project":{"id":"acme-bakery","state":"needs-setup"},"envFiles":[...]}`.
 
@@ -498,9 +501,9 @@ or deploy acts on the wrong one.
 branch. A tip different from the entry's `deployed` starts a deploy: fetch, check the commit out into
 `<dir>.next`, carry the env files across from the running copy, carry any compose file the checkout does
 not have (see below), `docker compose build` there, then the
-swap (maintenance flag up, `down`, `<dir>` becomes `<dir>.prev`, `<dir>.next` becomes `<dir>`, the
+swap (holding page set to "upgrading", `down`, `<dir>` becomes `<dir>.prev`, `<dir>.next` becomes `<dir>`, the
 registered `storage` folders move from `<dir>.prev` into `<dir>`, `up -d`,
-flag down), then the health check, then `deployed` is written to the registry. One deploy per environment
+page cleared), then the health check, then `deployed` is written to the registry. One deploy per environment
 at a time; a commit that lands mid-deploy is picked up by the next poll.
 
 **A host-specific compose file survives a deploy.** An override that says which port this machine has
@@ -615,10 +618,14 @@ Check `dir` and any `composeName` in `hostd/registry/projects.yaml` for the site
 name it runs under; migration always writes `composeName` explicitly, so an existing site keeps the name
 its containers and named volumes already carry, whatever its folder or id becomes.
 
-**The maintenance flag.** `/run/hostd/maintenance/<id>-<env>` exists from just before the swap until just
-after it. Apache's half of this (serving the holding page while that file exists, and when the upstream
-is unreachable) **is not built yet**, so today the flag is written and removed and nothing reads it. The
-site is briefly unreachable during a swap either way.
+**The holding page.** Just before the swap the agent refreshes the environment's holding page to
+"upgrading" (`/var/www/hostd-maintenance/sites/<id>-<env>.html`). There is no flag file any more, and a
+deploy never calls `edge` or NPM. The swap stops the site's containers, NPM gets a refused connection and
+answers 502, and the `error_page` in the host's `advanced_config` serves the holding page from `edge`
+(`GET /holding/<id>-<env>`, status 503, on the VM's port 8790). The site is briefly unreachable during a
+swap either way. Known limits: a deploy whose new container accepts connections but answers errors while
+it starts shows those errors rather than the holding page, and the holding page is served for `GET` only,
+so a `POST` to a site that is down gets a 404 from `edge` instead of the holding page.
 
 The calls, all admin-only except the last two:
 
@@ -684,7 +691,7 @@ puts the tree that was serving before the window back into service: the build th
 in is never started, because no health check has seen it. If that build had already reached
 `<site>/live`, it is moved aside to `<site>/next/live` first (replacing any stale build there); if it is
 still the flat `<site>.next`, it is removed. Then `<site>/prev/live` becomes `<site>/live` and is started,
-under the maintenance flag. A build tree is never client data, so nothing is lost: the deploy that resumed
+under the "upgrading" holding page. A build tree is never client data, so nothing is lost: the deploy that resumed
 the move carries on and builds the same commit again from scratch, which is why a resumed deploy takes a
 full build's time. The layout still only moves forward; a resume never puts the site back into the flat
 shape.
@@ -750,8 +757,8 @@ this.
 ### Names
 
 An environment name is a lowercase letter followed by up to 15 lowercase letters or digits
-(`^[a-z][a-z0-9]{0,15}$`). There is no hyphen, on purpose: hostd joins `<id>-<env>` into maintenance flag
-names, vhost file names (`<id>-<env>.conf`) and compose project names, and a project id may hold hyphens.
+(`^[a-z][a-z0-9]{0,15}$`). There is no hyphen, on purpose: hostd joins `<id>-<env>` into holding page
+names, access log names, NPM host markers (`# hostd: <id>/<env>`) and compose project names, and a project id may hold hyphens.
 With hyphens in both, `acme` plus `test-live` would collide with `acme-test` plus `live`; without them in
 the environment name, the last hyphen always splits the two.
 
@@ -809,9 +816,12 @@ added, the tab opens the new environment.
    the copy so live's port cannot win, and writes `hostd.ports.yml`.
 5. It resolves compose under the name `<id>-<name>`, gives the tree the owner and mode of the site folder,
    and registers the environment.
-6. api writes its vhost straight after, as a create does for live's first. If another file already
-   serves that hostname, or Apache refuses, the environment is still added and the reply's `vhost` says
-   what is left to do from the environment's Domains section on the Environments tab.
+6. The agent asks `edge` for its NPM hosts straight after, as a create does for live's first. If NPM
+   already serves that hostname, the zone has no certificate in the `certificates` map, or NPM refuses, the
+   environment is still added and the reply's `vhost` field says what is left to do from the
+   environment's Domains section on the Environments tab. The address must be the zone itself or one label
+   below it (`uat1.acme.com`, not `uat1.mappies.horizons.gg`): a deeper name is refused, because the
+   Origin certificate does not cover it.
 
 A failure before the registry write removes `<site>/<name>`, which that call made, and nothing else. The
 new environment is not started, and its database starts empty, unless the body also had `"copyFromLive":
@@ -820,12 +830,12 @@ never with `docker compose up` by hand.
 
 ### Its first hostname
 
-Every environment added now carries a domain from the start, so it gets a primary and a first vhost as
+Every environment added now carries a domain from the start, so it gets a primary and its NPM hosts as
 part of the add itself (see **Adding one**). An older environment from before this was required, one with
 no domain at all, still has no primary: the first hostname added to it (choose it in the Environments
 tab's list and add the name in its Domains section, or `POST /projects/<id>/<env>/domains` with
 `{"hostname":"..."}`) becomes its primary: it is set the way
-Settings sets a domain, its first vhost is written, and it is verified as the primary. Every hostname
+Settings sets a domain, its NPM hosts are written, and it is verified as the primary. Every hostname
 after that is an alias, as before. There is no limit on how many: adding a hostname is admin-only, and
 `maxDomains` in projects.yaml is still accepted but no longer enforced.
 
@@ -841,8 +851,9 @@ environment with a deploy, a port change, an env write, a copy from live, or ano
 running. Under the provisioning lock:
 
 1. `docker compose down --remove-orphans` under its compose name. Never `-v`: its volumes stay.
-2. Its vhost is removed, so its hostnames stop proxying to a port that is about to be free, and api drops
-   its domain verification records once the agent says it is gone.
+2. Its NPM hosts are deleted (only ones carrying its marker), so its hostnames stop forwarding to a
+   port that is about to be free, and api drops its domain verification records once the agent says they
+   are gone.
 3. Its folders move into the site's trash, `<site>/.deleted/<env>-<unix seconds>/`: `<site>/<env>` to
    `tree`, and `<site>/prev/<env>` and `<site>/next/<env>` to `prev` and `next` when they exist.
    `.deleted` and the trash folder are made with the site folder's owner and mode. Every move is a rename
@@ -852,7 +863,7 @@ running. Under the provisioning lock:
    path, the compose name, the registry entry exactly as it was, and who deleted it.
 5. The environment is removed from `projects.yaml`.
 
-A failure undoes in reverse whatever had succeeded: the record, the moves, the vhost put back, and
+A failure undoes in reverse whatever had succeeded: the record, the moves, the NPM hosts put back, and
 `up -d --no-build`. An undo that cannot finish stops where it is, deletes nothing, and the refusal names
 what is still done.
 
@@ -879,8 +890,8 @@ when the trash folder's `tree` is gone, or when `<site>/<env>` exists.
   ones are dropped and listed in the reply's `droppedHostnames`; when the primary was taken, the first
   alias kept becomes the primary.
 - `tree` moves back to `<site>/<env>`, and `prev` and `next` move back when their places are free.
-- The registry entry is written back, the vhost is written when it has a primary, and it is started with
-  `up -d --no-build`. What fails from here on (the vhost, the start) is reported beside the restore, not
+- The registry entry is written back, its NPM hosts are written when it has a primary, and it is started with
+  `up -d --no-build`. What fails from here on (the NPM hosts, the start) is reported beside the restore, not
   undone: deploy it to start it.
 - The record is dropped, and the empty trash folder removed.
 
@@ -981,7 +992,7 @@ the agent stopped:
    serves, and if the port is taken, pick a free one and set it both in the entry and in the tree's
    `.env` (the next deploy rewrites `hostd.ports.yml`).
 3. Drop the entry from the file, copy it back, and start the agent.
-4. Adopt its primary from its Domains section on the Environments tab to write its vhost, and deploy it
+4. Save its primary again from its Domains section on the Environments tab to write its NPM hosts, and deploy it
    to start it.
 
 ### Removing a whole site
@@ -991,7 +1002,7 @@ place, `.deleted` included, and the records of its deleted environments stay: th
 each one's trash folder and volumes when its time comes, since its compose name is no longer registered.
 
 Removing a whole site stops only live's compose project. Its named environments are taken off the web
-(every environment's vhost is removed) but keep running, holding their ports, until each is stopped by
+(every environment's NPM hosts are deleted) but keep running, holding their ports, until each is stopped by
 hand:
 
 ```bash
@@ -1203,7 +1214,7 @@ The environment is blocked for the whole run, from the start until step 7 has fi
   copy ends;
 - so are a port change, a domain write for that environment, deleting or restoring it, and a copy into it;
 - a Settings save (`configure`) and removing the whole site are refused for the whole project, with `<id>
-  has an environment being copied from live`, since either may rewrite that environment's vhost or entry;
+  has an environment being copied from live`, since either may rewrite that environment's NPM hosts or entry;
 - a backup of the project is refused with `<id> <env> is being copied from live; a backup waits until it
   has finished`, and a copy is refused while a backup of the project runs.
 
@@ -1756,11 +1767,11 @@ database on a timer.
   portal created can be deleted from its Settings tab. Deleting, adding or restoring one environment
   still needs `provision`.
 - **Removing a project leaves its folder, volumes and databases in place.** `provision remove` stops it,
-  edits the registry, and takes hostd's own vhost for each environment it removed off the host; nothing
-  under `/var/www` is deleted. The vhost goes because a file left behind would go on claiming those
-  hostnames and proxying to a port `choosePort` is then free to give another project. A hand-written
-  vhost that was adopted stays in `/etc/apache2/hostd-adopted/`, as it always does. If the rail cannot
-  be reached the removal still succeeds and the reply names the file that is still there. Clean the rest
+  edits the registry, and deletes hostd's own NPM hosts for each environment it removed; nothing
+  under `/var/www` is deleted. The hosts go because ones left behind would go on claiming those
+  hostnames and forwarding to a port `choosePort` is then free to give another project. If `edge` or NPM
+  cannot be reached the removal still succeeds and the reply names the NPM hosts that are still there
+  (delete them in the NPM UI). Clean the rest
   up by hand once you are sure: a flat site leaves `<dir>`, `<dir>.git`, `<dir>.prev` and, if it ever had
   one, `<dir>-test` and its own `.git`/`.prev` behind; a nested site leaves the single `/var/www/<site>`
   folder (`git`, `live`, every other environment's folder, `prev/`, `next/`, and `.deleted/` if anything
@@ -1768,257 +1779,213 @@ database on a timer.
 
 ## Domains
 
-hostd's other half of Apache control does not run in Docker at all. Every domain action (writing a vhost,
-adding an alias, adopting a hand-configured site) ends with `hostd-agent` dropping a request file in a
-directory bind-mounted from the host; a systemd path unit on the host itself picks it up, runs the write,
-runs `apache2ctl configtest`, reloads Apache if that passed, and writes a result file back. `hostd-agent`
-has no network namespace and cannot reach Apache any other way. The shell script and the two unit files
-that do this live in `hostd/host/`; nothing about them is exercised by `npm test`, because a shell script
-reloading a real Apache is not something CI can run. This section is what stands in for that missing test
-suite: read it in full before the first domain change on a new dedi, not only when something breaks.
+The sites run on the websites VM (192.168.0.8). The front door is Nginx Proxy Manager (NPM), a native
+install in Proxmox CT 101 at **192.168.0.6**: its admin UI and API are `http://192.168.0.6:81` (also
+`http://nginx.home.arpa`). Reach the CT with `ssh proxmox`, then `pct exec 101 -- <command>`. NPM's nginx
+binary is `nginx` (OpenResty 1.29), not Docker.
 
-The request and result shapes are defined once, in `hostd/src/shared/apache.ts`: a request carries `seq`,
-`action` (`reload`, `adopt` or `restore`), `write` (a single `{path, text}` or null), `remove` (paths to
-delete), `disable` (paths to move out of `sites-enabled`, only ever populated alongside `adopt`) and
-`restore` (paths to move back in, only ever populated alongside `restore`, and naming the original
-`sites-enabled` path rather than the `.bak` the unit parked it at); a result carries
-`seq`, `ok` and `output`. `hostd/src/agent/apache-rail.ts` is the agent's half: it writes the request by
-writing to a `.tmp` file and renaming it into place, so the path unit (which fires on the file's name
-appearing) never sees a half-written request, then polls for a result carrying the same `seq` for up to 30
-seconds. If nothing answers in time, it deliberately leaves the request file where it is: a host unit that
-is merely slow still answers it, and the sequence number means that answer is safely ignored rather than
-mistaken for whatever the agent asks next.
+Every domain action (a site's first hostname, an alias, Flexible SSL, an adoption, a removal) ends with
+`hostd-agent` rendering the environment's NPM hosts and asking a fourth container, **`hostd-edge`**, to
+apply them. `edge` is the only process that holds the NPM credentials (`hostd/.env.edge`) and the only one
+that talks to NPM's API. It shares a socket (`/run/hostd-edge/edge.sock`, volume `hostd-edge-sock`) with the
+agent and nothing else; `hostd-api` never sees the socket or the credentials. `edge` also serves the holding
+pages and receives NPM's access logs (below). It runs on the host network (so NPM's syslog datagrams keep
+their real source address) and binds only the VM's own address, 192.168.0.8: **TCP 8790** for the holding
+pages and **UDP 5514** for syslog.
 
-### 1. Host setup, done once
+What an environment renders to: one **proxy host** for the primary (forwarding to `192.168.0.8:<port>`,
+the zone's certificate, Force SSL and HTTP/2 on, Block Exploits on, websockets allowed, the brotli 415
+snippet, the verification location, the holding page and the access log line), and, when it has aliases,
+one **redirection host** sending the aliases to the primary with a 301 (path and query kept). Under
+Flexible SSL there is no certificate and no Force SSL, so Cloudflare's own https side does the work.
 
-The host script's only external dependency is `jq`. Install it before anything else:
+**hostd only touches hosts it owns.** The first line of every host's `advanced_config` is
+`# hostd: <project>/<environment>. Managed by hostd; edits here are overwritten.` and `edge` refuses to
+update or delete a host unless both that marker and the id recorded in the registry
+(`npm: { proxyHost: 10, redirectionHost: 4 }` on the environment) match. Everything else in NPM
+(`horizons.gg` itself, wg, dns, proxmox and so on) is out of hostd's reach. The one exception is
+**adopt**, which may take over a host Koda made by hand, and only when `edge` re-reads it and finds it
+plainly this environment's (it serves the primary and forwards to this environment's upstream).
 
-```bash
-sudo apt-get install -y jq
-```
+A deploy never calls `edge` or NPM. Nothing about NPM's side is exercised by `npm test` beyond a fake NPM and
+an `nginx -t` run on the rendered config; this section is what stands in for a live test, so read it in
+full before the first domain change on a new setup, not only when something breaks.
 
-Create the directories the script and the agent both expect. None of this touches an existing site:
+### 1. Rollout, done once
 
-```bash
-sudo mkdir -p /etc/hostd/apache
-sudo mkdir -p /etc/apache2/hostd
-sudo mkdir -p /etc/apache2/hostd-adopted
-sudo mkdir -p /var/www/hostd-acme/.well-known/acme-challenge
-sudo mkdir -p /var/www/hostd-maintenance
-```
+Do these in order. Nothing here changes a live site until step 6.
 
-`/etc/apache2/hostd-adopted` must stay a sibling of `/etc/apache2/sites-enabled`, both directly under
-`/etc/apache2` as created above: `a2ensite` writes `sites-enabled` entries as symlinks relative to
-`sites-available` (`../sites-available/<name>.conf`), and adopting a site moves that symlink, unchanged,
-into `hostd-adopted`. The move only leaves a link that still resolves when the two directories share a
-parent, since that is what makes `../sites-available` mean the same thing from both. Point either
-directory (`HOSTD_APACHE_SITES_ENABLED` or `HOSTD_APACHE_ADOPTED_DIR`) somewhere at a different depth and
-every future adoption's undo becomes a dangling symlink nobody notices until Apache next fails a
-configtest; the agent's boot gate below refuses to start rather than let that happen quietly.
+1. **The NPM user.** In the NPM UI, Users, add `hostd@horizons.gg`: not an admin; permissions visibility
+   **All**, Proxy Hosts **Manage**, Redirection Hosts **Manage**, Certificates **View**, everything else
+   **Hidden**. ("All" visibility is what lets hostd see and adopt the hosts Koda created.) Copy
+   `hostd/example.env.edge` to `/opt/horizons/hostd/.env.edge` on the VM and put the user's password in
+   `HOSTD_NPM_SECRET`. Never commit the filled-in copy.
 
-`/var/www/hostd-maintenance` holds the holding page Apache serves for every 503, and the agent writes
-everything in it (the agent mounts `/var/www`, so nothing more is needed than the directory itself):
-`sites/<id>-<env>.html` for each environment with a domain, which its vhost serves, and `index.html`, a
-fallback that names no site. Each site's page says why it is down, read off Docker on every pass of the
-agent's loop: upgrading while a deploy holds the maintenance flag, switched off for a container `docker
-stop` took down, having trouble for one in a restart loop or one that died and stayed down, and back
-shortly for anything else. It also shows the registry entry's `contact`, when it has one (see
-`registry/projects.example.yaml`), so a visitor knows who to reach. The portal writes that from the
-client's public contact details once the operator lists them on the client's page. Vhosts written before per-site pages
-existed are pointed at their own page once, the first time the agent boots with this in place.
+2. **The log format.** NPM's built-in format lacks fields the analytics need (`Accept`, `RSC`,
+   `CF-Connecting-IP`, the epoch time), so hostd's own format is defined once in NPM's custom http include,
+   by hand, because NPM's API cannot write it. First look at what the file already holds, so the format is
+   not added twice:
 
-Put the Cloudflare Origin CA certificate at `/etc/ssl/hostd/origin.pem` and its key at
-`/etc/ssl/hostd/origin.key`. This is an install step, not a check: do not assume the dedi already has one
-because its hand-written vhosts serve HTTPS. Those use Let's Encrypt, which is per hostname and issued on
-the host; hostd instead serves one Origin certificate to every vhost it renders, and nothing else on the
-machine needs it, so on a dedi that has never run hostd it will not exist.
+   ```bash
+   ssh proxmox
+   pct exec 101 -- sh -c 'mkdir -p /data/nginx/custom && touch /data/nginx/custom/http_top.conf && cat /data/nginx/custom/http_top.conf'
+   ```
 
-Issue it from the Cloudflare dashboard (SSL/TLS > Origin Server > Create Certificate) for the zone whose
-hostnames this dedi serves, then install both halves with `0600` root-owned permissions. An Origin
-certificate is per zone: a `*.example.com` one covers that zone's subdomains but not a client's own
-domain on a separate zone, which needs its own certificate and its own entry here.
+   If `log_format hostd` is not there, append it. This is exactly `NGINX_LOG_FORMAT` from
+   `hostd/src/agent/analytics.ts`; the `\t` sequences are a backslash and a `t`, and must stay that way:
 
-Both files are mounted read-only into `hostd-agent`, and every vhost's `:443` block names them. Without
-them the agent's boot gate refuses to start at all:
+   ```bash
+   pct exec 101 -- sh -c 'cat >> /data/nginx/custom/http_top.conf' <<'EOF'
+   log_format hostd escape=default '$host\t$msec\t$remote_addr\t$http_cf_connecting_ip\t$http_x_forwarded_for\t$request_method\t$uri\t$status\t$http_referer\t$http_user_agent\t$http_accept\t$http_rsc\t$http_next_router_prefetch\t$http_sec_purpose\t$http_purpose\t$http_cf_ipcountry';
+   EOF
+   pct exec 101 -- nginx -t && pct exec 101 -- nginx -s reload
+   ```
 
-```
-FATAL HOSTD_ORIGIN_CERT (/etc/ssl/hostd/origin.pem) does not exist
-FATAL HOSTD_ORIGIN_KEY (/etc/ssl/hostd/origin.key) does not exist
-```
+   Do not run the reload unless `nginx -t` passed. The format does nothing on its own: it is the hosts hostd
+   writes that log with it.
 
-The agent then restarts forever, `agent.sock` never appears, `hostd-api` fails its own gate behind it, and
-the portal shows `hostd is not answering`. Note that Docker creates `/etc/ssl/hostd/` as an empty
-directory for the bind mount, so the path existing proves nothing: check for the two files themselves.
+3. **The registry.** Edit `/opt/horizons/hostd/registry/projects.yaml` on the VM (see **Editing the
+   registry**). The adoption renders what the registry says, so it has to be right first:
 
-Install the script and the units:
+   - spotondrones `live`: add the aliases `spotondrones.net.au` and `www.spotondrones.net.au` (NPM already
+     serves them on that host; adopting without them would refuse the unlisted names).
+   - Remove `flexibleSsl` from backroom `live`, geoguesser `live`, pmpc-group `live` and spotondrones
+     `redesign`. NPM serves them with an Origin certificate and Force SSL and that works; left in, the
+     adoption would switch them to Flexible.
+   - Add the top-level `certificates` map: the NPM certificate id for each zone, found by longest suffix
+     on a label boundary.
 
-```bash
-sudo cp hostd/host/hostd-apache.sh /usr/local/sbin/hostd-apache.sh
-sudo chmod 700 /usr/local/sbin/hostd-apache.sh
-sudo cp hostd/host/hostd-apache.path hostd/host/hostd-apache.service /etc/systemd/system/
-sudo systemctl daemon-reload
-sudo systemctl enable --now hostd-apache.path
-```
+     ```yaml
+     certificates:
+       horizons.gg: 3
+       1stcanzukbrigade.com: 16
+       thebackroom.dev: 17
+       spotondrones.com: 18
+     ```
 
-Append the include to Apache's own config, once, and enable the modules every vhost hostd renders needs.
-Without `headers`, `Header always set X-Hostd-Token ...` is never set and no domain, alias or adoption can
-ever verify; the others are `rewrite` (the maintenance and ACME redirects), `proxy` and `proxy_http` (the
-site itself), and `ssl` (every `:443` block):
+   - Any environment with `certificate: letsencrypt` must become `cloudflare-origin`, or the registry
+     refuses to load. (None had it on 2026-10-27.)
 
-```bash
-cat hostd/host/apache-include.conf | sudo tee -a /etc/apache2/apache2.conf >/dev/null
-sudo a2enmod headers rewrite proxy proxy_http ssl
-sudo apache2ctl configtest
-sudo systemctl reload apache2
-```
+   A hostname may be the zone itself or exactly **one label below** it, which is what an Origin certificate
+   (`zone` and `*.zone`) covers: a deeper name (`uat1.mappies.horizons.gg`) is refused. A non-Flexible
+   environment with a name in no listed zone is refused too, with a message to upload that zone's Origin
+   certificate in NPM and add it to the map. Flexible environments need no entry. spotondrones live's
+   `.com.au` and `.net.au` names are Flexible today and need none; if that site moves to Full, each of those
+   zones needs its own Origin certificate in NPM and its own entry here.
 
-`apache2ctl configtest` should say `Syntax OK`. An empty `/etc/apache2/hostd/` is fine: the include line
-uses `IncludeOptional`, precisely so a fresh install with nothing adopted yet is not a startup error.
+4. **The VM.** Make the log directory (root-owned) and its rotation, and the holding page directory the
+   agent writes into:
 
-The include goes at the end, so everything in `sites-enabled` loads before hostd's vhosts, and Apache
-answers with the first vhost whose name matches. A hand-written vhost with a wildcard name (`ServerAlias *`
-or `*.example.com`) therefore takes any hostd hostname it matches, on the ports its block listens on. The
-agent's health sweep warns when one does. Keep such a catch-all working by moving it after hostd's include
-instead of leaving it in `sites-enabled`:
+   ```bash
+   sudo mkdir -p /var/log/hostd /var/www/hostd-maintenance
+   sudo tee /etc/logrotate.d/hostd >/dev/null <<'EOF'
+   /var/log/hostd/*.log {
+       daily
+       rotate 14
+       compress
+       delaycompress
+       missingok
+       notifempty
+       copytruncate
+   }
+   EOF
+   ```
 
-```bash
-sudo a2dissite everything
-# then, in /etc/apache2/apache2.conf, on the line after IncludeOptional /etc/apache2/hostd/*.conf:
-# IncludeOptional /etc/apache2/sites-available/everything.conf
-sudo apache2ctl configtest && sudo systemctl reload apache2
-```
+   (`copytruncate` is what lets `edge` keep its file handles across a rotation.) Then the firewall:
 
-This is how the dedi is set up since 2026-09-25, when `everything.conf` (a port 80 catch-all) was found
-answering arbysauto.com, a Flexible SSL site, with another machine's 503.
+   ```bash
+   sudo ufw status
+   ```
 
-Last, confirm `hostd-agent` can actually read the hand-written vhosts. It has two read-only mounts for
-this, both in `hostd/docker-compose.yml`, and it needs **both**:
+   If it says `inactive`, skip the rest of this step. Otherwise allow the two ports from NPM's address only:
 
-```
-- /etc/apache2/sites-enabled:/etc/apache2/sites-enabled:ro
-- /etc/apache2/sites-available:/etc/apache2/sites-available:ro
-```
+   ```bash
+   sudo ufw allow from 192.168.0.6 to any port 5514 proto udp
+   sudo ufw allow from 192.168.0.6 to any port 8790 proto tcp
+   ```
 
-The second one looks unused, because no code path in hostd ever names that directory, and it is not.
-`a2ensite` fills `sites-enabled` with *relative* symlinks (`../sites-available/<name>.conf`), so without
-`sites-available` mounted beside it every one of those links dangles inside the container: `readdir`
-lists the entry and `open` answers `ENOENT`, while the host reads the same file perfectly well. hostd
-would then read none of the vhosts on the box, find no claim on any hostname, and let an adoption write
-its own vhost without displacing the one still serving the site. Do not remove it when tidying mounts.
+   `edge` drops syslog datagrams whose source is not 192.168.0.6, but UDP source addresses can be forged
+   on the LAN, so that is only a filter against stray traffic. **The firewall is what limits who can reach
+   the port.** The worst a forged line can do is skew one site's visit counts, and only for a hostname the
+   registry knows.
 
-Check it from the host, naming any file that is actually in `sites-enabled`:
+5. **Deploy hostd with `edge`.** From the repo root on the VM (the directory that holds `hostd/` and
+   `scripts/`, `/opt/horizons`):
 
-```bash
-sudo docker exec hostd-agent cat /etc/apache2/sites-enabled/<name>.conf
-```
+   ```bash
+   ./scripts/stack.sh up --build hostd --dry-run
+   ./scripts/stack.sh up --build hostd
+   ```
 
-It should print the vhost. See the troubleshooting table at the end of this section if it does not.
+   The first line prints the command, `docker compose up -d --build` in `hostd/`, and runs nothing. Then
+   check the new container:
 
-### 2. Checking the rail by hand
+   ```bash
+   docker compose -f hostd/docker-compose.yml ps
+   docker logs hostd-edge
+   ```
 
-This is the one thing no automated test covers, because there is no Apache and no systemd in CI. Do this
-once after the units are installed, and again after any change to `hostd-apache.sh` itself.
+   Expect `listening on /run/hostd-edge/edge.sock`, `holding pages on 192.168.0.8:8790` and
+   `access logs on udp 192.168.0.8:5514 from 192.168.0.6`. This is `edge`'s first real start under
+   `cap_drop: ALL` with only `CHOWN` added: if it logs `EACCES`, make sure `/var/log/hostd` and the edge
+   socket volume are root-owned (`ls -ld /var/log/hostd`; `sudo chown root:root /var/log/hostd`), then
+   `docker compose -f hostd/docker-compose.yml up -d --force-recreate edge`. A `FATAL` line names the
+   setting at fault (usually `.env.edge`).
 
-The script guarantees the handshake completes whatever goes wrong: an `EXIT` trap answers with `ok:false`
-and always removes `request.json`, even if `jq` is missing, a path cannot be written, or anything else
-fails somewhere `set -eu` was not already guarding (which is most of the script; POSIX only suspends
-`errexit` inside an `if` condition, not around a plain command). This matters because
-`hostd-apache.path` uses `PathExists=`, which needs a false-to-true edge to fire again: a request left
-sitting on disk unanswered would mean no domain change on this dedi could ever run again until a human
-noticed and cleared it by hand, which is a permanent failure, not the ordinary 30 second timeout
-`apache-rail.ts` already tolerates. The same trap also restores anything the script moved aside if it dies
-partway through disabling several files, for the same reason the explicit failed-configtest path already
-did: a client's hand-written vhost must never end up moved aside with nothing serving in its place. The two
-checks below exercise the deliberate failure path (a configtest that fails cleanly); the crash-safety net
-itself has no separate hand check here because there is nothing safe to break on purpose on a host that is
-serving real traffic. It is proven instead by the automated integration test in
-`hostd/src/agent/apache-rail-fake.test.ts`, which runs the real handshake protocol against a temporary
-directory and asserts the restore happens.
+   From **another machine on the LAN**, not the VM:
 
-First, a harmless write. This drops a comment-only file, so `apache2ctl configtest` cannot fail on it:
+   ```bash
+   curl -i http://192.168.0.8:8790/holding/backroom-live
+   ```
 
-```bash
-sudo tee /etc/hostd/apache/request.json.tmp >/dev/null <<'EOF'
-{"seq":1,"action":"reload","write":{"path":"/etc/apache2/hostd/hostd-rail-check.conf","text":"# hostd rail check\n"},"remove":[],"disable":[]}
-EOF
-sudo mv /etc/hostd/apache/request.json.tmp /etc/hostd/apache/request.json
-```
+   It answers `503` with `Retry-After: 120` and the holding page. Anything else on that port answers 404:
+   the holding page is served for `GET` only, so a `POST` to a site that is down gets a 404 from `edge`
+   instead of the holding page. That is a known limit.
 
-Within a second or two, watch for the result:
+   The `/health` endpoint (see **Calling the API from the dedi**) now reports whether `edge` and NPM answer,
+   how long ago the last NPM call succeeded, and any drift (below).
 
-```bash
-cat /etc/hostd/apache/result.json
-ls /etc/hostd/apache/
-```
+6. **Adopt each site, one at a time**, from the portal (Environments tab, the environment's Domains section,
+   preview then Adopt; see **4. Adopting a site**), in this order: pmpcold, mappies, pmpcgroup, arbysauto,
+   1stcanzuk, redesign, backroom, spotondrones live. After **each** one, before starting the next:
 
-Expect `{"seq":1,"ok":true,"output":"Syntax OK"}` (the exact wording of `output` is whatever
-`apache2ctl configtest` printed) and `request.json` gone from the listing: the script always removes it,
-success or failure, once it has written a result.
+   - `curl -sI https://<primary>/` answers as it did before the adopt;
+   - `curl -sI https://<alias>/` answers `301` to the primary, for each alias the site has;
+   - the domain shows verified in the portal (within about a minute);
+   - a visit appears in `/var/log/hostd/<id>-<env>.log` within a minute (`sudo tail -f` it while loading the
+     page; see **Analytics**).
 
-Now a deliberately broken one, at a different path so the first file is left alone:
+   Stop at the first site that is wrong and undo it (step 8) before touching another.
 
-```bash
-sudo tee /etc/hostd/apache/request.json.tmp >/dev/null <<'EOF'
-{"seq":2,"action":"reload","write":{"path":"/etc/apache2/hostd/hostd-rail-check-bad.conf","text":"ThisIsNotADirective\n"},"remove":[],"disable":[]}
-EOF
-sudo mv /etc/hostd/apache/request.json.tmp /etc/hostd/apache/request.json
-cat /etc/hostd/apache/result.json
-```
+7. **Clean up the Apache leftovers** on the VM, once all eight are adopted:
 
-Expect `"ok":false` and `output` naming the syntax error, with a `seq` of 2. Apache did not reload: the
-script only calls `systemctl reload apache2` after a configtest that passed, and this one did not, so the
-site that was serving before this check is still serving exactly what it was. Confirm it by running
-`sudo apache2ctl configtest` again right now: it still fails, for the same reason, because the bad file is
-still sitting in `/etc/apache2/hostd/hostd-rail-check-bad.conf`. That file being left in place is
-deliberate (see the comment above `restore()` in the script): the rail only undoes a `disable` move on a
-failed configtest, never a `write`, because reverting a bad write means putting back whatever was there
-before it, and only the agent (in `hostd/src/agent/domains.ts`, `revert()`) knows what that was. Clean it
-up the same way the agent would, with a follow-up request that removes it and reloads:
+   ```bash
+   sudo rm -rf /etc/apache2/hostd /etc/hostd/apache /run/hostd/maintenance
+   ```
 
-```bash
-sudo tee /etc/hostd/apache/request.json.tmp >/dev/null <<'EOF'
-{"seq":3,"action":"reload","write":null,"remove":["/etc/apache2/hostd/hostd-rail-check-bad.conf","/etc/apache2/hostd/hostd-rail-check.conf"],"disable":[]}
-EOF
-sudo mv /etc/hostd/apache/request.json.tmp /etc/hostd/apache/request.json
-cat /etc/hostd/apache/result.json
-```
+8. **Undo for one site.** The portal's adoption undo puts the hand-made NPM host back exactly as it was and
+   deletes the redirection host hostd made. The agent keeps a copy of the host as it was before the adopt in
+   its state volume for this. If the undo is not possible (the reply says so, or the copy could not be
+   saved), the host is still in NPM: edit it in the UI and take the first `# hostd:` line out of its
+   Advanced tab to hand it back to yourself.
 
-Expect `"ok":true` again, and `apache2ctl configtest` clean. This is exactly the shape of request
-`writeVhost`'s failure path sends automatically in production; running it by hand here is what proves the
-whole recovery a real failed write relies on actually happens on this host, not only in a test's fake one.
+### 2. Checking it by hand
 
-### 3. Live verification
+Do this once after the rollout, and again after any change to `edge`, the renderer or the NPM version. It
+proves the whole chain (agent, `edge`, NPM, DNS, and api's own verifier) against a name that belongs to nothing
+a client depends on. The name has to be the zone or one label below it, so use `hostd-test.horizons.gg`
+(the old two-label `test.hostd.horizons.gg` is now refused).
 
-This proves the whole chain (agent, host unit, Apache, DNS, and api's own verifier) against a name that
-belongs to nothing a client depends on: `test.hostd.horizons.gg`.
-
-Add it to the registry's `allowed` list, the exact-name carve-out from `reserved: [horizons.gg]`.
-`allowed` takes exact hostnames only, never a subtree. (If the registry already has
-`openSubdomains: [horizons.gg]`, this name is already accepted as a main domain and `allowed` is not
-needed: `openSubdomains` opens every name below horizons.gg as a site's main domain, which only the
-operator sets, while client aliases stay reserved.)
+Add it to the registry's `allowed` list (the exact-name carve-out from `reserved: [horizons.gg]`; not needed
+when `openSubdomains: [horizons.gg]` is set):
 
 ```yaml
-allowed: [test.hostd.horizons.gg]
+allowed: [hostd-test.horizons.gg]
 ```
 
-In Cloudflare, on the `horizons.gg` zone, create the CNAME:
-
-```
-test.hostd.horizons.gg  CNAME  <the host you already keep pointed at the dedi>  (proxied)
-```
-
-This is the same target most client domains are CNAMEd to today (see **Enrolling a real site** if you are
-unsure which host that is); it is not the apex and does not touch anything `koda@horizons.gg` mail depends
-on.
-
-`adopt` is the only route to a vhost hostd owns, and it is also the one that writes it for the first time:
-an empty `disable` list is allowed (`hostd/src/shared/protocol.ts`), specifically so an environment nobody
-has hand-written a file for is not stuck with a domain in the registry and no vhost forever. So this check
-doubles as the first live rehearsal of adoption, using the `hostd-test` project already set up under
-**Live checks with a throwaway project**. Give it an `environments` block instead of its plain
-`dir`/`upstream` entry, keeping the same directory and port it already has, and add `domains` to its
-capabilities:
+In Cloudflare, on the `horizons.gg` zone, create `hostd-test.horizons.gg` as a proxied CNAME to the host you
+already keep pointed at the site VM. Give the `hostd-test` project from **Live checks with a throwaway
+project** an `environments` block with no `domain` yet, and `domains` in its capabilities:
 
 ```yaml
   hostd-test:
@@ -2028,209 +1995,146 @@ capabilities:
     environments:
       live:
         dir: /var/www/hostd-test
-        domain: test.hostd.horizons.gg
         port: 5099
         certificate: cloudflare-origin
 ```
 
-Wait ten seconds, then preview and adopt exactly as **Adopting a site** describes:
+Wait ten seconds, then give it its first hostname, which creates its NPM hosts (an adoption would be refused:
+there is no host in NPM for it to take over):
 
 ```bash
-hc http://hostd-api:8080/projects/hostd-test/live/adopt
-hc -X POST http://hostd-api:8080/projects/hostd-test/live/adopt \
-  -H 'Content-Type: application/json' -d '{"confirm":"hostd test"}'
+hc -X POST http://hostd-api:8080/projects/hostd-test/live/domains \
+  -H 'Content-Type: application/json' -d '{"hostname":"hostd-test.horizons.gg"}'
 ```
 
-The preview's `claims` list is expected to be empty here (`hostd-test` has no hand-written vhost of its
-own to hand over), and `adoptable` is `true` regardless: an empty list has nothing to fail the "can this be
-read well enough" check.
+Expect: a proxy host in the NPM UI for `hostd-test.horizons.gg` whose Advanced tab starts with
+`# hostd: hostd-test/live`; `hc http://hostd-api:8080/projects/hostd-test/live/domains` showing the domain
+`active` within about a minute; and `curl -sSI https://hostd-test.horizons.gg/` answering. The test page
+publishes only on `127.0.0.1:5099` (not an address NPM can reach), so expect the **holding page, a 503**, which
+proves the 502-to-holding-page path too. Publish it on `5099:80` instead if you want to see the test page.
 
-Confirm the site serves:
-
-```bash
-curl -sSI https://test.hostd.horizons.gg/
-```
-
-**Verify the token path is answered, not redirected.** Read the token off the domain record:
-
-```bash
-hc http://hostd-api:8080/projects/hostd-test/live/domains
-```
-
-then, for the primary and for every alias an environment carries, check the well-known path directly:
+**Verify the token path is answered, not redirected**, for the primary and for every alias an environment
+carries. Read the token off the domain record (`hc http://hostd-api:8080/projects/hostd-test/live/domains`),
+then:
 
 ```bash
 curl -sS -o /dev/null -D- https://<alias-or-primary>/.well-known/hostd/<token>
 ```
 
-The expected result is `HTTP/... 204` carrying `X-Hostd-Token: <token>`. This matters more for an alias
-than for the primary: an alias's `:443` block (`aliasRedirect` in `hostd/src/agent/vhost.ts`) has to
-answer the token path while also carrying `Redirect permanent / https://<primary>/`, which would take the
-probe with it. The template settles that by making both of them the same kind of directive, a `mod_alias`
-redirect at `translate_name`, with the specific one first:
+Expect `HTTP/... 204` carrying `X-Hostd-Token: <token>`. For an alias this matters most: it is served by the
+redirection host, whose catch-all redirect would take the probe with it. The template answers the token path
+with an exact-match `location =` in the host's own `advanced_config`, which nginx prefers over NPM's
+generated `location /`, so the probe is answered, not redirected. That is a question about nginx's runtime
+rather than about the rendered text, so this `curl` is the authority: run it for real the first time any
+environment actually gets an alias. If it comes back `301`, every alias will sit `pending` for 72 hours and
+then go `failed` while the primary verifies fine, which reads exactly like a DNS problem. Read the host's
+Advanced tab in the NPM UI first.
 
-```apache
-Redirect 204 /.well-known/hostd/<token>
-Redirect permanent / https://<primary>/
-```
+To see the **holding page on a deploy**, deploy any site and watch `curl -sI https://<primary>/` during the
+swap: it flips to `503` while the containers are stopped and back after. (It is brief; do it on a site
+nobody is using.)
 
-`mod_alias` takes the first entry that matches, so the token path wins on order. The earlier shape put a
-`Redirect 204` inside the `<Location>` block, where it would have run at `fixups`, after the catch-all had
-already redirected: that shape depended on config order deciding between two directives that never
-competed at the same stage. The `<Location>` that remains carries only `Header always set X-Hostd-Token`,
-which is scoped rather than at vhost level on purpose, so the token does not go out on every `301` this
-block sends to every visitor.
+When you are done, **delete the two NPM hosts by hand first** (Hosts, Proxy Hosts, the one whose Advanced tab
+starts with `# hostd: hostd-test/live`; hostd never deletes anything on its own once its registry entry is
+gone), then remove the `hostd-test` entry's `environments` block (or the whole entry, matching **Live checks
+with a throwaway project**'s own cleanup) and take `hostd-test.horizons.gg` back out of `allowed`.
 
-None of that is proof about Apache's runtime, and nothing this codebase can test settles it, because it
-is a question about Apache rather than about the rendered text. This `curl` is the authority.
-`test.hostd.horizons.gg` above has no alias of its own, so run it for real the first time any environment
-on this dedi actually gets one, whether that is here (add one more hostname to both `allowed` and this
-environment's `aliases` before moving on) or the first time a real client's site is adopted or given a
-`domain-add` alias. Do not skip it and do not assume it is fine because the primary passed: the primary's
-own `:443` block has no catch-all redirect at all, so it cannot fail this way, and passing there proves
-nothing about the alias block.
+### 3. Drift, ownership and health
 
-If it comes back `301` instead of `204`, every alias will sit `pending` for 72 hours and then go `failed`
-while the primary verifies fine, which reads exactly like a DNS problem and would be debugged in entirely
-the wrong place. The ordering fix above is already in the template, so a `301` here means something else
-is answering ahead of `mod_alias` on that path, and the next thing to read is the rendered file itself:
-`cat /etc/apache2/hostd/<id>-<env>.conf`. Do not try to work around it in DNS or Cloudflare; whatever it
-is would still be there for the next alias.
-
-Finally, confirm verification itself passes within the minute: a `pending` domain is checked once a
-minute for its first hour, so within about sixty seconds `hc
-http://hostd-api:8080/projects/hostd-test/live/domains` should show `test.hostd.horizons.gg` at
-`"state":"active"`.
-
-When you are done, remove the `hostd-test` entry's `environments` block (or the whole entry, matching
-**Live checks with a throwaway project**'s own cleanup), remove whatever hostd wrote under
-`/etc/apache2/hostd/` (`ls /etc/apache2/hostd/` to see it), reload Apache, and take `test.hostd.horizons.gg`
-back out of `allowed`.
+- `/health` reports **drift**: any owned host whose current NPM state differs from what hostd would render,
+  because someone edited it in the NPM UI. It is reported, not fixed; the next domain action on that
+  environment rewrites it.
+- A host whose `# hostd:` marker was deleted is no longer hostd's. `edge` refuses to update or delete it, so
+  the domain action fails with the reason. Put the marker line back as the first line of the Advanced tab, or
+  adopt the host again.
+- `/health` also warns about an NPM host hostd does not own whose domain names match a registry hostname
+  (for example a hand-made catch-all that would answer a hostname hostd thinks it serves).
+- NPM writes are serialised in `edge`, one at a time, with a 30 second timeout per call. NPM can answer 200
+  and still take the host offline: it tests the generated nginx config after each write, and when that fails
+  it moves the host's config aside and records `meta.nginx_online: false` rather than failing the API call.
+  `edge` treats that as a failure and the agent writes the previous state straight back, which brings the
+  host back. A bad change therefore costs a short outage on that one site, not a lasting one.
 
 ### 4. Adopting a site
 
-Every real site on this dedi already has a hand-written vhost, serving traffic right now, and adoption is
-what replaces that file with hostd's own without a moment where neither is in force. (An environment with
-no existing file, freshly provisioned and never hand-configured, adopts too: the steps below still apply,
-except steps 2 and 3 have nothing to read and the preview's `claims` list is simply empty. See **Live
-verification** above for that case worked through end to end.) Do it in this order:
+Every environment in the registry with a domain already has an NPM host (Koda made them by hand), so the
+rollout is adopt-only. A new environment, or a domain added later, goes through the ordinary create path.
+Adopt with no matching host is refused rather than falling back to a create.
 
-1. **Preview it, before anything is touched.** `hc http://hostd-api:8080/projects/<id>/<env>/adopt` (GET)
-   renders the vhost hostd would write and lists every file in `sites-enabled` that claims one of the
-   environment's hostnames, with `adoptable: true` only if every one of them can be read well enough to
-   adopt.
-2. **Read the whole existing file yourself**, not just the preview's summary of it. The preview reads
-   `ServerName` and `ServerAlias`, and it refuses a file that does any of the things listed in step 3
-   (`hostd/src/agent/sites-enabled.ts`). It is not an Apache parser and does not claim to be one, so
-   everything it says nothing about is still yours to check.
-3. **Look for anything the template has no equivalent for.** The preview now refuses the file outright,
-   naming what it found, for each of these:
-   - a `RewriteRule` carrying the `[P]` flag, which proxies rather than redirects; hostd's template has
-     no rewrite of its own and cannot carry it,
-   - a WebSocket tunnel (a `[P]` rule onto `ws://`, the usual socket.io setup) while the environment
-     has WebSockets switched off; tick "WebSockets" for that environment in the site's Settings and the
-     template carries it with `ProxyPass / ... upgrade=websocket`, so the line stops being a reason. A
-     tunnel to any other upstream, or any `wss://` target, is still refused either way,
-   - a `ProxyPass` whose target disagrees with the upstream the registry gives this environment,
-   - anything under `Include`, `IncludeOptional` or `Use`, since a hostname could be defined somewhere
-     the preview cannot see.
+1. **Preview it, before anything is touched.** `hc http://hostd-api:8080/projects/<id>/<env>/adopt` (GET), or
+   the portal's preview, finds the proxy host whose `domain_names` include the environment's primary and
+   shows a field-by-field diff of what the sync would change, including domains that would move to the
+   redirection host. It refuses when there is no such host, when there is more than one, when the host's
+   upstream is not `192.168.0.8:<the environment's port>`, when it has custom `locations`, or when it serves
+   names the registry does not list (it refuses rather than drops them: add the name as an alias first).
+2. **Read the host yourself** in the NPM UI, not only the preview. hostd renders one fixed template, so
+   small differences between the hosts go away on purpose: Block Exploits on, websockets allowed, HTTP/2 on,
+   the brotli snippet present, and aliases that used to be served directly now **301 to the primary**. Anything
+   in the host's `advanced_config` or locations that the template does not carry is replaced, so reconcile
+   it by hand before adopting.
+3. **Adopt.** `hc -X POST http://hostd-api:8080/projects/<id>/<env>/adopt -d '{"confirm":"<project name>"}'`,
+   typing the project's name back. The rendered spec is written onto the **same proxy host id**, so NPM's own
+   logs and stats carry on; the redirection host for the aliases is created, the aliases leaving the proxy
+   host first (NPM refuses a name on two hosts), and both ids are recorded in the registry. api requests
+   `https://<domain>/` once just before and once just after, and if the second answer is materially worse
+   than the first (a page that became a redirect, an error or nothing at all) it undoes the adoption itself
+   and answers 502 saying what both requests got.
+4. **Confirm the site serves** as it did before (`curl -sSI https://<domain>/`), each alias `301`s to the
+   primary, and the domain verifies within the minute.
 
-   A file with **no port 443 block** is not refused any more. It means the origin is HTTP-only behind
-   something terminating TLS on its own (Cloudflare Flexible), and hostd's usual port 80, which redirects
-   to https, would loop that CDN forever: that is what took thebackroom.dev down. Adoption switches the
-   environment's Flexible SSL on instead (`flexibleSsl: true` in the registry, "Cloudflare Flexible SSL"
-   in Settings), and the generated vhost then serves the primary on port 80 as well as 443. The preview
-   says so before you confirm. Once the zone is moved to Full, untick it in Settings and port 80 goes
-   back to redirecting.
-
-   It still says nothing about `Require` or other auth directives, a bespoke `ErrorDocument`, custom
-   `Header` rules, or a `DocumentRoot` serving files rather than proxying. Anything found there has to be
-   reconciled by hand, outside hostd, before adopting: adoption replaces the file whole, and nothing it
-   does not render survives.
-4. **Adopt.** `hc -X POST http://hostd-api:8080/projects/<id>/<env>/adopt -d '{"confirm":"<project
-   name>"}'`, typing the project's name back, the same confirmation a delete asks for. This is one rail
-   request: the old file moves to `/etc/apache2/hostd-adopted/<name>.bak`, the new one is written, and
-   only then does the single configtest run, so there is never a moment with both files loaded (which
-   Apache would resolve by file order, silently) or a moment with neither.
-
-   `hostd-api` requests `https://<domain>/` once just before the adopt and once just after the reload,
-   and rolls the whole thing back if the second answer is materially worse than the first (a page that
-   became a redirect, an error or nothing at all). `hostd-agent` cannot make that request: it runs
-   `network_mode: none`. A rollback answers the call with a 502 saying what both requests got, puts the
-   hand-written file back and removes hostd's own, in one further rail request. The check is skipped when
-   the environment had no hand-written file to begin with, because the only rollback available would then
-   leave the hostname with no vhost at all.
-5. **Confirm the site serves**, exactly as it did before: `curl -sSI https://<domain>/` against whatever
-   the site actually answers with. The check above is a single request at the bare path and grades only
-   how the origin answered; it is not a substitute for looking.
-6. **Confirm verification passes within the minute**, the same check as the end of **Live verification**
-   above.
-
-**The undo**, if adoption needs to be reversed. hostd does this itself when its own post-adoption check
-fails, using the same moves by hand below; what follows is for every other case, including one where
-hostd's rollback itself reported a problem and you need to finish it.
-
-```bash
-ls /etc/apache2/hostd-adopted/
-```
-
-Find the `.bak` file that belongs to this site (there is one per disabled file, named after it), then:
-
-```bash
-sudo mv "/etc/apache2/hostd-adopted/<the .bak file just listed>" "/etc/apache2/sites-enabled/<its name with .bak removed>"
-sudo rm "/etc/apache2/hostd/<id>-<env>.conf"
-sudo apache2ctl configtest && sudo systemctl reload apache2
-```
-
-The `.bak` file is moved, never deleted, specifically so this is possible by hand, months later, by
-someone who was not the one who adopted the site and has nothing memorized about it beyond what `ls`
-shows them.
-
-On Debian, that `.bak` is usually not a regular file: `a2ensite` writes `sites-enabled` entries as
-symlinks, and adoption moves the symlink itself, so `ls -l` shows `<name>.conf.bak -> ../sites-available/
-<name>.conf` rather than a copy of the vhost's text. That is expected, and the `mv` above restores it
-exactly as it was. If `sites-enabled` and `hostd-adopted` are ever set up at different depths (see **Host
-setup**), that symlink would already be broken before you got here, and `hostd-apache.sh` itself refuses
-the adoption that would have produced it rather than leave one behind.
+The undo is described in step 8 of **1. Rollout, done once**.
 
 ### 5. Troubleshooting
 
 | Symptom | Cause |
 | --- | --- |
-| `/health` warns `the Apache host unit has not answered; no domain change can take effect` | The agent's `railAge` (time since the rail last got an answer) is null or over 10 minutes. First look at the unit itself: `sudo systemctl status hostd-apache.path hostd-apache.service` and `sudo journalctl -u hostd-apache.service -n 50` on the host. If both look fine, check whether a request is simply stuck: `cat /etc/hostd/apache/request.json`. The script's own trap means it should always answer and remove that file itself now, even on a crash, but if something outside its control kept it from running at all (the unit disabled, the script not executable, the directory missing), a wedged `request.json` is possible: `hostd-apache.path` only fires on the file going from absent to present (`PathExists`, not `PathChanged`), so a request already sitting there when the unit comes back will never be picked up on its own. Clear it by hand and let the unit re-arm: `sudo rm /etc/hostd/apache/request.json` then `sudo systemctl restart hostd-apache.path`. The domain action that wrote it will already have timed out on the agent's side (after 30 seconds) and reported a failure; retry it once the rail is answering again. |
-| `systemctl status` shows `hostd-apache.path` failed with `unit-start-limit-hit` (and the service with `start-limit-hit`), and every domain change and environment delete fails with `the Apache host unit did not answer request N within 30000ms` | The agent sent more requests in a burst than systemd's default start limit (5 in 10 seconds) allows, so systemd failed the service and the path unit with it, and neither starts again on its own. The units in this repo set `StartLimitIntervalSec=0` on the service so this cannot happen; a host still on the older copy can. Install the current units and clear the failure: `sudo cp hostd/host/hostd-apache.path hostd/host/hostd-apache.service /etc/systemd/system/`, `sudo systemctl daemon-reload`, `sudo systemctl reset-failed hostd-apache.service hostd-apache.path`, then clear any request left behind with `sudo rm -f /etc/hostd/apache/request.json` and `sudo systemctl start hostd-apache.path`. Retry whatever failed; the agent re-sends its own vhost rewrites within a minute. |
-| After clearing a wedged `request.json`, or after any adoption that failed partway | Confirm nothing was left with no vhost at all. List all three directories: `ls /etc/apache2/hostd-adopted/`, `ls /etc/apache2/sites-enabled/`, `ls /etc/apache2/hostd/`. Every `<name>.bak` in `hostd-adopted` should correspond to *either* `<name>` being back in `sites-enabled` (the adoption was rolled back) *or* a `<id>-<env>.conf` in `hostd/` that renders that hostname (the adoption succeeded and this is its permanent record). A `.bak` matching neither is a site with nothing currently serving it: put it back immediately with the same commands as **The undo**, above, then confirm the site serves again before doing anything else. |
+| `/health` warns that `edge` or NPM is not answering, or a domain action fails with `NPM could not be searched` or a timeout | Read `docker logs hostd-edge` first. If it is not running or logged a `FATAL`, fix that (usually `.env.edge`). If it is running, check NPM from the VM: `curl -sI http://192.168.0.6:81/` and `ssh proxmox` then `pct exec 101 -- systemctl status npm` (or whatever the CT's NPM unit is called). A `401` from NPM makes `edge` log in again once and retry; a persistent one means the `hostd@horizons.gg` password in `.env.edge` is wrong or the user was removed. Recreate after editing: `docker compose -f hostd/docker-compose.yml up -d --force-recreate edge`. |
+| A domain action is refused for a zone with no certificate | The hostname's zone is not in the registry's `certificates` map. Upload that zone's Cloudflare Origin certificate in NPM (Certificates), note its id, add `<zone>: <id>` to the map, wait ten seconds. A name two labels below the zone is refused whatever the map says: choose a name one label below it. |
+| A domain action is refused `is already served by NPM proxy host <n>` (or redirection or 404 host) | NPM already has that name on a host hostd does not own. Remove the name there, or adopt that host if it is this environment's. |
+| A domain action is refused because a host `does not carry` its marker | The first line of the host's Advanced tab is no longer `# hostd: <id>/<env>. ...`, so hostd will not overwrite it. See **3. Drift, ownership and health**. |
+| `/health` warns of drift on an environment | Someone edited the owned host in NPM. Look at the Advanced tab and the fields against the registry; the next domain action on that environment rewrites it. |
+| A site goes offline for a moment after a domain change, and the reply says NPM rejected the config | NPM reported `nginx_online: false` for that host and hostd wrote the previous state back. The reply carries NPM's own error text (`meta.nginx_err`). `ssh proxmox` then `pct exec 101 -- nginx -t` shows the same. |
+| The holding page never appears while a site is down (NPM's plain 502 shows) | NPM cannot reach `edge`. From CT 101: `pct exec 101 -- curl -i http://192.168.0.8:8790/holding/<id>-<env>` should answer 503. If it hangs, it is the VM firewall (step 4 of **Rollout**). If it answers 404, the page does not exist yet (the agent writes `/var/www/hostd-maintenance/sites/<id>-<env>.html` for each environment with a domain) or the request was not a `GET`. Also check that the host's Advanced tab has the `error_page 502 504` block. |
 | A domain stays `pending` with `No record exists yet. Add the CNAME and this will start working within a few minutes.` | No DNS record resolves yet for the hostname, or it has not propagated. Nothing to do but wait, unless the CNAME was never created. |
-| A domain stays `pending` with `The CNAME is not proxied, so the request reached us directly. Turn the proxy on in Cloudflare.` | The environment's `certificate` is `cloudflare-origin` (which expects Cloudflare in front) but the CNAME's cloud icon is grey, not orange: the Origin certificate only Cloudflare should ever see reached this client's browser directly. Turn proxying on. |
-| A domain stays `pending` with `This name points somewhere else at the moment.` | The token this dedi expects did not come back, meaning the hostname currently resolves (through DNS or Cloudflare) to something other than this environment's vhost: a stale CNAME, a different project holding the name, or, if this is an alias, its token path being redirected rather than answered. Run the `curl` in **Live verification** against that alias: `204` with the header means the vhost is fine and the name genuinely points elsewhere, and `301` means something is answering ahead of `mod_alias` on that path, which **Live verification** says how to read. |
-| A domain action fails with `ENOENT: no such file or directory, open '/etc/apache2/sites-enabled/<name>.conf'` while that file is plainly fine on the host (`ls -l` shows a healthy symlink and `cat` prints it) | The agent cannot read `sites-enabled` from inside its container, and the usual cause is `/etc/apache2/sites-available` not being mounted into `hostd-agent`: `a2ensite` makes the entries in `sites-enabled` *relative* symlinks into it, so they all dangle inside the container while the host resolves them fine. One line tells the two apart, because it asks from inside the container: `sudo docker exec hostd-agent cat /etc/apache2/sites-enabled/<name>.conf`. If that prints the vhost, the mount is right and this is something else. If it says `No such file or directory` while the host reads it, the mount is the fault: add the `sites-available` line from **Host setup** to the `agent` service in `hostd/docker-compose.yml`, then `sudo docker compose up -d --force-recreate agent` (a `restart` keeps the old mounts). |
-| `/health` warns `hostd can see /etc/apache2/sites-enabled and the N vhosts listed in it ... and it could not read a single one of them`, or a domain action is refused with the same words | The same fault as the row above, caught before anything was written. hostd will not treat a directory it could not read as an empty one, so every domain action is refused until it can read at least one file: an empty listing and a blind one both look like "no vhost claims this hostname", and acting on the second is how a live site gets adopted over. Run the `docker exec` in that row. If it prints the file, the mount is fine and these entries really are symlinks whose targets were deleted or renamed, which fails `apache2ctl configtest` and blocks domain changes anyway; remove the dead entries. |
-| An adoption is refused `these cannot be read well enough to adopt: <path> (Include is used, so the hostnames this file serves cannot be read here)` (or `IncludeOptional`, or `Use`) | The existing vhost pulls in another file, or uses a `mod_macro Use`, that could define a hostname `hostd/src/agent/sites-enabled.ts` cannot see. Resolve or inline whatever that file defines by hand, outside hostd, before adopting; nothing here will half-understand it for you. |
-| `/health` warns `waiting for Let's Encrypt support: <project> <env>` | That environment's `certificate` is set to `letsencrypt`, but 4a serves the Cloudflare Origin certificate to every vhost regardless of this setting: the environment works today over the Origin cert, and this warning is only saying certbot itself (4b) is not built yet. Nothing to fix; it clears once 4b lands. |
+| A domain stays `pending` with `The CNAME is not proxied, so the request reached us directly. Turn the proxy on in Cloudflare.` | The environment's `certificate` is `cloudflare-origin` (which expects Cloudflare in front) but the CNAME's cloud icon is grey, not orange. Turn proxying on. |
+| A domain stays `pending` with `This name points somewhere else at the moment.` | The token this setup expects did not come back, meaning the hostname currently resolves (through DNS or Cloudflare) to something other than this environment's NPM host: a stale CNAME, a different project holding the name, or, if this is an alias, its token path being redirected rather than answered. Run the `curl` in **2. Checking it by hand** against that alias: `204` with the header means the host is fine and the name genuinely points elsewhere, and `301` means the host's `advanced_config` is not what hostd rendered; read it in the NPM UI. |
+| An adoption is refused `no NPM proxy host serves <domain>` | NPM has no host with that name, so there is nothing to adopt. Check the spelling in the registry; for a genuinely new name use the Domains section's ordinary add, not adopt. |
+| An adoption is refused because the host forwards somewhere else | The hand-made host's upstream is not `192.168.0.8:<the environment's port>`. Fix the port in the NPM host or in the registry, whichever is wrong, and preview again. |
+| `/health` warns `waiting for Let's Encrypt support: <project> <env>`, or the registry will not load naming `letsencrypt` | An environment's `certificate` is `letsencrypt`, which is not supported with NPM. Change it to `cloudflare-origin` (and make sure its zone is in `certificates`). |
 
 ## Analytics
 
 Each site's Overview shows visits and unique visitors per day for the last 30 days, its top pages, the sites
 that sent visitors, and (behind Cloudflare) their countries. Nothing is added to the client's site: every
-vhost hostd writes logs its serving block to `/var/log/apache2/hostd-<id>-<environment>.access.log`, and the
-agent counts that file (mounted read-only) when the portal asks.
+NPM host hostd writes logs to syslog on the VM with the `hostd` log format, `edge` files each line under the
+environment that owns its hostname in `/var/log/hostd/<id>-<environment>.log`, and the agent counts that
+directory (mounted read-only) when the portal asks.
 
-- **Turning it on.** Nothing to do. The first boot of an agent with analytics rewrites every vhost hostd
-  owns to add the log line, keeping its token, and Apache reloads once per vhost. A site still served by a
-  hand-written vhost logs nowhere hostd can see, and its Overview says it is not being counted until it is
-  adopted.
+- **Turning it on.** The log format (step 2 of **Domains, 1. Rollout**), the `edge` container and the
+  `/var/log/hostd` directory must exist, and the site must be hostd's: a site whose NPM host is still
+  hand-made logs nowhere hostd can see, and its Overview says it is not being counted until it is adopted
+  (adopting writes the `access_log` line into the host).
 - **What counts.** A page view is a successful `GET` that asked for HTML (or a Next.js page change), from
   something that is not a known bot. Scripts, images, API calls, prefetches, hostd's own probes and the
   holding page are left out. A visitor is a hash of the address and user agent, held in memory while a day
   is counted and never written down. Days are Brisbane days (`HOSTD_ANALYTICS_TIMEZONE` changes that).
-- **How far back.** logrotate keeps fourteen days of these logs with the rest of `/var/log/apache2`. Each
-  finished day is also kept in `/var/lib/hostd/analytics/<id>-<environment>.json` (the agent's state
-  volume), so the 30 day chart keeps filling after the logs have rotated away. The numbers start from the
-  day the log line went in, and the panel says so.
-- **Checking it.** `sudo tail -f /var/log/apache2/hostd-<id>-live.access.log` while loading a page shows
-  one tab-separated line per request. An empty or missing file means Apache is not writing it: check that
-  `/etc/apache2/hostd/<id>-live.conf` has a `CustomLog` line, and `docker compose logs agent` for a vhost
-  that could not be brought up to date.
+- **What `edge` accepts.** Only datagrams whose source address is NPM's (`HOSTD_NPM_ADDRESS`,
+  192.168.0.6), and only for a `$host` some registry entry owns; anything else is dropped without writing
+  anything. UDP can drop lines under load. Analytics is a count, so that is accepted.
+- **How far back.** logrotate keeps fourteen days of these logs (`/etc/logrotate.d/hostd`, step 4 of
+  **Rollout**). Each finished day is also kept in `/var/lib/hostd/analytics/<id>-<environment>.json` (the
+  agent's state volume), so the 30 day chart keeps filling after the logs have rotated away. The history from
+  the Apache days carries on; the gap since the move simply has no data.
+- **Checking it.** `sudo tail -f /var/log/hostd/<id>-live.log` while loading a page shows one tab-separated
+  line per request. If the file stays empty or missing, work along the path: is `log_format hostd` in
+  `/data/nginx/custom/http_top.conf` (`pct exec 101 -- nginx -T | grep "log_format hostd"`); does the host's
+  Advanced tab end with an `access_log syslog:server=192.168.0.8:5514,...` line; is the firewall letting
+  UDP 5514 in from 192.168.0.6 (`sudo ufw status`); and does `docker logs hostd-edge` complain of
+  `access log write failed`. The format NPM writes is exactly:
+
+  ```
+  log_format hostd escape=default '$host\t$msec\t$remote_addr\t$http_cf_connecting_ip\t$http_x_forwarded_for\t$request_method\t$uri\t$status\t$http_referer\t$http_user_agent\t$http_accept\t$http_rsc\t$http_next_router_prefetch\t$http_sec_purpose\t$http_purpose\t$http_cf_ipcountry';
+  ```
 
 ## Troubleshooting
 
@@ -2242,7 +2146,7 @@ agent counts that file (mounted read-only) when the portal asks.
 | `FATAL RESTIC_PASSWORD is not set` (agent) | `.env.agent` is missing, or it is the unfilled copy of `example.env.agent`. Fill it in (and keep a copy off the dedi), then start again. Without it every backup would fail at `restic init`. |
 | `FATAL the agent is not answering on /run/hostd/agent.sock` (api) | The agent is not running or failed its own gate. Read `docker compose logs agent`. |
 | `503` with `"code":"agent-unavailable"` | The same, after startup. |
-| `FATAL HOSTD_ORIGIN_CERT (/etc/ssl/hostd/origin.pem) does not exist` (agent) | The Origin certificate was never installed on this dedi, so the agent's boot gate refuses to start and restarts forever. `hostd-api` then fails its own gate behind it and the portal shows `hostd is not answering`, which points at the wrong service: always read `docker compose logs agent` before believing it. `/etc/ssl/hostd/` existing means nothing, because Docker creates it empty for the bind mount. See step 1 of **Host setup, done once**. |
+| `FATAL ...` from `docker logs hostd-edge` (it names the setting at fault) | `edge` failed its own gate, most often because `.env.edge` is missing or unfilled (`HOSTD_NPM_IDENTITY`, `HOSTD_NPM_SECRET`). Every domain action is refused until `edge` answers, and the portal's domain screens say NPM could not be reached. Read `docker logs hostd-edge` before anything else. See **Domains**. |
 | A project is `"valid":false` with `compose resolves the project name ...` | See step 1 of Enrolling a real site. |
 | A project is `"valid":false` with `... does not exist on the dedi` | `dir` is wrong, or the directory was removed. |
 | A project is `"valid":false` with `service <name> joins the external network <network>` | The site's compose file joins a Docker network it did not create. hostd refuses that by default, because an external network is how a client's container would reach hostd's own api or another tenant. Its containers keep running, but status, logs, lifecycle and deploys are refused until this is settled. Either remove the network from the site's compose file, or, if the site really does need it, sanction it for that one project by adding `networks: [ <network> ]` to its entry in `hostd/registry/projects.yaml`. The list holds the networks' real Docker names, applies to that project only, and can never include `hostd`. |
