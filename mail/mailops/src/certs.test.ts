@@ -4,10 +4,7 @@ import { mkdir, writeFile, rm } from 'node:fs/promises'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { loadConfig } from './config.ts'
-import {
-    needsRenewal, backoffMs, legoArgs,
-    readCertState, writeCertState, certificateStatus, acknowledgeCurrentCertificate,
-} from './certs.ts'
+import { needsRenewal, backoffMs, legoArgs, certificateStatus } from './certs.ts'
 
 const config = loadConfig({
     MAIL_DOMAIN: 'dev.horizons.gg',
@@ -99,84 +96,27 @@ async function withCertDir(run: (certDir: string) => Promise<void>, withCert = t
     }
 }
 
-describe('cert state', () => {
-    it('reads as nothing acknowledged when the marker file does not exist', async () => {
-        await withCertDir(async certDir => {
-            assert.deepEqual(await readCertState(certDir), { issuedNotAfter: null, acknowledgedNotAfter: null })
-        })
-    })
-
-    it('reads as nothing acknowledged when the marker file is corrupt, which is the safe answer', async () => {
-        await withCertDir(async certDir => {
-            await writeFile(join(certDir, 'mailops-cert-state.json'), 'not json at all', 'utf8')
-            assert.deepEqual(await readCertState(certDir), { issuedNotAfter: null, acknowledgedNotAfter: null })
-        })
-    })
-
-    it('ignores non-string values rather than trusting them', async () => {
-        await withCertDir(async certDir => {
-            await writeFile(join(certDir, 'mailops-cert-state.json'), JSON.stringify({ acknowledgedNotAfter: 12345 }), 'utf8')
-            assert.equal((await readCertState(certDir)).acknowledgedNotAfter, null)
-        })
-    })
-
-    it('round-trips what it wrote', async () => {
-        await withCertDir(async certDir => {
-            const state = { issuedNotAfter: FIXTURE_NOT_AFTER, acknowledgedNotAfter: null }
-            await writeCertState(certDir, state)
-            assert.deepEqual(await readCertState(certDir), state)
-        })
-    })
-})
-
 describe('certificateStatus', () => {
-    it('reports the on-disk expiry and that nothing has been acknowledged yet', async () => {
+    it('reports the on-disk expiry and when the file last changed', async () => {
         await withCertDir(async certDir => {
+            const before = Date.now()
             const status = await certificateStatus(config, certDir)
             assert.equal(status.onDiskNotAfter?.toISOString(), FIXTURE_NOT_AFTER)
-            assert.equal(status.acknowledgedNotAfter, null)
+            assert(status.onDiskChangedAt, 'expected a change time for a certificate that exists')
+            assert(Math.abs(status.onDiskChangedAt.getTime() - before) < 60_000)
         })
     })
 
     it('reports nothing on disk before the first issuance, without throwing', async () => {
         await withCertDir(async certDir => {
-            assert.deepEqual(await certificateStatus(config, certDir), { onDiskNotAfter: null, acknowledgedNotAfter: null })
+            assert.deepEqual(await certificateStatus(config, certDir), { onDiskNotAfter: null, onDiskChangedAt: null })
         }, false)
     })
 
-    it('reports an acknowledgement once one has been recorded', async () => {
+    it('reports nothing for a certificate file it cannot parse, without throwing', async () => {
         await withCertDir(async certDir => {
-            await acknowledgeCurrentCertificate(config, certDir)
-            const status = await certificateStatus(config, certDir)
-            assert.equal(status.acknowledgedNotAfter?.toISOString(), FIXTURE_NOT_AFTER)
-            assert.equal(status.onDiskNotAfter?.getTime(), status.acknowledgedNotAfter?.getTime())
-        })
-    })
-})
-
-describe('acknowledgeCurrentCertificate', () => {
-    it('records the certificate now on disk and returns its expiry', async () => {
-        await withCertDir(async certDir => {
-            const notAfter = await acknowledgeCurrentCertificate(config, certDir)
-            assert.equal(notAfter?.toISOString(), FIXTURE_NOT_AFTER)
-            assert.equal((await readCertState(certDir)).acknowledgedNotAfter, FIXTURE_NOT_AFTER)
-        })
-    })
-
-    it('preserves what was issued rather than clobbering it', async () => {
-        await withCertDir(async certDir => {
-            await writeCertState(certDir, { issuedNotAfter: FIXTURE_NOT_AFTER, acknowledgedNotAfter: null })
-            await acknowledgeCurrentCertificate(config, certDir)
-            assert.deepEqual(await readCertState(certDir), {
-                issuedNotAfter: FIXTURE_NOT_AFTER, acknowledgedNotAfter: FIXTURE_NOT_AFTER,
-            })
-        })
-    })
-
-    it('acknowledges nothing when there is no certificate on disk', async () => {
-        await withCertDir(async certDir => {
-            assert.equal(await acknowledgeCurrentCertificate(config, certDir), null)
-            assert.equal((await readCertState(certDir)).acknowledgedNotAfter, null)
+            await writeFile(join(certDir, 'certificates', `${config.mailHostname}.crt`), 'not a certificate', 'utf8')
+            assert.deepEqual(await certificateStatus(config, certDir), { onDiskNotAfter: null, onDiskChangedAt: null })
         }, false)
     })
 })

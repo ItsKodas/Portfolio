@@ -1,6 +1,9 @@
 import { describe, it } from 'node:test'
 import assert from 'node:assert/strict'
-import { evaluateBootGate, bootGateIsRetryable, collectWarnings, cycleFailedWarning, resolveIntervalMs } from './health.ts'
+import { mkdtemp, readFile, rm } from 'node:fs/promises'
+import { join } from 'node:path'
+import { tmpdir } from 'node:os'
+import { evaluateBootGate, bootGateIsRetryable, collectWarnings, cycleFailedWarning, resolveIntervalMs, writeStatus } from './health.ts'
 
 const healthy = {
     outbound: { ok: true, banner: '220 mx.google.com ESMTP' },
@@ -117,38 +120,6 @@ describe('collectWarnings', () => {
         assert.ok(checks.includes('inbound-stale'), 'a cert failure must not hide the inbound staleness check')
     })
 
-    // The expiry-on-the-wire case: mailops renewed into the shared volume, mailserver runs
-    // SSL_TYPE=manual and did not notice, and nothing restarted it. status.json must not say ok.
-    it('warns that a renewed certificate has not been picked up', () => {
-        const warnings = collectWarnings({
-            ...quiet,
-            cert: { onDiskNotAfter: new Date('2026-12-01T00:00:00Z'), acknowledgedNotAfter: new Date('2026-10-01T00:00:00Z') },
-        })
-        assert.equal(warnings[0]?.check, 'cert-reload-needed')
-        assert.match(warnings[0]!.detail, /2026-12-01/)
-        assert.match(warnings[0]!.detail, /restart mailserver/)
-    })
-
-    it('warns when no certificate has ever been acknowledged', () => {
-        const warnings = collectWarnings({
-            ...quiet,
-            cert: { onDiskNotAfter: new Date('2026-12-01T00:00:00Z'), acknowledgedNotAfter: null },
-        })
-        assert.equal(warnings[0]?.check, 'cert-reload-needed')
-        assert.match(warnings[0]!.detail, /never been restarted/)
-    })
-
-    it('is quiet once the acknowledged certificate matches the one on disk', () => {
-        assert.deepEqual(collectWarnings({
-            ...quiet,
-            cert: { onDiskNotAfter: new Date('2026-12-01T00:00:00Z'), acknowledgedNotAfter: new Date('2026-12-01T00:00:00Z') },
-        }), [])
-    })
-
-    it('does not raise a reload warning before the first certificate exists', () => {
-        assert.deepEqual(collectWarnings({ ...quiet, cert: { onDiskNotAfter: null, acknowledgedNotAfter: null } }), [])
-    })
-
     it('warns when the mail log cannot be read at all', () => {
         const warnings = collectWarnings({ ...quiet, logError: 'cannot open /mail-logs/mial.log: ENOTDIR' })
         assert.equal(warnings[0]?.check, 'log-unreadable')
@@ -166,6 +137,135 @@ describe('collectWarnings', () => {
 
     it('does not warn when inbound mail has never arrived, because a new stack has no history', () => {
         assert.deepEqual(collectWarnings({ ...quiet, lastInbound: null }), [])
+    })
+})
+
+// quiet.now is 2026-09-18T12:00:00Z, so these expiries are a comfortable 74 days out.
+const fresh = new Date('2026-12-01T00:00:00Z')
+const older = new Date('2026-11-01T00:00:00Z')
+const longAgo = new Date('2026-09-01T00:00:00Z')
+
+describe('collectWarnings: certificate on the wire', () => {
+    it('is quiet when mailserver serves the certificate on disk', () => {
+        assert.deepEqual(collectWarnings({
+            ...quiet, cert: { onDiskNotAfter: fresh, onDiskChangedAt: longAgo, servedNotAfter: fresh },
+        }), [])
+    })
+
+    // The expiry-on-the-wire case: lego renewed into the shared volume and Postfix never reloaded, so the
+    // file looks healthy while the old certificate runs out in front of every sender.
+    it('warns when mailserver is still serving an older certificate than the one on disk', () => {
+        const warnings = collectWarnings({
+            ...quiet, cert: { onDiskNotAfter: fresh, onDiskChangedAt: longAgo, servedNotAfter: older },
+        })
+        assert.equal(warnings[0]?.check, 'cert-reload-needed')
+        assert.match(warnings[0]!.detail, /serving a certificate expiring 2026-11-01/)
+        assert.match(warnings[0]!.detail, /on disk expires 2026-12-01/)
+        assert.match(warnings[0]!.detail, /docker compose restart mailserver/)
+        assert.equal(warnings[0]!.advisory, undefined)
+    })
+
+    it('gives a renewal from moments ago time to be reloaded before calling it a mismatch', () => {
+        const justNow = new Date(quiet.now.getTime() - 60_000)
+        assert.deepEqual(collectWarnings({
+            ...quiet, cert: { onDiskNotAfter: fresh, onDiskChangedAt: justNow, servedNotAfter: older },
+        }), [])
+    })
+
+    it('stops giving that grace once the renewal is a few minutes old', () => {
+        const tenMinutesAgo = new Date(quiet.now.getTime() - 10 * 60_000)
+        const warnings = collectWarnings({
+            ...quiet, cert: { onDiskNotAfter: fresh, onDiskChangedAt: tenMinutesAgo, servedNotAfter: older },
+        })
+        assert.equal(warnings[0]?.check, 'cert-reload-needed')
+    })
+
+    it('warns when the served certificate cannot be read, rather than assuming it matches', () => {
+        const warnings = collectWarnings({
+            ...quiet, cert: { onDiskNotAfter: fresh, onDiskChangedAt: longAgo, servedNotAfter: null, servedError: 'connect ECONNREFUSED' },
+        })
+        assert.deepEqual(warnings.map(w => w.check), ['cert-served-unknown'])
+        assert.match(warnings[0]!.detail, /ECONNREFUSED/)
+    })
+
+    it('does not raise a reload warning before the first certificate exists', () => {
+        assert.deepEqual(collectWarnings({ ...quiet, cert: { onDiskNotAfter: null, onDiskChangedAt: null } }), [])
+    })
+})
+
+describe('collectWarnings: certificate expiry against the clock', () => {
+    const daysFromNow = (days: number) => new Date(quiet.now.getTime() + days * 86_400_000)
+    const matching = (notAfter: Date) => ({ onDiskNotAfter: notAfter, onDiskChangedAt: longAgo, servedNotAfter: notAfter })
+
+    it('is quiet with more than three weeks left, where renewal has only just started trying', () => {
+        assert.deepEqual(collectWarnings({ ...quiet, cert: matching(daysFromNow(25)) }), [])
+    })
+
+    // The case the acknowledged-expiry comparison could never see: every cycle agrees with itself, renewal
+    // keeps failing between backoff attempts, and the certificate simply runs out.
+    it('reports, without failing, a certificate that renewal should already have replaced', () => {
+        const warnings = collectWarnings({ ...quiet, cert: matching(daysFromNow(15)) })
+        assert.equal(warnings[0]?.check, 'cert-expiring')
+        assert.equal(warnings[0]!.advisory, true)
+        assert.match(warnings[0]!.detail, /in 15 days/)
+    })
+
+    it('fails once fewer than ten days are left', () => {
+        const warnings = collectWarnings({ ...quiet, cert: matching(daysFromNow(9)) })
+        assert.equal(warnings[0]?.check, 'cert-expiring')
+        assert.equal(warnings[0]!.advisory, undefined)
+    })
+
+    it('fails on a certificate that has already expired', () => {
+        const warnings = collectWarnings({ ...quiet, cert: matching(daysFromNow(-1)) })
+        assert.equal(warnings[0]?.check, 'cert-expired')
+        assert.equal(warnings[0]!.advisory, undefined)
+    })
+
+    it('judges the served certificate when it expires sooner than the one on disk', () => {
+        const warnings = collectWarnings({
+            ...quiet, cert: { onDiskNotAfter: daysFromNow(80), onDiskChangedAt: longAgo, servedNotAfter: daysFromNow(-2) },
+        })
+        const expired = warnings.find(w => w.check === 'cert-expired')
+        assert.match(expired?.detail ?? '', /the certificate mailserver is serving/)
+    })
+
+    it('still checks the on-disk expiry when the served certificate cannot be read', () => {
+        const warnings = collectWarnings({
+            ...quiet, cert: { onDiskNotAfter: daysFromNow(-1), onDiskChangedAt: longAgo, servedNotAfter: null, servedError: 'timeout' },
+        })
+        assert.deepEqual(warnings.map(w => w.check), ['cert-served-unknown', 'cert-expired'])
+        assert.match(warnings[1]!.detail, /the certificate on disk/)
+    })
+})
+
+describe('writeStatus', () => {
+    async function statusFor(warnings: Parameters<typeof writeStatus>[1]) {
+        const dir = await mkdtemp(join(tmpdir(), 'status-'))
+        try {
+            await writeStatus(join(dir, 'status.json'), warnings, quiet.now)
+            return JSON.parse(await readFile(join(dir, 'status.json'), 'utf8')) as { ok: boolean, warnings: unknown[] }
+        } finally {
+            await rm(dir, { recursive: true, force: true })
+        }
+    }
+
+    it('is ok with no warnings', async () => {
+        assert.equal((await statusFor([])).ok, true)
+    })
+
+    it('stays ok when every warning is advisory, but still lists them', async () => {
+        const status = await statusFor([{ check: 'cert-expiring', detail: 'soon', advisory: true }])
+        assert.equal(status.ok, true)
+        assert.equal(status.warnings.length, 1)
+    })
+
+    it('is not ok as soon as one warning is not advisory', async () => {
+        const status = await statusFor([
+            { check: 'cert-expiring', detail: 'soon', advisory: true },
+            { check: 'cert-reload-needed', detail: 'stale' },
+        ])
+        assert.equal(status.ok, false)
     })
 })
 
