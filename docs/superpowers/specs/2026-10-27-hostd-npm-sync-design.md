@@ -235,7 +235,7 @@ Cloudflare's `CF-Connecting-IP`, the epoch time). So:
   `escape=default` replaces control characters with `\xXX`, so a tab is still only ever a separator.
 - Every hostd proxy host also logs to syslog on the websites VM (the `access_log` line above).
 - `edge` listens for syslog on UDP `<HOSTD_EDGE_SYSLOG_PORT>`, accepts datagrams only from
-  `HOSTD_NPM_ADDRESS` (192.168.0.5), maps the logged `$host` to its environment through the registry,
+  `HOSTD_NPM_ADDRESS` (192.168.0.6), maps the logged `$host` to its environment through the registry,
   and appends the line to `<HOSTD_ACCESS_LOG_DIR>/<id>-<environment>.log`, the path
   `accessLogName()` already gives. Lines for hosts it does not know are dropped.
 - The agent mounts that directory read-only and reads it as it read Apache's logs. Rotation: a
@@ -264,7 +264,7 @@ Cloudflare's `CF-Connecting-IP`, the epoch time). So:
   so a template mistake is caught in CI, not on a client's site.
 - Timeouts: 30 seconds per call, as the rail had. `RAIL_STALE_MS` and the health figure carry over as
   "last successful NPM call".
-- `HOSTD_NPM_URL` defaults to `http://192.168.0.5:81/api`. Builder to confirm which address `edge`
+- `HOSTD_NPM_URL` defaults to `http://192.168.0.6:81/api`. Builder to confirm which address `edge`
   reaches the API on from the VM; `nginx.home.arpa/api` answered from Koda's PC.
 
 ### Adoption
@@ -314,8 +314,8 @@ says "Apache" changes to name NPM or nothing.
    `.env.edge` on the VM.
 2. Add `/data/nginx/custom/http_top.conf` with the `hostd` log format on CT 101; reload NPM.
 3. Fix the registry by hand (aliases and `flexibleSsl`, above) and add the `certificates` map.
-4. Deploy hostd with `edge`. Open the VM firewall (if any) for UDP syslog from 192.168.0.5 and the edge
-   HTTP port from 192.168.0.5.
+4. Deploy hostd with `edge`. Open the VM firewall (if any) for UDP syslog from 192.168.0.6 and the edge
+   HTTP port from 192.168.0.6.
 5. Adopt each site from the portal, one at a time, checking it in a browser after each, with
    thebackroom.dev last-but-one and spotondrones last (most aliases).
 6. Remove the leftover Apache directories on the VM (`/etc/apache2/hostd`, `/etc/hostd/apache`).

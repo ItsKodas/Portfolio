@@ -92,17 +92,23 @@ export class NpmClient {
         const headers: Record<string, string> = {}
         if (body !== undefined) headers['Content-Type'] = 'application/json'
         if (token) headers.Authorization = `Bearer ${token}`
+        // A ref'd timer rather than AbortSignal.timeout, whose timer is unref'd: with nothing else holding the
+        // event loop open, the process could exit before the abort fired and the hang would never end in an error.
+        const controller = new AbortController()
+        const timer = setTimeout(() => controller.abort(new DOMException('The operation timed out', 'TimeoutError')), this.timeoutMs)
         try {
             const response = await this.doFetch(`${this.base}${path}`, {
                 method,
                 headers,
                 body: body === undefined ? undefined : JSON.stringify(body),
-                signal: AbortSignal.timeout(this.timeoutMs),
+                signal: controller.signal,
             })
             return { status: response.status, text: await response.text() }
         } catch (error) {
             const timedOut = error instanceof Error && (error.name === 'TimeoutError' || error.name === 'AbortError')
             throw new NpmError(timedOut ? `NPM did not answer ${method} ${path} within ${this.timeoutMs / 1000} seconds` : `NPM ${method} ${path} failed: ${describeError(error)}`, null)
+        } finally {
+            clearTimeout(timer)
         }
     }
 

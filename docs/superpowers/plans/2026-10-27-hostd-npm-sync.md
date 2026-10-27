@@ -19,7 +19,7 @@
 - A deploy never calls `edge` or NPM.
 - `hostd-api` never gets the edge socket or the NPM credentials.
 - NPM fixed values: `forward_scheme: 'http'`, `hsts_enabled: false`, `hsts_subdomains: false`, `caching_enabled: false`, `access_list_id: 0`, `locations: []`, `block_exploits: true`, `allow_websocket_upgrade: true`; redirection hosts `forward_scheme: 'https'`, `forward_http_code: 301`, `preserve_path: true`.
-- Defaults: `HOSTD_UPSTREAM_HOST=192.168.0.8`, `HOSTD_NPM_ADDRESS=192.168.0.5`, `HOSTD_NPM_URL=http://192.168.0.5:81/api`, `HOSTD_EDGE_HTTP_PORT=8790`, `HOSTD_EDGE_SYSLOG_PORT=5514`, `HOSTD_EDGE_SOCKET=/run/hostd-edge/edge.sock`, `HOSTD_ACCESS_LOG_DIR=/var/log/hostd`. (Ports are this plan's call; nothing on the VM listens on them as of 2026-10-27.)
+- Defaults: `HOSTD_UPSTREAM_HOST=192.168.0.8`, `HOSTD_NPM_ADDRESS=192.168.0.6`, `HOSTD_NPM_URL=http://192.168.0.6:81/api`, `HOSTD_EDGE_HTTP_PORT=8790`, `HOSTD_EDGE_SYSLOG_PORT=5514`, `HOSTD_EDGE_SOCKET=/run/hostd-edge/edge.sock`, `HOSTD_ACCESS_LOG_DIR=/var/log/hostd`. (Ports are this plan's call; nothing on the VM listens on them as of 2026-10-27.)
 - NPM call timeout 30 000 ms. NPM writes are serialised in `edge`.
 - Marker line, exactly: `# hostd: <project>/<environment>. Managed by hostd; edits here are overwritten.`
 - Brotli snippet, exactly as it is on the live hosts:
@@ -251,7 +251,7 @@
 - Produces: `export function holdingHandler(root: string, readFile: (path: string) => Promise<string | null>): (req, res) => void`; `export function syslogLine(datagram: string, source: string, allowed: string, route: (host: string) => { id: string, environment: EnvironmentName } | null): { path: string, line: string } | null` (pure) and `export function startSyslog(options: { host: string, port: number, allowed: string, logDir: string, route: ..., append: (path: string, line: string) => Promise<void> }): Socket`.
 - [ ] **Step 1: Write the failing tests**:
   - `holding-http.test.ts`: `GET /holding/spotondrones-live` answers 503, `Retry-After: 120`, `Content-Type: text/html; charset=utf-8`, the file's body; `/holding/../etc/passwd`, `/holding/Bad-Live`, `/holding/x-nosuchenv` and `/` answer 404 without reading a file; a missing page answers 503 with a short built-in fallback page.
-  - `syslog.test.ts`: `<190>Oct 27 16:01:51 hostd: www.spotondrones.com\t1730000000.123\t...` from `192.168.0.5` with a route for that host gives `{ path: '/var/log/hostd/hostd-spotondrones-live.access.log', line: '1730000000.123\t...' }` (the host field removed); the same datagram from `192.168.0.9` gives `null`; an unknown host gives `null`; a datagram with no `hostd: ` tag gives `null`; host matching is case-insensitive.
+  - `syslog.test.ts`: `<190>Oct 27 16:01:51 hostd: www.spotondrones.com\t1730000000.123\t...` from `192.168.0.6` with a route for that host gives `{ path: '/var/log/hostd/hostd-spotondrones-live.access.log', line: '1730000000.123\t...' }` (the host field removed); the same datagram from `192.168.0.9` gives `null`; an unknown host gives `null`; a datagram with no `hostd: ` tag gives `null`; host matching is case-insensitive.
 - [ ] **Step 2: Run** both. Expected: FAIL.
 - [ ] **Step 3: Implement**. The route map is rebuilt from the registry each time the registry file changes (or once a minute), mapping every `hostnamesOf(environment)` to its owner.
 - [ ] **Step 4: Run** both. Expected: PASS.

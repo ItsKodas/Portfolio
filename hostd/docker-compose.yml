@@ -187,14 +187,23 @@ services:
     # See the note on agent.
     init: true
     # The host's network, not the hostd one. NPM's syslog datagrams must arrive with NPM's real source
-    # address (the edge drops anything else), which Docker NAT would rewrite, and the holding page port
-    # binds 192.168.0.8 directly rather than through a published port. It binds only HOSTD_UPSTREAM_HOST,
-    # never every interface, so nothing else on the machine can reach either listener. This is also why
-    # there is no `networks:` key here.
+    # address, which Docker NAT would rewrite, and the holding page port binds 192.168.0.8 directly rather
+    # than through a published port. It binds only HOSTD_UPSTREAM_HOST, never every interface, so nothing
+    # else on the machine can reach either listener. This is also why there is no `networks:` key here.
+    # The source-address check does not authenticate the stream: UDP source addresses can be forged on the
+    # LAN, so it only filters stray traffic. The worst a forged line can do is skew one site's visit counts,
+    # and the VM firewall (see the RUNBOOK) is what limits who can reach the port.
     network_mode: host
     # Root, like fetcher: it chowns its socket to HOSTD_SOCKET_GID, so that the agent (and nothing else)
     # can connect. HOSTD_NPM_IDENTITY and HOSTD_NPM_SECRET live here, and nowhere else, because this file is committed.
     env_file: .env.edge
+    # No setuid binary or file capability can raise the process's privileges again.
+    security_opt: ["no-new-privileges:true"]
+    # Root still, but with every capability dropped bar the one below.
+    cap_drop: [ALL]
+    # CHOWN, to hand its socket to HOSTD_SOCKET_GID. Nothing else needs one: the ports are above 1024 and it
+    # writes only to directories it owns as root.
+    cap_add: [CHOWN]
     environment:
       HOSTD_EDGE_SOCKET: /run/hostd-edge/edge.sock
       HOSTD_REGISTRY_FILE: /etc/hostd/registry/projects.yaml
@@ -202,8 +211,8 @@ services:
       # value means a later change to who connects touches one setting.
       HOSTD_SOCKET_GID: "1000"
       HOSTD_STATUS_FILE: /tmp/hostd-status.json
-      HOSTD_NPM_URL: http://192.168.0.5:81/api
-      HOSTD_NPM_ADDRESS: 192.168.0.5
+      HOSTD_NPM_URL: http://192.168.0.6:81/api
+      HOSTD_NPM_ADDRESS: 192.168.0.6
       HOSTD_UPSTREAM_HOST: 192.168.0.8
       HOSTD_EDGE_HTTP_PORT: "8790"
       HOSTD_EDGE_SYSLOG_PORT: "5514"

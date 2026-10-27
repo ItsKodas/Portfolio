@@ -15,7 +15,7 @@ describe('rendered hosts under nginx -t', { skip: process.env.HOSTD_NGINX_CHECK 
         const spec = renderHosts({
             id: 'acme', environment: 'production', primary: 'acme.com', aliases: ['www.acme.com'], port: 3000,
             flexibleSsl: true, token: 'a'.repeat(32), certificateId: null,
-            upstreamHost: '192.168.0.8', edgeHost: '192.168.0.5', edgeHttpPort: 8790,
+            upstreamHost: '192.168.0.8', edgeHost: '192.168.0.8', edgeHttpPort: 8790,
         })
         assert.ok(spec.redirection)
         const dir = await mkdtemp(join(tmpdir(), 'hostd-nginx-'))

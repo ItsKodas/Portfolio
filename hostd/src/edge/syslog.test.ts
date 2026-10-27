@@ -8,7 +8,7 @@ const route: Route = host => host === 'www.spotondrones.com' ? { id: 'spotondron
 const datagram = '<190>Oct 27 16:01:51 hostd: www.spotondrones.com\t1730000000.123\t10.0.0.1\tGET'
 
 test('a datagram from NPM is filed under its environment without the host field', () => {
-    assert.deepEqual(syslogLine(datagram, '192.168.0.5', '192.168.0.5', route), {
+    assert.deepEqual(syslogLine(datagram, '192.168.0.6', '192.168.0.6', route), {
         path: '/var/log/hostd/hostd-spotondrones-live.access.log',
         line: '1730000000.123\t10.0.0.1\tGET',
     })
@@ -16,22 +16,22 @@ test('a datagram from NPM is filed under its environment without the host field'
 
 test('host matching ignores case', () => {
     const upper = datagram.replace('www.spotondrones.com', 'WWW.SpotOnDrones.com')
-    assert.ok(syslogLine(upper, '192.168.0.5', '192.168.0.5', routesOf(registry())))
+    assert.ok(syslogLine(upper, '192.168.0.6', '192.168.0.6', routesOf(registry())))
 })
 
 test('a datagram from anywhere else is dropped', () => {
-    assert.equal(syslogLine(datagram, '192.168.0.9', '192.168.0.5', route), null)
+    assert.equal(syslogLine(datagram, '192.168.0.9', '192.168.0.6', route), null)
 })
 
 test('an unknown host, a missing tag and a missing host field are dropped', () => {
-    assert.equal(syslogLine(datagram.replace('www.spotondrones.com', 'evil.example'), '192.168.0.5', '192.168.0.5', route), null)
-    assert.equal(syslogLine(datagram.replace('hostd:', 'other:'), '192.168.0.5', '192.168.0.5', route), null)
-    assert.equal(syslogLine('<190>Oct 27 16:01:51 hostd: nohostfield', '192.168.0.5', '192.168.0.5', route), null)
-    assert.equal(syslogLine('garbage', '192.168.0.5', '192.168.0.5', route), null)
+    assert.equal(syslogLine(datagram.replace('www.spotondrones.com', 'evil.example'), '192.168.0.6', '192.168.0.6', route), null)
+    assert.equal(syslogLine(datagram.replace('hostd:', 'other:'), '192.168.0.6', '192.168.0.6', route), null)
+    assert.equal(syslogLine('<190>Oct 27 16:01:51 hostd: nohostfield', '192.168.0.6', '192.168.0.6', route), null)
+    assert.equal(syslogLine('garbage', '192.168.0.6', '192.168.0.6', route), null)
 })
 
 test('a log line cannot smuggle a second line into the file', () => {
-    assert.equal(syslogLine(`${datagram}\nfake`, '192.168.0.5', '192.168.0.5', route), null)
+    assert.equal(syslogLine(`${datagram}\nfake`, '192.168.0.6', '192.168.0.6', route), null)
 })
 
 function registry() {

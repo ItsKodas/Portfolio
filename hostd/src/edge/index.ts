@@ -20,7 +20,7 @@ const POLL_MS = 10_000
 const UPSTREAM_HOST = process.env.HOSTD_UPSTREAM_HOST ?? '192.168.0.8'
 const HTTP_PORT = Number(process.env.HOSTD_EDGE_HTTP_PORT ?? '8790')
 const SYSLOG_PORT = Number(process.env.HOSTD_EDGE_SYSLOG_PORT ?? '5514')
-const NPM_ADDRESS = process.env.HOSTD_NPM_ADDRESS ?? '192.168.0.5'
+const NPM_ADDRESS = process.env.HOSTD_NPM_ADDRESS ?? '192.168.0.6'
 const ACCESS_LOG_DIR = process.env.HOSTD_ACCESS_LOG_DIR ?? '/var/log/hostd'
 // The agent's setting for where holding pages live (agent/index.ts)
 const MAINTENANCE_ROOT = process.env.HOSTD_MAINTENANCE_ROOT ?? '/var/www/hostd-maintenance'
@@ -47,7 +47,7 @@ async function main(): Promise<void> {
     if (failures.length > 0) fail(failures)
 
     const npm = new NpmClient({
-        url: process.env.HOSTD_NPM_URL ?? 'http://192.168.0.5:81/api',
+        url: process.env.HOSTD_NPM_URL ?? 'http://192.168.0.6:81/api',
         identity: identity as string,
         secret: secret as string,
     })

@@ -24,7 +24,9 @@ function fake(replies: Reply[]) {
         if (!reply) throw new Error('unexpected extra call')
         if (reply === 'hang') {
             return new Promise<Response>((_, reject) => {
-                init.signal?.addEventListener('abort', () => reject(init.signal?.reason))
+                const signal = init.signal
+                if (signal?.aborted) return reject(signal.reason)
+                signal?.addEventListener('abort', () => reject(signal.reason))
             })
         }
         return new Response(JSON.stringify(reply.body), { status: reply.status })
