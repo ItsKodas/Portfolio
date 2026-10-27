@@ -2,7 +2,7 @@
 
 hostd lets the client portal control client sites on this dedi. Phase 1 covers status, start, stop,
 restart and logs; phase 2 adds provisioning: creating and removing projects and environments, and editing
-their env files. It is three containers:
+their env files; domains add a fourth container. It is four containers:
 
 - `hostd-agent` holds the Docker socket. It has no network and listens only on a Unix socket.
 - `hostd-api` speaks HTTP on the private `hostd` Docker network. Nothing is published on the host.
@@ -10,6 +10,9 @@ their env files. It is three containers:
   never gets the Docker socket and never shares a socket with `api` (its own volume is mounted only in it
   and the agent), so a compromise there cannot touch a container, the registry, impersonate the agent to
   `api`, or reach anything outside `/var/www` and its own socket to the agent.
+- `hostd-edge` holds the Nginx Proxy Manager credentials and is the only thing that talks to NPM. It
+  shares a socket with the agent alone, serves the holding pages and receives NPM's access logs (see
+  **Domains**).
 
 Client sites never depend on hostd. If it is down, every site keeps serving; only the portal's controls
 stop working. The fetcher is narrower still: if only it is down, lifecycle and logs (what the deployed
@@ -27,6 +30,10 @@ site depends on) keep working, and only provisioning and env editing are unavail
 
 3. Create `hostd/.env.fetcher` from `hostd/example.env.fetcher`, and fill in `GITHUB_TOKEN` with a
    fine-grained personal access token, read-only, limited to the client repositories.
+
+   Create `hostd/.env.edge` from `hostd/example.env.edge`, and fill in `HOSTD_NPM_SECRET` with the
+   password of the Nginx Proxy Manager user hostd signs in as (step 1 of **Domains, 1. Rollout** makes
+   that user). `edge` refuses to start without it.
 
 4. Create `hostd/registry/projects.yaml` from `hostd/registry/projects.example.yaml`, and delete the
    example project for now. `registry/` is already there, because the example lives in it, and the
@@ -165,13 +172,14 @@ docker compose ps
 The build runs the whole test suite. A failing test stops the build, and whatever was running before
 keeps running.
 
-All three containers should report `healthy` within about two minutes. All three logs should show
+All four containers should report `healthy` within about two minutes. All four logs should show
 `listening`:
 
 ```bash
 docker compose logs agent | tail -20
 docker compose logs api | tail -20
 docker compose logs fetcher | tail -20
+docker compose logs edge | tail -20
 ```
 
 If a container exits, its log names the failed check on a `FATAL` line.
@@ -622,10 +630,10 @@ its containers and named volumes already carry, whatever its folder or id become
 "upgrading" (`/var/www/hostd-maintenance/sites/<id>-<env>.html`). There is no flag file any more, and a
 deploy never calls `edge` or NPM. The swap stops the site's containers, NPM gets a refused connection and
 answers 502, and the `error_page` in the host's `advanced_config` serves the holding page from `edge`
-(`GET /holding/<id>-<env>`, status 503, on the VM's port 8790). The site is briefly unreachable during a
+(`/holding/<id>-<env>`, status 503, on the VM's port 8790). The site is briefly unreachable during a
 swap either way. Known limits: a deploy whose new container accepts connections but answers errors while
-it starts shows those errors rather than the holding page, and the holding page is served for `GET` only,
-so a `POST` to a site that is down gets a 404 from `edge` instead of the holding page.
+it starts shows those errors rather than the holding page. The holding page answers any method, so a form
+posted to a site that is down gets it too.
 
 The calls, all admin-only except the last two:
 
@@ -1781,7 +1789,7 @@ database on a timer.
 
 The sites run on the websites VM (192.168.0.8). The front door is Nginx Proxy Manager (NPM), a native
 install in Proxmox CT 101 at **192.168.0.6**: its admin UI and API are `http://192.168.0.6:81` (also
-`http://nginx.home.arpa`). Reach the CT with `ssh proxmox`, then `pct exec 101 -- <command>`. NPM's nginx
+`http://nginx.home.arpa`). Run a command in the CT from the VM with `ssh proxmox "pct exec 101 -- <command>"`. NPM's nginx
 binary is `nginx` (OpenResty 1.29), not Docker.
 
 Every domain action (a site's first hostname, an alias, Flexible SSL, an adoption, a removal) ends with
@@ -1816,8 +1824,11 @@ full before the first domain change on a new setup, not only when something brea
 Do these in order. Nothing here changes a live site until step 6.
 
 1. **The NPM user.** In the NPM UI, Users, add `hostd@horizons.gg`: not an admin; permissions visibility
-   **All**, Proxy Hosts **Manage**, Redirection Hosts **Manage**, Certificates **View**, everything else
-   **Hidden**. ("All" visibility is what lets hostd see and adopt the hosts Koda created.) Copy
+   **All**, Proxy Hosts **Manage**, Redirection Hosts **Manage**, 404 Hosts **View**, Certificates **View**,
+   everything else **Hidden**. ("All" visibility is what lets hostd see and adopt the hosts Koda created.
+   404 Hosts must be View, not Hidden: every create, adopt and alias change, and every drift check, lists
+   them to make sure no 404 host already holds the name, and NPM answers that list with 403 when they are
+   hidden, so every one of those would fail.) Copy
    `hostd/example.env.edge` to `/opt/horizons/hostd/.env.edge` on the VM and put the user's password in
    `HOSTD_NPM_SECRET`. Never commit the filled-in copy.
 
@@ -1827,55 +1838,24 @@ Do these in order. Nothing here changes a live site until step 6.
    not added twice:
 
    ```bash
-   ssh proxmox
-   pct exec 101 -- sh -c 'mkdir -p /data/nginx/custom && touch /data/nginx/custom/http_top.conf && cat /data/nginx/custom/http_top.conf'
+   ssh proxmox "pct exec 101 -- sh -c 'mkdir -p /data/nginx/custom && touch /data/nginx/custom/http_top.conf && cat /data/nginx/custom/http_top.conf'"
    ```
 
    If `log_format hostd` is not there, append it. This is exactly `NGINX_LOG_FORMAT` from
    `hostd/src/agent/analytics.ts`; the `\t` sequences are a backslash and a `t`, and must stay that way:
 
    ```bash
-   pct exec 101 -- sh -c 'cat >> /data/nginx/custom/http_top.conf' <<'EOF'
+   ssh proxmox 'pct exec 101 -- sh -c "cat >> /data/nginx/custom/http_top.conf"' <<'EOF'
    log_format hostd escape=default '$host\t$msec\t$remote_addr\t$http_cf_connecting_ip\t$http_x_forwarded_for\t$request_method\t$uri\t$status\t$http_referer\t$http_user_agent\t$http_accept\t$http_rsc\t$http_next_router_prefetch\t$http_sec_purpose\t$http_purpose\t$http_cf_ipcountry';
    EOF
-   pct exec 101 -- nginx -t && pct exec 101 -- nginx -s reload
+   ssh proxmox 'pct exec 101 -- nginx -t && pct exec 101 -- nginx -s reload'
    ```
 
-   Do not run the reload unless `nginx -t` passed. The format does nothing on its own: it is the hosts hostd
+   The reload runs only if `nginx -t` passed (the `&&` runs on Proxmox); if the test failed, fix the file
+   before anything else. The format does nothing on its own: it is the hosts hostd
    writes that log with it.
 
-3. **The registry.** First keep a copy: `sudo cp /opt/horizons/hostd/registry/projects.yaml /opt/horizons/hostd/registry/projects.yaml.pre-npm`
-   (this step's undo is to copy it back over `projects.yaml`). Then edit
-   `/opt/horizons/hostd/registry/projects.yaml` on the VM (see **Editing the
-   registry**). The adoption renders what the registry says, so it has to be right first:
-
-   - spotondrones `live`: add the aliases `spotondrones.net.au` and `www.spotondrones.net.au` (NPM already
-     serves them on that host; adopting without them would refuse the unlisted names).
-   - Remove `flexibleSsl` from backroom `live`, geoguesser `live`, pmpc-group `live` and spotondrones
-     `redesign`. NPM serves them with an Origin certificate and Force SSL and that works; left in, the
-     adoption would switch them to Flexible.
-   - Add the top-level `certificates` map: the NPM certificate id for each zone, found by longest suffix
-     on a label boundary.
-
-     ```yaml
-     certificates:
-       horizons.gg: 3
-       1stcanzukbrigade.com: 16
-       thebackroom.dev: 17
-       spotondrones.com: 18
-     ```
-
-   - Any environment with `certificate: letsencrypt` must become `cloudflare-origin`, or the registry
-     refuses to load. (None had it on 2026-10-27.)
-
-   A hostname may be the zone itself or exactly **one label below** it, which is what an Origin certificate
-   (`zone` and `*.zone`) covers: a deeper name (`uat1.mappies.horizons.gg`) is refused. A non-Flexible
-   environment with a name in no listed zone is refused too, with a message to upload that zone's Origin
-   certificate in NPM and add it to the map. Flexible environments need no entry. spotondrones live's
-   `.com.au` and `.net.au` names are Flexible today and need none; if that site moves to Full, each of those
-   zones needs its own Origin certificate in NPM and its own entry here.
-
-4. **The VM.** Make the log directory (root-owned) and its rotation, and the holding page directory the
+3. **The VM.** Make the log directory (root-owned) and its rotation, and the holding page directory the
    agent writes into:
 
    ```bash
@@ -1911,8 +1891,38 @@ Do these in order. Nothing here changes a live site until step 6.
    the port.** The worst a forged line can do is skew one site's visit counts, and only for a hostname the
    registry knows.
 
-5. **Deploy hostd with `edge`.** From the repo root on the VM (the directory that holds `hostd/` and
+4. **Deploy hostd with `edge`.** From the repo root on the VM (the directory that holds `hostd/` and
    `scripts/`, `/opt/horizons`):
+
+   First two checks the new build depends on. The registry must not name `certificate: letsencrypt`
+   anywhere, because the new build marks an environment that does as invalid (none had it on 2026-10-27):
+
+   ```bash
+   grep -n 'letsencrypt' /opt/horizons/hostd/registry/projects.yaml
+   ```
+
+   It should print nothing. If it prints a line, change that `certificate:` to `cloudflare-origin` now (the
+   build that is running accepts that), wait ten seconds, and check again. Then confirm the NPM user can read
+   every list `edge` reads. This signs in as the hostd user with the password from `.env.edge` (`printf` is
+   a shell builtin, so the password never appears in the process list), then asks for each list:
+
+   ```bash
+   SECRET=$(sudo sed -n 's/^HOSTD_NPM_SECRET=//p' /opt/horizons/hostd/.env.edge)
+   TOKEN=$(printf '{"identity":"hostd@horizons.gg","secret":"%s"}' "$SECRET" \
+     | curl -s http://192.168.0.6:81/api/tokens -H 'Content-Type: application/json' -d @- \
+     | sed -n 's/.*"token":"\([^"]*\)".*/\1/p')
+   unset SECRET
+   for list in proxy-hosts redirection-hosts dead-hosts certificates; do
+     printf '%s ' "$list"
+     curl -s -o /dev/null -w '%{http_code}\n' -H "Authorization: Bearer $TOKEN" "http://192.168.0.6:81/api/nginx/$list"
+   done
+   unset TOKEN
+   ```
+
+   Every line must end `200`. `dead-hosts 403` means 404 Hosts is still Hidden for the user (step 1). If
+   `TOKEN` came back empty (every line `401`), the password in `.env.edge` is wrong, or it holds a `"` or
+   `\`, which this JSON does not escape: sign in through NPM's UI as the user to check the password instead.
+   Then deploy:
 
    ```bash
    ./scripts/stack.sh up --build hostd --dry-run
@@ -1934,19 +1944,53 @@ Do these in order. Nothing here changes a live site until step 6.
    `docker compose -f hostd/docker-compose.yml up -d --force-recreate edge`. A `FATAL` line names the
    setting at fault (usually `.env.edge`).
 
-   From NPM's own container, which is the path NPM will use (the firewall in step 4 lets nothing else in):
+   From NPM's own container, which is the path NPM will use (the firewall in step 3 lets nothing else in):
 
    ```bash
-   ssh proxmox
-   pct exec 101 -- curl -i http://192.168.0.8:8790/holding/backroom-live
+   ssh proxmox "pct exec 101 -- curl -i http://192.168.0.8:8790/holding/backroom-live"
    ```
 
-   It answers `503` with `Retry-After: 120` and the holding page. Anything else on that port answers 404:
-   the holding page is served for `GET` only, so a `POST` to a site that is down gets a 404 from `edge`
-   instead of the holding page. That is a known limit.
+   It answers `503` with `Retry-After: 120` and the holding page, for any method (a form posted to a site
+   that is down gets the holding page too; a `HEAD` gets the headers alone). Any other path on that port
+   answers 404.
 
    The `/health` endpoint (see **Calling the API from the dedi**) now reports whether `edge` and NPM answer,
-   how long ago the last NPM call succeeded, and any drift (below).
+   how long ago the last NPM call succeeded (`edge` asks NPM itself at most once a minute, so this stays
+   current with no site adopted yet), and any drift (below). Its first answer after a start says drift has
+   not been checked yet; the check runs in the background and shows on the next read.
+
+5. **The registry.** First keep a copy: `sudo cp /opt/horizons/hostd/registry/projects.yaml /opt/horizons/hostd/registry/projects.yaml.pre-npm`
+   (this step's undo is to copy it back over `projects.yaml`). Then edit
+   `/opt/horizons/hostd/registry/projects.yaml` on the VM (see **Editing the
+   registry**). This comes after the deploy on purpose: the build before `edge` refuses the unknown
+   `certificates` key, and once it has refused one registry write it refuses every one after it. The new
+   build loads the old registry unchanged, so the deploy in step 4 is safe first. The adoption renders what
+   the registry says, so it has to be right before step 6:
+
+   - spotondrones `live`: add the aliases `spotondrones.net.au` and `www.spotondrones.net.au` (NPM already
+     serves them on that host; adopting without them would refuse the unlisted names).
+   - Remove `flexibleSsl` from backroom `live`, geoguesser `live`, pmpc-group `live` and spotondrones
+     `redesign`. NPM serves them with an Origin certificate and Force SSL and that works; left in, the
+     adoption would switch them to Flexible.
+   - Add the top-level `certificates` map: the NPM certificate id for each zone, found by longest suffix
+     on a label boundary.
+
+     ```yaml
+     certificates:
+       horizons.gg: 3
+       1stcanzukbrigade.com: 16
+       thebackroom.dev: 17
+       spotondrones.com: 18
+     ```
+
+   - No environment may have `certificate: letsencrypt` (step 4 checked this before deploying).
+
+   A hostname may be the zone itself or exactly **one label below** it, which is what an Origin certificate
+   (`zone` and `*.zone`) covers: a deeper name (`uat1.mappies.horizons.gg`) is refused. A non-Flexible
+   environment with a name in no listed zone is refused too, with a message to upload that zone's Origin
+   certificate in NPM and add it to the map. Flexible environments need no entry. spotondrones live's
+   `.com.au` and `.net.au` names are Flexible today and need none; if that site moves to Full, each of those
+   zones needs its own Origin certificate in NPM and its own entry here.
 
 6. **Adopt each site, one at a time**, from the portal (Environments tab, the environment's Domains section,
    preview then Adopt; see **4. Adopting a site**), in this order: pmpcold, mappies, pmpcgroup, arbysauto,
@@ -1970,8 +2014,9 @@ Do these in order. Nothing here changes a live site until step 6.
 
    - **The automatic rollback.** api requests `https://<domain>/` just before and just after the adopt. If
      the second answer is materially worse (a page that became a redirect, an error, nothing at all), api
-     itself puts the hand-made proxy host back as it was (without the hostd marker), deletes the redirection
-     host hostd made, and clears the registry ids. The adopt then answers 502 saying what both requests got.
+     itself puts the hand-made proxy host back as it was (without the hostd marker, and with its own Block
+     Exploits, Websockets Support, HSTS and Cache Assets settings, which the adopt had set to hostd's),
+     deletes the redirection host hostd made, and clears the registry ids. The adopt then answers 502 saying what both requests got.
    - **A bad adopt the probe missed** (the page still answers but something else is wrong). Recover it by
      hand from the copy the agent saved before adopting, on the VM:
 
@@ -1981,11 +2026,17 @@ Do these in order. Nothing here changes a live site until step 6.
 
      (`hostd_hostd-agent-state` is the `hostd-agent-state` volume of the `hostd` compose project; inside
      the agent the file is `/var/lib/hostd/adopted/<id>-<environment>.json`.) It holds the proxy host's
-     fields before the adopt, and the NPM ids. Then:
+     fields before the adopt under `previous.proxy`, its own switches under `previous.proxyFixed`, and the
+     NPM ids. Then:
 
      1. In the NPM UI, edit the proxy host and put those fields back: its domain names (including the
         aliases that hostd moved off it), forward host and port, certificate, Force SSL, HTTP/2, and the
-        advanced config **without** the `# hostd:` marker line.
+        advanced config **without** the `# hostd:` marker line. Then the switches from `proxyFixed`, which
+        the adopt set to hostd's own values: Block Exploits (`block_exploits`), Websockets Support
+        (`allow_websocket_upgrade`), HSTS Enabled (`hsts_enabled`), HSTS Subdomains (`hsts_subdomains`),
+        Cache Assets (`caching_enabled`) and the scheme (`forward_scheme`). pmpcgroup's host, for one, had
+        Block Exploits off. If `proxyFixed` is `null` (the adopt's reply was lost and NPM was read back
+        instead), the file does not know them: compare with how the other hand-made hosts are set.
      2. Delete the redirection host hostd created (the id is in that file's saved ids, and its Advanced tab
         starts with the same `# hostd: <id>/<environment>` marker). Do this after step 1, because NPM
         refuses a name that is on two hosts.
@@ -2066,7 +2117,10 @@ with a throwaway project**'s own cleanup) and take `hostd-test.horizons.gg` back
 
 - `/health` reports **drift**: any owned host whose current NPM state differs from what hostd would render,
   because someone edited it in the NPM UI. It is reported, not fixed; the next domain action on that
-  environment rewrites it.
+  environment rewrites it. Drift is read in the background at most once a minute and `/health` shows the
+  last reading without waiting for `edge` or NPM, so it can be up to a minute old. If a reading takes
+  longer than five seconds, `/health` says so (`could not be checked for drift within 5 seconds`) until
+  it lands; a reading more than five minutes old is labelled with its age.
 - A host whose `# hostd:` marker was deleted is no longer hostd's. `edge` refuses to update or delete it, so
   the domain action fails with the reason. Put the marker line back as the first line of the Advanced tab, or
   adopt the host again.
@@ -2075,7 +2129,7 @@ with a throwaway project**'s own cleanup) and take `hostd-test.horizons.gg` back
 - NPM writes are serialised in `edge`, one at a time, with a 30 second timeout per call. NPM can answer 200
   and still take the host offline: it tests the generated nginx config after each write, and when that fails
   it moves the host's config aside and records `meta.nginx_online: false` rather than failing the API call.
-  `edge` treats that as a failure and the agent writes the previous state straight back, which brings the
+  `edge` treats that as a failure and writes the previous state straight back itself, which brings the
   host back. A bad change therefore costs a short outage on that one site, not a lasting one.
 
 ### 4. Adopting a site
@@ -2086,8 +2140,8 @@ Adopt with no matching host is refused rather than falling back to a create.
 
 1. **Preview it, before anything is touched.** `hc http://hostd-api:8080/projects/<id>/<env>/adopt` (GET), or
    the portal's preview, finds the proxy host whose `domain_names` include the environment's primary and
-   shows a field-by-field diff of what the sync would change, including domains that would move to the
-   redirection host. It refuses when there is no such host, when there is more than one, when the host's
+   shows two plain-text descriptions to read side by side: the host as it is in NPM, and the hosts hostd
+   would write (including the redirection host the aliases would move to). It refuses when there is no such host, when there is more than one, when the host's
    upstream is not `192.168.0.8:<the environment's port>`, when it has custom `locations`, or when it serves
    names the registry does not list (it refuses rather than drops them: add the name as an alias first).
 2. **Read the host yourself** in the NPM UI, not only the preview. hostd renders one fixed template, so
@@ -2111,19 +2165,20 @@ Undoing an adoption is described in step 8 of **1. Rollout, done once**.
 
 | Symptom | Cause |
 | --- | --- |
-| `/health` warns that `edge` or NPM is not answering, or a domain action fails with `NPM could not be searched` or a timeout | Read `docker logs hostd-edge` first. If it is not running or logged a `FATAL`, fix that (usually `.env.edge`). If it is running, check NPM from the VM: `curl -sI http://192.168.0.6:81/` and `ssh proxmox` then `pct exec 101 -- systemctl status npm openresty` (the CT's units are `npm.service` and `openresty.service`). A `401` from NPM makes `edge` log in again once and retry; a persistent one means the `hostd@horizons.gg` password in `.env.edge` is wrong or the user was removed. Recreate after editing: `docker compose -f hostd/docker-compose.yml up -d --force-recreate edge`. |
+| `/health` warns that `edge` or NPM is not answering, or a domain action fails with `NPM could not be searched` or a timeout | Read `docker logs hostd-edge` first. If it is not running or logged a `FATAL`, fix that (usually `.env.edge`). If it is running, check NPM from the VM: `curl -sI http://192.168.0.6:81/` and `ssh proxmox "pct exec 101 -- systemctl status npm openresty"` (the CT's units are `npm.service` and `openresty.service`). A `401` from NPM makes `edge` log in again once and retry; a persistent one means the `hostd@horizons.gg` password in `.env.edge` is wrong or the user was removed. Recreate after editing: `docker compose -f hostd/docker-compose.yml up -d --force-recreate edge`. |
 | A domain action is refused for a zone with no certificate | The hostname's zone is not in the registry's `certificates` map. Upload that zone's Cloudflare Origin certificate in NPM (Certificates), note its id, add `<zone>: <id>` to the map, wait ten seconds. A name two labels below the zone is refused whatever the map says: choose a name one label below it. |
 | A domain action is refused `is already served by NPM proxy host <n>` (or redirection or 404 host) | NPM already has that name on a host hostd does not own. Remove the name there, or adopt that host if it is this environment's. |
+| A domain action is refused `<alias> is already on NPM redirection host <n>`, and that host's Advanced tab starts with this environment's own `# hostd: <id>/<env>.` marker | The registry's `redirectionHost` id was stale (an earlier change lost its reply, or `edge` put the redirection host back under a new id). `edge` now takes a redirection host carrying this environment's exact marker as its own and records its id, so retrying the action heals it. If it is still refused, the marker is not exactly this environment's (another environment's, or not on the first line): fix it in NPM, or delete that redirection host if nothing else uses it, and retry. |
 | A domain action is refused because a host `does not carry` its marker | The first line of the host's Advanced tab is no longer `# hostd: <id>/<env>. ...`, so hostd will not overwrite it. See **3. Drift, ownership and health**. |
 | `/health` warns of drift on an environment | Someone edited the owned host in NPM. Look at the Advanced tab and the fields against the registry; the next domain action on that environment rewrites it. |
-| A site goes offline for a moment after a domain change, and the reply says NPM rejected the config | NPM reported `nginx_online: false` for that host and hostd wrote the previous state back. The reply carries NPM's own error text (`meta.nginx_err`). `ssh proxmox` then `pct exec 101 -- nginx -t` shows the same. |
-| The holding page never appears while a site is down (NPM's plain 502 shows) | NPM cannot reach `edge`. From CT 101: `pct exec 101 -- curl -i http://192.168.0.8:8790/holding/<id>-<env>` should answer 503. If it hangs, it is the VM firewall (step 4 of **Rollout**). If it answers 404, the page does not exist yet (the agent writes `/var/www/hostd-maintenance/sites/<id>-<env>.html` for each environment with a domain) or the request was not a `GET`. Also check that the host's Advanced tab has the `error_page 502 504` block. |
+| A site goes offline for a moment after a domain change, and the reply says NPM rejected the config | NPM reported `nginx_online: false` for that host and hostd wrote the previous state back. The reply carries NPM's own error text (`meta.nginx_err`). `ssh proxmox "pct exec 101 -- nginx -t"` shows the same. |
+| The holding page never appears while a site is down (NPM's plain 502 shows) | NPM cannot reach `edge`. From the VM, `ssh proxmox "pct exec 101 -- curl -i http://192.168.0.8:8790/holding/<id>-<env>"` should answer 503 (a missing page file still gets a built-in page). If it hangs, it is the VM firewall (step 3 of **Rollout**). If it answers 404, the path is wrong: the name must be `<id>-<env>` exactly. Also check that the host's Advanced tab has the `error_page 502 504` block. |
 | A domain stays `pending` with `No record exists yet. Add the CNAME and this will start working within a few minutes.` | No DNS record resolves yet for the hostname, or it has not propagated. Nothing to do but wait, unless the CNAME was never created. |
 | A domain stays `pending` with `The CNAME is not proxied, so the request reached us directly. Turn the proxy on in Cloudflare.` | The environment's `certificate` is `cloudflare-origin` (which expects Cloudflare in front) but the CNAME's cloud icon is grey, not orange. Turn proxying on. |
 | A domain stays `pending` with `This name points somewhere else at the moment.` | The token this setup expects did not come back, meaning the hostname currently resolves (through DNS or Cloudflare) to something other than this environment's NPM host: a stale CNAME, a different project holding the name, or, if this is an alias, its token path being redirected rather than answered. Run the `curl` in **2. Checking it by hand** against that alias: `204` with the header means the host is fine and the name genuinely points elsewhere, and `301` means the host's `advanced_config` is not what hostd rendered; read it in the NPM UI. |
 | An adoption is refused `no NPM proxy host serves <domain>` | NPM has no host with that name, so there is nothing to adopt. Check the spelling in the registry; for a genuinely new name use the Domains section's ordinary add, not adopt. |
 | An adoption is refused because the host forwards somewhere else | The hand-made host's upstream is not `192.168.0.8:<the environment's port>`. Fix the port in the NPM host or in the registry, whichever is wrong, and preview again. |
-| `/health` warns `waiting for Let's Encrypt support: <project> <env>`, or the registry will not load naming `letsencrypt` | An environment's `certificate` is `letsencrypt`, which is not supported with NPM. Change it to `cloudflare-origin` (and make sure its zone is in `certificates`). |
+| The registry will not load, naming `letsencrypt` | An environment's `certificate` is `letsencrypt`, which is not supported with NPM. Change it to `cloudflare-origin` (and make sure its zone is in `certificates`). |
 
 ## Analytics
 
@@ -2144,13 +2199,13 @@ directory (mounted read-only) when the portal asks.
 - **What `edge` accepts.** Only datagrams whose source address is NPM's (`HOSTD_NPM_ADDRESS`,
   192.168.0.6), and only for a `$host` some registry entry owns; anything else is dropped without writing
   anything. UDP can drop lines under load. Analytics is a count, so that is accepted.
-- **How far back.** logrotate keeps fourteen days of these logs (`/etc/logrotate.d/hostd`, step 4 of
+- **How far back.** logrotate keeps fourteen days of these logs (`/etc/logrotate.d/hostd`, step 3 of
   **Rollout**). Each finished day is also kept in `/var/lib/hostd/analytics/<id>-<environment>.json` (the
   agent's state volume), so the 30 day chart keeps filling after the logs have rotated away. The history from
   the Apache days carries on; the gap since the move simply has no data.
 - **Checking it.** `sudo tail -f /var/log/hostd/<id>-live.log` while loading a page shows one tab-separated
   line per request. If the file stays empty or missing, work along the path: is `log_format hostd` in
-  `/data/nginx/custom/http_top.conf` (`pct exec 101 -- nginx -T | grep "log_format hostd"`); does the host's
+  `/data/nginx/custom/http_top.conf` (`ssh proxmox "pct exec 101 -- nginx -T" | grep "log_format hostd"`); does the host's
   Advanced tab end with an `access_log syslog:server=192.168.0.8:5514,...` line; is the firewall letting
   UDP 5514 in from 192.168.0.6 (`sudo ufw status`); and does `docker logs hostd-edge` complain of
   `access log write failed`. The format NPM writes is exactly:

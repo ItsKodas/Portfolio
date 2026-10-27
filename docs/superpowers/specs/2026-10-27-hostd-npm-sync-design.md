@@ -217,8 +217,10 @@ the holding page.
 - `holding-pages.ts` keeps writing each environment's page and refreshing it to "upgrading" before the
   swap, as now. `setMaintenance` keeps the refresh and stops writing a flag; `clearMaintenance` becomes
   a no-op. The `/run/hostd/maintenance` mount goes.
-- `edge` serves `GET /holding/<project id>-<environment>` from the maintenance directory (read-only
-  mount), with status 503 and `Retry-After: 120`, and nothing else on that port.
+- `edge` serves `/holding/<project id>-<environment>` from the maintenance directory (read-only
+  mount), with status 503 and `Retry-After: 120`, for any method (nginx's `error_page` to a named
+  location keeps the visitor's method, so a POST to a site that is down arrives as a POST; HEAD gets no
+  body), and nothing else on that port.
 - *Trade-off accepted:* a deploy whose new container accepts connections but answers errors while
   starting shows those errors rather than the holding page. Apache had the same gap after the flag came
   down.
@@ -247,12 +249,14 @@ Cloudflare's `CF-Connecting-IP`, the epoch time). So:
 ### NPM API access
 
 - A dedicated NPM user, `hostd@horizons.gg`, created by Koda (RUNBOOK). Not an admin. Permissions:
-  visibility "all", proxy hosts "manage", redirection hosts "manage", certificates "view", everything
-  else hidden. "All" visibility is needed to see and adopt the hosts Koda created.
+  visibility "all", proxy hosts "manage", redirection hosts "manage", 404 hosts "view", certificates
+  "view", everything else hidden. "All" visibility is needed to see and adopt the hosts Koda created.
+  404 hosts must be "view": edge lists them on every create, adopt, alias change and drift check, and NPM
+  answers that list with 403 when they are hidden.
 - `edge` logs in with `POST /api/tokens` (identity and secret from `.env.edge`, not committed), keeps
   the token in memory, refreshes it with `GET /api/tokens` before it expires, and logs in again on a 401.
 - Endpoints used: `GET/POST/PUT/DELETE /api/nginx/proxy-hosts[/:id]`, the same for
-  `/api/nginx/redirection-hosts`, `GET /api/nginx/certificates`. Writes are serialised in `edge`, one at
+  `/api/nginx/redirection-hosts`, `GET /api/nginx/dead-hosts`, `GET /api/nginx/certificates`. Writes are serialised in `edge`, one at
   a time, as the Apache rail serialised them.
 - NPM tests the nginx config after each write, but a failed test does **not** fail the API call
   (checked in CT 101's `/app/internal/nginx.js`): NPM renames that host's config to `.err`, reloads
@@ -313,9 +317,10 @@ says "Apache" changes to name NPM or nothing.
 1. Koda creates the `hostd@horizons.gg` NPM user with the permissions above; its password goes in
    `.env.edge` on the VM.
 2. Add `/data/nginx/custom/http_top.conf` with the `hostd` log format on CT 101; reload NPM.
-3. Fix the registry by hand (aliases and `flexibleSsl`, above) and add the `certificates` map.
-4. Deploy hostd with `edge`. Open the VM firewall (if any) for UDP syslog from 192.168.0.6 and the edge
-   HTTP port from 192.168.0.6.
+3. Open the VM firewall (if any) for UDP syslog from 192.168.0.6 and the edge HTTP port from
+   192.168.0.6, then deploy hostd with `edge`. The new build loads the old registry unchanged.
+4. Fix the registry by hand (aliases and `flexibleSsl`, above) and add the `certificates` map. This
+   comes after the deploy because the old build refuses the unknown `certificates` key.
 5. Adopt each site from the portal, one at a time, checking it in a browser after each, with
    thebackroom.dev last-but-one and spotondrones last (most aliases).
 6. Remove the leftover Apache directories on the VM (`/etc/apache2/hostd`, `/etc/hostd/apache`).
