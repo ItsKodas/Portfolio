@@ -13,7 +13,7 @@ describe('portOverride', () => {
         const result = portOverride(compose({ web: { build: '.', ports: [{ target: 3000, published: '3000', protocol: 'tcp' }] } }), 'WEB_PORT')
         assert.deepEqual(result, {
             ok: true, service: 'web', target: 3000,
-            text: `${HEADER}  "web":\n    ports: !override ["127.0.0.1:\${WEB_PORT}:3000"]\n`,
+            text: `${HEADER}  "web":\n    ports: !override ["\${WEB_PORT}:3000"]\n`,
         })
     })
 
@@ -26,7 +26,7 @@ describe('portOverride', () => {
 
     it('names the registry\'s own port variable', () => {
         const result = portOverride(compose({ web: { ports: [{ target: 3000 }] } }), 'PORT')
-        assert.match(result.ok ? result.text : '', /"127\.0\.0\.1:\$\{PORT\}:3000"/)
+        assert.match(result.ok ? result.text : '', /"\$\{PORT\}:3000"/)
     })
 
     it('uses expose when the service publishes nothing', () => {
@@ -77,7 +77,7 @@ describe('portOverride', () => {
             db: { image: 'mongo:7', ports: [{ target: 27017, published: '27017' }] },
         }), 'WEB_PORT')
         assert.equal(result.ok && result.text,
-            `${HEADER}  "db":\n    ports: !reset []\n  "web":\n    ports: !override ["127.0.0.1:\${WEB_PORT}:3000"]\n`)
+            `${HEADER}  "db":\n    ports: !reset []\n  "web":\n    ports: !override ["\${WEB_PORT}:3000"]\n`)
     })
 })
 

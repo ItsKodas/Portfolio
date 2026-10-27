@@ -1,5 +1,5 @@
 // The one line of a site's .env that hostd owns: <portEnv>=<port>. The site's compose file publishes it
-// (ports: ["127.0.0.1:${WEB_PORT}:3000"]), which is how the port chosen in the portal is the port the
+// (ports: ["${WEB_PORT}:3000"]), which is how the port chosen in the portal is the port the
 // site actually binds. The root .env, because that is the file compose reads for interpolation when it
 // runs with --project-directory set to the environment's folder, as every compose call hostd makes does.
 // Writes go through env-files.ts, so this stays inside the same boundary every other env write does.
