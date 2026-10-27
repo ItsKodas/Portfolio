@@ -322,6 +322,13 @@ export async function setAliases(
     // No maxDomains check. Adding a hostname is admin-only (see ADMIN_ONLY in api's policy.ts), and the
     // admin may give an environment as many as they like.
 
+    // The certificate too, before the registry takes the list: writeHosts would refuse a name no zone
+    // covers, but only after the registry had recorded it, leaving an alias NPM does not serve.
+    if (!environment.flexibleSsl) {
+        const chosen = certificateFor((await deps.reloadRegistry()).certificates, [environment.domain, ...aliases])
+        if (!chosen.ok) return refuse('bad-request', chosen.problem)
+    }
+
     // parseRegistry's uniqueness rule sees hostd's entries and nothing else, so it cannot know that an
     // NPM host made by hand already serves one of these names. edge would refuse the write anyway, but
     // only after the registry had taken the alias, so the check is made here first. Only the names being

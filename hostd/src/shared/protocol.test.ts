@@ -528,7 +528,7 @@ describe('parseDomainsArgs', () => {
     it('accepts a remove, a preview and an adopt', () => {
         ok({ action: 'remove', environment: 'test' })
         ok({ action: 'preview', environment: 'live', token: 'abc123' })
-        ok({ action: 'adopt', environment: 'live', token: 'abc123', disable: ['/etc/apache2/sites-enabled/acme.conf'] })
+        ok({ action: 'adopt', environment: 'live', token: 'abc123', disable: ['NPM proxy host 12'] })
     })
 
     // A preview with no token would render a file that can never match what adopt actually writes,
@@ -556,38 +556,32 @@ describe('parseDomainsArgs', () => {
         }
     })
 
-    // An environment nothing currently serves has nothing to move aside, and adopt is the only route to
-    // a vhost hostd owns, so refusing an empty list would leave such a site with no way to get one.
+    // An environment nothing currently serves has nothing to take over; the agent refuses that adopt
+    // itself, with a reason the portal can show, so the parser lets the empty list through.
     it('accepts an adopt that disables nothing', () => {
         const parsed = ok({ action: 'adopt', environment: 'live', token: 'abc123', disable: [] })
         assert.deepEqual(parsed.ok && parsed.args, { action: 'adopt', environment: 'live', token: 'abc123', disable: [] })
     })
 
-    it('still refuses a bad path inside a list that is not empty', () => {
-        for (const bad of ['/etc/passwd', '/etc/apache2/sites-enabled/../../passwd', '/etc/apache2/sites-enabled/.hidden']) {
-            const parsed = parseDomainsArgs({
-                action: 'adopt', environment: 'live', token: 'abc123',
-                disable: ['/etc/apache2/sites-enabled/acme.conf', bad],
-            })
-            assert.equal(parsed.ok, false, bad)
+    // The claim paths the preview names, which api hands back as disable and, for the rollback, restore
+    it('accepts the NPM claim paths the preview names, in an adopt and in a restore', () => {
+        const paths = ['NPM proxy host 12', 'NPM redirection host 4', 'NPM dead host 7']
+        const adopted = ok({ action: 'adopt', environment: 'live', token: 'abc123', disable: paths })
+        assert.deepEqual(adopted.ok && adopted.args.action === 'adopt' && adopted.args.disable, paths)
+        const restored = ok({ action: 'restore', environment: 'live', restore: paths })
+        assert.deepEqual(restored.ok && restored.args.action === 'restore' && restored.args.restore, paths)
+    })
+
+    it('refuses anything else in disable or restore, Apache paths included', () => {
+        for (const bad of ['/etc/apache2/sites-enabled/acme.conf', '/etc/passwd', 'NPM proxy host', 'NPM proxy host 12 ', 'NPM access list 3', 'npm proxy host 12', 'NPM proxy host 1x', 3]) {
+            assert.equal(parseDomainsArgs({ action: 'adopt', environment: 'live', token: 'abc123', disable: ['NPM proxy host 12', bad] }).ok, false, String(bad))
+            assert.equal(parseDomainsArgs({ action: 'restore', environment: 'live', restore: [bad] }).ok, false, String(bad))
         }
     })
 
-    it('refuses a disable that is not a list at all', () => {
-        assert.equal(parseDomainsArgs({ action: 'adopt', environment: 'live', token: 'abc123', disable: '/etc/apache2/sites-enabled/acme.conf' }).ok, false)
-    })
-
-    it('refuses a disable entry that is not inside sites-enabled', () => {
-        const parsed = parseDomainsArgs({ action: 'adopt', environment: 'live', token: 'abc123', disable: ['/etc/passwd'] })
-        assert.equal(parsed.ok, false)
-    })
-
-    it('refuses a disable entry that climbs out with dot segments', () => {
-        const parsed = parseDomainsArgs({
-            action: 'adopt', environment: 'live', token: 'abc123',
-            disable: ['/etc/apache2/sites-enabled/../../passwd'],
-        })
-        assert.equal(parsed.ok, false)
+    it('refuses a disable or a restore that is not a list at all', () => {
+        assert.equal(parseDomainsArgs({ action: 'adopt', environment: 'live', token: 'abc123', disable: 'NPM proxy host 12' }).ok, false)
+        assert.equal(parseDomainsArgs({ action: 'restore', environment: 'live', restore: 'NPM proxy host 12' }).ok, false)
     })
 
     it('accepts set-aliases with a list and a token', () => {

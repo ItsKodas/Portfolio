@@ -18,7 +18,7 @@ import { DomainStore, domainKey, newRecord, type DomainRecord } from './domain-s
 // as the thing it actually is (a record the verifier will pick up) rather than as a state string.
 import { nextCheckAt } from './verifier.ts'
 import { parseRegistry, type Registry } from '../shared/registry.ts'
-import { DOMAIN_TOKEN, checkStructure, type AgentReply, type AgentRequest, type CopyRecord, type RestoreRecord, type LogLine } from '../shared/protocol.ts'
+import { DOMAIN_TOKEN, checkStructure, parseAgentRequest, type AgentReply, type AgentRequest, type CopyRecord, type RestoreRecord, type LogLine } from '../shared/protocol.ts'
 import type { SystemUsage } from '../shared/system.ts'
 
 const TOKEN = 'k'.repeat(64)
@@ -1884,8 +1884,8 @@ describe('POST /projects/:id/:env/domains/:hostname/verify', () => {
 
 describe('GET|POST /projects/:id/:env/adopt', () => {
     const claim: { path: string, text: string, names: string[], unsupported: string[] } = {
-        path: '/etc/apache2/sites-enabled/acme.conf',
-        text: '<VirtualHost *:443>\n    ServerName acme.example\n</VirtualHost>\n',
+        path: 'NPM proxy host 12',
+        text: 'Proxy host\nDomains: acme.example\nUpstream: 192.168.0.8:5010\n',
         names: ['acme.example'],
         unsupported: [],
     }
@@ -1948,6 +1948,8 @@ describe('GET|POST /projects/:id/:env/adopt', () => {
             verb: 'domains', project: 'acme',
             args: { action: 'adopt', environment: 'live', token: TOKEN_IN_PLACE, disable: [claim.path] },
         })
+        // What api sent is what the agent's own parser accepts, so the claim path survives the wire
+        assert.equal(parseAgentRequest(JSON.stringify(agent.calls[1])).ok, true)
         for (const record of domains.forEnvironment('acme', 'live')) {
             assert.equal(record.state, 'pending', record.hostname)
             // The 72 hour clock starts now, not when the registry first named the hostname: a record
@@ -1991,8 +1993,8 @@ describe('GET|POST /projects/:id/:env/adopt', () => {
 // network_mode: none; api is the process with a network, so api asks the hostname.
 describe('POST /projects/:id/:env/adopt: did the site survive it', () => {
     const claim: { path: string, text: string, names: string[], unsupported: string[] } = {
-        path: '/etc/apache2/sites-enabled/acme.conf',
-        text: '<VirtualHost *:80>\n    ServerName acme.example\n</VirtualHost>\n',
+        path: 'NPM proxy host 12',
+        text: 'Proxy host\nDomains: acme.example\nUpstream: 192.168.0.8:5010\n',
         names: ['acme.example'],
         unsupported: [],
     }
@@ -2036,10 +2038,12 @@ describe('POST /projects/:id/:env/adopt: did the site survive it', () => {
             verb: 'domains', project: 'acme',
             args: { action: 'restore', environment: 'live', restore: [claim.path] },
         })
+        // The adopt and the rollback both pass the agent's own parser, claim paths and all
+        for (const sent of agent.calls) assert.equal(parseAgentRequest(JSON.stringify(sent)).ok, true, JSON.stringify(sent))
         const said = (await response.json() as { message: string }).message
         assert.match(said, /answered 200/)
         assert.match(said, /answered 301/)
-        assert.match(said, /acme\.conf/)
+        assert.match(said, /NPM proxy host 12/)
     })
 
     it('does not start a verification countdown against a vhost it just removed', async () => {

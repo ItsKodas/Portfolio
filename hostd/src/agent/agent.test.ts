@@ -1940,7 +1940,7 @@ describe('deleting and restoring an environment', () => {
       test: { dir: /var/www/acme/test, branch: develop, port: 5011, domain: test.acme.com, npm: { proxyHost: 14 } }
 `
 
-    function trashSetup(options: { deploying?: string, gate?: { armed: boolean, wait: Promise<void> }, moveGate?: Promise<void> } = {}) {
+    function trashSetup(options: { deploying?: string, gate?: { armed: boolean, wait: Promise<void> }, moveGate?: Promise<void>, failSetNpm?: boolean } = {}) {
         const files = new Map([['/etc/hostd/projects.yaml', YAML]])
         const writeFs: RegistryWriteFs = {
             readFile: async path => files.get(path)!,
@@ -1955,7 +1955,9 @@ describe('deleting and restoring an environment', () => {
         const records: DeletedRecord[] = []
         // The one writer both provisioning and the domains verb write through, as in production
         const writer = new RegistryWriter('/etc/hostd/projects.yaml', writeFs)
-        const context = fakeDomains(current, { writeRegistry: change => writer.write(change) })
+        const context = fakeDomains(current, {
+            writeRegistry: async change => (options.failSetNpm && change.kind === 'set-npm' ? { ok: false, problem: 'the registry file is read-only' } : writer.write(change)),
+        })
         seedOwned(context.edge, { environment: 'test', domain: 'test.acme.com', port: 5011, proxyHost: 14, redirection: null })
         const blocks: string[] = []
         const deploys = {
@@ -2015,6 +2017,18 @@ describe('deleting and restoring an environment', () => {
         assert.equal(records[0]!.actor, 'admin')
         assert.equal(current().projects.get('acme')!.environments.has('test'), false)
         assert.equal(paths.has('/var/www/acme/test'), false)
+    })
+
+    // The entry and its ids go in one registry write at the end, so taking the hosts down must not
+    // depend on a set-npm of its own: one that failed after the hosts were gone used to report the
+    // delete as fully undone while the site was off NPM.
+    it('deletes without a registry write of its own for the NPM ids', async () => {
+        const { agent, edge, records, current } = trashSetup({ failSetNpm: true })
+        const reply = replyOf(await agent.handle({ verb: 'provision', project: 'acme', args: { action: 'delete-environment', environment: 'test' } }))
+        assert.equal(reply?.ok, true, JSON.stringify(reply))
+        assert.deepEqual(edge.npm.snapshot()['proxy-hosts'], [])
+        assert.equal(records.length, 1)
+        assert.equal(current().projects.get('acme')!.environments.has('test'), false)
     })
 
     it('refuses the delete, moving nothing, when edge cannot say what the hosts are', async () => {

@@ -390,6 +390,22 @@ describe('setAliases', () => {
         assert.deepEqual(current().environment.npm, { proxyHost: 100, redirectionHost: 101 })
     })
 
+    it('refuses an alias no certificate covers before the registry takes it', async () => {
+        const { deps, edge, current, changes } = setup()
+        const result = await setAliases(deps, current().project, current().environment, ['www.acme.com', 'acme.org'], 'abc123')
+        assert.deepEqual(result, { ok: false, code: 'bad-request', message: 'No certificate in Nginx Proxy Manager covers acme.org.' })
+        assert.deepEqual(changes, [])
+        assert.deepEqual(current().environment.aliases, ['www.acme.com'])
+        assert.deepEqual(edge.writes(), [])
+    })
+
+    it('takes an alias outside every zone under Flexible SSL', async () => {
+        const { deps, current } = setup({ flexibleSsl: true })
+        const result = await setAliases(deps, current().project, current().environment, ['www.acme.com', 'acme.org'], 'abc123')
+        assert.equal(result.ok, true)
+        assert.deepEqual(current().environment.aliases, ['www.acme.com', 'acme.org'])
+    })
+
     it('touches no host when the registry refuses the change', async () => {
         const { deps, edge, current } = setup()
         deps.writeRegistry = async () => ({ ok: false, problem: 'uat1.acme.com is already used' })

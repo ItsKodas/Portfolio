@@ -167,10 +167,10 @@ export async function deleteEnvironment(project: ProjectEntry, name: Environment
         const vhosts = deps.vhosts
         const previous = vhosts ? await vhosts.read(project, environment) : null
         if (vhosts && previous !== null) {
-            ensure(await vhosts.remove(project, environment), `the vhost for ${id} could not be removed`)
+            ensure(await vhosts.remove(project, environment), `the NPM hosts for ${id} could not be removed`)
             steps.push({
-                what: `removed the vhost for ${id}`,
-                undo: async () => ensure(await vhosts.put(project, environment, previous), 'the vhost could not be put back'),
+                what: `removed the NPM hosts for ${id}`,
+                undo: async () => ensure(await vhosts.put(project, environment, previous), 'the NPM hosts could not be put back'),
             })
         }
 

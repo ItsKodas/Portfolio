@@ -1250,7 +1250,10 @@ export class Agent {
                 if (!reply.ok) throw new Error(reply.problem)
                 return reply.verb === 'get' ? reply.current : null
             },
-            remove: async (project, environment) => done(await removeHosts(domains, project, environment)),
+            // Off NPM only: the remove-environment write that ends a delete drops the ids with the entry,
+            // and a set-npm of its own that failed after the hosts were gone would leave the delete
+            // reporting itself undone while nothing had put the hosts back.
+            remove: async (project, environment) => done(await removeEdgeHosts(domains, project, environment)),
             put: async (project, environment, previous) => done(await recreateHosts(domains, project, environment, previous)),
             write: async (project, environment, token) => done(await writeHosts(domains, project, environment, token)),
         }
