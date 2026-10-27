@@ -3,7 +3,8 @@ import assert from 'node:assert/strict'
 import { markerFor } from '../shared/edge-protocol.ts'
 import { certificateFor, describeHosts, renderHosts, tokenFromHosts, type HostsInput } from './npm-render.ts'
 
-const BROTLI = `if ($http_content_encoding ~* "(^|,)\s*br\s*(,|$)") {
+const BS = String.fromCharCode(92)
+const BROTLI = `if ($http_content_encoding ~* "(^|,)${BS}s*br${BS}s*(,|$)") {
     return 415;
 }`
 
@@ -46,6 +47,8 @@ test('advanced_config starts with the marker and carries the brotli snippet, the
         'access_log syslog:server=192.168.0.8:5514,tag=hostd,nohostname hostd;',
         BROTLI,
     ]) assert.ok(config.includes(wanted), wanted)
+    // Built from plain characters, so a template literal eating the backslashes cannot hide in both sides
+    assert.ok(config.includes('"(^|,)' + BS + 's*br' + BS + 's*(,|$)"'))
     assert.ok(!config.includes('proxy_pass http://192.168.0.8:8790/'))
 })
 
