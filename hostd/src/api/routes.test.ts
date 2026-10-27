@@ -825,51 +825,45 @@ describe('POST /projects', () => {
     describe('with a domain', () => {
         const CREATED: AgentReply = { ok: true, project: { id: 'acme', state: 'needs-setup' }, envFiles: [] }
         const body = { ...CREATE_BODY, id: 'acme', domain: 'acme.example', certificate: 'cloudflare-origin' }
-        const previewWith = (claims: string[]): AgentReply => ({
-            ok: true,
-            preview: {
-                proposed: '<VirtualHost *:443>', extraNames: [], unreadable: [], adoptable: true, flexibleSsl: false,
-                claims: claims.map(path => ({ path, text: '', names: ['acme.example'], unsupported: [] })),
-            },
-        })
 
-        it('writes the first vhost through an adopt with nothing to disable, and starts its hostnames verifying', async () => {
-            agent.reply = request => request.verb === 'provision' ? CREATED
-                : request.verb === 'domains' && request.args.action === 'preview' ? previewWith([])
-                : WRITTEN
+        it('writes the first NPM hosts through the ordinary write, and starts its hostnames verifying', async () => {
+            agent.reply = request => request.verb === 'provision' ? CREATED : WRITTEN
             const response = await request('/projects', { method: 'POST', actor: 'admin', body })
             assert.equal(response.status, 200)
             assert.deepEqual(await response.json(), { ...CREATED, vhost: { ok: true } })
 
-            const [, preview, adopt] = agent.calls
-            assert.ok(preview?.verb === 'domains' && preview.args.action === 'preview')
-            assert.ok(adopt?.verb === 'domains' && adopt.args.action === 'adopt')
-            assert.deepEqual(adopt.args.disable, [])
-            // One token, the one the preview rendered, is what the adopt wrote and what the record holds
-            assert.ok(preview.args.action === 'preview' && preview.args.token === adopt.args.token)
+            assert.deepEqual(agent.calls.map(call => call.verb === 'domains' ? call.args.action : call.verb), ['provision', 'write'])
+            const write = agent.calls[1]
+            assert.ok(write?.verb === 'domains' && write.args.action === 'write' && write.args.environment === 'live')
+            // The token the write carried is the one the record holds
             const record = domains.forEnvironment('acme', 'live').find(entry => entry.hostname === 'acme.example')
-            assert.deepEqual([record?.state, record?.token], ['pending', adopt.args.token])
+            assert.deepEqual([record?.state, record?.token], ['pending', write.args.token])
         })
 
-        it('leaves a hostname another file already serves for the operator to adopt, and still answers the create', async () => {
-            agent.reply = request => request.verb === 'provision' ? CREATED : previewWith(['/etc/apache2/sites-enabled/acme.conf'])
+        // A hand-made NPM host still serving the name: the agent refuses the create, and that refusal is
+        // shown beside the create rather than swallowed, with no hostname recorded as written
+        it('leaves a hostname another NPM host already serves for the operator to adopt, and still answers the create', async () => {
+            const message = 'acme.example is already served by NPM proxy host 12, which hostd does not manage; adopt acme live from the Domains tab to take it over, or remove it in NPM'
+            agent.reply = request => request.verb === 'provision' ? CREATED : { ok: false, code: 'bad-request', message }
             const response = await request('/projects', { method: 'POST', actor: 'admin', body })
             assert.equal(response.status, 200)
             const answer = await response.json() as { vhost: { ok: boolean, message: string } }
-            assert.equal(answer.vhost.ok, false)
-            assert.match(answer.vhost.message, /acme\.conf/)
-            assert.deepEqual(agent.calls.map(call => call.verb === 'domains' ? call.args.action : call.verb), ['provision', 'preview'])
+            assert.deepEqual(answer.vhost, { ok: false, message })
+            assert.deepEqual(agent.calls.map(call => call.verb === 'domains' ? call.args.action : call.verb), ['provision', 'write'])
+            const record = domains.forEnvironment('acme', 'live').find(entry => entry.hostname === 'acme.example')
+            assert.notEqual(record?.state, 'pending')
+            const [entry] = await audit.read({ limit: 1 })
+            assert.deepEqual([entry?.verb, entry?.outcome], ['domains', 'refused'])
         })
 
-        it('reports an Apache refusal beside the create rather than instead of it', async () => {
+        it('reports an NPM refusal beside the create rather than instead of it', async () => {
             agent.reply = request => request.verb === 'provision' ? CREATED
-                : request.verb === 'domains' && request.args.action === 'preview' ? previewWith([])
-                : { ok: false, code: 'failed', message: 'Apache refused the new configuration', output: 'Syntax error' }
+                : { ok: false, code: 'failed', message: 'NPM refused the configuration for acme live', output: 'nginx: [emerg] unexpected "}"' }
             const response = await request('/projects', { method: 'POST', actor: 'admin', body })
             assert.equal(response.status, 200)
-            assert.deepEqual((await response.json() as { vhost: unknown }).vhost, { ok: false, message: 'Apache refused the new configuration' })
+            assert.deepEqual((await response.json() as { vhost: unknown }).vhost, { ok: false, message: 'NPM refused the configuration for acme live' })
             const record = domains.forEnvironment('acme', 'live').find(entry => entry.hostname === 'acme.example')
-            assert.deepEqual(record?.vhost, { ok: false, output: 'Syntax error' })
+            assert.deepEqual(record?.vhost, { ok: false, output: 'nginx: [emerg] unexpected "}"' })
         })
 
         it('reports a lost agent connection during the vhost step without failing the create', async () => {
@@ -946,11 +940,7 @@ projects:
 const nestedWithUat1 = (domain: string | null): Registry => parseRegistry(
     `${NESTED_ACME}      uat1: { dir: /var/www/acme/uat1, port: 5020, branch: main${domain === null ? '' : `, domain: ${domain}`} }\n`,
 )
-const UAT1_WRITTEN: AgentReply = { ok: true, written: { hostnames: ['uat1.acme.example'], path: '/etc/apache2/hostd/acme-uat1.conf' } }
-const EMPTY_PREVIEW: AgentReply = {
-    ok: true,
-    preview: { proposed: '<VirtualHost *:443>', extraNames: [], unreadable: [], adoptable: true, flexibleSsl: false, claims: [] },
-}
+const UAT1_WRITTEN: AgentReply = { ok: true, written: { hostnames: ['uat1.acme.example'], path: 'npm:proxy-host/100' } }
 
 // A handler whose registry moves the way the real one does: `from` until the refresh that follows an ok
 // write, `to` after it, exactly as RegistryStore.refresh brings api's copy level in production.
@@ -980,7 +970,7 @@ describe('POST /projects/:id/environments', () => {
         assert.equal(response.status, 200)
         assert.deepEqual(await response.json(), {
             ...provisionReply,
-            vhost: { ok: false, message: 'acme uat1 was created, but its entry could not be read back to write its vhost' },
+            vhost: { ok: false, message: 'acme uat1 was created, but its entry could not be read back to write its NPM hosts' },
         })
         assert.deepEqual(agent.calls, [{
             verb: 'provision', project: 'acme',
@@ -1023,27 +1013,24 @@ describe('POST /projects/:id/environments', () => {
         assert.deepEqual(agent.calls, [])
     })
 
-    it('writes the new environment\'s first vhost when it was given a domain, and starts its hostname verifying', async () => {
+    it('writes the new environment\'s first NPM hosts when it was given a domain, and starts its hostname verifying', async () => {
         const added: AgentReply = { ok: true, project: { id: 'acme', state: 'needs-setup' }, envFiles: [] }
-        agent.reply = sent => sent.verb === 'provision' ? added
-            : sent.verb === 'domains' && sent.args.action === 'preview' ? EMPTY_PREVIEW
-            : UAT1_WRITTEN
+        agent.reply = sent => sent.verb === 'provision' ? added : UAT1_WRITTEN
         const response = await through(movingHandler(parseRegistry(NESTED_ACME), nestedWithUat1('uat1.acme.example')), '/projects/acme/environments', {
             method: 'POST', actor: 'admin', body: { name: 'uat1', branch: 'main', domain: 'uat1.acme.example' },
         })
         assert.equal(response.status, 200)
         assert.deepEqual(await response.json(), { ...added, vhost: { ok: true } })
 
-        const [provision, preview, adopt] = agent.calls
+        const [provision, write] = agent.calls
         assert.deepEqual(provision, {
             verb: 'provision', project: 'acme',
             args: { action: 'add-environment', environment: 'uat1', branch: 'main', domain: 'uat1.acme.example', certificate: null },
         })
-        assert.ok(preview?.verb === 'domains' && preview.args.action === 'preview' && preview.args.environment === 'uat1')
-        assert.ok(adopt?.verb === 'domains' && adopt.args.action === 'adopt' && adopt.args.environment === 'uat1')
-        assert.deepEqual(adopt.args.disable, [])
+        assert.ok(write?.verb === 'domains' && write.args.action === 'write' && write.args.environment === 'uat1')
+        assert.equal(agent.calls.length, 2)
         const record = domains.forEnvironment('acme', 'uat1').find(entry => entry.hostname === 'uat1.acme.example')
-        assert.deepEqual([record?.primary, record?.state, record?.token], [true, 'pending', adopt.args.token])
+        assert.deepEqual([record?.primary, record?.state, record?.token], [true, 'pending', write.args.token])
     })
 
     it('refuses a missing domain before ever reaching the agent, on the moving handler too', async () => {
@@ -1557,23 +1544,20 @@ describe('POST /projects/:id/:env/domains', () => {
 describe('POST /projects/:id/:env/domains, on an environment with no primary yet', () => {
     const CONFIGURED: AgentReply = { ok: true, written: [], output: 'acme\'s registry entry was updated' }
 
-    it('makes the first hostname its primary through configure, then writes its vhost and records it as primary', async () => {
-        agent.reply = sent => sent.verb === 'configure' ? CONFIGURED
-            : sent.verb === 'domains' && sent.args.action === 'preview' ? EMPTY_PREVIEW
-            : UAT1_WRITTEN
+    it('makes the first hostname its primary through configure, then writes its NPM hosts and records it as primary', async () => {
+        agent.reply = sent => sent.verb === 'configure' ? CONFIGURED : UAT1_WRITTEN
         const response = await through(movingHandler(nestedWithUat1(null), nestedWithUat1('uat1.acme.example')), '/projects/acme/uat1/domains', {
             method: 'POST', actor: 'admin', body: { hostname: 'uat1.acme.example' },
         })
         assert.equal(response.status, 200)
 
-        const [configure, preview, adopt] = agent.calls
+        const [configure, write] = agent.calls
         assert.deepEqual(configure, { verb: 'configure', project: 'acme', args: { domains: { uat1: 'uat1.acme.example' } } })
-        assert.ok(preview?.verb === 'domains' && preview.args.action === 'preview' && preview.args.environment === 'uat1')
-        assert.ok(adopt?.verb === 'domains' && adopt.args.action === 'adopt' && adopt.args.environment === 'uat1')
-        assert.equal(agent.calls.length, 3)
+        assert.ok(write?.verb === 'domains' && write.args.action === 'write' && write.args.environment === 'uat1')
+        assert.equal(agent.calls.length, 2)
 
         const record = domains.get(domainKey('acme', 'uat1', 'uat1.acme.example'))
-        assert.deepEqual([record?.primary, record?.state, record?.token], [true, 'pending', adopt.args.token])
+        assert.deepEqual([record?.primary, record?.state, record?.token], [true, 'pending', write.args.token])
         const body = await response.json() as { ok: boolean, domains: Array<{ hostname: string, primary: boolean }>, vhost: unknown }
         assert.equal(body.ok, true)
         assert.deepEqual(body.domains.map(domain => [domain.hostname, domain.primary]), [['uat1.acme.example', true]])
@@ -2803,7 +2787,7 @@ describe('copying from live', () => {
 
     describe('when an environment is added with copyFromLive', () => {
         const added: AgentReply = { ok: true, project: { id: 'acme', state: 'needs-setup' }, envFiles: [] }
-        const VHOST_REFUSAL = { ok: false, message: 'acme uat1 was created, but its entry could not be read back to write its vhost' }
+        const VHOST_REFUSAL = { ok: false, message: 'acme uat1 was created, but its entry could not be read back to write its NPM hosts' }
 
         it('starts a copy once the add succeeded, and says so in the reply', async () => {
             agent.reply = sent => (sent.verb === 'copy' ? { ok: true, run: RUN } : added)

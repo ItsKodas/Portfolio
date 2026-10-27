@@ -57,25 +57,25 @@ function fakes(overrides: Partial<PortChangeDeps> = {}) {
         writePort: async (port, compose) => { steps.push(compose ? `registry ${port} ${compose.join(',')}` : `registry ${port}`); return { ok: true } },
         running: async () => { steps.push('running?'); return true },
         up: async () => { steps.push('up'); return { ok: true } },
-        rewriteVhost: async () => { steps.push('vhost'); return null },
-        hasOwnVhost: async () => true,
+        rewriteHosts: async () => { steps.push('hosts'); return null },
+        hasOwnHosts: async () => true,
         ...overrides,
     }
     return { deps, steps }
 }
 
 describe('changePort', () => {
-    it('checks, writes .env, confirms compose publishes it, writes the registry, recreates, rewrites the vhost', async () => {
+    it('checks, writes .env, confirms compose publishes it, writes the registry, recreates, rewrites the NPM hosts', async () => {
         const { deps, steps } = fakes()
         const reply = await changePort(acme, 'live', 5012, deps)
         assert.deepEqual(reply, { ok: true, output: 'acme live now uses port 5012, and its containers were recreated on it' })
-        assert.deepEqual(steps, ['check 5012', 'env WEB_PORT=5012', 'override', 'published', 'registry 5012 docker-compose.yml,hostd.ports.yml', 'running?', 'up', 'vhost'])
+        assert.deepEqual(steps, ['check 5012', 'env WEB_PORT=5012', 'override', 'published', 'registry 5012 docker-compose.yml,hostd.ports.yml', 'running?', 'up', 'hosts'])
     })
 
     it('leaves an override that is already there alone', async () => {
         const { deps, steps } = fakes()
         assert.equal((await changePort(withOverride, 'live', 5012, deps)).ok, true)
-        assert.deepEqual(steps, ['check 5012', 'env WEB_PORT=5012', 'published', 'registry 5012', 'running?', 'up', 'vhost'])
+        assert.deepEqual(steps, ['check 5012', 'env WEB_PORT=5012', 'published', 'registry 5012', 'running?', 'up', 'hosts'])
     })
 
     it('checks and recreates with the override in the compose list', async () => {
@@ -138,13 +138,13 @@ describe('changePort', () => {
         assert.deepEqual(steps.slice(-5), ['up', 'restore env "WEB_PORT=5010\\n"', 'registry 5010 docker-compose.yml', 'remove override', 'up'])
     })
 
-    it('undoes everything when the vhost cannot be rewritten', async () => {
+    it('undoes everything when the NPM hosts cannot be rewritten', async () => {
         let rewrites = 0
-        const { deps, steps } = fakes({ rewriteVhost: async () => { steps.push('vhost'); rewrites += 1; return rewrites === 1 ? 'Apache refused the file' : null } })
+        const { deps, steps } = fakes({ rewriteHosts: async () => { steps.push('hosts'); rewrites += 1; return rewrites === 1 ? 'NPM refused the host' : null } })
         const reply = await changePort(acme, 'live', 5012, deps)
         assert.equal(reply.ok, false)
-        assert.match(reply.ok ? '' : reply.message, /Apache refused the file/)
-        assert.deepEqual(steps.slice(-6), ['vhost', 'restore env "WEB_PORT=5010\\n"', 'registry 5010 docker-compose.yml', 'remove override', 'up', 'vhost'])
+        assert.match(reply.ok ? '' : reply.message, /NPM refused the host/)
+        assert.deepEqual(steps.slice(-6), ['hosts', 'restore env "WEB_PORT=5010\\n"', 'registry 5010 docker-compose.yml', 'remove override', 'up', 'hosts'])
     })
 
     it('does not start an environment that is not running', async () => {
@@ -155,14 +155,14 @@ describe('changePort', () => {
     })
 
     // A thrown error is undone exactly like an answered failure, or .env and the registry would be left
-    // on the new port while the containers and the vhost stay on the old one
+    // on the new port while the containers and the NPM hosts stay on the old one
     it('undoes .env and the registry when asking whether it runs throws', async () => {
         const { deps, steps } = fakes({ running: async () => { steps.push('running?'); throw new Error('connect ENOENT /var/run/docker.sock') } })
         const reply = await changePort(acme, 'live', 5012, deps)
         assert.deepEqual(reply, { ok: false, code: 'failed', message: 'acme live could not be moved to port 5012: connect ENOENT /var/run/docker.sock. It was moved back to 5010.' })
         assert.deepEqual(steps.slice(-4), ['running?', 'restore env "WEB_PORT=5010\\n"', 'registry 5010 docker-compose.yml', 'remove override'])
         assert.ok(!steps.includes('up'))
-        assert.ok(!steps.includes('vhost'))
+        assert.ok(!steps.includes('hosts'))
     })
 
     it('undoes everything and brings the old port back up when the recreate throws', async () => {
@@ -171,16 +171,16 @@ describe('changePort', () => {
         const reply = await changePort(acme, 'live', 5012, deps)
         assert.deepEqual(reply, { ok: false, code: 'failed', message: 'acme live could not be moved to port 5012: spawn docker ENOENT. It was moved back to 5010.' })
         assert.deepEqual(steps.slice(-5), ['up', 'restore env "WEB_PORT=5010\\n"', 'registry 5010 docker-compose.yml', 'remove override', 'up'])
-        assert.ok(!steps.includes('vhost'))
+        assert.ok(!steps.includes('hosts'))
     })
 
-    it('rewrites the vhost back when a throw comes after it was rewritten', async () => {
+    it('rewrites the NPM hosts back when a throw comes after it was rewritten', async () => {
         let rewrites = 0
-        const { deps, steps } = fakes({ rewriteVhost: async () => { steps.push('vhost'); rewrites += 1; if (rewrites === 1) throw new Error('rail went away'); return null } })
+        const { deps, steps } = fakes({ rewriteHosts: async () => { steps.push('hosts'); rewrites += 1; if (rewrites === 1) throw new Error('edge went away'); return null } })
         const reply = await changePort(acme, 'live', 5012, deps)
         assert.equal(reply.ok, false)
-        assert.match(reply.ok ? '' : reply.message, /rail went away/)
-        assert.deepEqual(steps.slice(-6), ['vhost', 'restore env "WEB_PORT=5010\\n"', 'registry 5010 docker-compose.yml', 'remove override', 'up', 'vhost'])
+        assert.match(reply.ok ? '' : reply.message, /edge went away/)
+        assert.deepEqual(steps.slice(-6), ['hosts', 'restore env "WEB_PORT=5010\\n"', 'registry 5010 docker-compose.yml', 'remove override', 'up', 'hosts'])
     })
 
     it('does not put the registry back when the throw came before it was written', async () => {
@@ -221,28 +221,28 @@ describe('changePort', () => {
 
     // Apache would go on proxying to the old port behind a file hostd cannot rewrite, while the change
     // reported success, so an address served by hand is refused before anything is written
-    it('refuses an environment whose domain is served by a hand-written vhost, touching nothing', async () => {
-        const { deps, steps } = fakes({ hasOwnVhost: async () => { steps.push('own vhost?'); return false } })
+    it('refuses an environment whose domain is served by an NPM host hostd does not manage, touching nothing', async () => {
+        const { deps, steps } = fakes({ hasOwnHosts: async () => { steps.push('own hosts?'); return false } })
         assert.deepEqual(await changePort(acme, 'live', 5012, deps), {
             ok: false, code: 'bad-request',
-            message: 'acme.com is served by a hand-written vhost; adopt it from the Domains tab first, or move the port by hand',
+            message: 'acme.com is served by an NPM proxy host hostd does not manage; adopt it from the Domains tab first, or move the port by hand in Nginx Proxy Manager',
         })
-        assert.deepEqual(steps, ['own vhost?'])
+        assert.deepEqual(steps, ['own hosts?'])
     })
 
-    it('moves an environment with no domain without asking about a vhost', async () => {
-        const { deps, steps } = fakes({ hasOwnVhost: async () => { steps.push('own vhost?'); return false } })
+    it('moves an environment with no domain without asking about NPM hosts', async () => {
+        const { deps, steps } = fakes({ hasOwnHosts: async () => { steps.push('own hosts?'); return false } })
         const reply = await changePort(bare, 'live', 5012, deps)
         assert.equal(reply.ok, true)
-        assert.ok(!steps.includes('own vhost?'))
+        assert.ok(!steps.includes('own hosts?'))
     })
 
-    it('refuses, touching nothing, when whether hostd owns the vhost cannot be read', async () => {
-        const { deps, steps } = fakes({ hasOwnVhost: async () => { steps.push('own vhost?'); throw new Error('EACCES') } })
+    it('refuses, touching nothing, when whether hostd manages the NPM hosts cannot be read', async () => {
+        const { deps, steps } = fakes({ hasOwnHosts: async () => { steps.push('own hosts?'); throw new Error('EACCES') } })
         assert.deepEqual(await changePort(acme, 'live', 5012, deps), {
             ok: false, code: 'failed',
-            message: 'acme live could not be moved to port 5012: whether hostd owns its vhost could not be read: EACCES',
+            message: 'acme live could not be moved to port 5012: whether hostd manages its NPM hosts could not be read: EACCES',
         })
-        assert.deepEqual(steps, ['own vhost?'])
+        assert.deepEqual(steps, ['own hosts?'])
     })
 })

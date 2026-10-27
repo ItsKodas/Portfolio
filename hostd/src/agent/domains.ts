@@ -1,149 +1,311 @@
-// The agent's domain verb. It renders a vhost, puts it on the host through the rail, and puts the
-// previous one back when Apache refuses the result.
+// The agent's domain verb. It renders an environment's Nginx Proxy Manager hosts and asks edge to put
+// them in place; edge is the only process that talks to NPM, and it refuses to touch any host that does
+// not carry this environment's marker (adopt aside). Everything that decides what a site may serve
+// stays here: the registry, the certificate, the claim checks.
 //
-// Reverting is here rather than in the host unit because this is what knows the previous contents. On a
-// failed configtest nothing has reloaded, so the running configuration is still good; what is dangerous
-// is the bad file sitting on disk, which the next unrelated reload or a reboot would pick up.
+// Undoing a failed write is edge's job now, not this file's: edge holds the state the host was in
+// before, and answers ok: false only after putting it back. What is left here is the one case edge
+// cannot settle, a reply that never arrived, where the write may or may not have happened.
 
-import { posix } from 'node:path'
-import { hostnamesOf, type EnvironmentEntry, type ProjectEntry, type Registry } from '../shared/registry.ts'
+import { hostnamesOf, type EnvironmentEntry, type NpmIds, type ProjectEntry, type Registry } from '../shared/registry.ts'
 import { refuse, type AdoptPreview, type DomainsWritten, type Refusal } from '../shared/protocol.ts'
 import type { Change } from '../shared/registry-write.ts'
-import type { ApacheRail } from './apache-rail.ts'
-import { blindWarning, findClaims, readNothing, servesHttpOnly, type Claim, type SitesEnabled } from './sites-enabled.ts'
-import { renderVhost, upstreamFor, vhostPath } from './vhost.ts'
-import { holdingPagePath } from './holding-pages.ts'
-import { accessLogPath } from './analytics.ts'
+import { describeError } from '../shared/formats.ts'
+import { ownerOf as ownerOfConfig, type FoundHost, type HostsSpec, type Owner, type ProxyHostSpec, type RedirectionHostSpec } from '../shared/edge-protocol.ts'
+import type { EdgeClient } from './edge-client.ts'
+import type { AdoptedStore } from './adopted-store.ts'
+import { BROTLI, certificateFor, describeHosts, renderHosts, tokenFromHosts } from './npm-render.ts'
 
-export type DomainsConfig = {
-    includeDir: string
-    sitesEnabled: string
-    originCert: string
-    originKey: string
-    acmeWebroot: string
-    maintenanceFlagDir: string
-    maintenancePageDir: string
-    // Where each environment's access log is written: Apache's own log directory, so logrotate keeps it
-    accessLogDir: string
-}
+export type DomainsConfig = { upstreamHost: string, edgeHost: string, edgeHttpPort: number }
 
 export type DomainsDeps = {
-    rail: Pick<ApacheRail, 'send'>
-    // null rather than a throw when the file is not there: a first write has no previous file, and that
-    // is the ordinary case rather than an error.
-    readFile(path: string): Promise<string | null>
-    // Both halves of the sweep: the files that were read, and the paths of any that could not be. A
-    // file nobody can open claims no hostname, so it never blocks a write, but the caller is told about
-    // it rather than left to believe sites-enabled held nothing else.
-    listSitesEnabled(): Promise<SitesEnabled>
+    edge: EdgeClient
+    // The pre-adopt copy of each adopted proxy host, which is what restoreAdopted puts back
+    adopted: AdoptedStore
     // The same RegistryWriter provisioning already uses, and a reload so the entry this just wrote is
-    // what the vhost is rendered from. Rendering from the arguments instead would let a write that was
-    // silently rejected still produce a vhost claiming the alias.
+    // what the hosts are rendered from. Rendering from the arguments instead would let a write that was
+    // silently rejected still produce a host claiming the alias.
     writeRegistry(change: Change): Promise<{ ok: true } | { ok: false, problem: string, conflict?: true }>
     reloadRegistry(): Promise<Registry>
-    // Writes the environment's holding page now, so it is already on disk when the vhost that names it
-    // is loaded. Optional, and its failure only logged by the caller: a vhost that cannot find its page
-    // still serves the site, and the main loop writes the page again on its next pass.
+    // Writes the environment's holding page now, so it is already there when NPM first falls back to
+    // it. Optional, and its failure ignored: a host whose page is missing still serves the site, and the
+    // main loop writes the page again on its next pass.
     refreshHoldingPage?(project: ProjectEntry, environment: EnvironmentEntry): Promise<void>
     config: DomainsConfig
 }
 
-function render(deps: DomainsDeps, project: ProjectEntry, environment: EnvironmentEntry, token: string): string {
-    return renderVhost({
-        id: project.id,
-        environment: environment.name,
-        primary: environment.domain!,
-        aliases: environment.aliases,
-        port: environment.port,
-        websockets: environment.websockets,
-        flexibleSsl: environment.flexibleSsl,
-        token,
-        certificate: { chain: deps.config.originCert, key: deps.config.originKey },
-        maintenanceDir: deps.config.maintenancePageDir,
-        maintenanceFlag: posix.join(deps.config.maintenanceFlagDir, `${project.id}-${environment.name}`),
-        holdingPage: holdingPagePath(deps.config.maintenancePageDir, project.id, environment.name),
-        acmeWebroot: deps.config.acmeWebroot,
-        accessLog: accessLogPath(deps.config.accessLogDir, project.id, environment.name),
-    })
+type Done = { ok: true } | Refusal
+type Applied = { ok: true, ids: NpmIds, previous: HostsSpec | null }
+type Claim = AdoptPreview['preview']['claims'][number]
+
+const ownerOf = (project: ProjectEntry, environment: EnvironmentEntry): Owner => ({ project: project.id, environment: environment.name })
+const nameOf = (owner: Owner): string => `${owner.project} ${owner.environment}`
+// What DomainsWritten carries as its path: the portal shows it, and api only ever stores it
+const pathOf = (proxyHost: number): string => `npm:proxy-host/${proxyHost}`
+// Hand-made hosts in NPM may carry names in any case, or with a trailing dot; the registry's never do.
+const hostname = (name: string): string => name.toLowerCase().replace(/\.$/, '')
+const sameOwner = (a: Owner | null, b: Owner): boolean => a !== null && a.project === b.project && a.environment === b.environment
+const sameIds = (a: NpmIds | null, b: NpmIds | null): boolean =>
+    a === b || (a !== null && b !== null && a.proxyHost === b.proxyHost && a.redirectionHost === b.redirectionHost)
+
+function allDomains(spec: HostsSpec): string[] {
+    return [...spec.proxy.domain_names, ...(spec.redirection?.domain_names ?? [])]
 }
 
-// Put back what was there, or take away what was just put down. Either way a second reload follows, so
-// that the configuration on disk is known to pass a configtest before this returns.
-// The sweep every claim check starts from. It answers a refusal instead of a listing when the directory
-// had entries and not one of them could be read, because every check below reads "no claim found" out of
-// an empty list and cannot tell that apart from hostd being unable to see. The guards under it are the
-// only thing standing between an adopt and a live site's own vhost, and a guard that cannot fire is
-// worse than one that is not there: it reports all clear.
-//
-// unavailable rather than bad-request: nothing about the call is wrong, and the operator cannot fix it
-// by changing what they asked for. api turns it into a 503.
-async function sweep(deps: DomainsDeps): Promise<{ ok: true, sites: SitesEnabled } | Refusal> {
-    const sites = await deps.listSitesEnabled()
-    if (readNothing(sites)) return refuse('unavailable', blindWarning(deps.config.sitesEnabled, sites.unreadable))
-    return { ok: true, sites }
+// Field by field, with the domain names as a set: NPM may hand them back in another order.
+function sameSpec(a: ProxyHostSpec | RedirectionHostSpec, b: ProxyHostSpec | RedirectionHostSpec): boolean {
+    const canonical = (spec: ProxyHostSpec | RedirectionHostSpec) => JSON.stringify(Object.entries(spec)
+        .map(([key, value]) => [key, key === 'domain_names' ? (value as string[]).map(hostname).sort() : value])
+        .sort(([left], [right]) => String(left).localeCompare(String(right))))
+    return canonical(a) === canonical(b)
 }
 
-// Never throws: the page is a nicety on top of the vhost, and the domain change must not fail for it.
+// Never throws: the page is a nicety on top of the hosts, and the domain change must not fail for it.
 async function ensureHoldingPage(deps: DomainsDeps, project: ProjectEntry, environment: EnvironmentEntry): Promise<void> {
     await deps.refreshHoldingPage?.(project, environment).catch(() => {})
 }
 
-async function revert(deps: DomainsDeps, path: string, previous: string | null): Promise<string> {
-    const parts = previous === null
-        ? { write: null, remove: [path], disable: [] }
-        : { write: { path, text: previous }, remove: [], disable: [] }
-    try {
-        const result = await deps.rail.send('reload', parts)
-        return result.ok ? '' : ` The previous configuration could not be restored either: ${result.output}`
-    } catch (error) {
-        return ` The previous configuration could not be restored either: ${error instanceof Error ? error.message : String(error)}`
+// The certificate comes from a fresh read of the registry's certificates map rather than anything the
+// caller holds, for the same reason the entry itself is reloaded before every write.
+async function render(deps: DomainsDeps, project: ProjectEntry, environment: EnvironmentEntry, token: string): Promise<{ ok: true, spec: HostsSpec } | Refusal> {
+    let certificateId: number | null = null
+    if (!environment.flexibleSsl) {
+        const chosen = certificateFor((await deps.reloadRegistry()).certificates, hostnamesOf(environment))
+        if (!chosen.ok) return refuse('bad-request', chosen.problem)
+        certificateId = chosen.id
+    }
+    return {
+        ok: true,
+        spec: renderHosts({
+            id: project.id,
+            environment: environment.name,
+            primary: environment.domain!,
+            aliases: environment.aliases,
+            port: environment.port,
+            flexibleSsl: environment.flexibleSsl,
+            token,
+            certificateId,
+            upstreamHost: deps.config.upstreamHost,
+            edgeHost: deps.config.edgeHost,
+            edgeHttpPort: deps.config.edgeHttpPort,
+        }),
     }
 }
 
-export async function writeVhost(
+async function find(deps: DomainsDeps, domains: string[]): Promise<{ ok: true, hosts: FoundHost[] } | Refusal> {
+    try {
+        const reply = await deps.edge.call({ verb: 'find', domains })
+        if (!reply.ok) return refuse('unavailable', `NPM could not be searched: ${reply.problem}`, reply.output)
+        if (reply.verb !== 'find') return refuse('failed', `edge answered a find with ${reply.verb}`)
+        return { ok: true, hosts: reply.hosts }
+    } catch (error) {
+        return refuse('unavailable', `NPM could not be searched: ${describeError(error)}`)
+    }
+}
+
+function unknownOutcome(owner: Owner, why: string, again: string): Refusal {
+    return refuse(
+        'unavailable',
+        `${why}, and NPM could not be read back either (${again}), so the change to the hosts for ${nameOf(owner)} `
+        + 'may or may not have reached Nginx Proxy Manager. Check the hosts in NPM before trying again.',
+    )
+}
+
+// edge answers only once its write queue reaches a request, and the client's timeout counts the time
+// spent queued, so a reply that never came says nothing about whether the write happened: it may have
+// landed, it may still be waiting, or it may have failed and been put back. NPM is read once to find
+// out. Only hosts that match the spec exactly count as landed, and anything else is refused as
+// unavailable with no ids recorded: guessing wrong either way would leave the registry naming hosts
+// that are not there, or NPM holding marked hosts nothing names.
+async function confirmApply(deps: DomainsDeps, owner: Owner, ids: NpmIds | null, spec: HostsSpec, error: unknown): Promise<Applied | Refusal> {
+    const why = `edge did not answer (${describeError(error)})`
+    const notYet = refuse(
+        'unavailable',
+        `${why}, and NPM does not show the change to the hosts for ${nameOf(owner)}. It may still be waiting behind `
+        + 'another write, or it may have failed and been put back; check the hosts in NPM before trying again.',
+    )
+    // A known set of ids is read back directly, unless the write was to create a redirection host,
+    // whose id only a search can find, or to release the proxy host (the adoption undo writes it back
+    // without the marker), which get would then refuse as no longer this environment's.
+    const releasing = !sameOwner(ownerOfConfig(spec.proxy.advanced_config), owner)
+    if (ids !== null && !releasing && (ids.redirectionHost !== null || spec.redirection === null)) {
+        let reply
+        try {
+            reply = await deps.edge.call({ verb: 'get', owner, ids })
+        } catch (again) {
+            return unknownOutcome(owner, why, describeError(again))
+        }
+        if (!reply.ok) return unknownOutcome(owner, why, reply.problem)
+        if (reply.verb !== 'get') return unknownOutcome(owner, why, `edge answered a get with ${reply.verb}`)
+        const current = reply.current
+        if (current === null || !sameSpec(current.proxy, spec.proxy)) return notYet
+        if (spec.redirection === null ? current.redirection !== null : current.redirection === null || !sameSpec(current.redirection, spec.redirection)) return notYet
+        return { ok: true, ids: { proxyHost: ids.proxyHost, redirectionHost: spec.redirection === null ? null : ids.redirectionHost }, previous: null }
+    }
+    const found = await find(deps, allDomains(spec))
+    if (!found.ok) return unknownOutcome(owner, why, found.message)
+    // By id when there is one (a released host carries no marker to match on), by marker for a create
+    const proxy = found.hosts.find(host => host.kind === 'proxy' && host.spec !== null && sameSpec(host.spec, spec.proxy)
+        && (ids === null ? sameOwner(host.owner, owner) : host.id === ids.proxyHost))
+    if (!proxy) return notYet
+    let redirectionHost: number | null = null
+    if (spec.redirection) {
+        const wanted = spec.redirection
+        const redirection = found.hosts.find(host => host.kind === 'redirection' && sameOwner(host.owner, owner) && host.spec !== null && sameSpec(host.spec, wanted))
+        if (!redirection) return notYet
+        redirectionHost = redirection.id
+    } else if (found.hosts.some(host => host.kind === 'redirection' && sameOwner(host.owner, owner))) {
+        // The redirection host this write deletes is still there
+        return notYet
+    }
+    return { ok: true, ids: { proxyHost: proxy.id, redirectionHost }, previous: null }
+}
+
+async function apply(deps: DomainsDeps, owner: Owner, ids: NpmIds | null, spec: HostsSpec, adopt: boolean): Promise<Applied | Refusal> {
+    let reply
+    try {
+        reply = await deps.edge.call({ verb: 'apply', owner, ids, spec, adopt })
+    } catch (error) {
+        return confirmApply(deps, owner, ids, spec, error)
+    }
+    // edge has already put back whatever it changed, so a refusal means the hosts are as they were
+    if (!reply.ok) return refuse('failed', reply.problem, reply.output)
+    if (reply.verb !== 'apply') return refuse('failed', `edge answered an apply with ${reply.verb}`)
+    return { ok: true, ids: reply.ids, previous: reply.previous }
+}
+
+// The same question as confirmApply, for a removal: the hosts are gone or they are not.
+async function remove(deps: DomainsDeps, owner: Owner, ids: NpmIds): Promise<Done> {
+    let reply
+    try {
+        reply = await deps.edge.call({ verb: 'remove', owner, ids })
+    } catch (error) {
+        const why = `edge did not answer (${describeError(error)})`
+        let current
+        try {
+            current = await deps.edge.call({ verb: 'get', owner, ids })
+        } catch (again) {
+            return unknownOutcome(owner, why, describeError(again))
+        }
+        if (!current.ok) return unknownOutcome(owner, why, current.problem)
+        if (current.verb === 'get' && current.current === null) return { ok: true }
+        return refuse(
+            'unavailable',
+            `${why}, and NPM still has the hosts for ${nameOf(owner)}. The removal may still be waiting behind another `
+            + 'write; check the hosts in NPM before trying again.',
+        )
+    }
+    if (!reply.ok) return refuse('failed', reply.problem, reply.output)
+    return { ok: true }
+}
+
+// The registry is told whenever the ids changed, which is a create, or an update that made or removed
+// the redirection host. A create whose ids cannot be recorded is taken back off NPM, because a marked
+// host the registry does not name blocks every later write of those names.
+async function recordIds(deps: DomainsDeps, project: ProjectEntry, environment: EnvironmentEntry, ids: NpmIds): Promise<Done> {
+    if (sameIds(environment.npm, ids)) return { ok: true }
+    const written = await deps.writeRegistry({ kind: 'set-npm', id: project.id, environment: environment.name, npm: ids })
+    if (written.ok) return { ok: true }
+    const owner = ownerOf(project, environment)
+    const hosts = `NPM proxy host ${ids.proxyHost}${ids.redirectionHost === null ? '' : ` and redirection host ${ids.redirectionHost}`}`
+    if (environment.npm !== null) {
+        return refuse('failed', `the hosts for ${nameOf(owner)} were written, but the registry could not record their ids (${written.problem}); it should name ${hosts}`)
+    }
+    const removed = await remove(deps, owner, ids)
+    return refuse(
+        'failed',
+        `the registry could not record the new hosts for ${nameOf(owner)} (${written.problem}), `
+        + (removed.ok ? 'so they were removed again' : `and removing them again failed too (${removed.message}); delete ${hosts} in NPM`),
+    )
+}
+
+export async function writeHosts(
     deps: DomainsDeps,
     project: ProjectEntry,
     environment: EnvironmentEntry,
     token: string,
 ): Promise<DomainsWritten | Refusal> {
     if (environment.domain === null) {
-        return refuse('bad-request', `${project.id} ${environment.name} has no domain, so there is no vhost to write`)
+        return refuse('bad-request', `${project.id} ${environment.name} has no domain, so there are no NPM hosts to write`)
     }
-    const path = vhostPath(deps.config.includeDir, project.id, environment.name)
-    const previous = await deps.readFile(path)
-    const text = render(deps, project, environment, token)
+    const rendered = await render(deps, project, environment, token)
+    if (!rendered.ok) return rendered
+    const owner = ownerOf(project, environment)
+
+    // A create, checked here as well as in edge so a name already on another NPM host is refused as the
+    // operator's to sort out (adopt it, or remove it in NPM) before anything is written, rather than
+    // coming back as a failed write. Usually that host is the hand-made one the site runs on today.
+    if (environment.npm === null) {
+        const found = await find(deps, hostnamesOf(environment))
+        if (!found.ok) return found
+        const host = found.hosts[0]
+        if (host) {
+            const kind = host.kind === 'dead' ? '404' : host.kind
+            const names = host.domain_names.map(hostname)
+            const name = hostnamesOf(environment).find(entry => names.includes(hostname(entry))) ?? environment.domain
+            const why = sameOwner(host.owner, owner)
+                ? `which carries the marker for ${nameOf(owner)} although the registry names no NPM hosts for it; delete it in NPM first`
+                : `which hostd does not manage; adopt ${nameOf(owner)} from the Domains tab to take it over, or remove it in NPM`
+            return refuse('bad-request', `${name} is already served by NPM ${kind} host ${host.id}, ${why}`)
+        }
+    }
     await ensureHoldingPage(deps, project, environment)
 
-    const result = await deps.rail.send('reload', { write: { path, text }, remove: [], disable: [] })
-    if (!result.ok) {
-        const also = await revert(deps, path, previous)
-        return refuse('failed', `Apache refused the new configuration for ${project.id} ${environment.name}.${also}`, result.output)
-    }
-    return { ok: true, written: { hostnames: hostnamesOf(environment), path } }
+    const applied = await apply(deps, owner, environment.npm, rendered.spec, false)
+    if (!applied.ok) return applied
+    const recorded = await recordIds(deps, project, environment, applied.ids)
+    if (!recorded.ok) return recorded
+    return { ok: true, written: { hostnames: hostnamesOf(environment), path: pathOf(applied.ids.proxyHost) } }
 }
 
-export async function removeVhost(
+// The hosts off NPM, with nothing written to the registry: for a whole project being removed, whose
+// entry, ids and all, is already gone by the time this runs.
+export async function removeEdgeHosts(deps: DomainsDeps, project: ProjectEntry, environment: EnvironmentEntry): Promise<Done> {
+    if (environment.npm === null) return { ok: true }
+    return remove(deps, ownerOf(project, environment), environment.npm)
+}
+
+export async function removeHosts(
     deps: DomainsDeps,
     project: ProjectEntry,
     environment: EnvironmentEntry,
 ): Promise<DomainsWritten | Refusal> {
-    const path = vhostPath(deps.config.includeDir, project.id, environment.name)
-    const previous = await deps.readFile(path)
-    const result = await deps.rail.send('reload', { write: null, remove: [path], disable: [] })
-    if (!result.ok) {
-        const also = await revert(deps, path, previous)
-        return refuse('failed', `Apache refused the configuration without ${project.id} ${environment.name}.${also}`, result.output)
+    // Nothing hostd wrote, so nothing to take away: a hand-made host is never hostd's to delete
+    if (environment.npm === null) return { ok: true, written: { hostnames: [], path: 'npm:none' } }
+    const ids = environment.npm
+    const removed = await remove(deps, ownerOf(project, environment), ids)
+    if (!removed.ok) return removed
+    const written = await deps.writeRegistry({ kind: 'set-npm', id: project.id, environment: environment.name, npm: null })
+    if (!written.ok) {
+        return refuse('failed', `the NPM hosts for ${project.id} ${environment.name} were removed, but the registry still names them: ${written.problem}`)
     }
-    return { ok: true, written: { hostnames: [], path } }
+    return { ok: true, written: { hostnames: [], path: pathOf(ids.proxyHost) } }
+}
+
+// Puts hosts back that a delete's undo read before removing them: a create from the spec as it was,
+// which carries the marker already, and the new ids recorded, since NPM never reuses an id.
+export async function recreateHosts(deps: DomainsDeps, project: ProjectEntry, environment: EnvironmentEntry, spec: HostsSpec): Promise<Done> {
+    const applied = await apply(deps, ownerOf(project, environment), null, spec, false)
+    if (!applied.ok) return applied
+    return recordIds(deps, project, { ...environment, npm: null }, applied.ids)
+}
+
+// The token the environment's hosts carry now, or null when hostd wrote none. Throws when edge cannot
+// say, so a caller never mistakes "could not read" for "nothing there".
+export async function currentToken(deps: DomainsDeps, project: ProjectEntry, environment: EnvironmentEntry): Promise<string | null> {
+    if (environment.npm === null) return null
+    const reply = await deps.edge.call({ verb: 'get', owner: ownerOf(project, environment), ids: environment.npm })
+    if (!reply.ok) throw new Error(reply.problem)
+    if (reply.verb !== 'get') throw new Error(`edge answered a get with ${reply.verb}`)
+    return reply.current === null ? null : tokenFromHosts(reply.current)
 }
 
 // Add or remove an alias. The caller hands over the whole list the environment should end up with, so a
 // retry after a half-failure lands in the same place rather than adding the same alias twice.
 //
-// The order is registry first, then vhost, and it matters. The registry is the record of what this site
-// is entitled to serve; the vhost is a rendering of it. Writing the vhost first would mean a crash
-// between the two left Apache serving a hostname no entry claims, which is the one state nothing else in
-// hostd knows how to correct.
+// The order is registry first, then hosts, and it matters. The registry is the record of what this site
+// is entitled to serve; the hosts are a rendering of it. Writing the hosts first would mean a crash
+// between the two left NPM serving a hostname no entry claims.
 export async function setAliases(
     deps: DomainsDeps,
     project: ProjectEntry,
@@ -160,81 +322,141 @@ export async function setAliases(
     // No maxDomains check. Adding a hostname is admin-only (see ADMIN_ONLY in api's policy.ts), and the
     // admin may give an environment as many as they like.
 
-    // parseRegistry's own uniqueness rule sees hostd's entries and nothing else, so it cannot know that a
-    // hand-written vhost in sites-enabled already serves one of these hostnames; findClaims is what does.
-    // Two vhosts claiming one name is not an error Apache refuses: it warns about the overlap, starts
-    // anyway, and which one answers depends on the order the files loaded. Every refusal here names the
-    // file, because the operator's next move is to adopt it or edit it, and neither is possible without
-    // knowing which one it is.
-    // Only the files that were read. An unreadable one is Apache serving nothing from that path, so it
-    // cannot be claiming a hostname and it must not stop this write; /health is where it is raised,
-    // because it is a problem with the server rather than with this site. The one exception is a
-    // directory where nothing at all could be read, which sweep refuses on: see its own comment.
-    const listing = await sweep(deps)
-    if (!listing.ok) return listing
-    const { files: sitesEnabled } = listing.sites
-
-    // The primary first, and it is checked on every call rather than only when something is being added.
-    // This path does not merely register a name: it writes a whole vhost, and that vhost claims the
-    // primary too. A site that has never been adopted still has a hand-written file serving its primary,
-    // which is the state all five existing sites are in, so adding a first alias to one of them would
-    // put a second vhost on the same hostname and let include order decide which of the two answers. If
-    // hostd's won, the site would silently lose whatever the hand-written file carried, a custom
-    // rewrite, basic auth, a bespoke error page, which is exactly what adopt's preview exists to put in
-    // front of the operator before it happens.
-    //
-    // This guard is not authoritative and must not be read as though it were. It sees sites-enabled as it
-    // is on disk right now; Apache is serving the configuration it loaded the last time it was reloaded,
-    // which may be an older view of the same directory. In the window where a symlink has been deleted
-    // but Apache has not reloaded since, the file is gone from this reading while the hostname it names
-    // is still genuinely being served, so this passes and the vhost is written anyway. Nothing bad
-    // reaches production when that happens: the rail's own apache2ctl configtest fails on the dangling
-    // entry and writeVhost puts the previous file back. The cost is only that the operator gets Apache's
-    // words about a configuration it refused instead of the purpose-built refusal below, which would have
-    // named the file and told them to adopt. Closing the race would mean asking Apache what it currently
-    // has loaded rather than reading the directory, which is a much larger thing than this check is.
-    const primaryClaim = findClaims(sitesEnabled, [environment.domain])[0]
-    if (primaryClaim) {
-        return refuse(
-            'bad-request',
-            `${environment.domain} is still served by ${primaryClaim.path}, so writing a vhost for it here would leave two claiming it; adopt ${project.id} ${environment.name} first, which moves that file aside in the same reload`,
-        )
-    }
-
-    // The aliases, and only the ones being added. Names already on the environment were accepted once,
-    // and re-checking them would make removing an unrelated alias impossible, since set-aliases carries
-    // the whole resulting list rather than one name and a direction.
+    // parseRegistry's uniqueness rule sees hostd's entries and nothing else, so it cannot know that an
+    // NPM host made by hand already serves one of these names. edge would refuse the write anyway, but
+    // only after the registry had taken the alias, so the check is made here first. Only the names being
+    // added: the ones already on the environment were accepted once, and re-checking them would make
+    // removing an unrelated alias impossible. The primary too while hostd has no hosts for it, because
+    // this call creates them, and a hand-made host on the primary is a site still waiting to be adopted.
+    const owner = ownerOf(project, environment)
     const added = aliases.filter(alias => !environment.aliases.includes(alias))
-    if (added.length > 0) {
-        const claim = findClaims(sitesEnabled, added)[0]
-        if (claim) {
-            const clashing = claim.names.filter(name => added.includes(name))
-            return refuse('bad-request', `${clashing.join(', ')} is already served by ${claim.path}; adopt or edit that file first`)
+    const checking = environment.npm === null ? [environment.domain, ...added] : added
+    if (checking.length > 0) {
+        const found = await find(deps, checking)
+        if (!found.ok) return found
+        for (const host of found.hosts) {
+            if (sameOwner(host.owner, owner)) continue
+            const names = host.domain_names.map(hostname)
+            const kind = host.kind === 'dead' ? '404' : host.kind
+            if (environment.npm === null && names.includes(hostname(environment.domain))) {
+                return refuse(
+                    'bad-request',
+                    `${environment.domain} is still served by NPM ${kind} host ${host.id}, which hostd does not manage; adopt ${project.id} ${environment.name} first`,
+                )
+            }
+            const clashing = added.filter(name => names.includes(hostname(name)))
+            return refuse('bad-request', `${clashing.join(', ')} is already on NPM ${kind} host ${host.id}, which this environment does not own; remove it there first`)
         }
     }
 
-    const written = await deps.writeRegistry({
-        kind: 'set-aliases', id: project.id, environment: environment.name, aliases,
-    })
+    const written = await deps.writeRegistry({ kind: 'set-aliases', id: project.id, environment: environment.name, aliases })
     if (!written.ok) return refuse('failed', `the registry could not be updated: ${written.problem}`)
 
     // Re-read rather than trusting the write: parseRegistry is what enforces reserved, the allowed
     // carve-out and cross-project uniqueness, and a list that passed the grammar can still fail those.
     const registry = await deps.reloadRegistry()
     const fresh = registry.projects.get(project.id)?.environments.get(environment.name)
-    if (!fresh) {
-        return refuse('failed', `${project.id} ${environment.name} did not survive the change`)
+    if (!fresh) return refuse('failed', `${project.id} ${environment.name} did not survive the change`)
+    return writeHosts(deps, registry.projects.get(project.id)!, fresh, token)
+}
+
+const yesNo = (value: boolean): string => (value ? 'yes' : 'no')
+
+// A found host in the same plain lines describeHosts gives the proposal, so the two read side by side.
+function describeFound(host: FoundHost): string {
+    if (host.kind === 'proxy' && host.spec !== null) return describeHosts({ proxy: host.spec as ProxyHostSpec, redirection: null })
+    if (host.kind === 'redirection' && host.spec !== null) {
+        const spec = host.spec as RedirectionHostSpec
+        return [
+            'Redirection host',
+            `Domains: ${spec.domain_names.join(', ')}`,
+            `Redirects to: ${spec.forward_domain_name}`,
+            `Certificate: ${spec.certificate_id === 0 ? 'none' : spec.certificate_id}`,
+            `SSL forced: ${yesNo(spec.ssl_forced)}`,
+            `HTTP/2: ${yesNo(spec.http2_support)}`,
+            'Advanced config:',
+            ...spec.advanced_config.trimEnd().split('\n').map(line => `    ${line}`),
+        ].join('\n')
     }
-    return writeVhost(deps, registry.projects.get(project.id)!, fresh, token)
+    return ['404 host', `Domains: ${host.domain_names.join(', ')}`].join('\n')
 }
 
-// Whether the vhost adoption writes has to serve port 80: the environment already says so, or a file it
-// replaces answered port 80 only (see servesHttpOnly).
-function needsFlexibleSsl(environment: EnvironmentEntry, claims: Claim[]): boolean {
-    return environment.flexibleSsl || claims.some(claim => servesHttpOnly(claim.text))
+function claimPath(host: FoundHost): string {
+    return `NPM ${host.kind === 'dead' ? 'dead' : host.kind} host ${host.id}`
 }
 
-// Reading only. Nothing here moves a file or reloads anything: an operator has to see what they are
+// Every reason one found host cannot be adopted, all of them at once: the operator fixes them by hand in
+// NPM, and being told one per attempt is how an adoption takes an afternoon. edge re-checks the ones that
+// guard live sites (marker, upstream, locations, access list, directives) when adopt writes.
+function reasonsFor(deps: DomainsDeps, owner: Owner, environment: EnvironmentEntry, found: FoundHost[], host: FoundHost, extraNames: string[]): string[] {
+    const reasons: string[] = []
+    if (found.length > 1) {
+        reasons.push(`${found.length} NPM hosts serve these names (${found.map(claimPath).join(', ')}); hostd adopts a single proxy host, so leave only one in NPM first.`)
+    }
+    if (host.owner !== null && !sameOwner(host.owner, owner)) {
+        reasons.push(`It carries the marker for ${host.owner.project}/${host.owner.environment}, so it is already managed by hostd for that environment.`)
+    }
+    if (host.kind === 'redirection') {
+        reasons.push('It is a redirection host; hostd adopts the proxy host and makes its own redirection host for the aliases.')
+        return reasons
+    }
+    if (host.kind === 'dead') {
+        reasons.push('It is a 404 host, which serves nothing hostd could take over.')
+        return reasons
+    }
+    if (!host.domain_names.map(hostname).includes(hostname(environment.domain!))) reasons.push(`It does not serve ${environment.domain}.`)
+    const forward = `${host.forward_host}:${host.forward_port}`
+    const wanted = `${deps.config.upstreamHost}:${environment.port}`
+    if (forward !== wanted) reasons.push(`It forwards to ${forward}, not ${wanted}.`)
+    if (host.hasLocations) reasons.push('It has custom locations, which hostd would drop.')
+    // The template replaces advanced_config whole, so anything in it but the brotli snippet every live
+    // host carries would be lost without a word. A host already marked for this environment is hostd's
+    // own rendering, so there is nothing of Koda's in it to lose.
+    if (host.owner === null && host.spec !== null) {
+        const config = host.spec.advanced_config.replace(/\r\n/g, '\n').trim()
+        if (config !== '' && config !== BROTLI) {
+            reasons.push(`It has custom nginx directives: ${config.split('\n', 1)[0]!.trim()} (move them out in NPM, or leave this host to be managed by hand).`)
+        }
+    }
+    const extra = extraNames.filter(name => host.domain_names.map(hostname).includes(name))
+    if (extra.length > 0) reasons.push(`${extra.join(', ')} are on the NPM host but not in the registry; add them as aliases first.`)
+    return reasons
+}
+
+type Survey = { spec: HostsSpec, found: FoundHost[], claims: Claim[], extraNames: string[], adoptable: boolean }
+
+// What preview shows and adopt re-checks, read fresh from NPM each time: a preview may be minutes old
+// by the time the operator confirms it.
+async function survey(deps: DomainsDeps, project: ProjectEntry, environment: EnvironmentEntry, token: string): Promise<{ ok: true, survey: Survey } | Refusal> {
+    if (environment.domain === null) {
+        return refuse('bad-request', `${project.id} ${environment.name} has no domain, so there is nothing to adopt`)
+    }
+    const rendered = await render(deps, project, environment, token)
+    if (!rendered.ok) return rendered
+    const hostnames = hostnamesOf(environment)
+    const searched = await find(deps, hostnames)
+    if (!searched.ok) return searched
+    const found = searched.hosts
+    // Adopt takes over a host that exists; with none, the site is made through the ordinary write instead
+    if (found.length === 0) return refuse('bad-request', `no NPM proxy host serves ${environment.domain}`)
+
+    // Names the old host serves that the registry has never heard of. Refused rather than dropped:
+    // adopting without them would silently stop serving hostnames that work today.
+    const listed = hostnames.map(hostname)
+    const extraNames = [...new Set(found.filter(host => host.kind === 'proxy').flatMap(host => host.domain_names.map(hostname)))]
+        .filter(name => !listed.includes(name))
+    const owner = ownerOf(project, environment)
+    const claims = found.map(host => ({
+        path: claimPath(host),
+        text: describeFound(host),
+        names: host.domain_names,
+        unsupported: reasonsFor(deps, owner, environment, found, host, extraNames),
+    }))
+    const adoptable = found.length === 1 && found[0]!.kind === 'proxy' && claims[0]!.unsupported.length === 0
+    return { ok: true, survey: { spec: rendered.spec, found, claims, extraNames, adoptable } }
+}
+
+// Reading only. Nothing here writes to NPM or the registry: an operator has to see what they are
 // replacing before any of it happens, and that is the whole reason adoption is two calls.
 export async function previewAdopt(
     deps: DomainsDeps,
@@ -242,143 +464,103 @@ export async function previewAdopt(
     environment: EnvironmentEntry,
     token: string,
 ): Promise<AdoptPreview | Refusal> {
-    if (environment.domain === null) {
-        return refuse('bad-request', `${project.id} ${environment.name} has no domain, so there is nothing to adopt`)
-    }
-    const hostnames = hostnamesOf(environment)
-    // Refused rather than previewed when nothing in sites-enabled could be read. This pane is where an
-    // operator decides whether there is anything to displace, and a preview that says "nothing claims
-    // this hostname" for a site that plainly has a vhost is the most convincing wrong answer hostd can
-    // give: they confirm the adopt on the strength of it.
-    const listing = await sweep(deps)
-    if (!listing.ok) return listing
-    const { files, unreadable } = listing.sites
-    // The upstream is handed to the parser rather than left for it to work out: the port belongs to the
-    // registry entry, which this function holds and sites-enabled.ts deliberately does not.
-    const claims = findClaims(files, hostnames, upstreamFor(environment.port), environment.websockets)
-    // Names the old file serves that the registry has never heard of. Offered rather than taken: adopting
-    // without carrying these across would silently stop serving hostnames that work today, and adding
-    // them automatically would put hostnames in the registry nobody asked for.
-    const extraNames = [...new Set(claims.flatMap(claim => claim.names))].filter(name => !hostnames.includes(name))
-    // Rendered as adopt will render it, Flexible SSL included when a file being replaced needs it, so the
-    // file the operator reads here is the file adopt puts down.
-    const flexibleSsl = needsFlexibleSsl(environment, claims)
+    const surveyed = await survey(deps, project, environment, token)
+    if (!surveyed.ok) return surveyed
+    const { spec, claims, extraNames, adoptable } = surveyed.survey
     return {
         ok: true,
         preview: {
-            proposed: render(deps, project, { ...environment, flexibleSsl }, token),
-            flexibleSsl,
+            proposed: describeHosts(spec),
             claims,
             extraNames,
-            // Carried even though none of it can be a claim. This pane's whole job is to show what is
-            // actually in sites-enabled before it is replaced, and "there is a file here nobody could
-            // open" is exactly the sort of thing an operator should see before confirming, not least
-            // because Apache will refuse the reload the adopt ends with while it is there.
-            unreadable,
-            adoptable: claims.every(claim => claim.unsupported.length === 0),
+            // Nothing in NPM is unreadable the way a broken sites-enabled symlink was; kept for the portal
+            unreadable: [],
+            adoptable,
+            // The environment's own flag. Adopting no longer switches it: NPM serves the existing hosts
+            // with a certificate and Force SSL, and the registry is corrected by hand before adoption.
+            flexibleSsl: environment.flexibleSsl,
         },
     }
 }
 
+// disable is what the Apache design moved aside; with NPM the one host to take over is found here, so
+// it is accepted for the wire's sake and not used.
 export async function adopt(
     deps: DomainsDeps,
     project: ProjectEntry,
     environment: EnvironmentEntry,
     token: string,
-    disable: string[],
+    _disable: string[],
 ): Promise<DomainsWritten | Refusal> {
-    if (environment.domain === null) {
-        return refuse('bad-request', `${project.id} ${environment.name} has no domain, so there is nothing to adopt`)
+    if (environment.npm !== null) {
+        return refuse('bad-request', `${project.id} ${environment.name} is already managed by hostd (NPM proxy host ${environment.npm.proxyHost}), so there is nothing to adopt`)
     }
-    const hostnames = hostnamesOf(environment)
-    // Only the files that were read, for the same reason as in setAliases: an unreadable file serves
-    // nothing, so it claims nothing, and it cannot be one of the paths api asked to have disabled. A
-    // sweep that read nothing at all is the exception sweep refuses on: this is the call that writes
-    // hostd's vhost over a site still being served by its own, so it is the one that must not run blind.
-    const listing = await sweep(deps)
-    if (!listing.ok) return listing
-    const claims = findClaims(listing.sites.files, hostnames, upstreamFor(environment.port), environment.websockets)
-
-    // Every named file has to be one this environment's hostnames actually reach. api chose these from a
-    // preview, and the preview could be minutes old, so the claim is re-established here against the
-    // files as they are now rather than trusted from the request.
-    for (const path of disable) {
-        const claim = claims.find(entry => entry.path === path)
-        if (!claim) return refuse('bad-request', `${path} does not serve any hostname of ${project.id} ${environment.name}`)
-        // Every reason, not the first: this is the last gate before the file is moved aside, and the
-        // operator is going to act on what it says rather than on a preview they read minutes ago.
-        if (claim.unsupported.length > 0) {
-            return refuse('bad-request', `${path} cannot be adopted: ${claim.unsupported.join(' ')}`)
-        }
+    const surveyed = await survey(deps, project, environment, token)
+    if (!surveyed.ok) return surveyed
+    const { spec, found, claims, adoptable } = surveyed.survey
+    if (!adoptable) {
+        const reasons = claims.filter(claim => claim.unsupported.length > 0).map(claim => `${claim.path} cannot be adopted: ${claim.unsupported.join(' ')}`)
+        return refuse('bad-request', reasons.join(' '))
     }
+    const host = found[0]!
+    await ensureHoldingPage(deps, project, environment)
 
-    // A file being replaced that answered port 80 only was relying on the CDN in front to terminate TLS,
-    // so the environment is switched to Flexible SSL before the vhost is rendered: the usual redirect to
-    // https would loop that CDN forever. Registry first, then vhost, for the reason setAliases gives, and
-    // rendered from the reloaded entry rather than from a copy patched here.
-    let adopting = { project, environment }
-    if (!environment.flexibleSsl && needsFlexibleSsl(environment, claims.filter(claim => disable.includes(claim.path)))) {
-        const written = await deps.writeRegistry({
-            kind: 'set-flag', id: project.id, environment: environment.name, flag: 'flexibleSsl', enabled: true,
-        })
-        if (!written.ok) return refuse('failed', `the registry could not be updated: ${written.problem}`)
-        const fresh = (await deps.reloadRegistry()).projects.get(project.id)
-        const freshEnvironment = fresh?.environments.get(environment.name)
-        if (!fresh || !freshEnvironment) return refuse('failed', `${project.id} ${environment.name} did not survive the change`)
-        adopting = { project: fresh, environment: freshEnvironment }
+    // The same proxy host id, so NPM's own logs and stats for it carry on; edge makes the redirection
+    // host for the aliases, taking them off the proxy host first.
+    const owner = ownerOf(project, environment)
+    const applied = await apply(deps, owner, { proxyHost: host.id, redirectionHost: null }, spec, true)
+    if (!applied.ok) return applied
+
+    // edge's own copy of what it replaced, read inside its write queue, is the better one; the survey's
+    // is only for a reply that never arrived but was confirmed by reading NPM back.
+    const previous = applied.previous ?? { proxy: host.spec as ProxyHostSpec, redirection: null }
+    const problems: string[] = []
+    try {
+        await deps.adopted.save(owner, { ids: applied.ids, previous })
+    } catch (error) {
+        problems.push(`the copy of NPM proxy host ${host.id} as it was could not be saved (${describeError(error)}), so this adoption cannot be undone from the portal`)
     }
-
-    const path = vhostPath(deps.config.includeDir, project.id, environment.name)
-    const previous = await deps.readFile(path)
-    const text = render(deps, adopting.project, adopting.environment, token)
-    await ensureHoldingPage(deps, adopting.project, adopting.environment)
-
-    // One request, so the new file arrives and the old one leaves before the single configtest. Two
-    // requests would mean a moment with both files loaded, where Apache picks one by file order, or a
-    // moment with neither.
-    const result = await deps.rail.send('adopt', { write: { path, text }, remove: [], disable })
-    if (!result.ok) {
-        const also = await revert(deps, path, previous)
-        return refuse('failed', `Apache refused the configuration adopting ${project.id} ${environment.name}.${also}`, result.output)
-    }
-    return { ok: true, written: { hostnames, path } }
+    // Recorded even when the copy could not be saved: the hosts carry the marker now, and without their
+    // ids in the registry hostd could neither update nor remove them.
+    const recorded = await recordIds(deps, project, environment, applied.ids)
+    if (!recorded.ok) problems.push(recorded.message)
+    if (problems.length > 0) return refuse('failed', `${project.id} ${environment.name} was adopted, but ${problems.join('; and ')}`)
+    return { ok: true, written: { hostnames: hostnamesOf(environment), path: pathOf(applied.ids.proxyHost) } }
 }
 
-// Adoption undone: hostd's own vhost goes away and the files adopt moved aside come back, in the single
-// reload the rail already gives. This is the rollback deploy.ts's swapBack is to a deploy, and it exists
-// for the same reason: a change can be reported a success by everything that was watching and still have
-// taken the site down.
+// Adoption undone: the proxy host goes back to the fields Koda made it with, without the marker, so
+// hostd no longer owns it, and the redirection host hostd made goes away because the spec has none.
+// edge's guard passes because it checks the hosts as they are now, which the adopt marked. This is the
+// rollback api reaches for when the hostname stops answering after an adopt.
 //
-// It is an agent verb even though nothing but api can decide to call it, because only the agent can move
-// a file on the host. api is the process with a network, so api is what asks the hostname whether the
-// adoption left it answering; the agent is the process with the rail, so the agent is what puts the
-// operator's own configuration back when the answer is no. Neither half can do the other's work.
-//
-// Note what is NOT here: no render, no registry write, no claim check against sites-enabled. Adoption's
-// guards exist to stop hostd replacing a file it does not understand. This call only ever puts back a
-// file the operator wrote themselves, so there is nothing left to protect them from; refusing it because
-// the file it is about to restore is unreadable would be refusing to end an outage.
+// restore was the list of files to move back under Apache; it is accepted for the wire's sake.
 export async function restoreAdopted(
     deps: DomainsDeps,
     project: ProjectEntry,
     environment: EnvironmentEntry,
-    restore: string[],
+    _restore: string[],
 ): Promise<DomainsWritten | Refusal> {
-    const path = vhostPath(deps.config.includeDir, project.id, environment.name)
-    const result = await deps.rail.send('restore', { write: null, remove: [path], disable: [], restore })
-    if (!result.ok) {
-        // Nothing is reverted here, unlike every other verb above. The file this removed is the one that
-        // took the site down, and putting it back is the opposite of what the caller asked for. The
-        // operator is told what Apache said and what is now on disk, which is as much of their own
-        // configuration as the host unit managed to put back.
+    const owner = ownerOf(project, environment)
+    const saved = await deps.adopted.read(owner)
+    if (!saved) return refuse('bad-request', `there is no adoption of ${project.id} ${environment.name} to undo`)
+    if (environment.npm === null) return refuse('bad-request', `hostd holds no NPM hosts for ${project.id} ${environment.name}, so there is no adoption to undo`)
+    // The saved copy belongs to one proxy host. Written onto another it would replace a host it never was.
+    if (environment.npm.proxyHost !== saved.ids.proxyHost) {
         return refuse(
-            'failed',
-            `hostd removed its own vhost for ${project.id} ${environment.name} and could not reload Apache afterwards. `
-            + `Apache is still serving what it last loaded. Check ${restore.join(', ') || deps.config.sitesEnabled} on the server.`,
-            result.output,
+            'bad-request',
+            `the saved copy is of NPM proxy host ${saved.ids.proxyHost}, but ${project.id} ${environment.name} is now NPM proxy host ${environment.npm.proxyHost}, so it was not put back`,
         )
     }
-    // No hostnames: this call took a vhost away rather than writing one, and saying otherwise would
-    // start a 72 hour verification countdown against a file that is no longer there.
-    return { ok: true, written: { hostnames: [], path } }
+
+    const applied = await apply(deps, owner, environment.npm, { proxy: saved.previous.proxy, redirection: null }, false)
+    if (!applied.ok) return { ...applied, message: `NPM proxy host ${saved.ids.proxyHost} could not be put back as it was: ${applied.message}` }
+    const written = await deps.writeRegistry({ kind: 'set-npm', id: project.id, environment: environment.name, npm: null })
+    if (!written.ok) {
+        return refuse('failed', `NPM proxy host ${saved.ids.proxyHost} was put back as it was, but the registry still names it: ${written.problem}`)
+    }
+    // A record left behind is harmless: the next adopt overwrites it, and an undo without ids refuses.
+    await deps.adopted.clear(owner).catch(() => {})
+    // No hostnames: hostd serves nothing for this environment now, and saying otherwise would start a
+    // verification countdown against hosts it no longer owns.
+    return { ok: true, written: { hostnames: [], path: pathOf(saved.ids.proxyHost) } }
 }

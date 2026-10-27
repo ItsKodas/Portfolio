@@ -1001,12 +1001,12 @@ export function createHandler(deps: ApiDeps): (req: IncomingMessage, res: Server
             return sendJson(res, 200, { ok: true, domains: domainsFor(entry, environment) })
         }
 
-        // An environment's first vhost, written straight after whatever gave it its first address: a new
-        // site's create (live), an add-environment with a domain, or a first hostname added from the
-        // Domains tab. The operator does not have to go and adopt a site that has nothing to adopt. The
-        // same preview and adopt the Domains tab runs, with nothing to disable: if another file already
-        // serves the hostname, that is a displacement the operator should preview and confirm
-        // themselves, so this stops and says so.
+        // An environment's first NPM hosts, written straight after whatever gave it its first address: a
+        // new site's create (live), an add-environment with a domain, or a first hostname added from the
+        // Domains tab. The operator does not have to go and adopt a site that has nothing to adopt, and
+        // adopt no longer creates anything: this is the agent's ordinary write. If another NPM host
+        // already serves the hostname, edge refuses the create naming that host, and taking it over is a
+        // displacement the operator previews and confirms themselves from the Domains tab.
         //
         // Never throws and never answers the request itself: the environment already exists by the time
         // this runs, so whatever goes wrong here is reported beside the change that succeeded, not instead
@@ -1016,22 +1016,14 @@ export function createHandler(deps: ApiDeps): (req: IncomingMessage, res: Server
             const environment = entry?.environments.get(name)
             if (!entry || !environment || environment.domain === null) {
                 const what = name === 'live' ? id : `${id} ${name}`
-                return { ok: false, message: `${what} was created, but its entry could not be read back to write its vhost` }
+                return { ok: false, message: `${what} was created, but its entry could not be read back to write its NPM hosts` }
             }
             const target = environment.domain
             try {
                 // Records for the new hostname first, so the token minted below is stored on them
                 await deps.domains.reconcile(deps.registry(), new Date(now()).toISOString())
                 const token = await tokenFor(id, name)
-                const preview = await deps.agent.call({ verb: 'domains', project: id, args: { action: 'preview', environment: name, token } })
-                if (!preview.ok) return { ok: false, message: preview.message }
-                if (!('preview' in preview)) return { ok: false, message: 'the agent did not answer the preview with one' }
-                const claims = preview.preview.claims.map(claim => claim.path)
-                if (claims.length > 0) {
-                    return { ok: false, message: `${target} is already served by ${claims.join(', ')}. Adopt it from the Domains tab to replace that file.` }
-                }
-
-                const reply = await deps.agent.call({ verb: 'domains', project: id, args: { action: 'adopt', environment: name, token, disable: [] } })
+                const reply = await deps.agent.call({ verb: 'domains', project: id, args: { action: 'write', environment: name, token } })
                 if (!reply.ok) {
                     if (reply.code === 'failed') await recordVhost(id, name, { ok: false, output: reply.output ?? '' })
                     const outcome: AuditOutcome = reply.code === 'failed' ? 'failed' : 'refused'

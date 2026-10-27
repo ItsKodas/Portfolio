@@ -6,6 +6,7 @@ import { DELETED_KEEP_MS, type DeletedRecord } from './deleted-store.ts'
 import { RegistryWriter, environmentNodeIn, type RegistryWriteFs } from '../shared/registry-write.ts'
 import { parseRegistry, type ProjectEntry } from '../shared/registry.ts'
 import type { RunResult } from './compose.ts'
+import type { HostsSpec } from '../shared/edge-protocol.ts'
 
 const REGISTRY_PATH = '/etc/hostd/projects.yaml'
 const NOW = Date.parse('2026-09-24T10:00:00.000Z')
@@ -46,6 +47,15 @@ const YAML = `projects:
         port: 5011
 `
 
+// What edge reads back for uat1's hosts before a delete removes them
+const UAT1_HOSTS: HostsSpec = {
+    proxy: {
+        domain_names: ['uat1.acme.com'], forward_host: '192.168.0.8', forward_port: 5020, certificate_id: 16,
+        ssl_forced: true, http2_support: true, advanced_config: '# hostd: acme/uat1. Managed by hostd; edits here are overwritten.\n',
+    },
+    redirection: null,
+}
+
 type Options = {
     yaml?: string
     paths?: string[]
@@ -53,7 +63,7 @@ type Options = {
     failRun?: (argv: string) => boolean
     failMove?: (from: string, to: string) => boolean
     failVhost?: 'remove' | 'put' | 'write'
-    vhost?: string | null
+    vhost?: HostsSpec | null
     failRecord?: boolean
     records?: DeletedRecord[]
     takenPorts?: number[]
@@ -82,7 +92,7 @@ function setup(options: Options = {}) {
     const paths = new Set(options.paths ?? ['/var/www/acme', '/var/www/acme/live', '/var/www/acme/uat1', '/var/www/acme/prev', '/var/www/acme/prev/uat1', '/var/www/acme/next'])
     const records: DeletedRecord[] = [...(options.records ?? [])]
     const envWrites: Array<{ dir: string, key: string, value: string }> = []
-    let vhostText: string | null = options.vhost === undefined ? 'the vhost acme-uat1.conf' : options.vhost
+    let vhostText: HostsSpec | null = options.vhost === undefined ? UAT1_HOSTS : options.vhost
     const removed: string[] = []
     const logs: string[] = []
 
@@ -162,10 +172,10 @@ function setup(options: Options = {}) {
                 vhostText = null
                 return { ok: true }
             },
-            put: async (_project, _environment, text) => {
+            put: async (_project, _environment, previous) => {
                 if (options.failVhost === 'put') return { ok: false, message: 'Apache refused the old file too' }
                 calls.push('vhost put')
-                vhostText = text
+                vhostText = previous
                 return { ok: true }
             },
             write: async (_project, environment, token) => {
@@ -296,7 +306,7 @@ describe('deleteEnvironment', () => {
         ])
         assert.equal(paths.has('/var/www/acme/uat1'), true)
         assert.equal(paths.has('/var/www/acme/prev/uat1'), true)
-        assert.equal(vhost(), 'the vhost acme-uat1.conf')
+        assert.deepEqual(vhost(), UAT1_HOSTS)
         assert.equal(records.length, 0)
         assert.equal(registry().projects.get('acme')!.environments.has('uat1'), true)
     })
@@ -364,6 +374,15 @@ describe('restoreEnvironment', () => {
         assert.equal(records.length, 0)
         assert.ok(!calls.some(call => call.startsWith('port env')))
         assert.deepEqual(calls.slice(-5), ['registry restore-environment', 'vhost write uat1.acme.com abc123', 'docker up', 'record remove uat1', `rmdir-empty ${TRASH}`])
+    })
+
+    it('does not bring back the NPM ids the deleted environment had, so its hosts are made afresh', async () => {
+        const record = deletedRecord({ node: { ...deletedRecord().node, npm: { proxyHost: 40, redirectionHost: 41 } } })
+        const { deps, calls, registry, project } = setup({ yaml: WITHOUT_UAT1, paths: TRASHED, records: [record] })
+        const reply = await restoreEnvironment(project(), 'uat1', record.deletedAt, 'abc123', deps)
+        assert.equal(reply.ok, true, JSON.stringify(reply))
+        assert.equal(registry().projects.get('acme')!.environments.get('uat1')!.npm, null)
+        assert.ok(calls.includes('vhost write uat1.acme.com abc123'))
     })
 
     it('chooses another port when the recorded one was taken, and rewrites .env and hostd.ports.yml for it', async () => {

@@ -28,7 +28,7 @@ export const HOSTD_EDGE_SYSLOG_PORT = 5514
 
 // NPM's nginx rejects a request body it cannot decode with a confusing upstream error; the live hosts
 // answer 415 instead, so the rendered ones must too.
-const BROTLI = String.raw`if ($http_content_encoding ~* "(^|,)\s*br\s*(,|$)") {
+export const BROTLI = String.raw`if ($http_content_encoding ~* "(^|,)\s*br\s*(,|$)") {
     return 415;
 }`
 

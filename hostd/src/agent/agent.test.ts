@@ -11,6 +11,9 @@ import { DeployWatch } from './deploy-watch.ts'
 import { parseRegistry, type ProjectEntry, type Registry } from '../shared/registry.ts'
 import { emptyDeploys, MAX_WATCH_BYTES, type DeployRecord, type EnvironmentDeploys } from '../shared/deploys.ts'
 import { RegistryWriter, type Change, type RegistryWriteFs } from '../shared/registry-write.ts'
+import { markerFor } from '../shared/edge-protocol.ts'
+import { FakeEdge, FAKE_UPSTREAM } from './testing/fake-edge.ts'
+import type { DomainsDeps } from './domains.ts'
 import type { DeletedRecord } from './deleted-store.ts'
 import type { FetchReply, FetchRequest } from '../shared/fetch-protocol.ts'
 import type { AgentRequest, BackupArgs, ConfigureArgs, DeployArgs, LogLine } from '../shared/protocol.ts'
@@ -1383,40 +1386,46 @@ projects:
 
 const domainsRegistry = parseRegistry(domainsRegistrySource('[lifecycle, logs, provision, env, domains]'))
 
-type SentRail = { action: string, write: { path: string, text: string } | null, remove: string[], disable: string[] }
-
-// Only what the domains verb itself touches: the rail is a recorder (the real one is covered by
-// apache-rail.test.ts and the writeVhost/removeVhost/etc functions by domains.test.ts), so this exists
-// only to prove the agent wires the request through, checks structure itself and reloads first.
-function fakeDomains(registry: Registry) {
-    const sent: SentRail[] = []
+// The domains verb over edge's real host logic and an in-memory NPM (testing/fake-edge.ts), so this only
+// has to prove the agent wires the request through, checks structure itself and reloads first; what
+// writeHosts and the rest do in detail is domains.test.ts's. reloadRegistry adds the certificates map
+// these fixtures leave out, so a Full SSL write finds acme.com's certificate.
+function fakeDomains(registry: Registry | (() => Registry), options: { writeRegistry?: DomainsDeps['writeRegistry'] } = {}) {
+    const edge = new FakeEdge()
+    edge.npm.certificates = [16]
     const reload = { calls: 0 }
+    const read = typeof registry === 'function' ? registry : () => registry
     const domains: NonNullable<AgentDeps['domains']> = {
-        rail: {
-            async send(action, parts) {
-                sent.push({ action, ...parts })
-                return { seq: sent.length - 1, ok: true, output: 'Syntax OK' }
-            },
-        },
-        async readFile() { return null },
-        async listSitesEnabled() { return { files: [], unreadable: [] } },
-        async writeRegistry() { return { ok: true } },
+        edge,
+        adopted: { async save() {}, async read() { return null }, async clear() {} },
+        writeRegistry: options.writeRegistry ?? (async () => ({ ok: true })),
         async reloadRegistry() {
             reload.calls += 1
-            return registry
+            return { ...read(), certificates: new Map([['acme.com', 16]]) }
         },
-        config: {
-            includeDir: '/etc/apache2/hostd',
-            sitesEnabled: '/etc/apache2/sites-enabled',
-            originCert: '/etc/ssl/hostd/origin.pem',
-            originKey: '/etc/ssl/hostd/origin.key',
-            acmeWebroot: '/var/www/hostd-acme',
-            maintenanceFlagDir: '/run/hostd/maintenance',
-            maintenancePageDir: '/var/www/hostd-maintenance',
-            accessLogDir: '/var/log/apache2',
-        },
+        config: { upstreamHost: FAKE_UPSTREAM, edgeHost: FAKE_UPSTREAM, edgeHttpPort: 8790 },
     }
-    return { domains, sent, reload }
+    return { domains, edge, reload }
+}
+
+// The token hosts hostd wrote earlier carry, which a rewrite must keep
+const OWNED_TOKEN = 'abc123def456'
+
+// Hosts as hostd wrote them for one of acme's environments: marked, and answering OWNED_TOKEN
+function seedOwned(edge: FakeEdge, options: { environment?: 'live' | 'test', domain?: string, port?: number, proxyHost?: number, redirection?: { id: number, names: string[] } | null } = {}) {
+    const marker = markerFor({ project: 'acme', environment: options.environment ?? 'live' })
+    const domain = options.domain ?? 'acme.com'
+    edge.npm.seed('proxy-hosts', {
+        id: options.proxyHost ?? 12, domain_names: [domain], forward_host: FAKE_UPSTREAM, forward_port: options.port ?? 5010,
+        certificate_id: 16, ssl_forced: true, http2_support: true, locations: [],
+        advanced_config: `${marker}\nlocation = /.well-known/hostd/${OWNED_TOKEN} {\n    return 204;\n}\n`,
+    })
+    const redirection = options.redirection === undefined ? { id: 13, names: [`www.${domain}`] } : options.redirection
+    if (redirection) {
+        edge.npm.seed('redirection-hosts', {
+            id: redirection.id, domain_names: redirection.names, forward_domain_name: domain, certificate_id: 16, advanced_config: `${marker}\n`,
+        })
+    }
 }
 
 describe('the domains verb', () => {
@@ -1428,15 +1437,15 @@ describe('the domains verb', () => {
         const registry = options.capabilities === undefined ? domainsRegistry : parseRegistry(domainsRegistrySource(options.capabilities))
         const context = fakeDomains(registry)
         const base = baseSetup({ registry: () => registry, domains: context.domains })
-        return { ...base, sent: context.sent, reload: context.reload }
+        return { ...base, edge: context.edge, reload: context.reload }
     }
 
-    it('refuses a project without the domains capability, before touching the rail', async () => {
-        const { agent, sent } = setup({ capabilities: '[lifecycle]' })
+    it('refuses a project without the domains capability, before asking edge anything', async () => {
+        const { agent, edge } = setup({ capabilities: '[lifecycle]' })
         const result = await agent.domains({ verb: 'domains', project: 'acme', args: { action: 'write', environment: 'live', token: 'abc123' } })
         assert.equal(result.ok, false)
         assert.equal(result.ok === false && result.code, 'capability-disabled')
-        assert.equal(sent.length, 0)
+        assert.deepEqual(edge.requests, [])
     })
 
     it('refuses an unknown project', async () => {
@@ -1454,18 +1463,20 @@ describe('the domains verb', () => {
     it('re-reads the registry rather than trusting what api sent', async () => {
         const { agent, reload } = setup()
         await agent.domains({ verb: 'domains', project: 'acme', args: { action: 'write', environment: 'live', token: 'abc123' } })
-        assert.equal(reload.calls, 1)
+        // Once by the verb itself, once more by writeHosts for the certificates map
+        assert.equal(reload.calls, 2)
     })
 
-    it('writes the vhost for a project that has the capability', async () => {
-        const { agent, sent } = setup()
+    it('writes the NPM hosts for a project that has the capability', async () => {
+        const { agent, edge } = setup()
         const result = await agent.domains({ verb: 'domains', project: 'acme', args: { action: 'write', environment: 'live', token: 'abc123' } })
-        assert.equal(result.ok, true)
-        assert.equal(sent[0]!.write?.path, '/etc/apache2/hostd/acme-live.conf')
+        assert.deepEqual(result, { ok: true, written: { hostnames: ['acme.com', 'www.acme.com'], path: 'npm:proxy-host/100' } })
+        assert.deepEqual(edge.npm.snapshot()['proxy-hosts'].map(host => host.domain_names), [['acme.com']])
     })
 
     it('previews with the token that was passed in, not a placeholder', async () => {
-        const { agent } = setup()
+        const { agent, edge } = setup()
+        edge.npm.seed('proxy-hosts', { id: 12, domain_names: ['acme.com', 'www.acme.com'], forward_host: FAKE_UPSTREAM, forward_port: 5010, locations: [] })
         const result = await agent.domains({ verb: 'domains', project: 'acme', args: { action: 'preview', environment: 'live', token: 'deadbeef' } })
         assert.equal(result.ok, true)
         assert.ok(result.ok && 'preview' in result && result.preview.proposed.includes('deadbeef'))
@@ -1478,9 +1489,9 @@ describe('the domains verb', () => {
     })
 })
 
-// Left behind, a vhost goes on claiming its hostnames and goes on proxying to a port choosePort may
-// hand to another project: one client's visitors reaching another client's application.
-describe('removing an environment takes its vhost with it', () => {
+// Left behind, NPM hosts go on claiming their hostnames and proxying to a port choosePort may hand to
+// another project: one client's visitors reaching another client's application.
+describe('removing a project takes its NPM hosts with it', () => {
     const twoEnvironments = parseRegistry(`
 projects:
   acme:
@@ -1490,8 +1501,8 @@ projects:
     services: { web: { role: site } }
     capabilities: [lifecycle, provision, domains]
     environments:
-      live: { dir: /var/www/acme, port: 5010, domain: acme.com }
-      test: { dir: /var/www/acme-test, port: 5011, domain: test.acme.com }
+      live: { dir: /var/www/acme, port: 5010, domain: acme.com, npm: { proxyHost: 12, redirectionHost: 13 } }
+      test: { dir: /var/www/acme-test, port: 5011, domain: test.acme.com, npm: { proxyHost: 14 } }
 `)
 
     function setup(registry: Registry) {
@@ -1501,20 +1512,31 @@ projects:
             domains: context.domains,
             provision: fakeProvisionDeps({ registry: () => registry }),
         })
-        return { ...base, sent: context.sent }
+        return { ...base, edge: context.edge }
     }
 
-    it('removes every environment\'s file when the whole project goes', async () => {
-        const { agent, sent } = setup(twoEnvironments)
+    it('removes every environment\'s hosts when the whole project goes', async () => {
+        const { agent, edge } = setup(twoEnvironments)
+        seedOwned(edge)
+        seedOwned(edge, { environment: 'test', domain: 'test.acme.com', port: 5011, proxyHost: 14, redirection: null })
         const reply = replyOf(await agent.handle({ verb: 'provision', project: 'acme', args: { action: 'remove', environment: null } }))
-        assert.equal(reply?.ok, true)
-        assert.deepEqual(
-            sent.flatMap(request => request.remove).sort(),
-            ['/etc/apache2/hostd/acme-live.conf', '/etc/apache2/hostd/acme-test.conf'],
-        )
+        assert.equal(reply?.ok, true, JSON.stringify(reply))
+        assert.deepEqual(edge.npm.snapshot()['proxy-hosts'], [])
+        assert.deepEqual(edge.npm.snapshot()['redirection-hosts'], [])
     })
 
-    it('leaves the rail alone for a project hostd never wrote a vhost for', async () => {
+    it('says which hosts it could not remove, without failing a removal that happened', async () => {
+        const { agent, edge } = setup(twoEnvironments)
+        seedOwned(edge)
+        // test's host lost its marker: hostd may not delete it
+        edge.npm.seed('proxy-hosts', { id: 14, domain_names: ['test.acme.com'], forward_host: FAKE_UPSTREAM, forward_port: 5011, advanced_config: '' })
+        const reply = replyOf(await agent.handle({ verb: 'provision', project: 'acme', args: { action: 'remove', environment: null } }))
+        assert.equal(reply?.ok, true)
+        assert.match(reply?.ok && 'output' in reply ? reply.output : '', /the NPM hosts for acme test could not be removed/)
+        assert.deepEqual(edge.npm.snapshot()['proxy-hosts'].map(host => host.id), [14])
+    })
+
+    it('leaves edge alone for a project hostd holds no NPM hosts for', async () => {
         const noDomains = parseRegistry(`
 projects:
   acme:
@@ -1525,10 +1547,10 @@ projects:
     services: { web: { role: site } }
     capabilities: [lifecycle, provision]
 `)
-        const { agent, sent } = setup(noDomains)
+        const { agent, edge } = setup(noDomains)
         const reply = replyOf(await agent.handle({ verb: 'provision', project: 'acme', args: { action: 'remove', environment: null } }))
         assert.equal(reply?.ok, true)
-        assert.deepEqual(sent, [])
+        assert.deepEqual(edge.requests, [])
     })
 })
 
@@ -1590,9 +1612,9 @@ describe('configure', () => {
     })
 
     // Moving an address that already exists. Allowed since the portal grew a confirmation for it, and
-    // the registry write is only half the job: hostd's own vhost still names the old hostname, and a
-    // vhost claiming a name the registry no longer does is the one state nothing else here can correct.
-    const moved = (domain: string) => parseRegistry(`
+    // the registry write is only half the job: hostd's own hosts still name the old hostname, and a host
+    // claiming a name the registry no longer does is the one state nothing else here can correct.
+    const moved = (domain: string, options: { npm?: boolean, websockets?: boolean } = {}) => parseRegistry(`
 projects:
   acme:
     client: cl_1
@@ -1605,194 +1627,143 @@ projects:
         port: 5010
         domain: ${domain}
         aliases: [www.acme.com]
-`)
+${options.npm === false ? '' : '        npm: { proxyHost: 12, redirectionHost: 13 }\n'}${options.websockets ? '        websockets: true\n' : ''}`)
 
-    // What hostd wrote for this environment the last time round, cut down to the line the rewrite reads
-    // out of it. The token is the whole reason the old file is read at all.
-    const EXISTING_VHOST = `<VirtualHost *:443>
-    ServerName acme.com
-    <Location "/.well-known/hostd/abc123def456">
-        Header always set X-Hostd-Token "abc123def456"
-        Redirect 204
-    </Location>
-</VirtualHost>
-`
-
-    const movingSetup = (over: Partial<NonNullable<AgentDeps['domains']>> = {}) => {
-        const context = fakeDomains(moved('shop.acme.com'))
+    // hostd's hosts for acme live, as written before the move, unless the environment has none
+    const movingSetup = (options: { npm?: boolean } = {}) => {
+        const context = fakeDomains(moved('shop.acme.com', options))
+        if (options.npm !== false) seedOwned(context.edge, { redirection: { id: 13, names: ['www.acme.com'] } })
         const written: Change[] = []
         const base = setup({
-            registry: () => moved('acme.com'),
-            domains: { ...context.domains, ...over },
+            registry: () => moved('acme.com', options),
+            domains: context.domains,
             writer: { write: async (change: Change) => { written.push(change); return { ok: true as const } } },
         })
-        return { ...base, written, sent: context.sent, reload: context.reload }
+        return { ...base, written, edge: context.edge, reload: context.reload }
     }
 
     const outputOf = (reply: ReturnType<typeof replyOf>) =>
         reply !== null && reply.ok && 'output' in reply ? reply.output : ''
 
-    it('rewrites the vhost behind an address that moved, keeping the token the file already carries', async () => {
-        const { agent, written, sent, reload } = movingSetup({ readFile: async () => EXISTING_VHOST })
+    it('rewrites the NPM hosts behind an address that moved, keeping the token they already carry', async () => {
+        const { agent, written, edge, reload } = movingSetup()
 
         const reply = replyOf(await agent.handle(configure({ domains: { live: 'shop.acme.com' } })))
 
-        assert.equal(reply?.ok, true)
+        assert.equal(reply?.ok, true, JSON.stringify(reply))
         assert.deepEqual(written, [
             { kind: 'configure', id: 'acme' },
             { kind: 'set-domain', id: 'acme', environment: 'live', domain: 'shop.acme.com' },
         ])
-        assert.equal(sent.length, 1)
-        assert.equal(sent[0]?.write?.path, '/etc/apache2/hostd/acme-live.conf')
-        assert.match(sent[0]?.write?.text ?? '', /ServerName shop\.acme\.com/)
-        // The token out of the file that was there, never a new one: every alias proves itself against
+        assert.equal(edge.writes().length, 1)
+        const proxy = edge.npm.snapshot()['proxy-hosts'][0]!
+        assert.equal(proxy.id, 12)
+        assert.deepEqual(proxy.domain_names, ['shop.acme.com'])
+        // The token out of the hosts that were there, never a new one: every alias proves itself against
         // that one value and not one of them changed.
-        assert.match(sent[0]?.write?.text ?? '', /\/\.well-known\/hostd\/abc123def456/)
+        assert.match(String(proxy.advanced_config), /\/\.well-known\/hostd\/abc123def456/)
         // Rendered from the reloaded entry rather than from the request, which is what keeps
-        // parseRegistry's reserved names, allowed carve-out and uniqueness in front of Apache.
-        assert.equal(reload.calls, 1)
+        // parseRegistry's reserved names, allowed carve-out and uniqueness in front of NPM (and once
+        // more by writeHosts, for the certificates map).
+        assert.equal(reload.calls, 2)
         assert.match(outputOf(reply), /rewritten/)
-        // What api has no other way to learn: these names are served from a file hostd wrote a moment
+        // What api has no other way to learn: these names are served from hosts hostd wrote a moment
         // ago, so their records belong in pending with the environment's token rather than in unmanaged,
         // which is what reconcile alone would leave behind.
         assert.deepEqual(reply?.ok === true && 'written' in reply ? reply.written : null, [{
             environment: 'live',
             hostnames: ['shop.acme.com', 'www.acme.com'],
-            path: '/etc/apache2/hostd/acme-live.conf',
+            path: 'npm:proxy-host/12',
         }])
     })
 
-    // A vhost written before per-site holding pages names the shared index.html; booting this version
-    // points it at its own page, with the token it already carries, and leaves an up to date one alone
-    it('points a vhost written before per-site holding pages at its own page, once', async () => {
-        const context = fakeDomains(moved('acme.com'))
-        let current = EXISTING_VHOST
-        const { agent } = setup({
-            registry: () => moved('acme.com'),
-            domains: { ...context.domains, readFile: async () => current },
-        })
-        assert.deepEqual(await agent.refreshStaleVhosts(), [])
-        assert.equal(context.sent.length, 1)
-        const text = context.sent[0]?.write?.text ?? ''
-        assert.match(text, /\/var\/www\/hostd-maintenance\/sites\/acme-live\.html/)
-        assert.match(text, /\/\.well-known\/hostd\/abc123def456/)
-
-        current = text
-        assert.deepEqual(await agent.refreshStaleVhosts(), [])
-        assert.equal(context.sent.length, 1)
-    })
-
-    // A vhost from before analytics names its holding page but logs nowhere the portal can count, so it
-    // is rewritten once to add the access log, with the token it already carries
-    it('adds the access log to a vhost written before analytics, once', async () => {
-        const context = fakeDomains(moved('acme.com'))
-        let current = EXISTING_VHOST + '\nAlias "/.hostd-maintenance" "/var/www/hostd-maintenance/sites/acme-live.html"\n'
-        const { agent } = setup({
-            registry: () => moved('acme.com'),
-            domains: { ...context.domains, readFile: async () => current },
-        })
-        assert.deepEqual(await agent.refreshStaleVhosts(), [])
-        assert.equal(context.sent.length, 1)
-        const text = context.sent[0]?.write?.text ?? ''
-        assert.match(text, /CustomLog "\/var\/log\/apache2\/hostd-acme-live\.access\.log"/)
-        assert.match(text, /\/\.well-known\/hostd\/abc123def456/)
-
-        current = text
-        assert.deepEqual(await agent.refreshStaleVhosts(), [])
-        assert.equal(context.sent.length, 1)
-    })
-
-    // Switching WebSockets changes nothing but the vhost, so it has to reach Apache the same way a moved
-    // address does, with the same token, and without making any hostname prove itself again.
-    it('rewrites the vhost with upgrade=websocket when WebSockets is switched on', async () => {
-        const switched = parseRegistry(`
-projects:
-  acme:
-    client: cl_1
-    name: Acme
-    services: { web: { role: site } }
-    capabilities: [domains]
-    environments:
-      live:
-        dir: /var/www/acme
-        port: 5010
-        domain: acme.com
-        aliases: [www.acme.com]
-        websockets: true
-`)
-        const context = fakeDomains(switched)
+    // Switching WebSockets is a render-only switch, so it reaches NPM the same way a moved address does,
+    // with the same token, and without making any hostname prove itself again.
+    it('rewrites the NPM hosts when WebSockets is switched on, keeping the token', async () => {
+        const context = fakeDomains(moved('acme.com', { websockets: true }))
+        seedOwned(context.edge, { redirection: { id: 13, names: ['www.acme.com'] } })
         const written: Change[] = []
         const { agent } = setup({
             registry: () => moved('acme.com'),
-            domains: { ...context.domains, readFile: async () => EXISTING_VHOST },
+            domains: context.domains,
             writer: { write: async (change: Change) => { written.push(change); return { ok: true as const } } },
         })
 
         const reply = replyOf(await agent.handle(configure({ websockets: { live: true } })))
 
-        assert.equal(reply?.ok, true)
+        assert.equal(reply?.ok, true, JSON.stringify(reply))
         assert.deepEqual(written, [
             { kind: 'configure', id: 'acme' },
             { kind: 'set-flag', id: 'acme', environment: 'live', flag: 'websockets', enabled: true },
         ])
-        assert.equal(context.sent.length, 1)
-        assert.match(context.sent[0]?.write?.text ?? '', /ProxyPass \/ http:\/\/127\.0\.0\.1:5010\/ upgrade=websocket/)
-        assert.match(context.sent[0]?.write?.text ?? '', /\/\.well-known\/hostd\/abc123def456/)
+        assert.equal(context.edge.writes().length, 1)
+        assert.match(String(context.edge.npm.snapshot()['proxy-hosts'][0]!.advanced_config), /\/\.well-known\/hostd\/abc123def456/)
     })
 
-    it('writes nothing and asks Apache for nothing when WebSockets is already how it was asked to be', async () => {
-        const { agent, written, sent } = movingSetup({ readFile: async () => EXISTING_VHOST })
+    it('writes nothing and asks edge for nothing when WebSockets is already how it was asked to be', async () => {
+        const { agent, written, edge } = movingSetup()
 
         const reply = replyOf(await agent.handle(configure({ websockets: { live: false } })))
 
         assert.equal(reply?.ok, true)
         assert.deepEqual(written, [{ kind: 'configure', id: 'acme' }])
-        assert.equal(sent.length, 0)
+        assert.deepEqual(edge.requests, [])
     })
 
-    // Every site enrolled by hand is in this state: the registry knows its address, but the file serving
-    // it is somebody's hand-written vhost in sites-enabled. Rewriting nothing is the right answer, and
-    // the operator displaces that file by adopting the site, which is its own previewed decision.
-    it('moves an address on an environment hostd serves no vhost for, and asks Apache for nothing', async () => {
-        const { agent, written, sent } = movingSetup()
+    // Every site not yet adopted is in this state: the registry knows its address, but the host serving
+    // it is one Koda made in NPM. Rewriting nothing is the right answer, and the operator takes that host
+    // over by adopting the site, which is its own previewed decision.
+    it('moves an address on an environment hostd holds no NPM hosts for, and asks edge for nothing', async () => {
+        const { agent, written, edge } = movingSetup({ npm: false })
 
         const reply = replyOf(await agent.handle(configure({ domains: { live: 'shop.acme.com' } })))
 
         assert.equal(reply?.ok, true)
-        assert.equal(sent.length, 0)
+        assert.deepEqual(edge.requests, [])
         assert.equal(written.length, 2)
         assert.doesNotMatch(outputOf(reply), /rewritten/)
         // An empty list rather than a missing field, and the emptiness is the message: hostd serves no
-        // vhost here, so api leaves the new hostname unmanaged, which is the truth about it.
+        // hosts here, so api leaves the new hostname unmanaged, which is the truth about it.
         assert.deepEqual(reply?.ok === true && 'written' in reply ? reply.written : null, [])
     })
 
     // The registry has already changed by then, so "it worked" would be a lie in the one direction that
-    // matters: Apache is still serving the old address and nothing on the tab would say so.
-    it('reports a vhost rewrite Apache refused instead of answering as though it worked', async () => {
-        const { agent, written } = movingSetup({
-            readFile: async () => EXISTING_VHOST,
-            rail: { send: async () => ({ seq: 0, ok: false as const, output: 'AH00526: Syntax error' }) },
-        })
+    // matters: NPM is still serving the old address and nothing on the tab would say so.
+    it('reports a rewrite edge refused instead of answering as though it worked', async () => {
+        const { agent, written, edge } = movingSetup()
+        // The certificate the hosts name is gone from NPM, so edge refuses the write
+        edge.npm.certificates = []
 
         const reply = replyOf(await agent.handle(configure({ domains: { live: 'shop.acme.com' } })))
 
         assert.equal(reply?.ok, false)
         assert.equal(reply?.ok === false && reply.code, 'failed')
         // The registry write happened and is named as having happened, before the part that did not.
-        assert.match(reply?.ok === false ? reply.message : '', /registry entry was updated, but/)
+        assert.match(reply?.ok === false ? reply.message : '', /registry entry was updated, but its NPM hosts were not/)
+        assert.match(reply?.ok === false ? reply.message : '', /NPM has no certificate 16/)
         assert.match(reply?.ok === false ? reply.message : '', /no longer agree/)
         assert.equal(written.length, 2)
     })
 
+    it('reports hosts edge could not read, rather than rewriting them with a token invented here', async () => {
+        const { agent, edge } = movingSetup()
+        edge.failNext('get', 'before')
+
+        const reply = replyOf(await agent.handle(configure({ domains: { live: 'shop.acme.com' } })))
+
+        assert.equal(reply?.ok === false && reply.code, 'failed')
+        assert.match(reply?.ok === false ? reply.message : '', /NPM proxy host 12 could not be read/)
+        assert.equal(edge.writes().length, 0)
+    })
+
     // Saving the address the environment already has is not a move, so nothing is rewritten for it.
-    it('asks Apache for nothing when the address given is the one already set', async () => {
-        const { agent, sent } = movingSetup({ readFile: async () => EXISTING_VHOST })
+    it('asks edge for nothing when the address given is the one already set', async () => {
+        const { agent, edge } = movingSetup()
 
         const reply = replyOf(await agent.handle(configure({ domains: { live: 'acme.com' } })))
 
         assert.equal(reply?.ok, true)
-        assert.equal(sent.length, 0)
+        assert.deepEqual(edge.requests, [])
     })
 
     // checkStructure runs first, exactly as it does for every other verb: a project the guard has marked
@@ -1910,25 +1881,29 @@ describe('port', () => {
     })
 
     it('refuses the domains verb for the project while a change is in progress', async () => {
-        // A vhost hostd wrote, so the change gets as far as the port check and holds there
-        const domains = { ...fakeDomains(domainsRegistry).domains, readFile: async () => '# hostd' }
-        const { agent, first, release } = heldChange({ registry: () => domainsRegistry, domains })
+        // Hosts hostd manages, so the change gets as far as the port check and holds there
+        const managed = parseRegistry(domainsRegistrySource('[lifecycle, logs, provision, env, domains]')
+            .replace('        aliases: [www.acme.com]\n', '        aliases: [www.acme.com]\n        npm: { proxyHost: 12, redirectionHost: 13 }\n'))
+        const { agent, first, release } = heldChange({ registry: () => managed, domains: fakeDomains(managed).domains })
         const request = { verb: 'domains' as const, project: 'acme', args: { action: 'write' as const, environment: 'live' as const, token: 'abc123' } }
         assert.deepEqual(await agent.domains(request), { ok: false, code: 'busy', message: 'acme is moving an environment to another port' })
-        // The vhost read comes first, so the port check that holds the change starts a tick later
+        // The ownership check comes first, so the port check that holds the change starts a tick later
         await new Promise(resolve => setImmediate(resolve))
         release()
         await first
     })
 
-    // Apache would go on proxying to the old port behind a file hostd did not write
-    it('refuses a domain served by a hand-written vhost, and without a rail at all', async () => {
-        const refusal = { ok: false, code: 'bad-request', message: 'acme.com is served by a hand-written vhost; adopt it from the Domains tab first, or move the port by hand' }
-        const handWritten = setup({ registry: () => domainsRegistry, provision: fakeProvisionDeps(), domains: fakeDomains(domainsRegistry).domains, envFs: fakeEnvFs() })
-        assert.deepEqual(replyOf(await handWritten.agent.handle(change(5012))), refusal)
-        assert.deepEqual(handWritten.runs, [])
-        const noRail = setup({ registry: () => domainsRegistry, provision: fakeProvisionDeps(), envFs: fakeEnvFs() })
-        assert.deepEqual(replyOf(await noRail.agent.handle(change(5012))), refusal)
+    // NPM would go on proxying to the old port behind a host hostd does not manage
+    it('refuses a domain served by an NPM host hostd does not manage, and without edge at all', async () => {
+        const refusal = {
+            ok: false, code: 'bad-request',
+            message: 'acme.com is served by an NPM proxy host hostd does not manage; adopt it from the Domains tab first, or move the port by hand in Nginx Proxy Manager',
+        }
+        const handMade = setup({ registry: () => domainsRegistry, provision: fakeProvisionDeps(), domains: fakeDomains(domainsRegistry).domains, envFs: fakeEnvFs() })
+        assert.deepEqual(replyOf(await handMade.agent.handle(change(5012))), refusal)
+        assert.deepEqual(handMade.runs, [])
+        const noEdge = setup({ registry: () => domainsRegistry, provision: fakeProvisionDeps(), envFs: fakeEnvFs() })
+        assert.deepEqual(replyOf(await noEdge.agent.handle(change(5012))), refusal)
     })
 
     // up, an undo's up and the rail all fit inside api's 150 second call to the agent
@@ -1962,9 +1937,8 @@ describe('deleting and restoring an environment', () => {
     capabilities: [provision, domains]
     environments:
       live: { dir: /var/www/acme/live, branch: main, port: 5010, domain: acme.com }
-      test: { dir: /var/www/acme/test, branch: develop, port: 5011, domain: test.acme.com }
+      test: { dir: /var/www/acme/test, branch: develop, port: 5011, domain: test.acme.com, npm: { proxyHost: 14 } }
 `
-    const VHOST = '/etc/apache2/hostd/acme-test.conf'
 
     function trashSetup(options: { deploying?: string, gate?: { armed: boolean, wait: Promise<void> }, moveGate?: Promise<void> } = {}) {
         const files = new Map([['/etc/hostd/projects.yaml', YAML]])
@@ -1979,9 +1953,10 @@ describe('deleting and restoring an environment', () => {
         const current = () => parseRegistry(files.get('/etc/hostd/projects.yaml')!)
         const paths = new Set(['/var/www/acme', '/var/www/acme/live', '/var/www/acme/test'])
         const records: DeletedRecord[] = []
-        const context = fakeDomains(current())
-        context.domains.readFile = async path => (path === VHOST && paths.has('vhost') ? 'the test vhost' : null)
-        paths.add('vhost')
+        // The one writer both provisioning and the domains verb write through, as in production
+        const writer = new RegistryWriter('/etc/hostd/projects.yaml', writeFs)
+        const context = fakeDomains(current, { writeRegistry: change => writer.write(change) })
+        seedOwned(context.edge, { environment: 'test', domain: 'test.acme.com', port: 5011, proxyHost: 14, redirection: null })
         const blocks: string[] = []
         const deploys = {
             runner: {
@@ -2002,7 +1977,7 @@ describe('deleting and restoring an environment', () => {
                 registry: current,
                 refreshRegistry: async () => { if (options.gate?.armed) await options.gate.wait },
                 rmdir: async dir => { removed.push(dir) },
-                writer: new RegistryWriter('/etc/hostd/projects.yaml', writeFs),
+                writer,
                 exists: async path => paths.has(path),
                 move: async (from, to) => { if (options.moveGate) await options.moveGate; paths.delete(from); paths.add(to) },
                 mkdir: async dir => { paths.add(dir) },
@@ -2025,22 +2000,36 @@ describe('deleting and restoring an environment', () => {
                 registryRejection: () => null,
             },
         })
-        return { ...base, sent: context.sent, records, current, paths, blocks, removed }
+        return { ...base, edge: context.edge, records, current, paths, blocks, removed }
     }
 
-    it('deletes one environment into the trash, taking its vhost off the web, when asked to remove it', async () => {
-        const { agent, sent, records, current, paths } = trashSetup()
+    it('deletes one environment into the trash, taking its NPM hosts off the web, when asked to remove it', async () => {
+        const { agent, edge, records, current, paths } = trashSetup()
         const reply = replyOf(await agent.handle({ verb: 'provision', project: 'acme', args: { action: 'remove', environment: 'test' } }))
         assert.equal(reply?.ok, true, JSON.stringify(reply))
-        assert.deepEqual(sent.map(request => request.remove), [[VHOST]])
+        assert.deepEqual(edge.writes().map(request => request.verb), ['remove'])
+        assert.deepEqual(edge.npm.snapshot()['proxy-hosts'], [])
         assert.equal(records.length, 1)
+        // The record keeps the node as it was, ids and all; a restore drops them (environment-trash.ts)
+        assert.deepEqual(records[0]!.node.npm, { proxyHost: 14 })
         assert.equal(records[0]!.actor, 'admin')
         assert.equal(current().projects.get('acme')!.environments.has('test'), false)
         assert.equal(paths.has('/var/www/acme/test'), false)
     })
 
-    it('records who asked, and restores it from the trash with a vhost written with the token api sent', async () => {
-        const { agent, sent, records, current } = trashSetup()
+    it('refuses the delete, moving nothing, when edge cannot say what the hosts are', async () => {
+        const { agent, edge, records, current, paths } = trashSetup()
+        edge.failNext('get', 'before')
+        const reply = replyOf(await agent.handle({ verb: 'provision', project: 'acme', args: { action: 'remove', environment: 'test' } }))
+        assert.equal(reply?.ok, false)
+        assert.equal(records.length, 0)
+        assert.equal(current().projects.get('acme')!.environments.has('test'), true)
+        assert.equal(paths.has('/var/www/acme/test'), true)
+        assert.equal(edge.npm.snapshot()['proxy-hosts'].length, 1)
+    })
+
+    it('records who asked, and restores it from the trash with fresh hosts written with the token api sent', async () => {
+        const { agent, edge, records, current } = trashSetup()
         const deleted = replyOf(await agent.handle({ verb: 'provision', project: 'acme', args: { action: 'delete-environment', environment: 'test', actor: 'koda' } }))
         assert.equal(deleted?.ok, true)
         assert.equal(records[0]!.actor, 'koda')
@@ -2054,9 +2043,13 @@ describe('deleting and restoring an environment', () => {
             args: { action: 'restore-environment', environment: 'test', deletedAt: records[0]!.deletedAt, token: 'abc123' },
         }))
         assert.deepEqual(restored, { ok: true, port: 5011, portChanged: false, droppedHostnames: [], warnings: [], vhost: true })
-        assert.equal(current().projects.get('acme')!.environments.get('test')!.domain, 'test.acme.com')
-        assert.equal(sent.at(-1)!.write?.path, VHOST)
-        assert.match(sent.at(-1)!.write?.text ?? '', /abc123/)
+        const test = current().projects.get('acme')!.environments.get('test')!
+        assert.equal(test.domain, 'test.acme.com')
+        // New hosts under new ids: the record's ids named hosts the delete removed
+        assert.deepEqual(test.npm, { proxyHost: 100, redirectionHost: null })
+        const proxy = edge.npm.snapshot()['proxy-hosts'][0]!
+        assert.equal(proxy.id, 100)
+        assert.match(String(proxy.advanced_config), /\/\.well-known\/hostd\/abc123/)
         assert.equal(records.length, 0)
     })
 

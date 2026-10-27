@@ -2,14 +2,25 @@ import { describe, it } from 'node:test'
 import assert from 'node:assert/strict'
 
 import { parseRegistry } from '../shared/registry.ts'
-import { writeVhost, removeVhost, setAliases, previewAdopt, adopt, restoreAdopted, type DomainsDeps } from './domains.ts'
-import type { VhostFile } from './sites-enabled.ts'
+import { applyChange, type Change } from '../shared/registry-write.ts'
+import { markerFor, type HostsSpec, type Owner } from '../shared/edge-protocol.ts'
+import {
+    adopt, currentToken, previewAdopt, recreateHosts, removeEdgeHosts, removeHosts, restoreAdopted, setAliases, writeHosts,
+    type DomainsDeps,
+} from './domains.ts'
+import type { AdoptedStore } from './adopted-store.ts'
+import { FakeEdge, FAKE_UPSTREAM } from './testing/fake-edge.ts'
 
-// What listSitesEnabled answers with: the files that were read, and the paths of any that could not be.
-// Most tests here care only about the first, so the second defaults to none.
-const listing = (files: VhostFile[], unreadable: string[] = []) => async () => ({ files, unreadable })
+const OWNER: Owner = { project: 'acme', environment: 'live' }
+const BS = String.fromCharCode(92)
+const BROTLI = `if ($http_content_encoding ~* "(^|,)${BS}s*br${BS}s*(,|$)") {
+    return 415;
+}`
 
-const REGISTRY = `
+function registryText(options: { aliases?: string[], certificates?: boolean, flexibleSsl?: boolean, port?: number } = {}): string {
+    const aliases = options.aliases ?? ['www.acme.com']
+    return `
+${options.certificates === false ? '' : 'certificates:\n  acme.com: 16\n'}
 projects:
   acme:
     client: cl_1
@@ -19,636 +30,584 @@ projects:
     environments:
       live:
         dir: /var/www/acme
-        port: 5010
+        port: ${options.port ?? 5010}
         domain: acme.com
-        aliases: [www.acme.com]
+        aliases: [${aliases.join(', ')}]
+${options.flexibleSsl ? '        flexibleSsl: true\n' : ''}      uat1:
+        dir: /var/www/acme-uat1
+        port: 5011
+        domain: uat1.acme.com
 `
+}
 
-function setup(options: { railOk?: boolean, existing?: string | null } = {}) {
-    const sent: {
-        action: string
-        write: { path: string, text: string } | null
-        remove: string[]
-        disable: string[]
-        restore?: string[]
-    }[] = []
-    const railOk = options.railOk ?? true
+function memoryStore(): AdoptedStore & { records: Map<string, unknown> } {
+    const records = new Map<string, unknown>()
+    const key = (owner: Owner) => `${owner.project}-${owner.environment}`
+    return {
+        records,
+        async save(owner, record) { records.set(key(owner), structuredClone(record)) },
+        async read(owner) { return (records.get(key(owner)) as never) ?? null },
+        async clear(owner) { records.delete(key(owner)) },
+    }
+}
+
+function setup(options: Parameters<typeof registryText>[0] = {}) {
+    const edge = new FakeEdge()
+    edge.npm.certificates = [16]
+    let text = registryText(options)
+    const changes: Change[] = []
+    const order: string[] = []
+    const adopted = memoryStore()
     const deps: DomainsDeps = {
-        rail: {
-            async send(action, parts) {
-                sent.push({ action, ...parts })
-                // The revert, which is the second call, always passes: only the first is made to fail.
-                const ok = railOk || sent.length > 1
-                return { seq: sent.length - 1, ok, output: ok ? 'Syntax OK' : 'AH00526: Syntax error on line 9' }
+        edge: {
+            async call(request) {
+                order.push(`edge ${request.verb}`)
+                return edge.call(request)
             },
         },
-        async readFile() { return options.existing ?? null },
-        listSitesEnabled: listing([]),
-        // Neither is exercised unless a test overrides it: writeRegistry defaults to succeeding, and
-        // reloadRegistry defaults to handing back the fixture unchanged.
-        async writeRegistry() { return { ok: true } },
-        async reloadRegistry() { return parseRegistry(REGISTRY) },
-        config: {
-            includeDir: '/etc/apache2/hostd',
-            sitesEnabled: '/etc/apache2/sites-enabled',
-            originCert: '/etc/ssl/hostd/origin.pem',
-            originKey: '/etc/ssl/hostd/origin.key',
-            acmeWebroot: '/var/www/hostd-acme',
-            maintenanceFlagDir: '/run/hostd/maintenance',
-            maintenancePageDir: '/var/www/hostd-maintenance',
-            accessLogDir: '/var/log/apache2',
+        adopted,
+        async writeRegistry(change) {
+            changes.push(change)
+            order.push(`registry ${change.kind}`)
+            const result = applyChange(text, change)
+            if (!result.ok) return result
+            text = result.text
+            return { ok: true }
         },
+        async reloadRegistry() { return parseRegistry(text) },
+        config: { upstreamHost: FAKE_UPSTREAM, edgeHost: FAKE_UPSTREAM, edgeHttpPort: 8790 },
     }
-    const registry = parseRegistry(REGISTRY)
-    const project = registry.projects.get('acme')!
-    return { deps, sent, project, environment: project.environments.get('live')! }
+    // The entry as the registry holds it now, so a test sees ids an earlier call recorded
+    const current = (name: 'live' | 'uat1' = 'live') => {
+        const project = parseRegistry(text).projects.get('acme')!
+        return { project, environment: project.environments.get(name)! }
+    }
+    return { deps, edge, npm: edge.npm, changes, order, adopted, current }
 }
 
-// The same fixture, but with the live environment's aliases spliced in, as if the registry had already
-// been rewritten. Lets a test that stands in for reloadRegistry name only the aliases it cares about.
-function reloaded(aliases: string[]) {
-    const list = aliases.length === 0 ? '[]' : `[${aliases.join(', ')}]`
-    return parseRegistry(`
-projects:
-  acme:
-    client: cl_1
-    name: Acme
-    capabilities: [domains]
-    services: { web: { role: site } }
-    environments:
-      live:
-        dir: /var/www/acme
-        port: 5010
-        domain: acme.com
-        aliases: ${list}
-`)
+// A proxy host Koda made by hand in NPM's UI, as NPM returns it
+function handMade(id: number, over: Record<string, unknown> = {}) {
+    return {
+        id, domain_names: ['acme.com', 'www.acme.com'], forward_scheme: 'http', forward_host: FAKE_UPSTREAM, forward_port: 5010,
+        certificate_id: 16, ssl_forced: 1, http2_support: 1, hsts_enabled: 0, hsts_subdomains: 0, caching_enabled: 0,
+        access_list_id: 0, block_exploits: 1, allow_websocket_upgrade: 1, advanced_config: BROTLI, locations: [], ...over,
+    }
 }
 
-describe('writeVhost', () => {
-    // The vhost names the environment's own page, so the page has to be on disk before Apache loads it
-    it('writes the holding page before the vhost that serves it, and names that page', async () => {
-        const { deps, sent, project, environment } = setup()
-        const order: string[] = []
-        deps.refreshHoldingPage = async () => { order.push(`page (${sent.length} sent)`) }
-        const result = await writeVhost(deps, project, environment, 'abc123')
-        assert.equal(result.ok, true)
-        assert.deepEqual(order, ['page (0 sent)'])
-        assert.match(sent[0]?.write?.text ?? '', /Alias "\/\.hostd-maintenance" "\/var\/www\/hostd-maintenance\/sites\/acme-live\.html"/)
+describe('writeHosts', () => {
+    it('refuses an environment with no domain', async () => {
+        const { deps, edge, current } = setup()
+        const { project, environment } = current()
+        const result = await writeHosts(deps, project, { ...environment, domain: null }, 'abc123')
+        assert.equal(result.ok, false)
+        assert.equal(!result.ok && result.code, 'bad-request')
+        assert.deepEqual(edge.writes(), [])
     })
 
-    it('writes the vhost even when its holding page could not be written', async () => {
-        const { deps, sent, project, environment } = setup()
+    it('refuses Full SSL without a zone certificate', async () => {
+        const { deps, edge, current, changes } = setup({ certificates: false })
+        const { project, environment } = current()
+        const result = await writeHosts(deps, project, environment, 'abc123')
+        assert.deepEqual(result, { ok: false, code: 'bad-request', message: 'No certificate in Nginx Proxy Manager covers acme.com.' })
+        assert.deepEqual(edge.writes(), [])
+        assert.deepEqual(changes, [])
+    })
+
+    it('needs no certificate under Flexible SSL', async () => {
+        const { deps, npm, current } = setup({ certificates: false, flexibleSsl: true })
+        const { project, environment } = current()
+        const result = await writeHosts(deps, project, environment, 'abc123')
+        assert.equal(result.ok, true)
+        const proxy = npm.snapshot()['proxy-hosts'][0]!
+        assert.equal(proxy.certificate_id, 0)
+        assert.equal(proxy.ssl_forced, false)
+    })
+
+    it('a create records the npm ids in the registry', async () => {
+        const { deps, npm, current, changes } = setup()
+        const { project, environment } = current()
+        const result = await writeHosts(deps, project, environment, 'abc123')
+        assert.deepEqual(result, { ok: true, written: { hostnames: ['acme.com', 'www.acme.com'], path: 'npm:proxy-host/100' } })
+        assert.deepEqual(changes, [{ kind: 'set-npm', id: 'acme', environment: 'live', npm: { proxyHost: 100, redirectionHost: 101 } }])
+        assert.deepEqual(current().environment.npm, { proxyHost: 100, redirectionHost: 101 })
+        const state = npm.snapshot()
+        const proxy = state['proxy-hosts'][0]!
+        assert.deepEqual(proxy.domain_names, ['acme.com'])
+        assert.equal(proxy.forward_host, FAKE_UPSTREAM)
+        assert.equal(proxy.forward_port, 5010)
+        assert.equal(proxy.certificate_id, 16)
+        assert.equal(String(proxy.advanced_config).split('\n')[0], markerFor(OWNER))
+        assert.match(String(proxy.advanced_config), /location = \/\.well-known\/hostd\/abc123/)
+        assert.deepEqual(state['redirection-hosts'][0]!.domain_names, ['www.acme.com'])
+    })
+
+    it('an update keeps the ids and leaves the registry alone', async () => {
+        const { deps, npm, current, changes } = setup()
+        await writeHosts(deps, current().project, current().environment, 'abc123')
+        changes.length = 0
+        const result = await writeHosts(deps, current().project, current().environment, 'def456')
+        assert.deepEqual(result, { ok: true, written: { hostnames: ['acme.com', 'www.acme.com'], path: 'npm:proxy-host/100' } })
+        assert.deepEqual(changes, [])
+        assert.match(String(npm.snapshot()['proxy-hosts'][0]!.advanced_config), /def456/)
+    })
+
+    it('writes the holding page before the hosts that point at it', async () => {
+        const { deps, order, current } = setup()
+        deps.refreshHoldingPage = async () => { order.push('page') }
+        await writeHosts(deps, current().project, current().environment, 'abc123')
+        assert.ok(order.indexOf('page') < order.indexOf('edge apply'))
+    })
+
+    it('writes the hosts even when the holding page could not be written', async () => {
+        const { deps, current } = setup()
         deps.refreshHoldingPage = async () => { throw new Error('EACCES') }
-        const result = await writeVhost(deps, project, environment, 'abc123')
+        const result = await writeHosts(deps, current().project, current().environment, 'abc123')
         assert.equal(result.ok, true)
-        assert.equal(sent.length, 1)
     })
 
-    it('sends one reload carrying the rendered file', async () => {
-        const { deps, sent, project, environment } = setup()
-        const result = await writeVhost(deps, project, environment, 'abc123')
+    it('refuses a create while another NPM host serves the name, writing nothing', async () => {
+        const { deps, npm, edge, current, changes } = setup()
+        npm.seed('proxy-hosts', handMade(12))
+        const result = await writeHosts(deps, current().project, current().environment, 'abc123')
+        assert.deepEqual(result, {
+            ok: false, code: 'bad-request',
+            message: 'acme.com is already served by NPM proxy host 12, which hostd does not manage; adopt acme live from the Domains tab to take it over, or remove it in NPM',
+        })
+        assert.deepEqual(edge.writes(), [])
+        assert.deepEqual(changes, [])
+    })
+
+    it('carries edge\'s refusal back as a failure', async () => {
+        const { deps, npm, current, changes } = setup()
+        npm.certificates = []
+        const result = await writeHosts(deps, current().project, current().environment, 'abc123')
+        assert.deepEqual(result, { ok: false, code: 'failed', message: 'NPM has no certificate 16' })
+        assert.deepEqual(changes, [])
+    })
+
+    it('refuses as unavailable and records nothing when edge never got the write', async () => {
+        const { deps, edge, current, changes } = setup()
+        edge.failNext('apply', 'before')
+        const result = await writeHosts(deps, current().project, current().environment, 'abc123')
+        assert.equal(result.ok, false)
+        assert.equal(!result.ok && result.code, 'unavailable')
+        assert.match(!result.ok ? result.message : '', /NPM does not show the change/)
+        assert.deepEqual(changes, [])
+    })
+
+    it('records the ids when the reply was lost but NPM shows the hosts were written', async () => {
+        const { deps, edge, current, changes } = setup()
+        edge.failNext('apply', 'after')
+        const result = await writeHosts(deps, current().project, current().environment, 'abc123')
+        assert.deepEqual(result, { ok: true, written: { hostnames: ['acme.com', 'www.acme.com'], path: 'npm:proxy-host/100' } })
+        assert.deepEqual(changes, [{ kind: 'set-npm', id: 'acme', environment: 'live', npm: { proxyHost: 100, redirectionHost: 101 } }])
+    })
+
+    it('says the change may or may not have reached NPM when the re-read fails too', async () => {
+        const { deps, edge, current, changes } = setup()
+        edge.failNext('apply', 'after')
+        // The create's own check is the first find; the re-read after the lost reply is the second
+        const inner = deps.edge
+        let finds = 0
+        deps.edge = {
+            async call(request) {
+                if (request.verb === 'find' && ++finds === 2) throw new Error('edge connection failed: ECONNREFUSED')
+                return inner.call(request)
+            },
+        }
+        const result = await writeHosts(deps, current().project, current().environment, 'abc123')
+        assert.equal(result.ok, false)
+        assert.equal(!result.ok && result.code, 'unavailable')
+        assert.match(!result.ok ? result.message : '', /may or may not have reached Nginx Proxy Manager/)
+        assert.deepEqual(changes, [])
+    })
+
+    it('confirms an update through a get when the reply was lost', async () => {
+        const { deps, edge, current } = setup()
+        await writeHosts(deps, current().project, current().environment, 'abc123')
+        edge.failNext('apply', 'after')
+        const result = await writeHosts(deps, current().project, current().environment, 'def456')
         assert.equal(result.ok, true)
-        assert.equal(sent.length, 1)
-        assert.equal(sent[0]!.action, 'reload')
-        assert.equal(sent[0]!.write?.path, '/etc/apache2/hostd/acme-live.conf')
-        assert.match(sent[0]!.write?.text ?? '', /ServerName acme\.com/)
+        assert.ok(edge.requests.some(request => request.verb === 'get'))
     })
 
-    it('answers with every hostname it just made live', async () => {
-        const { deps, project, environment } = setup()
-        const result = await writeVhost(deps, project, environment, 'abc123')
-        assert.deepEqual(result.ok && result.written.hostnames, ['acme.com', 'www.acme.com'])
-    })
-
-    it('refuses an environment with no domain rather than writing a vhost that serves nothing', async () => {
-        const registry = parseRegistry(`
-projects:
-  acme:
-    client: cl_1
-    name: Acme
-    capabilities: [domains]
-    services: { web: { role: site } }
-    environments:
-      live: { dir: /var/www/acme, port: 5010 }
-`)
-        const { deps } = setup()
-        const project = registry.projects.get('acme')!
-        const result = await writeVhost(deps, project, project.environments.get('live')!, 'abc123')
+    it('removes the hosts it created when the registry will not record their ids', async () => {
+        const { deps, npm, current } = setup()
+        deps.writeRegistry = async () => ({ ok: false, problem: 'the registry file is read-only' })
+        const result = await writeHosts(deps, current().project, current().environment, 'abc123')
         assert.equal(result.ok, false)
-        assert.match(result.ok === false ? result.message : '', /no domain/)
-    })
-
-    it('puts the previous file back when the configtest fails', async () => {
-        const { deps, sent, project, environment } = setup({ railOk: false, existing: '# the old file\n' })
-        const result = await writeVhost(deps, project, environment, 'abc123')
-        assert.equal(result.ok, false)
-        assert.equal(sent.length, 2, 'the revert is a second request')
-        assert.equal(sent[1]!.write?.text, '# the old file\n')
-    })
-
-    it('removes the file it wrote when the configtest fails and there was no previous file', async () => {
-        const { deps, sent, project, environment } = setup({ railOk: false, existing: null })
-        await writeVhost(deps, project, environment, 'abc123')
-        assert.deepEqual(sent[1]!.remove, ['/etc/apache2/hostd/acme-live.conf'])
-        assert.equal(sent[1]!.write, null)
-    })
-
-    it('carries Apache\'s own output back, because that is what says what is wrong', async () => {
-        const { deps, project, environment } = setup({ railOk: false })
-        const result = await writeVhost(deps, project, environment, 'abc123')
-        assert.match(result.ok === false ? result.output ?? '' : '', /AH00526/)
+        assert.equal(!result.ok && result.code, 'failed')
+        assert.match(!result.ok ? result.message : '', /the registry file is read-only/)
+        assert.deepEqual(npm.snapshot()['proxy-hosts'], [])
+        assert.deepEqual(npm.snapshot()['redirection-hosts'], [])
     })
 })
 
-describe('removeVhost', () => {
-    it('removes the file and reloads', async () => {
-        const { deps, sent, project, environment } = setup()
-        const result = await removeVhost(deps, project, environment)
+describe('removeHosts', () => {
+    it('is a success that touches nothing for an environment hostd holds no ids for', async () => {
+        const { deps, edge, current, changes } = setup()
+        const result = await removeHosts(deps, current().project, current().environment)
         assert.equal(result.ok, true)
-        assert.deepEqual(sent[0]!.remove, ['/etc/apache2/hostd/acme-live.conf'])
-        assert.equal(sent[0]!.write, null)
+        assert.deepEqual(edge.requests, [])
+        assert.deepEqual(changes, [])
+    })
+
+    it('removes the hosts and then clears the ids', async () => {
+        const { deps, npm, current, changes, order } = setup()
+        await writeHosts(deps, current().project, current().environment, 'abc123')
+        order.length = 0
+        changes.length = 0
+        const result = await removeHosts(deps, current().project, current().environment)
+        assert.deepEqual(result, { ok: true, written: { hostnames: [], path: 'npm:proxy-host/100' } })
+        assert.deepEqual(order, ['edge remove', 'registry set-npm'])
+        assert.deepEqual(changes, [{ kind: 'set-npm', id: 'acme', environment: 'live', npm: null }])
+        assert.deepEqual(npm.snapshot()['proxy-hosts'], [])
+        assert.deepEqual(npm.snapshot()['redirection-hosts'], [])
+    })
+
+    it('keeps the ids when edge refuses, because the hosts are still there', async () => {
+        const { deps, npm, current, changes } = setup()
+        await writeHosts(deps, current().project, current().environment, 'abc123')
+        changes.length = 0
+        // Koda deleted the marker by hand: the host is no longer hostd's to delete
+        npm.seed('proxy-hosts', { ...npm.snapshot()['proxy-hosts'][0]!, advanced_config: 'return 418;' })
+        const result = await removeHosts(deps, current().project, current().environment)
+        assert.equal(result.ok, false)
+        assert.equal(!result.ok && result.code, 'failed')
+        assert.deepEqual(changes, [])
+    })
+
+    it('clears the ids when the reply was lost but the hosts are gone', async () => {
+        const { deps, edge, current, changes } = setup()
+        await writeHosts(deps, current().project, current().environment, 'abc123')
+        changes.length = 0
+        edge.failNext('remove', 'after')
+        const result = await removeHosts(deps, current().project, current().environment)
+        assert.equal(result.ok, true)
+        assert.deepEqual(changes, [{ kind: 'set-npm', id: 'acme', environment: 'live', npm: null }])
+    })
+
+    it('keeps the ids when the reply was lost and the hosts are still there', async () => {
+        const { deps, edge, current, changes } = setup()
+        await writeHosts(deps, current().project, current().environment, 'abc123')
+        changes.length = 0
+        edge.failNext('remove', 'before')
+        const result = await removeHosts(deps, current().project, current().environment)
+        assert.equal(result.ok, false)
+        assert.equal(!result.ok && result.code, 'unavailable')
+        assert.deepEqual(changes, [])
+    })
+
+    it('says the change may or may not have reached NPM when the re-read fails too', async () => {
+        const { deps, edge, current, changes } = setup()
+        await writeHosts(deps, current().project, current().environment, 'abc123')
+        changes.length = 0
+        edge.failNext('remove', 'after')
+        edge.failNext('get', 'before')
+        const result = await removeHosts(deps, current().project, current().environment)
+        assert.equal(!result.ok && result.code, 'unavailable')
+        assert.match(!result.ok ? result.message : '', /may or may not have reached Nginx Proxy Manager/)
+        assert.deepEqual(changes, [])
+    })
+})
+
+describe('removeEdgeHosts', () => {
+    it('removes the hosts without writing the registry, for an entry that is already gone', async () => {
+        const { deps, npm, current, changes } = setup()
+        await writeHosts(deps, current().project, current().environment, 'abc123')
+        changes.length = 0
+        const result = await removeEdgeHosts(deps, current().project, current().environment)
+        assert.deepEqual(result, { ok: true })
+        assert.deepEqual(changes, [])
+        assert.deepEqual(npm.snapshot()['proxy-hosts'], [])
+    })
+})
+
+describe('recreateHosts', () => {
+    it('creates the hosts again from a spec read earlier and records the new ids', async () => {
+        const { deps, npm, current } = setup()
+        await writeHosts(deps, current().project, current().environment, 'abc123')
+        const before = npm.snapshot()['proxy-hosts'][0]!
+        const removed = await removeHosts(deps, current().project, current().environment)
+        assert.equal(removed.ok, true)
+        const spec: HostsSpec = {
+            proxy: {
+                domain_names: ['acme.com'], forward_host: FAKE_UPSTREAM, forward_port: 5010, certificate_id: 16,
+                ssl_forced: true, http2_support: true, advanced_config: String(before.advanced_config),
+            },
+            redirection: null,
+        }
+        const result = await recreateHosts(deps, current().project, current().environment, spec)
+        assert.deepEqual(result, { ok: true })
+        assert.deepEqual(current().environment.npm, { proxyHost: 102, redirectionHost: null })
     })
 })
 
 describe('setAliases', () => {
-    it('writes the registry before it writes the vhost', async () => {
-        const order: string[] = []
-        const { deps, project, environment } = setup()
-        deps.writeRegistry = async () => { order.push('registry'); return { ok: true } }
-        deps.reloadRegistry = async () => { order.push('reload'); return reloaded(['www.acme.com']) }
-        const inner = deps.rail.send
-        deps.rail = { send: async (a, p) => { order.push('vhost'); return inner(a, p) } }
-        await setAliases(deps, project, environment, ['www.acme.com'], 'abc123')
-        assert.deepEqual(order, ['registry', 'reload', 'vhost'])
-    })
-
-    it('does not touch Apache when the registry write is refused', async () => {
-        const { deps, sent, project, environment } = setup()
-        deps.writeRegistry = async () => ({ ok: false, problem: 'someone else changed it' })
-        const result = await setAliases(deps, project, environment, ['www.acme.com'], 'abc123')
-        assert.equal(result.ok, false)
-        assert.equal(sent.length, 0)
+    it('writes the registry before it writes the hosts', async () => {
+        const { deps, order, current } = setup()
+        const result = await setAliases(deps, current().project, current().environment, ['www.acme.com', 'shop.acme.com'], 'abc123')
+        assert.equal(result.ok, true)
+        assert.deepEqual(order.filter(step => step !== 'edge find'), ['registry set-aliases', 'edge apply', 'registry set-npm'])
+        assert.deepEqual(result.ok && result.written.hostnames, ['acme.com', 'www.acme.com', 'shop.acme.com'])
     })
 
     it('refuses an alias equal to the primary', async () => {
-        const { deps, project, environment } = setup()
-        const result = await setAliases(deps, project, environment, ['acme.com'], 'abc123')
-        assert.equal(result.ok, false)
-        assert.match(result.ok === false ? result.message : '', /already this environment's domain/)
+        const { deps, edge, current } = setup()
+        const result = await setAliases(deps, current().project, current().environment, ['acme.com'], 'abc123')
+        assert.equal(!result.ok && result.code, 'bad-request')
+        assert.deepEqual(edge.requests, [])
     })
 
-    // Only the admin can add hostnames, and the admin is not held to maxDomains
-    it('writes more hostnames than maxDomains', async () => {
-        const { deps, project, environment } = setup()
-        const capped = { ...project, maxDomains: 2 }
-        deps.reloadRegistry = async () => reloaded(['a.acme.com', 'b.acme.com'])
-        const result = await setAliases(deps, capped, environment, ['a.acme.com', 'b.acme.com'], 'abc123')
+    it('refuses an alias another NPM host already serves, naming the host', async () => {
+        const { deps, npm, edge, current, changes } = setup()
+        npm.seed('proxy-hosts', handMade(30, { domain_names: ['shop.acme.com'], advanced_config: '' }))
+        const result = await setAliases(deps, current().project, current().environment, ['www.acme.com', 'shop.acme.com'], 'abc123')
+        assert.deepEqual(result, {
+            ok: false, code: 'bad-request',
+            message: 'shop.acme.com is already on NPM proxy host 30, which this environment does not own; remove it there first',
+        })
+        assert.deepEqual(changes, [])
+        assert.deepEqual(edge.writes(), [])
+    })
+
+    it('refuses while a host hostd does not own still serves the primary', async () => {
+        const { deps, npm, current, changes } = setup()
+        npm.seed('proxy-hosts', handMade(12))
+        const result = await setAliases(deps, current().project, current().environment, ['www.acme.com', 'shop.acme.com'], 'abc123')
+        assert.equal(!result.ok && result.code, 'bad-request')
+        assert.match(!result.ok ? result.message : '', /acme\.com is still served by NPM proxy host 12.*adopt acme live first/)
+        assert.deepEqual(changes, [])
+    })
+
+    it('does not re-check names already on the environment, and accepts its own hosts', async () => {
+        const { deps, current } = setup()
+        await writeHosts(deps, current().project, current().environment, 'abc123')
+        const result = await setAliases(deps, current().project, current().environment, ['www.acme.com', 'shop.acme.com'], 'abc123')
         assert.equal(result.ok, true)
+        const removing = await setAliases(deps, current().project, current().environment, ['shop.acme.com'], 'abc123')
+        assert.equal(removing.ok, true)
+        assert.deepEqual(current().environment.npm, { proxyHost: 100, redirectionHost: 101 })
     })
 
-    it('refuses an environment with no domain rather than accepting aliases for it', async () => {
-        const registry = parseRegistry(`
-projects:
-  acme:
-    client: cl_1
-    name: Acme
-    capabilities: [domains]
-    services: { web: { role: site } }
-    environments:
-      live: { dir: /var/www/acme, port: 5010 }
-`)
-        const { deps } = setup()
-        const project = registry.projects.get('acme')!
-        const result = await setAliases(deps, project, project.environments.get('live')!, ['www.acme.com'], 'abc123')
-        assert.equal(result.ok, false)
-        assert.match(result.ok === false ? result.message : '', /no domain/)
-    })
-
-    // The registry's uniqueness rule only sees hostd's own entries. Apache does not refuse two vhosts
-    // claiming one hostname either: it warns and serves whichever loaded first.
-    it('refuses an alias a hand-written vhost already claims, naming the file', async () => {
-        const { deps, sent, project, environment } = setup()
-        deps.listSitesEnabled = listing([
-            { path: '/etc/apache2/sites-enabled/legacy.conf', text: 'ServerName legacy.example\nServerAlias shop.acme.com\n' },
-        ])
-        const result = await setAliases(deps, project, environment, ['www.acme.com', 'shop.acme.com'], 'abc123')
-        assert.equal(result.ok, false)
-        assert.match(result.ok === false ? result.message : '', /shop\.acme\.com is already served by \/etc\/apache2\/sites-enabled\/legacy\.conf/)
-        // Refused before the registry is touched, let alone Apache.
-        assert.equal(sent.length, 0)
-    })
-
-    // Otherwise removing one alias would be refused because an unrelated one, accepted long ago, is
-    // claimed by a file nobody is proposing to change.
-    it('does not re-check the names the environment already serves', async () => {
-        const { deps, project, environment } = setup()
-        deps.listSitesEnabled = listing([
-            { path: '/etc/apache2/sites-enabled/legacy.conf', text: 'ServerName www.acme.com\n' },
-        ])
-        // Removing the alias that file claims, and adding nothing.
-        const result = await setAliases(deps, project, environment, [], 'abc123')
-        assert.equal(result.ok, true)
-    })
-
-    // The state all five existing sites are in. Writing the vhost claims the primary as well as the
-    // aliases, so an alias added to a site nobody has adopted yet puts a second vhost on the primary
-    // and lets include order decide which of the two answers. If hostd's wins, the site loses whatever
-    // the hand-written file carried, which is the very thing adopt's preview exists to prevent.
-    it('refuses to write a vhost at all while a hand-written file still serves the primary', async () => {
-        const { deps, sent, project, environment } = setup()
-        deps.listSitesEnabled = listing([
-            { path: '/etc/apache2/sites-enabled/acme.conf', text: 'ServerName acme.com\n' },
-        ])
-        const result = await setAliases(deps, project, environment, ['www.acme.com', 'shop.acme.com'], 'abc123')
-        assert.equal(result.ok, false)
-        const message = result.ok === false ? result.message : ''
-        assert.match(message, /acme\.com is still served by \/etc\/apache2\/sites-enabled\/acme\.conf/)
-        // Says what to do, not only no.
-        assert.match(message, /adopt acme live first/)
-        assert.equal(sent.length, 0)
-    })
-
-    it('renders the vhost from the reloaded entry, not from the arguments', async () => {
-        const { deps, sent, project, environment } = setup()
-        // The registry accepted only one of the two: the second was already taken by another project.
-        deps.reloadRegistry = async () => reloaded(['www.acme.com'])
-        await setAliases(deps, project, environment, ['www.acme.com', 'taken.com'], 'abc123')
-        assert.doesNotMatch(sent[0]!.write?.text ?? '', /taken\.com/)
-    })
-
-    it('reports an entry that did not survive the change rather than writing a vhost for it', async () => {
-        const { deps, sent, project, environment } = setup()
-        deps.reloadRegistry = async () => parseRegistry('projects: {}')
-        const result = await setAliases(deps, project, environment, ['www.acme.com'], 'abc123')
-        assert.equal(result.ok, false)
-        assert.equal(sent.length, 0)
+    it('touches no host when the registry refuses the change', async () => {
+        const { deps, edge, current } = setup()
+        deps.writeRegistry = async () => ({ ok: false, problem: 'uat1.acme.com is already used' })
+        const result = await setAliases(deps, current().project, current().environment, ['uat1.acme.com'], 'abc123')
+        assert.equal(!result.ok && result.code, 'failed')
+        assert.deepEqual(edge.writes(), [])
     })
 })
 
 describe('previewAdopt', () => {
-    const handWritten = {
-        path: '/etc/apache2/sites-enabled/acme.conf',
-        text: 'ServerName acme.com\nServerAlias www.acme.com legacy.acme.com\n',
-    }
-
-    it('shows the file that serves this site today and the one hostd proposes', async () => {
-        const { deps, project, environment } = setup()
-        deps.listSitesEnabled = listing([handWritten])
-        const result = await previewAdopt(deps, project, environment, 'abc123')
-        assert.equal(result.ok, true)
-        assert.equal(result.ok && result.preview.claims[0]!.path, handWritten.path)
-        assert.match(result.ok ? result.preview.proposed : '', /ServerName acme\.com/)
+    it('shows the NPM host serving the site today and the hosts hostd proposes', async () => {
+        const { deps, npm, edge, current } = setup()
+        npm.seed('proxy-hosts', handMade(12))
+        const result = await previewAdopt(deps, current().project, current().environment, 'abc123')
+        assert.ok(result.ok && 'preview' in result)
+        const { preview } = result
+        assert.equal(preview.adoptable, true)
+        assert.deepEqual(preview.extraNames, [])
+        assert.deepEqual(preview.unreadable, [])
+        assert.equal(preview.flexibleSsl, false)
+        assert.equal(preview.claims.length, 1)
+        const claim = preview.claims[0]!
+        assert.equal(claim.path, 'NPM proxy host 12')
+        assert.deepEqual(claim.names, ['acme.com', 'www.acme.com'])
+        assert.deepEqual(claim.unsupported, [])
+        assert.match(claim.text, /^Proxy host\nDomains: acme\.com, www\.acme\.com\nUpstream: 192\.168\.0\.8:5010/)
+        assert.match(preview.proposed, /Redirection host\nDomains: www\.acme\.com/)
+        assert.match(preview.proposed, /# hostd: acme\/live/)
+        assert.deepEqual(edge.writes(), [])
     })
 
-    // Both files, whole. Naming the one being replaced is not showing it, and the operator is about to
-    // confirm an overwrite of a configuration serving a live site on the strength of this screen.
-    it('carries the old file verbatim, not merely its path and the names it was understood to serve', async () => {
-        const { deps, project, environment } = setup()
-        deps.listSitesEnabled = listing([handWritten])
-        const result = await previewAdopt(deps, project, environment, 'abc123')
-        assert.equal(result.ok && result.preview.claims[0]!.text, handWritten.text)
+    it('refuses when no NPM host serves the site', async () => {
+        const { deps, current } = setup()
+        const result = await previewAdopt(deps, current().project, current().environment, 'abc123')
+        assert.deepEqual(result, { ok: false, code: 'bad-request', message: 'no NPM proxy host serves acme.com' })
     })
 
-    it('lists hostnames the old file serves that the registry does not know about', async () => {
-        const { deps, project, environment } = setup()
-        deps.listSitesEnabled = listing([handWritten])
-        const result = await previewAdopt(deps, project, environment, 'abc123')
-        assert.deepEqual(result.ok && result.preview.extraNames, ['legacy.acme.com'])
+    it('preview refuses a host on another upstream', async () => {
+        const { deps, npm, current } = setup()
+        npm.seed('proxy-hosts', handMade(12, { forward_host: '192.168.0.9' }))
+        const result = await previewAdopt(deps, current().project, current().environment, 'abc123')
+        assert.ok(result.ok && 'preview' in result)
+        assert.equal(result.preview.adoptable, false)
+        assert.deepEqual(result.preview.claims[0]!.unsupported, ['It forwards to 192.168.0.9:5010, not 192.168.0.8:5010.'])
     })
 
-    it('moves nothing and reloads nothing', async () => {
-        const { deps, sent, project, environment } = setup()
-        deps.listSitesEnabled = listing([handWritten])
-        await previewAdopt(deps, project, environment, 'abc123')
-        assert.equal(sent.length, 0)
+    it('preview reports names the registry does not list as unsupported', async () => {
+        const { deps, npm, current } = setup()
+        npm.seed('proxy-hosts', handMade(12, { domain_names: ['acme.com', 'www.acme.com', 'acme.com.au'] }))
+        const result = await previewAdopt(deps, current().project, current().environment, 'abc123')
+        assert.ok(result.ok && 'preview' in result)
+        assert.deepEqual(result.preview.extraNames, ['acme.com.au'])
+        assert.equal(result.preview.adoptable, false)
+        assert.deepEqual(result.preview.claims[0]!.unsupported, ['acme.com.au are on the NPM host but not in the registry; add them as aliases first.'])
     })
 
-    it('refuses to call a file adoptable when it uses Include', async () => {
-        const { deps, project, environment } = setup()
-        deps.listSitesEnabled = listing([{ path: handWritten.path, text: 'ServerName acme.com\nInclude /etc/apache2/common.conf' }])
-        const result = await previewAdopt(deps, project, environment, 'abc123')
-        assert.equal(result.ok && result.preview.adoptable, false)
+    it('refuses more than one host, a redirection host, locations and custom directives', async () => {
+        const { deps, npm, current } = setup()
+        npm.seed('proxy-hosts', handMade(12, { domain_names: ['acme.com'], locations: [{ path: '/api' }], advanced_config: 'client_max_body_size 50m;' }))
+        npm.seed('redirection-hosts', { id: 4, domain_names: ['www.acme.com'], forward_domain_name: 'acme.com', advanced_config: '' })
+        const result = await previewAdopt(deps, current().project, current().environment, 'abc123')
+        assert.ok(result.ok && 'preview' in result)
+        const [proxy, redirection] = result.preview.claims
+        assert.equal(result.preview.adoptable, false)
+        assert.ok(proxy!.unsupported.some(reason => reason.startsWith('2 NPM hosts serve these names')))
+        assert.ok(proxy!.unsupported.includes('It has custom locations, which hostd would drop.'))
+        assert.ok(proxy!.unsupported.some(reason => reason.startsWith('It has custom nginx directives: client_max_body_size 50m;')))
+        assert.equal(redirection!.path, 'NPM redirection host 4')
+        assert.ok(redirection!.unsupported.some(reason => reason.startsWith('It is a redirection host')))
     })
 
-    it('is adoptable with no claims at all, which is a site that has no hand-written vhost', async () => {
-        const { deps, project, environment } = setup()
-        const result = await previewAdopt(deps, project, environment, 'abc123')
-        assert.equal(result.ok && result.preview.adoptable, true)
-        assert.deepEqual(result.ok && result.preview.claims, [])
+    it('refuses a host carrying another environment\'s marker', async () => {
+        const { deps, npm, current } = setup()
+        npm.seed('proxy-hosts', handMade(12, { advanced_config: `${markerFor({ project: 'acme', environment: 'uat1' })}\n` }))
+        const result = await previewAdopt(deps, current().project, current().environment, 'abc123')
+        assert.ok(result.ok && 'preview' in result)
+        assert.deepEqual(result.preview.claims[0]!.unsupported, ['It carries the marker for acme/uat1, so it is already managed by hostd for that environment.'])
+    })
+
+    it('reports the environment\'s own Flexible SSL flag', async () => {
+        const { deps, npm, current } = setup({ flexibleSsl: true })
+        npm.seed('proxy-hosts', handMade(12, { certificate_id: 0, ssl_forced: 0 }))
+        const result = await previewAdopt(deps, current().project, current().environment, 'abc123')
+        assert.ok(result.ok && 'preview' in result)
+        assert.equal(result.preview.flexibleSsl, true)
+    })
+
+    it('refuses as unavailable when NPM cannot be read', async () => {
+        const { deps, edge, current } = setup()
+        edge.failNext('find', 'before')
+        const result = await previewAdopt(deps, current().project, current().environment, 'abc123')
+        assert.equal(!result.ok && result.code, 'unavailable')
     })
 })
 
 describe('adopt', () => {
-    const handWritten = { path: '/etc/apache2/sites-enabled/acme.conf', text: 'ServerName acme.com\n' }
-
-    it('writes the new file and disables the old one in a single request', async () => {
-        const { deps, sent, project, environment } = setup()
-        deps.listSitesEnabled = listing([handWritten])
-        const result = await adopt(deps, project, environment, 'abc123', [handWritten.path])
-        assert.equal(result.ok, true)
-        assert.equal(sent.length, 1)
-        assert.equal(sent[0]!.action, 'adopt')
-        assert.deepEqual(sent[0]!.disable, [handWritten.path])
-        assert.match(sent[0]!.write?.text ?? '', /Generated by hostd/)
+    it('adopt keeps the proxy host id and records the redirection host', async () => {
+        const { deps, npm, current, adopted } = setup()
+        npm.seed('proxy-hosts', handMade(12))
+        const result = await adopt(deps, current().project, current().environment, 'abc123', ['NPM proxy host 12'])
+        assert.deepEqual(result, { ok: true, written: { hostnames: ['acme.com', 'www.acme.com'], path: 'npm:proxy-host/12' } })
+        assert.deepEqual(current().environment.npm, { proxyHost: 12, redirectionHost: 100 })
+        const state = npm.snapshot()
+        assert.deepEqual(state['proxy-hosts'].map(host => [host.id, host.domain_names]), [[12, ['acme.com']]])
+        assert.equal(String(state['proxy-hosts'][0]!.advanced_config).split('\n')[0], markerFor(OWNER))
+        assert.deepEqual(state['redirection-hosts'].map(host => [host.id, host.domain_names]), [[100, ['www.acme.com']]])
+        const saved = await adopted.read(OWNER)
+        assert.deepEqual(saved?.ids, { proxyHost: 12, redirectionHost: 100 })
+        assert.deepEqual(saved?.previous.proxy.domain_names, ['acme.com', 'www.acme.com'])
+        assert.equal(saved?.previous.proxy.advanced_config, BROTLI)
     })
 
-    // The other half of "adoptable with no claims at all": a site nobody hand-wrote a file for must be
-    // able to take its vhost, or a newly provisioned one would keep its registry domain and never get a
-    // vhost, since adopt is the only route to one.
-    it('writes the vhost for an environment with nothing to disable', async () => {
-        const { deps, sent, project, environment } = setup()
-        const result = await adopt(deps, project, environment, 'abc123', [])
-        assert.equal(result.ok, true)
-        assert.equal(sent.length, 1)
-        assert.equal(sent[0]!.action, 'adopt')
-        assert.deepEqual(sent[0]!.disable, [])
-        assert.match(sent[0]!.write?.text ?? '', /Generated by hostd/)
-        assert.deepEqual(result.ok && result.written.hostnames, ['acme.com', 'www.acme.com'])
+    it('records the ids and the host as it was when the reply was lost but NPM shows the adopt landed', async () => {
+        const { deps, npm, edge, current, adopted } = setup()
+        npm.seed('proxy-hosts', handMade(12))
+        edge.failNext('apply', 'after')
+        const result = await adopt(deps, current().project, current().environment, 'abc123', [])
+        assert.equal(result.ok, true, JSON.stringify(result))
+        assert.deepEqual(current().environment.npm, { proxyHost: 12, redirectionHost: 100 })
+        assert.deepEqual((await adopted.read(OWNER))?.previous.proxy.domain_names, ['acme.com', 'www.acme.com'])
     })
 
-    it('refuses a file that is not currently claiming one of this environment\'s hostnames', async () => {
-        const { deps, project, environment } = setup()
-        deps.listSitesEnabled = listing([handWritten])
-        const result = await adopt(deps, project, environment, 'abc123', ['/etc/apache2/sites-enabled/other.conf'])
-        assert.equal(result.ok, false)
-        assert.match(result.ok === false ? result.message : '', /does not serve/)
+    it('refuses a host the preview finds unadoptable, writing nothing', async () => {
+        const { deps, npm, edge, current, changes } = setup()
+        npm.seed('proxy-hosts', handMade(12, { forward_port: 6000 }))
+        const result = await adopt(deps, current().project, current().environment, 'abc123', [])
+        assert.equal(!result.ok && result.code, 'bad-request')
+        assert.match(!result.ok ? result.message : '', /NPM proxy host 12 cannot be adopted: It forwards to 192\.168\.0\.8:6000/)
+        assert.deepEqual(edge.writes(), [])
+        assert.deepEqual(changes, [])
     })
 
-    it('refuses to adopt a file it could not fully read', async () => {
-        const { deps, project, environment } = setup()
-        deps.listSitesEnabled = listing([{ path: handWritten.path, text: 'ServerName acme.com\nUse CommonSite acme' }])
-        const result = await adopt(deps, project, environment, 'abc123', [handWritten.path])
-        assert.equal(result.ok, false)
-        assert.match(result.ok === false ? result.message : '', /cannot be read/)
+    it('refuses with nothing to adopt rather than creating hosts', async () => {
+        const { deps, edge, current } = setup()
+        const result = await adopt(deps, current().project, current().environment, 'abc123', [])
+        assert.deepEqual(result, { ok: false, code: 'bad-request', message: 'no NPM proxy host serves acme.com' })
+        assert.deepEqual(edge.writes(), [])
     })
 
-    it('reverts when the configtest fails, so the old file comes back', async () => {
-        const { deps, sent, project, environment } = setup({ railOk: false })
-        deps.listSitesEnabled = listing([handWritten])
-        const result = await adopt(deps, project, environment, 'abc123', [handWritten.path])
-        assert.equal(result.ok, false)
-        assert.equal(sent.length, 2)
-    })
-
-    // The file thebackroom.dev had: port 80 only, because Cloudflare terminates TLS in Flexible mode. The
-    // usual redirect to https would loop that CDN forever, so adoption switches Flexible SSL on and the
-    // vhost serves port 80 instead.
-    describe('a file that answers port 80 only', () => {
-        const httpOnly = { path: '/etc/apache2/sites-enabled/acme.conf', text: '<VirtualHost *:80>\n    ServerName acme.com\n</VirtualHost>\n' }
-        const withFlexible = () => parseRegistry(REGISTRY.replace('aliases: [www.acme.com]', 'aliases: [www.acme.com]\n        flexibleSsl: true'))
-
-        it('switches Flexible SSL on in the registry before writing the vhost, and renders from the reloaded entry', async () => {
-            const { deps, sent, project, environment } = setup()
-            deps.listSitesEnabled = listing([httpOnly])
-            const writes: unknown[] = []
-            deps.writeRegistry = async change => { writes.push(change); return { ok: true } }
-            deps.reloadRegistry = async () => withFlexible()
-
-            const result = await adopt(deps, project, environment, 'abc123', [httpOnly.path])
-
-            assert.equal(result.ok, true)
-            assert.deepEqual(writes, [{ kind: 'set-flag', id: 'acme', environment: 'live', flag: 'flexibleSsl', enabled: true }])
-            const text = sent[0]!.write?.text ?? ''
-            // Port 80 serves the primary rather than redirecting it...
-            assert.match(text, /<VirtualHost \*:80>\n    ServerName acme\.com\n\n    # Flexible SSL/)
-            // ...while the alias on port 80 still redirects to the primary.
-            assert.match(text, /<VirtualHost \*:80>\n    ServerName www\.acme\.com\n[\s\S]*?https:\/\/acme\.com\/\$1 \[R=301,L\]/)
-        })
-
-        it('writes nothing to Apache when the registry refuses the switch', async () => {
-            const { deps, sent, project, environment } = setup()
-            deps.listSitesEnabled = listing([httpOnly])
-            deps.writeRegistry = async () => ({ ok: false, problem: 'the registry is locked' })
-
-            const result = await adopt(deps, project, environment, 'abc123', [httpOnly.path])
-
-            assert.equal(result.ok, false)
-            assert.equal(sent.length, 0)
-        })
-
-        it('leaves the registry alone for a file that has a port 443 block', async () => {
-            const { deps, project, environment } = setup()
-            deps.listSitesEnabled = listing([{ path: httpOnly.path, text: '<VirtualHost *:443>\n    ServerName acme.com\n</VirtualHost>\n' }])
-            let wrote = false
-            deps.writeRegistry = async () => { wrote = true; return { ok: true } }
-
-            assert.equal((await adopt(deps, project, environment, 'abc123', [httpOnly.path])).ok, true)
-            assert.equal(wrote, false)
-        })
-
-        it('previews the same file adopt will write, and says Flexible SSL is coming', async () => {
-            const { deps, project, environment } = setup()
-            deps.listSitesEnabled = listing([httpOnly])
-
-            const result = await previewAdopt(deps, project, environment, 'abc123')
-
-            assert.equal(result.ok && result.preview.flexibleSsl, true)
-            assert.equal(result.ok && result.preview.adoptable, true)
-            assert.match(result.ok ? result.preview.proposed : '', /# Flexible SSL/)
-        })
+    it('refuses an environment hostd already manages', async () => {
+        const { deps, edge, current } = setup()
+        await writeHosts(deps, current().project, current().environment, 'abc123')
+        const writes = edge.writes().length
+        const result = await adopt(deps, current().project, current().environment, 'abc123', [])
+        assert.equal(!result.ok && result.code, 'bad-request')
+        assert.equal(edge.writes().length, writes)
     })
 })
 
-// Adoption undone. api decides when, because api is the process with a network and can ask the hostname
-// whether the adoption left it answering; this is the half only the agent can do, because only the agent
-// can move a file on the host.
 describe('restoreAdopted', () => {
-    const handWritten = '/etc/apache2/sites-enabled/acme.conf'
-
-    it('removes hostd\'s own vhost and puts the operator\'s file back in one request', async () => {
-        const { deps, sent, project, environment } = setup()
-        const result = await restoreAdopted(deps, project, environment, [handWritten])
-        assert.equal(result.ok, true)
-        assert.equal(sent.length, 1, 'two requests would mean a moment with neither file loaded')
-        assert.equal(sent[0]!.action, 'restore')
-        assert.deepEqual(sent[0]!.remove, ['/etc/apache2/hostd/acme-live.conf'])
-        assert.deepEqual(sent[0]!.restore, [handWritten])
-        assert.equal(sent[0]!.write, null, 'a restore renders nothing')
+    it('restore puts back the hand-made host and clears the ids', async () => {
+        const { deps, npm, current, adopted, changes } = setup()
+        const original = npm.seed('proxy-hosts', handMade(12))
+        await adopt(deps, current().project, current().environment, 'abc123', ['NPM proxy host 12'])
+        changes.length = 0
+        const result = await restoreAdopted(deps, current().project, current().environment, ['NPM proxy host 12'])
+        assert.deepEqual(result, { ok: true, written: { hostnames: [], path: 'npm:proxy-host/12' } })
+        const state = npm.snapshot()
+        assert.deepEqual(state['redirection-hosts'], [])
+        const proxy = state['proxy-hosts'][0]!
+        assert.equal(proxy.id, 12)
+        assert.deepEqual(proxy.domain_names, original.domain_names)
+        assert.equal(proxy.advanced_config, BROTLI)
+        assert.deepEqual(changes, [{ kind: 'set-npm', id: 'acme', environment: 'live', npm: null }])
+        assert.equal(await adopted.read(OWNER), null)
+        // Released: hostd no longer owns it, so a write is refused rather than taking it back silently
+        const again = await removeEdgeHosts(deps, current().project, { ...current().environment, npm: { proxyHost: 12, redirectionHost: null } })
+        assert.equal(again.ok, false)
     })
 
-    // The verifier proves a hostname against a token in hostd's vhost. That file has just been removed,
-    // so naming hostnames here would start a 72 hour countdown against nothing.
-    it('reports no hostnames, because it took a vhost away rather than writing one', async () => {
-        const { deps, project, environment } = setup()
-        const result = await restoreAdopted(deps, project, environment, [handWritten])
-        assert.deepEqual(result.ok && result.written.hostnames, [])
+    it('clears the ids when the reply was lost but NPM shows the host was put back', async () => {
+        const { deps, npm, edge, current, adopted } = setup()
+        npm.seed('proxy-hosts', handMade(12))
+        await adopt(deps, current().project, current().environment, 'abc123', [])
+        edge.failNext('apply', 'after')
+        const result = await restoreAdopted(deps, current().project, current().environment, [])
+        assert.deepEqual(result, { ok: true, written: { hostnames: [], path: 'npm:proxy-host/12' } })
+        assert.equal(current().environment.npm, null)
+        assert.equal(await adopted.read(OWNER), null)
     })
 
-    it('still takes hostd\'s vhost away when the adoption displaced nothing', async () => {
-        const { deps, sent, project, environment } = setup()
-        const result = await restoreAdopted(deps, project, environment, [])
-        assert.equal(result.ok, true)
-        assert.deepEqual(sent[0]!.remove, ['/etc/apache2/hostd/acme-live.conf'])
-        assert.deepEqual(sent[0]!.restore, [])
+    it('keeps the ids and says to check NPM when the reply was lost and nothing changed', async () => {
+        const { deps, npm, edge, current } = setup()
+        npm.seed('proxy-hosts', handMade(12))
+        await adopt(deps, current().project, current().environment, 'abc123', [])
+        edge.failNext('apply', 'before')
+        const result = await restoreAdopted(deps, current().project, current().environment, [])
+        assert.equal(!result.ok && result.code, 'unavailable')
+        assert.match(!result.ok ? result.message : '', /could not be put back as it was: edge did not answer/)
+        assert.deepEqual(current().environment.npm, { proxyHost: 12, redirectionHost: 100 })
     })
 
-    // Every other verb here reverts on a failed configtest. This one must not: the file it removed is
-    // the one that took the site down, and putting it back is the opposite of what was asked.
-    it('does not put its own vhost back when the reload fails, and says where to look', async () => {
-        const { deps, sent, project, environment } = setup({ railOk: false })
-        const result = await restoreAdopted(deps, project, environment, [handWritten])
-        assert.equal(result.ok, false)
-        assert.equal(sent.length, 1, 'a second request would be hostd undoing the recovery')
-        assert.match(result.ok === false ? result.message : '', /acme\.conf/)
-        assert.equal(result.ok === false && result.output, 'AH00526: Syntax error on line 9')
-    })
-
-    it('has no em dash in what it tells the operator', async () => {
-        const { deps, project, environment } = setup({ railOk: false })
-        const result = await restoreAdopted(deps, project, environment, [handWritten])
-        assert.equal(result.ok === false && result.message.includes('—'), false)
-    })
-})
-
-// One file in sites-enabled that cannot be opened used to throw out of listSitesEnabled, so the agent's
-// top-level catch turned it into "unavailable" and every domain action on every site on the box failed,
-// naming a file belonging to a site the operator was not even looking at. A file Apache cannot read
-// serves nothing, so it claims no hostname, and it must not stop an unrelated site's change. It is not
-// forgotten either: it goes to the preview and to /health.
-describe('an unreadable file in sites-enabled', () => {
-    const handWritten = {
-        path: '/etc/apache2/sites-enabled/acme.conf',
-        text: 'ServerName acme.com\nServerAlias www.acme.com\n',
-    }
-    const dangling = '/etc/apache2/sites-enabled/010-arbys.horizons.gg.conf'
-
-    // A readable file beside the broken one, because a sites-enabled where NOTHING could be read is a
-    // different thing entirely and is refused: see the describe below.
-    it('does not stop an alias being added to a different site', async () => {
-        const { deps, sent, project, environment } = setup()
-        deps.listSitesEnabled = listing([{ path: '/etc/apache2/sites-enabled/other.conf', text: 'ServerName other.com\n' }], [dangling])
-        const result = await setAliases(deps, project, environment, ['www.acme.com', 'shop.acme.com'], 'abc123')
-        assert.equal(result.ok, true)
-        assert.equal(sent.length, 1)
-    })
-
-    // The readable files still have to be checked. Carrying on past the broken one must not also mean
-    // carrying on past a real clash.
-    it('still refuses an alias a readable file claims', async () => {
-        const { deps, project, environment } = setup()
-        deps.listSitesEnabled = listing(
-            [{ path: '/etc/apache2/sites-enabled/legacy.conf', text: 'ServerName shop.acme.com\n' }],
-            [dangling],
-        )
-        const result = await setAliases(deps, project, environment, ['www.acme.com', 'shop.acme.com'], 'abc123')
-        assert.equal(result.ok, false)
-        assert.match(result.ok === false ? result.message : '', /legacy\.conf/)
-    })
-
-    it('does not stop an adopt of a site whose own file reads fine', async () => {
-        const { deps, sent, project, environment } = setup()
-        deps.listSitesEnabled = listing([handWritten], [dangling])
-        const result = await adopt(deps, project, environment, 'abc123', [handWritten.path])
-        assert.equal(result.ok, true)
-        assert.equal(sent[0]!.disable[0], handWritten.path)
-    })
-
-    // The preview's whole job is to show what is actually in sites-enabled before it is replaced, and a
-    // file nobody could open is exactly the sort of thing that pane exists to say: it is also what makes
-    // Apache refuse the reload this adopt ends with.
-    it('is reported by the preview, alongside the claims it did read', async () => {
-        const { deps, project, environment } = setup()
-        deps.listSitesEnabled = listing([handWritten], [dangling])
-        const result = await previewAdopt(deps, project, environment, 'abc123')
-        assert.equal(result.ok, true)
-        assert.deepEqual(result.ok && result.preview.unreadable, [dangling])
-        assert.equal(result.ok && result.preview.claims[0]!.path, handWritten.path)
-    })
-
-    // A file that could not be read is not a file that could not be parsed: adoptable is about what the
-    // parser made of a claim, and this one never became a claim at all.
-    it('does not on its own make the site unadoptable', async () => {
-        const { deps, project, environment } = setup()
-        deps.listSitesEnabled = listing([handWritten], [dangling])
-        const result = await previewAdopt(deps, project, environment, 'abc123')
-        assert.equal(result.ok && result.preview.adoptable, true)
-    })
-
-    it('leaves the preview saying so plainly when there is nothing unreadable', async () => {
-        const { deps, project, environment } = setup()
-        deps.listSitesEnabled = listing([handWritten])
-        const result = await previewAdopt(deps, project, environment, 'abc123')
-        assert.deepEqual(result.ok && result.preview.unreadable, [])
+    it('refuses without a saved adoption', async () => {
+        const { deps, edge, current } = setup()
+        await writeHosts(deps, current().project, current().environment, 'abc123')
+        const writes = edge.writes().length
+        const result = await restoreAdopted(deps, current().project, current().environment, [])
+        assert.equal(!result.ok && result.code, 'bad-request')
+        assert.equal(edge.writes().length, writes)
     })
 })
 
-// The regression test for the mount bug, and the one that would have caught it. sites-available was not
-// mounted into the agent, so every relative symlink in sites-enabled dangled inside the container: five
-// live sites listed, none of them readable, and every check below answered "nothing claims this
-// hostname" with complete confidence. An empty sites-enabled and one hostd cannot read are the same
-// value to all of this, and only one of them means what the guards read out of it.
-describe('a sites-enabled where nothing at all could be read', () => {
-    // What the dedi actually looked like: the five live sites, every one of them a broken link inside
-    // the container and perfectly readable on the host.
-    const blind = listing([], [
-        '/etc/apache2/sites-enabled/010-arbys.horizons.gg.conf',
-        '/etc/apache2/sites-enabled/020-acme.com.conf',
-    ])
-
-    it('refuses an alias rather than reporting that no file claims the hostname', async () => {
-        const { deps, sent, project, environment } = setup()
-        deps.listSitesEnabled = blind
-        const result = await setAliases(deps, project, environment, ['www.acme.com', 'shop.acme.com'], 'abc123')
-        assert.equal(result.ok, false)
-        // Nothing written, and no registry change either: the refusal is before both.
-        assert.equal(sent.length, 0)
+describe('currentToken', () => {
+    it('reads the token out of the hosts hostd wrote', async () => {
+        const { deps, current } = setup()
+        await writeHosts(deps, current().project, current().environment, 'abc123')
+        assert.equal(await currentToken(deps, current().project, current().environment), 'abc123')
     })
 
-    // Not bad-request: the call is fine and no rewording of it will help. api answers 503.
-    it('refuses as unavailable, and says the mount rather than the site is at fault', async () => {
-        const { deps, project, environment } = setup()
-        deps.listSitesEnabled = blind
-        const result = await setAliases(deps, project, environment, ['www.acme.com'], 'abc123')
-        assert.equal(result.ok === false && result.code, 'unavailable')
-        const message = result.ok === false ? result.message : ''
-        assert.match(message, /could not read a single one of them/)
-        assert.match(message, /a mount is missing rather than anything a site did/)
-        assert.match(message, /cannot tell whether a hostname is already served/)
+    it('answers null for an environment with no hosts', async () => {
+        const { deps, current } = setup()
+        assert.equal(await currentToken(deps, current().project, current().environment), null)
     })
 
-    // The most convincing wrong answer hostd could give: an operator confirms the adopt because the
-    // preview told them there was nothing there to displace.
-    it('refuses the preview rather than showing a site with a live vhost as unclaimed', async () => {
-        const { deps, project, environment } = setup()
-        deps.listSitesEnabled = blind
-        const result = await previewAdopt(deps, project, environment, 'abc123')
-        assert.equal(result.ok, false)
-        assert.equal(result.ok === false && result.code, 'unavailable')
-    })
-
-    // The call that actually writes over a live site. Even with no paths to disable, which is precisely
-    // what an operator would send after a preview that found nothing.
-    it('refuses the adopt itself, including the empty-disable adopt the blind preview would produce', async () => {
-        const { deps, sent, project, environment } = setup()
-        deps.listSitesEnabled = blind
-        const result = await adopt(deps, project, environment, 'abc123', [])
-        assert.equal(result.ok, false)
-        assert.equal(sent.length, 0)
-    })
-
-    // Unchanged behaviour, stated as a test so it stays unchanged: a partly readable directory is still
-    // acted on, because what was read is real.
-    it('still proceeds on what it could read when at least one file read', async () => {
-        const { deps, sent, project, environment } = setup()
-        deps.listSitesEnabled = listing(
-            [{ path: '/etc/apache2/sites-enabled/other.conf', text: 'ServerName other.com\n' }],
-            ['/etc/apache2/sites-enabled/010-arbys.horizons.gg.conf'],
-        )
-        const result = await setAliases(deps, project, environment, ['www.acme.com', 'shop.acme.com'], 'abc123')
-        assert.equal(result.ok, true)
-        assert.equal(sent.length, 1)
-    })
-
-    // And a directory that is genuinely empty is genuinely empty. A dedi with nothing hand-written on it
-    // is an ordinary state, not a fault, and refusing there would block every first adoption.
-    it('proceeds on an empty sites-enabled, which is a real answer rather than a blind one', async () => {
-        const { deps, sent, project, environment } = setup()
-        deps.listSitesEnabled = listing([])
-        const result = await setAliases(deps, project, environment, ['www.acme.com', 'shop.acme.com'], 'abc123')
-        assert.equal(result.ok, true)
-        assert.equal(sent.length, 1)
-        const preview = await previewAdopt(deps, project, environment, 'abc123')
-        assert.equal(preview.ok, true)
-        assert.deepEqual(preview.ok && preview.preview.claims, [])
+    it('throws when edge cannot say', async () => {
+        const { deps, edge, current } = setup()
+        await writeHosts(deps, current().project, current().environment, 'abc123')
+        edge.failNext('get', 'before')
+        await assert.rejects(currentToken(deps, current().project, current().environment))
     })
 })
