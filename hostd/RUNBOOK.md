@@ -1844,7 +1844,9 @@ Do these in order. Nothing here changes a live site until step 6.
    Do not run the reload unless `nginx -t` passed. The format does nothing on its own: it is the hosts hostd
    writes that log with it.
 
-3. **The registry.** Edit `/opt/horizons/hostd/registry/projects.yaml` on the VM (see **Editing the
+3. **The registry.** First keep a copy: `sudo cp /opt/horizons/hostd/registry/projects.yaml /opt/horizons/hostd/registry/projects.yaml.pre-npm`
+   (this step's undo is to copy it back over `projects.yaml`). Then edit
+   `/opt/horizons/hostd/registry/projects.yaml` on the VM (see **Editing the
    registry**). The adoption renders what the registry says, so it has to be right first:
 
    - spotondrones `live`: add the aliases `spotondrones.net.au` and `www.spotondrones.net.au` (NPM already
@@ -1932,10 +1934,11 @@ Do these in order. Nothing here changes a live site until step 6.
    `docker compose -f hostd/docker-compose.yml up -d --force-recreate edge`. A `FATAL` line names the
    setting at fault (usually `.env.edge`).
 
-   From **another machine on the LAN**, not the VM:
+   From NPM's own container, which is the path NPM will use (the firewall in step 4 lets nothing else in):
 
    ```bash
-   curl -i http://192.168.0.8:8790/holding/backroom-live
+   ssh proxmox
+   pct exec 101 -- curl -i http://192.168.0.8:8790/holding/backroom-live
    ```
 
    It answers `503` with `Retry-After: 120` and the holding page. Anything else on that port answers 404:
@@ -1955,7 +1958,7 @@ Do these in order. Nothing here changes a live site until step 6.
    - a visit appears in `/var/log/hostd/<id>-<env>.log` within a minute (`sudo tail -f` it while loading the
      page; see **Analytics**).
 
-   Stop at the first site that is wrong and undo it (step 8) before touching another.
+   Stop at the first site that is wrong and recover it by hand (step 8) before touching another.
 
 7. **Clean up the Apache leftovers** on the VM, once all eight are adopted:
 
@@ -1963,11 +1966,31 @@ Do these in order. Nothing here changes a live site until step 6.
    sudo rm -rf /etc/apache2/hostd /etc/hostd/apache /run/hostd/maintenance
    ```
 
-8. **Undo for one site.** The portal's adoption undo puts the hand-made NPM host back exactly as it was and
-   deletes the redirection host hostd made. The agent keeps a copy of the host as it was before the adopt in
-   its state volume for this. If the undo is not possible (the reply says so, or the copy could not be
-   saved), the host is still in NPM: edit it in the UI and take the first `# hostd:` line out of its
-   Advanced tab to hand it back to yourself.
+8. **Undoing one adoption.** There is no undo button in the portal. Two things stand in for one:
+
+   - **The automatic rollback.** api requests `https://<domain>/` just before and just after the adopt. If
+     the second answer is materially worse (a page that became a redirect, an error, nothing at all), api
+     itself puts the hand-made proxy host back as it was (without the hostd marker), deletes the redirection
+     host hostd made, and clears the registry ids. The adopt then answers 502 saying what both requests got.
+   - **A bad adopt the probe missed** (the page still answers but something else is wrong). Recover it by
+     hand from the copy the agent saved before adopting, on the VM:
+
+     ```bash
+     sudo cat /var/lib/docker/volumes/hostd_hostd-agent-state/_data/adopted/<id>-<environment>.json
+     ```
+
+     (`hostd_hostd-agent-state` is the `hostd-agent-state` volume of the `hostd` compose project; inside
+     the agent the file is `/var/lib/hostd/adopted/<id>-<environment>.json`.) It holds the proxy host's
+     fields before the adopt, and the NPM ids. Then:
+
+     1. In the NPM UI, edit the proxy host and put those fields back: its domain names (including the
+        aliases that hostd moved off it), forward host and port, certificate, Force SSL, HTTP/2, and the
+        advanced config **without** the `# hostd:` marker line.
+     2. Delete the redirection host hostd created (the id is in that file's saved ids, and its Advanced tab
+        starts with the same `# hostd: <id>/<environment>` marker). Do this after step 1, because NPM
+        refuses a name that is on two hosts.
+     3. Remove that environment's `npm:` block from `/opt/horizons/hostd/registry/projects.yaml`, so hostd
+        stops treating the host as its own and the environment can be adopted again.
 
 ### 2. Checking it by hand
 
@@ -2034,7 +2057,7 @@ To see the **holding page on a deploy**, deploy any site and watch `curl -sI htt
 swap: it flips to `503` while the containers are stopped and back after. (It is brief; do it on a site
 nobody is using.)
 
-When you are done, **delete the two NPM hosts by hand first** (Hosts, Proxy Hosts, the one whose Advanced tab
+When you are done, **delete its NPM proxy host by hand first** (Hosts, Proxy Hosts, the one whose Advanced tab
 starts with `# hostd: hostd-test/live`; hostd never deletes anything on its own once its registry entry is
 gone), then remove the `hostd-test` entry's `environments` block (or the whole entry, matching **Live checks
 with a throwaway project**'s own cleanup) and take `hostd-test.horizons.gg` back out of `allowed`.
@@ -2082,13 +2105,13 @@ Adopt with no matching host is refused rather than falling back to a create.
 4. **Confirm the site serves** as it did before (`curl -sSI https://<domain>/`), each alias `301`s to the
    primary, and the domain verifies within the minute.
 
-The undo is described in step 8 of **1. Rollout, done once**.
+Undoing an adoption is described in step 8 of **1. Rollout, done once**.
 
 ### 5. Troubleshooting
 
 | Symptom | Cause |
 | --- | --- |
-| `/health` warns that `edge` or NPM is not answering, or a domain action fails with `NPM could not be searched` or a timeout | Read `docker logs hostd-edge` first. If it is not running or logged a `FATAL`, fix that (usually `.env.edge`). If it is running, check NPM from the VM: `curl -sI http://192.168.0.6:81/` and `ssh proxmox` then `pct exec 101 -- systemctl status npm` (or whatever the CT's NPM unit is called). A `401` from NPM makes `edge` log in again once and retry; a persistent one means the `hostd@horizons.gg` password in `.env.edge` is wrong or the user was removed. Recreate after editing: `docker compose -f hostd/docker-compose.yml up -d --force-recreate edge`. |
+| `/health` warns that `edge` or NPM is not answering, or a domain action fails with `NPM could not be searched` or a timeout | Read `docker logs hostd-edge` first. If it is not running or logged a `FATAL`, fix that (usually `.env.edge`). If it is running, check NPM from the VM: `curl -sI http://192.168.0.6:81/` and `ssh proxmox` then `pct exec 101 -- systemctl status npm openresty` (the CT's units are `npm.service` and `openresty.service`). A `401` from NPM makes `edge` log in again once and retry; a persistent one means the `hostd@horizons.gg` password in `.env.edge` is wrong or the user was removed. Recreate after editing: `docker compose -f hostd/docker-compose.yml up -d --force-recreate edge`. |
 | A domain action is refused for a zone with no certificate | The hostname's zone is not in the registry's `certificates` map. Upload that zone's Cloudflare Origin certificate in NPM (Certificates), note its id, add `<zone>: <id>` to the map, wait ten seconds. A name two labels below the zone is refused whatever the map says: choose a name one label below it. |
 | A domain action is refused `is already served by NPM proxy host <n>` (or redirection or 404 host) | NPM already has that name on a host hostd does not own. Remove the name there, or adopt that host if it is this environment's. |
 | A domain action is refused because a host `does not carry` its marker | The first line of the host's Advanced tab is no longer `# hostd: <id>/<env>. ...`, so hostd will not overwrite it. See **3. Drift, ownership and health**. |
