@@ -74,8 +74,10 @@ listening on.
 hostd writes it into the environment's root `.env` as `WEB_PORT=<port>` (or the variable the registry
 entry's `portEnv` names), and publishes it itself: every environment it creates gets a compose file of
 hostd's own, `hostd.ports.yml`, listed last in its compose list. It gives the site's service
-`ports: !override ["127.0.0.1:${WEB_PORT}:<container port>"]` and every other service `ports: !reset []`,
+`ports: !override ["${WEB_PORT}:<container port>"]` and every other service `ports: !reset []`,
 so whatever the repo's compose file publishes, the panel's port is the only host port the site has.
+The port is published on every interface, because Nginx Proxy Manager reaches the site from another
+machine on the LAN; only the site's port is opened, never a database's.
 The container port is the one the repo's first mapping resolves to, or its `expose` entry. Services still
 reach each other by service name. Every deploy rebuilds the file from the commit going out.
 
