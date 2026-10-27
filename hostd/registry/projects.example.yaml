@@ -19,6 +19,11 @@ reserved: [horizons.gg]
 # dev.horizons.gg is ever opened: listing it rejects the whole file.
 # openSubdomains: [horizons.gg]
 
+# The NPM certificate id for each zone a site's domain can sit in, keyed by the zone a certificate covers.
+# Only the operator sets these.
+certificates:
+  horizons.gg: 3
+
 # Offsite backup retention, which only the operator sets (phase 2).
 offsite:
   keep: { daily: 14, weekly: 8, monthly: 6 }
@@ -81,8 +86,9 @@ projects:
   #       aliases: [www.widgetshop.com]  # served, and each one 301s to the domain above. No limit
   #                                      # on how many: only the admin can add them.
   #       port: 5020
-  #       certificate: letsencrypt          # letsencrypt | cloudflare-origin
+  #       certificate: cloudflare-origin    # the only mode; letsencrypt is no longer supported
   #       deployed: 3f7c1a2                 # the commit currently checked out, set by hostd itself
+  #       npm: { proxyHost: 10, redirectionHost: 4 }  # NPM host ids, set by hostd itself; redirectionHost only with aliases
   #     test:
   #       dir: /var/www/widget-shop-test
   #       branch: develop

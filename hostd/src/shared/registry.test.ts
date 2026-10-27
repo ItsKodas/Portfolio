@@ -398,7 +398,7 @@ projects:
         branch: main
         domain: acme.com
         port: 5010
-        certificate: letsencrypt
+        certificate: cloudflare-origin
         deployed: 3f7c1a2
       test:
         dir: /var/www/acme-test
@@ -896,5 +896,54 @@ describe('nested layout', () => {
         const registry = parseRegistry(text)
         assert.match(registry.invalid.get('acme') ?? '', /site \/var\/www\/acme is also used by other/)
         assert.match(registry.invalid.get('other') ?? '', /site \/var\/www\/acme is also used by acme/)
+    })
+})
+
+describe('NPM host ids and the certificates map', () => {
+    const withEnvironment = (live: string) => parseRegistry(`
+projects:
+  acme:
+    client: cl_1
+    name: Acme
+    services: { web: { role: site } }
+    environments:
+      live: { dir: /var/www/acme, port: 5010${live} }
+`).projects.get('acme')?.environments.get('live') ?? null
+
+    it("parses an environment's npm ids", () => {
+        assert.deepEqual(withEnvironment(', npm: { proxyHost: 10, redirectionHost: 4 }')!.npm, { proxyHost: 10, redirectionHost: 4 })
+        assert.equal(withEnvironment('')!.npm, null)
+        assert.deepEqual(withEnvironment(', npm: { proxyHost: 10 }')!.npm, { proxyHost: 10, redirectionHost: null })
+    })
+
+    it('refuses npm ids that are not positive integers', () => {
+        for (const bad of ['0', '-1', '"10"', '1.5']) {
+            assert.match(invalidEnvironmentReason(`environments: { live: { dir: /var/www/a, port: 5010, npm: { proxyHost: ${bad} } } }`) ?? '', /npm\.proxyHost/, bad)
+        }
+    })
+
+    it('parses the certificates map', () => {
+        const registry = parseRegistry(`
+certificates: { horizons.gg: 3, 1stcanzukbrigade.com: 16 }
+projects: {}
+`)
+        assert.equal(registry.certificates.get('horizons.gg'), 3)
+        assert.equal(registry.certificates.get('1stcanzukbrigade.com'), 16)
+        assert.equal(parseRegistry('projects: {}').certificates.size, 0)
+    })
+
+    it('fails the file for a certificates key or value that is not valid, naming the key', () => {
+        assert.ok(failuresOf(`certificates: { "not a host": 3 }
+projects: {}`).some(f => f.includes('not a host')))
+        assert.ok(failuresOf(`certificates: { horizons.gg: 0 }
+projects: {}`).some(f => f.includes('horizons.gg')))
+        assert.ok(failuresOf(`certificates: { horizons.gg: "3" }
+projects: {}`).some(f => f.includes('horizons.gg')))
+    })
+
+    it('refuses certificate: letsencrypt, which is no longer supported', () => {
+        const reason = invalidEnvironmentReason('environments: { live: { dir: /var/www/a, port: 5010, certificate: letsencrypt } }')!
+        assert.match(reason, /letsencrypt is no longer supported/)
+        assert.match(reason, /cloudflare-origin/)
     })
 })

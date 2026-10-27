@@ -31,7 +31,7 @@ projects:
     services: { web: { role: site } }
     capabilities: [lifecycle, logs, provision, env, deploy, backups, domains]
     environments:
-      live: { dir: /var/www/acme, port: 5010, branch: main, domain: acme.example, aliases: [www.acme.example], certificate: letsencrypt, deployed: abc1234 }
+      live: { dir: /var/www/acme, port: 5010, branch: main, domain: acme.example, aliases: [www.acme.example], certificate: cloudflare-origin, deployed: abc1234 }
       test: { dir: /var/www/acme-test, port: 5013, branch: develop, domain: test.acme.example }
   quiet:
     client: cl_1
@@ -54,7 +54,7 @@ projects:
 // domain, certificate and deployed commit, and nothing about the machine underneath. quiet is the
 // single-environment shape, where the registry synthesises one live environment out of dir and upstream.
 const acmeEnvironmentsForClient = [
-    { name: 'live', branch: 'main', domain: 'acme.example', aliases: ['www.acme.example'], certificate: 'letsencrypt', websockets: false, flexibleSsl: false, deployed: 'abc1234' },
+    { name: 'live', branch: 'main', domain: 'acme.example', aliases: ['www.acme.example'], certificate: 'cloudflare-origin', websockets: false, flexibleSsl: false, deployed: 'abc1234' },
     { name: 'test', branch: 'develop', domain: 'test.acme.example', aliases: [], certificate: null, websockets: false, flexibleSsl: false, deployed: null },
 ]
 const quietEnvironmentsForClient = [{ name: 'live', branch: null, domain: null, aliases: [], certificate: null, websockets: false, flexibleSsl: false, deployed: null }]
@@ -428,7 +428,7 @@ describe('GET /projects', () => {
         assert.deepEqual(body.projects.find(project => project.id === 'acme')?.environments, [
             {
                 name: 'live', dir: '/var/www/acme', composePaths: ['/var/www/acme/docker-compose.yml'], port: 5010,
-                branch: 'main', domain: 'acme.example', aliases: ['www.acme.example'], certificate: 'letsencrypt', websockets: false, flexibleSsl: false, deployed: 'abc1234',
+                branch: 'main', domain: 'acme.example', aliases: ['www.acme.example'], certificate: 'cloudflare-origin', websockets: false, flexibleSsl: false, deployed: 'abc1234',
             },
             {
                 name: 'test', dir: '/var/www/acme-test', composePaths: ['/var/www/acme-test/docker-compose.yml'], port: 5013,
@@ -548,9 +548,8 @@ describe('GET /health', () => {
     it('gives the admin the machine\'s figures', async () => {
         const response = await request('/health', { actor: 'admin' })
         assert.equal(response.status, 200)
-        // acme live is set to letsencrypt, which 4a cannot serve yet, so health says so once.
         assert.deepEqual(await response.json(), {
-            ok: true, warnings: ['waiting for Let\'s Encrypt support: acme live'],
+            ok: true, warnings: [],
             invalid: { acme: 'guard says no' }, system: usage, railAge: 1_000,
         })
     })
@@ -825,7 +824,7 @@ describe('POST /projects', () => {
     // already in it with the domain the create names, which is what the refreshed registry would hold.
     describe('with a domain', () => {
         const CREATED: AgentReply = { ok: true, project: { id: 'acme', state: 'needs-setup' }, envFiles: [] }
-        const body = { ...CREATE_BODY, id: 'acme', domain: 'acme.example', certificate: 'letsencrypt' }
+        const body = { ...CREATE_BODY, id: 'acme', domain: 'acme.example', certificate: 'cloudflare-origin' }
         const previewWith = (claims: string[]): AgentReply => ({
             ok: true,
             preview: {
@@ -942,7 +941,7 @@ projects:
     services: { web: { role: site } }
     capabilities: [provision, domains]
     environments:
-      live: { dir: /var/www/acme/live, port: 5010, branch: main, domain: acme.example, certificate: letsencrypt }
+      live: { dir: /var/www/acme/live, port: 5010, branch: main, domain: acme.example, certificate: cloudflare-origin }
 `
 const nestedWithUat1 = (domain: string | null): Registry => parseRegistry(
     `${NESTED_ACME}      uat1: { dir: /var/www/acme/uat1, port: 5020, branch: main${domain === null ? '' : `, domain: ${domain}`} }\n`,
@@ -994,9 +993,9 @@ describe('POST /projects/:id/environments', () => {
     it('carries a certificate through when one is given', async () => {
         agent.reply = () => ({ ok: true, project: { id: 'acme', state: 'needs-setup' }, envFiles: [] })
         await request('/projects/acme/environments', {
-            method: 'POST', actor: 'admin', body: { name: 'uat1', branch: 'main', domain: 'uat1.acme.example', certificate: 'letsencrypt' },
+            method: 'POST', actor: 'admin', body: { name: 'uat1', branch: 'main', domain: 'uat1.acme.example', certificate: 'cloudflare-origin' },
         })
-        assert.equal((agent.calls[0] as { args: { certificate: unknown } }).args.certificate, 'letsencrypt')
+        assert.equal((agent.calls[0] as { args: { certificate: unknown } }).args.certificate, 'cloudflare-origin')
     })
 
     it('refuses live, a reserved or invalid name, a missing name and an unknown field, without calling the agent', async () => {
@@ -1434,8 +1433,8 @@ describe('GET /projects/:id/:env/domains', () => {
         assert.deepEqual(await response.json(), {
             ok: true,
             domains: [
-                { hostname: 'acme.example', primary: true, state: 'active', certificate: 'letsencrypt', checkedAt: CHECKED_AT, error: null, vhost: null },
-                { hostname: 'www.acme.example', primary: false, state: 'pending', certificate: 'letsencrypt', checkedAt: CHECKED_AT, error: 'No record exists yet.', vhost: null },
+                { hostname: 'acme.example', primary: true, state: 'active', certificate: 'cloudflare-origin', checkedAt: CHECKED_AT, error: null, vhost: null },
+                { hostname: 'www.acme.example', primary: false, state: 'pending', certificate: 'cloudflare-origin', checkedAt: CHECKED_AT, error: 'No record exists yet.', vhost: null },
             ],
         })
         assert.deepEqual(agent.calls, [])
@@ -1884,7 +1883,7 @@ describe('POST /projects/:id/:env/domains/:hostname/verify', () => {
         assert.deepEqual(verifier.checked, [domainKey('acme', 'live', 'www.acme.example')])
         assert.deepEqual(await response.json(), {
             ok: true,
-            domain: { hostname: 'www.acme.example', primary: false, state: 'active', certificate: 'letsencrypt', checkedAt: CHECKED_AT, error: null, vhost: null },
+            domain: { hostname: 'www.acme.example', primary: false, state: 'active', certificate: 'cloudflare-origin', checkedAt: CHECKED_AT, error: null, vhost: null },
         })
         // Nothing is written to the host to check a name, so the agent hears nothing about it.
         assert.deepEqual(agent.calls, [])
@@ -2156,13 +2155,6 @@ describe('GET /health: what only health can see', () => {
         assert.ok(body.warnings.some(warning => warning === 'the vhost for acme live was rolled back'), body.warnings.join('; '))
     })
 
-    // Said once, naming the environments, rather than once per hostname.
-    it('names an environment waiting for Let\'s Encrypt once, however many hostnames it has', async () => {
-        await seedDomains([domainRecord(), domainRecord({ hostname: 'www.acme.example', primary: false })])
-        const body = await (await request('/health', { actor: 'admin' })).json() as { warnings: string[] }
-        assert.deepEqual(body.warnings.filter(warning => warning.includes('Let\'s Encrypt')), ['waiting for Let\'s Encrypt support: acme live'])
-    })
-
     // The warning that matters most: with the unit dead, every domain action hangs for 30 seconds
     // rather than failing, and nothing else says so before somebody tries one.
     it('warns when the Apache host unit has never answered, or has gone quiet', async () => {
@@ -2280,7 +2272,7 @@ projects:
     services: { web: { role: site } }
     capabilities: [lifecycle, logs, provision, env, deploy, backups]
     environments:
-      live: { dir: /var/www/acme, port: 5010, branch: main, domain: acme.example, certificate: letsencrypt, deployed: abc1234 }
+      live: { dir: /var/www/acme, port: 5010, branch: main, domain: acme.example, certificate: cloudflare-origin, deployed: abc1234 }
       test: { dir: /var/www/acme-test, port: 5013, branch: develop, domain: test.acme.example }
 `)
 

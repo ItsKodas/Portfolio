@@ -143,7 +143,7 @@ describe('parseAgentRequest', () => {
     })
 
     it('parses a provision create request, which carries no project', () => {
-        const createArgs = { action: 'create', id: 'bakery', client: 'cl_2', name: 'Bakery', repo: 'git@github.com:x/bakery.git', branch: 'main', domain: 'bakery.com', certificate: 'letsencrypt' }
+        const createArgs = { action: 'create', id: 'bakery', client: 'cl_2', name: 'Bakery', repo: 'git@github.com:x/bakery.git', branch: 'main', domain: 'bakery.com', certificate: 'cloudflare-origin' }
         assert.deepEqual(parsed({ verb: 'provision', args: createArgs }), { ok: true, request: { verb: 'provision', args: createArgs } })
     })
 
@@ -180,7 +180,7 @@ describe('parseAgentRequest', () => {
 
     // credential is optional, unlike repo: a project created without one uses the default token.
     it('parses a provision create request carrying a credential, and refuses a malformed one', () => {
-        const createArgs = { action: 'create', id: 'bakery', client: 'cl_2', name: 'Bakery', repo: 'git@github.com:x/bakery.git', credential: 'acme', branch: 'main', domain: 'bakery.com', certificate: 'letsencrypt' }
+        const createArgs = { action: 'create', id: 'bakery', client: 'cl_2', name: 'Bakery', repo: 'git@github.com:x/bakery.git', credential: 'acme', branch: 'main', domain: 'bakery.com', certificate: 'cloudflare-origin' }
         assert.deepEqual(parsed({ verb: 'provision', args: createArgs }), { ok: true, request: { verb: 'provision', args: createArgs } })
         assert.equal(
             refusalOf({ verb: 'provision', args: { ...createArgs, credential: 'Acme-1' } }),
@@ -216,7 +216,7 @@ describe('parseAgentRequest', () => {
     })
 
     it('refuses a provision create request that carries a project, and one with a malformed or missing field', () => {
-        const createArgs = { action: 'create', id: 'bakery', client: 'cl_2', name: 'Bakery', repo: 'git@github.com:x/bakery.git', branch: 'main', domain: 'bakery.com', certificate: 'letsencrypt' }
+        const createArgs = { action: 'create', id: 'bakery', client: 'cl_2', name: 'Bakery', repo: 'git@github.com:x/bakery.git', branch: 'main', domain: 'bakery.com', certificate: 'cloudflare-origin' }
         assert.equal(refusalOf({ verb: 'provision', project: 'acme', args: createArgs }), 'bad-request: provision create takes only args')
         assert.equal(refusalOf({ verb: 'provision', args: { ...createArgs, id: 5 } }), 'bad-request: id is malformed')
         assert.equal(refusalOf({ verb: 'provision', args: { ...createArgs, certificate: 'self-signed' } }), 'bad-request: certificate is malformed')

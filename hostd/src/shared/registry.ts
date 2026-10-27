@@ -31,8 +31,14 @@ export type StorageEntry = { path: string, absolute: string, mode: StorageMode }
 // asks whether one project actually has a given name.
 export type EnvironmentName = string
 
-export const CERTIFICATE_MODES = ['letsencrypt', 'cloudflare-origin'] as const
+// letsencrypt was retired when domains moved to Nginx Proxy Manager: every zone's certificate is an NPM
+// certificate chosen through the top-level certificates map, so cloudflare-origin is the only mode left.
+export const CERTIFICATE_MODES = ['cloudflare-origin'] as const
 export type CertificateMode = typeof CERTIFICATE_MODES[number]
+
+// The ids of the NPM hosts hostd manages for an environment. The proxy host serves the domain and its
+// aliases; the redirection host, when there is one, sends the aliases on to the domain.
+export type NpmIds = { proxyHost: number, redirectionHost: number | null }
 
 export type EnvironmentEntry = {
     name: EnvironmentName
@@ -57,6 +63,8 @@ export type EnvironmentEntry = {
     // calls this Flexible). Off unless the registry says so; adoption turns it on for a site whose own
     // file had no port 443 block, since that is what the site was relying on.
     flexibleSsl: boolean
+    // Null until hostd has created (or adopted) this environment's hosts in NPM
+    npm: NpmIds | null
 }
 
 // The per-environment switches that change nothing but how the vhost is rendered. Each is off unless
@@ -124,6 +132,8 @@ export type Registry = {
     allowed: string[]
     openSubdomains: string[]
     offsite: { keep: Keep }
+    // NPM certificate id per zone (the registrable domain a certificate covers), written by the operator
+    certificates: Map<string, number>
     projects: Map<string, ProjectEntry>
     invalid: Map<string, string>
 }
@@ -161,12 +171,12 @@ const DEFAULT_MAX_KEEP: Keep = { daily: 14, weekly: 8, monthly: 12 }
 // against, so it cannot drift from what reserved actually protects.
 export const HORIZONS_BASE = 'horizons.gg'
 const DEFAULT_RESERVED = [HORIZONS_BASE]
-const TOP_KEYS = new Set(['reserved', 'allowed', 'openSubdomains', 'offsite', 'projects'])
+const TOP_KEYS = new Set(['reserved', 'allowed', 'openSubdomains', 'offsite', 'certificates', 'projects'])
 const PROJECT_KEYS = new Set([
     'client', 'name', 'dir', 'compose', 'upstream', 'services', 'storage', 'capabilities', 'maxDomains', 'backups',
     'repo', 'credential', 'portEnv', 'limits', 'networks', 'environments', 'contact', 'rootDomain',
 ])
-const ENVIRONMENT_KEYS = new Set(['dir', 'compose', 'composeName', 'branch', 'domain', 'aliases', 'port', 'certificate', 'deployed', 'websockets', 'flexibleSsl'])
+const ENVIRONMENT_KEYS = new Set(['dir', 'compose', 'composeName', 'branch', 'domain', 'aliases', 'port', 'certificate', 'deployed', 'websockets', 'flexibleSsl', 'npm'])
 const DIR = /^\/var\/www\/[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/
 const UPSTREAM = /^(localhost|\d{1,3}(?:\.\d{1,3}){3}):(\d{1,5})$/
 const MEMORY_LIMIT = /^[0-9]+(b|k|m|g)$/i
@@ -535,7 +545,22 @@ function parseEnvironment(id: string, name: EnvironmentName, raw: unknown, rules
     if (raw.certificate !== undefined) {
         if (typeof raw.certificate === 'string' && (CERTIFICATE_MODES as readonly string[]).includes(raw.certificate)) {
             certificate = raw.certificate as CertificateMode
+        } else if (raw.certificate === 'letsencrypt') {
+            problems.push(`${where}.certificate letsencrypt is no longer supported; cloudflare-origin is the only mode`)
         } else problems.push(`${where}.certificate must be one of ${CERTIFICATE_MODES.join(', ')}`)
+    }
+
+    let npm: NpmIds | null = null
+    if (raw.npm !== undefined) {
+        if (!isRecord(raw.npm) || !onlyKeys(raw.npm, ['proxyHost', 'redirectionHost'])) {
+            problems.push(`${where}.npm may only contain proxyHost and redirectionHost`)
+        } else {
+            const proxyHost = wholeNumber(raw.npm.proxyHost, 1, Number.MAX_SAFE_INTEGER)
+            const redirectionHost = raw.npm.redirectionHost === undefined ? null : wholeNumber(raw.npm.redirectionHost, 1, Number.MAX_SAFE_INTEGER)
+            if (proxyHost === null) problems.push(`${where}.npm.proxyHost must be a positive whole number`)
+            if (raw.npm.redirectionHost !== undefined && redirectionHost === null) problems.push(`${where}.npm.redirectionHost must be a positive whole number`)
+            if (proxyHost !== null && (redirectionHost !== null || raw.npm.redirectionHost === undefined)) npm = { proxyHost, redirectionHost }
+        }
     }
 
     let deployed: string | null = null
@@ -556,7 +581,7 @@ function parseEnvironment(id: string, name: EnvironmentName, raw: unknown, rules
     if (!dir || port === null) return null
     return {
         name, dir, composePaths: compose.map(file => posix.join(dir, file)), composeName: composeName ?? defaultComposeName(id, name, dir),
-        branch, domain, aliases, port, certificate, deployed, websockets, flexibleSsl,
+        branch, domain, aliases, port, certificate, deployed, websockets, flexibleSsl, npm,
     }
 }
 
@@ -650,7 +675,7 @@ function parseProject(id: string, raw: unknown, rules: HostRules): ParsedProject
             environments.set('live', {
                 name: 'live', dir, composePaths: compose.map(file => posix.join(dir, file)), composeName: flatComposeName(dir),
                 branch: null, domain: null, aliases: [], port: upstream.port, certificate: null, deployed: null,
-                websockets: false, flexibleSsl: false,
+                websockets: false, flexibleSsl: false, npm: null,
             })
         }
     }
@@ -777,6 +802,21 @@ export function parseRegistry(text: string): Registry {
         else offsiteKeep = parseKeep(doc.offsite.keep, DEFAULT_OFFSITE_KEEP, 'offsite.keep', failures)
     }
 
+    // A whole-file failure, like allowed: a zone mapped to a certificate that cannot be used would
+    // otherwise leave a domain action failing later, far from the line that caused it.
+    const certificates = new Map<string, number>()
+    if (doc.certificates !== undefined) {
+        if (!isRecord(doc.certificates)) failures.push('certificates must be a mapping of zone to NPM certificate id')
+        else {
+            for (const [key, value] of Object.entries(doc.certificates)) {
+                const zone = normaliseHostname(key)
+                if (zone === null) failures.push(`certificates.${key} is not a valid hostname`)
+                else if (wholeNumber(value, 1, Number.MAX_SAFE_INTEGER) === null) failures.push(`certificates.${key} must be a positive whole number`)
+                else certificates.set(zone, value as number)
+            }
+        }
+    }
+
     if (!isRecord(doc.projects)) failures.push('projects must be a mapping')
     if (failures.length > 0) throw new RegistryError(failures)
 
@@ -834,7 +874,7 @@ export function parseRegistry(text: string): Registry {
         else projects.set(id, entry)
     }
 
-    return { reserved, allowed, openSubdomains, offsite: { keep: offsiteKeep }, projects, invalid }
+    return { reserved, allowed, openSubdomains, offsite: { keep: offsiteKeep }, certificates, projects, invalid }
 }
 
 // The project's own environment of that name, or null when it has none. A name the project lacks is
