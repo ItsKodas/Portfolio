@@ -12,7 +12,7 @@
 
 ## Global Constraints
 
-- No em dashes (U+2014) anywhere except code comments: not in copy, docs, commit messages or PR text (CLAUDE.md). Check with Python, not a bash `$'—'` grep.
+- No em dashes (U+2014) anywhere except code comments: not in copy, docs, commit messages or PR text (CLAUDE.md). Check with Python, not a bash `$'—'` grep (it can match nothing).
 - Match hostd's style: four-space indent, no semicolons, single quotes, comments that explain why, `refuse(...)` for refusals, `{ ok: true, ... } | { ok: false, problem }` results rather than throws across process boundaries.
 - `shared/` never imports from `agent/`, `api/`, `fetcher/` or `edge/`.
 - hostd never updates or deletes an NPM host unless it carries that environment's marker, except the adopt verb (Task 5).
