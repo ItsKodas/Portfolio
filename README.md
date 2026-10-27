@@ -61,10 +61,11 @@ To restore a dump: `docker compose exec db-backup pg_restore --clean --if-exists
 
 ### Automatic deploys
 
-Every push to `Master` deploys itself (`.github/workflows/deploy.yml`), through a GitHub Actions runner that runs on the
-dedi. The runner connects out to GitHub and waits for jobs, so no port is opened. Each run:
+Every push to `Master` deploys itself (`.github/workflows/deploy.yml`), through a GitHub Actions runner named
+`websites` that runs on the websites VM (192.168.0.8, Proxmox VM 105). The runner connects out to GitHub and waits for
+jobs, so no port is opened. Each run:
 
-1. Refuses to start if `/var/www/horizons` has hand edits to tracked files, then fast-forwards it to the pushed commit.
+1. Refuses to start if `/opt/horizons` has hand edits to tracked files, then fast-forwards it to the pushed commit.
    Gitignored files (`.env`, `hostd/registry/projects.yaml`, hostd's env files) are untouched.
 2. Rebuilds hostd, only if the push changed something under `hostd/`. This restarts the agent, which interrupts any
    client deploy it is in the middle of, so avoid merging hostd changes while one is running.
@@ -74,24 +75,25 @@ dedi. The runner connects out to GitHub and waits for jobs, so no port is opened
 Runs show in the repo's Actions tab and under the `production` environment. **Run workflow** on the Deploy workflow
 redeploys the current `Master` without a push.
 
-The runner has the Docker socket, which is root on the dedi, so the workflow only ever triggers on a push to `Master` or
+The runner has the Docker socket, which is root on the VM, so the workflow only ever triggers on a push to `Master` or
 a manual run. Never give it a `pull_request` trigger. The repo is private, so outside forks cannot reach it.
 
-**Setting up the runner (once, on the dedi):**
+**How the runner is set up** (done on 2026-10-27; repeat this to rebuild it):
 
-1. Check which user owns the checkout (`stat -c %U /var/www/horizons`). The runner runs as that user so it can write to
-   it, and that user needs to be in the `docker` group (`id` lists it). Git refuses to work in a checkout another user
-   owns.
-2. On GitHub, open the repo's **Settings > Actions > Runners > New self-hosted runner**, pick Linux, and follow the
-   download and `./config.sh` steps it shows, as that user, in a folder outside `/var/www` such as
-   `~/actions-runner`. When `config.sh` asks for extra labels, enter `dedi`. The workflow only runs on a runner with
-   that label.
-3. Install it as a service so it survives reboots, from the same folder: `sudo ./svc.sh install <that user>`, then
-   `sudo ./svc.sh start`. `sudo ./svc.sh status` should say active.
-4. The runner should now show as Idle in the repo's runner list. Prove it end to end with **Actions > Deploy > Run
-   workflow**.
+1. The checkout `/opt/horizons` is owned by `koda`, who is in the `docker` group, so the runner runs as `koda`. Git
+   refuses to work in a checkout another user owns.
+2. The runner lives in `/opt/actions-runner` (owned by `koda`), outside the checkout. Download the Linux x64 release
+   from github.com/actions/runner, check its SHA-256 against the release notes, unpack it there and run
+   `sudo ./bin/installdependencies.sh`.
+3. Register it with a registration token (**Settings > Actions > Runners > New self-hosted runner** shows one, or
+   `gh api -X POST repos/ItsKodas/Portfolio/actions/runners/registration-token`):
+   `./config.sh --unattended --url https://github.com/ItsKodas/Portfolio --token <token> --name websites --labels websites`.
+   The workflow only runs on a runner with the `websites` label.
+4. Install it as a service so it survives reboots: `sudo ./svc.sh install koda`, then `sudo ./svc.sh start`.
+   `sudo ./svc.sh status` should say active, and the runner shows as Idle in the repo's runner list.
+5. Prove it end to end with **Actions > Deploy > Run workflow**.
 
-The dedi needs `git` and `curl` on the host, and nothing stored for GitHub: each run fetches with the job's own
+The VM needs `git` and `curl` on the host, and nothing stored for GitHub: each run fetches with the job's own
 short-lived token.
 
 ### All three stacks at once
