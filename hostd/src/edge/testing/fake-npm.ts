@@ -18,6 +18,7 @@ export class FakeNpm {
     private nextId = 100
     // Writes that nginx will reject: the next create or update of that kind stores the record offline.
     private readonly broken: { kind: NpmHostKind, op: 'create' | 'update', err: string }[] = []
+    private readonly lost: { kind: NpmHostKind, op: 'create' | 'update' }[] = []
 
     // Puts a host in place without a call being recorded, as if Koda had made it in the UI.
     seed(kind: NpmHostKind, record: Partial<NpmRecord> & { id: number }): NpmRecord {
@@ -28,6 +29,12 @@ export class FakeNpm {
 
     breakNext(kind: NpmHostKind, op: 'create' | 'update', err: string): void {
         this.broken.push({ kind, op, err })
+    }
+
+    // The next create or update of that kind is stored, then the call fails as a timeout would: the
+    // case where NPM did the write but hostd never heard back.
+    loseReplyNext(kind: NpmHostKind, op: 'create' | 'update'): void {
+        this.lost.push({ kind, op })
     }
 
     // Every host, for a test that wants to compare the whole state before and after.
@@ -78,6 +85,11 @@ export class FakeNpm {
         const err = at === -1 ? null : this.broken.splice(at, 1)[0]!.err
         record.meta = err === null ? { ...ONLINE } : { nginx_online: false, nginx_err: err }
         this.hosts[kind].set(record.id, record)
+        const lost = this.lost.findIndex(entry => entry.kind === kind && entry.op === op)
+        if (lost !== -1) {
+            this.lost.splice(lost, 1)
+            throw new NpmError(`NPM did not answer ${op === 'create' ? 'POST' : 'PUT'} /nginx/${kind} within 30 seconds`, null)
+        }
         return structuredClone(record)
     }
 

@@ -119,6 +119,18 @@ function notOwned(kind: NpmHostKind, record: NpmRecord, owner: Owner): string | 
     return `NPM ${KIND_NAMES[kind]} ${record.id} does not carry the marker for ${ownerName(owner)}, so hostd will not change it`
 }
 
+// The brotli snippet every live host carries (Global Constraints); hostd renders it too, so it is the
+// one piece of a hand-made advanced_config that adopting keeps rather than strips.
+const BROTLI = 'if ($http_content_encoding ~* "(^|,)\\s*br\\s*(,|$)") {\n    return 415;\n}'
+
+// Adopt overwrites advanced_config, so anything in it besides the brotli snippet would be lost silently.
+function customDirectives(kind: 'proxy-hosts' | 'redirection-hosts', record: NpmRecord): string | null {
+    const config = text(record.advanced_config).replace(/\r\n/g, '\n').trim()
+    if (config === '' || config === BROTLI) return null
+    const first = config.split('\n', 1)[0]!.trim()
+    return `NPM ${KIND_NAMES[kind]} ${record.id} has custom nginx directives: ${first} (move them out in NPM or leave this host to be managed by hand)`
+}
+
 // Whether this call may write over the proxy host it was given. An owned host always; an unmarked one
 // only under adopt, and only when it is unmistakably this environment's site.
 function proxyClaimProblem(deps: HostsDeps, record: NpmRecord, owner: Owner, spec: HostsSpec, adopt: boolean): string | null {
@@ -137,6 +149,11 @@ function proxyClaimProblem(deps: HostsDeps, record: NpmRecord, owner: Owner, spe
     }
     // hostd writes locations: [], so adopting would silently drop them.
     if (hasLocations(record)) return `NPM proxy host ${record.id} has custom locations, so hostd will not adopt it`
+    // hostd writes access_list_id 0, so adopting would silently open a host that is meant to be private.
+    const accessList = int(record.access_list_id)
+    if (accessList !== 0) return `NPM proxy host ${record.id} has access list ${accessList}; remove it in NPM or leave this host to be managed by hand`
+    const directives = customDirectives('proxy-hosts', record)
+    if (directives) return directives
     const covered = allDomains(spec).map(hostname)
     const stray = record.domain_names.find(name => !covered.includes(hostname(name)))
     if (stray !== undefined) return `NPM proxy host ${record.id} also serves ${stray}, which this environment does not list, so hostd will not adopt it`
@@ -152,6 +169,8 @@ function redirectionClaimProblem(record: NpmRecord, owner: Owner, spec: HostsSpe
     if (hostname(text(record.forward_domain_name)) !== hostname(primary)) {
         return `NPM redirection host ${record.id} redirects to ${text(record.forward_domain_name)}, not ${primary}, so hostd will not adopt it`
     }
+    const directives = customDirectives('redirection-hosts', record)
+    if (directives) return directives
     const covered = allDomains(spec).map(hostname)
     const stray = record.domain_names.find(name => !covered.includes(hostname(name)))
     if (stray !== undefined) return `NPM redirection host ${record.id} also serves ${stray}, which this environment does not list, so hostd will not adopt it`
@@ -213,17 +232,47 @@ function offline(record: NpmRecord): NginxRefused | null {
     return new NginxRefused(meta.nginx_err === undefined || meta.nginx_err === null ? undefined : String(meta.nginx_err))
 }
 
+function firstLine(config: string): string {
+    return config.split('\n', 1)[0] ?? ''
+}
+
+function carriesMarker(spec: HostsSpec, owner: Owner): boolean {
+    const marker = markerFor(owner)
+    return firstLine(spec.proxy.advanced_config) === marker && (!spec.redirection || firstLine(spec.redirection.advanced_config) === marker)
+}
+
+function sameDomains(a: string[], b: string[]): boolean {
+    const left = a.map(hostname).sort()
+    const right = b.map(hostname).sort()
+    return left.length === right.length && left.every((name, at) => name === right[at])
+}
+
+// A create that throws may still have landed (a timeout after NPM stored it), and then there is a host
+// hostd holds no id for. A 4xx is NPM saying no, so nothing was created and there is nothing to check.
+function mayHaveCreated(kind: NpmHostKind, error: unknown): unknown {
+    if (error instanceof NpmError && error.status !== null && error.status >= 400 && error.status < 500) return error
+    const message = `${describeError(error)}; NPM may have created the ${KIND_NAMES[kind]} anyway, so check NPM for it`
+    return error instanceof NpmError ? new NpmError(message, error.status, error.body) : new Error(message)
+}
+
+// An undo step answers a note when it changed something the caller must hear about (a host recreated
+// under a new id), otherwise null.
+type Undo = () => Promise<string | null>
+
 export async function applyHosts(deps: HostsDeps, owner: Owner, ids: NpmIds | null, spec: HostsSpec, adopt: boolean): Promise<EdgeReply> {
     const primary = spec.proxy.domain_names[0]
     if (primary === undefined) return refuse('The proxy host has no domain names')
     // Adopt takes over a host that exists; with nothing to take over it must not quietly create one.
     if (adopt && ids === null) return refuse(`Adopt needs the NPM proxy host to take over for ${ownerName(owner)}`)
-    if (spec.proxy.advanced_config.split('\n', 1)[0] !== markerFor(owner) || (spec.redirection && spec.redirection.advanced_config.split('\n', 1)[0] !== markerFor(owner))) {
-        // A host written without its marker could never be touched again, so it is not written at all.
-        return refuse(`The hosts for ${ownerName(owner)} must start with its marker`)
-    }
+    const proxyDomains = spec.proxy.domain_names.map(hostname)
+    const doubled = spec.redirection?.domain_names.find(name => proxyDomains.includes(hostname(name)))
+    if (doubled !== undefined) return refuse(`${doubled} is on both the proxy host and the redirection host`)
+    // A host created or adopted without its marker could never be touched again. An update of a host
+    // that already carries the marker may drop it: that is how the adoption undo hands a host back, and
+    // the guard that matters, the current host's marker, is checked below before anything is written.
+    if ((ids === null || adopt) && !carriesMarker(spec, owner)) return refuse(`The hosts for ${ownerName(owner)} must start with its marker`)
 
-    const undo: (() => Promise<void>)[] = []
+    const undo: Undo[] = []
     try {
         const certificates = [spec.proxy.certificate_id, spec.redirection?.certificate_id ?? 0].filter(id => id !== 0)
         if (certificates.length > 0) {
@@ -260,46 +309,97 @@ export async function applyHosts(deps: HostsDeps, owner: Owner, ids: NpmIds | nu
             ? { proxy: proxySpecOf(proxyRecord), redirection: redirectionRecord ? redirectionSpecOf(redirectionRecord) : null }
             : null
 
-        // Each write registers its own undo before its result is judged, so an offline host is put back too.
+        // A create's undo is registered once there is an id to delete, and before its result is judged,
+        // so an offline host is removed too.
         const create = async (kind: 'proxy-hosts' | 'redirection-hosts', body: Record<string, unknown>): Promise<number> => {
-            const record = await deps.npm.create(kind, body)
-            undo.push(async () => { await deps.npm.remove(kind, record.id) })
+            let record: NpmRecord
+            try {
+                record = await deps.npm.create(kind, body)
+            } catch (error) {
+                throw mayHaveCreated(kind, error)
+            }
+            undo.push(async () => {
+                await deps.npm.remove(kind, record.id)
+                return null
+            })
             const refused = offline(record)
             if (refused) throw refused
             return record.id
         }
+        // Registered before the call: NPM may store the write and still fail the reply (a timeout), and
+        // writing the before-state again is harmless when it did not.
         const update = async (kind: 'proxy-hosts' | 'redirection-hosts', before: NpmRecord, body: Record<string, unknown>): Promise<void> => {
-            const record = await deps.npm.update(kind, before.id, body)
             undo.push(async () => {
                 const back = await deps.npm.update(kind, before.id, revertBody(kind, before))
                 if (offline(back)) throw new Error(`NPM ${KIND_NAMES[kind]} ${before.id} is still offline after putting it back`)
+                return null
             })
-            const refused = offline(record)
+            const refused = offline(await deps.npm.update(kind, before.id, body))
             if (refused) throw refused
         }
+        // Registered before the call for the same reason. If the host is gone it is recreated, and NPM
+        // gives it a new id, which the agent has to record, so the undo says which.
+        const remove = async (kind: 'redirection-hosts', before: NpmRecord): Promise<void> => {
+            undo.push(async () => {
+                if (await deps.npm.get(kind, before.id)) {
+                    const back = await deps.npm.update(kind, before.id, revertBody(kind, before))
+                    if (offline(back)) throw new Error(`NPM ${KIND_NAMES[kind]} ${before.id} is still offline after putting it back`)
+                    return null
+                }
+                const back = await deps.npm.create(kind, revertBody(kind, before))
+                const moved = `NPM ${KIND_NAMES[kind]} ${before.id} was put back as NPM ${KIND_NAMES[kind]} ${back.id}`
+                if (offline(back)) throw new Error(`${moved}, which is offline`)
+                return moved
+            })
+            await deps.npm.remove(kind, before.id)
+        }
 
-        // The proxy first: it drops the aliases, which NPM will not let the redirection host take while
-        // the proxy host still has them.
-        const proxyHost = proxyRecord ? (await update('proxy-hosts', proxyRecord, proxyBody(spec.proxy)), proxyRecord.id) : await create('proxy-hosts', proxyBody(spec.proxy))
+        // NPM will not let two hosts hold one domain, so whichever host gives a domain up is written
+        // first. Usually that is the proxy (aliases move off it onto the redirection host). When the proxy
+        // takes domains back from the redirection host (the adoption undo puts the aliases back on a
+        // hand-made proxy host), the redirection host lets go of them first: trimmed, or deleted if
+        // nothing is left.
+        let redirection = redirectionRecord
+        let redirectionWritten = false
+        if (redirection && redirection.domain_names.some(name => proxyDomains.includes(hostname(name)))) {
+            const remaining = redirection.domain_names.filter(name => !proxyDomains.includes(hostname(name)))
+            if (!spec.redirection || remaining.length === 0) {
+                await remove('redirection-hosts', redirection)
+                redirection = null
+            } else {
+                redirectionWritten = sameDomains(remaining, spec.redirection.domain_names)
+                const interim = redirectionWritten ? spec.redirection : { ...redirectionSpecOf(redirection), domain_names: remaining }
+                await update('redirection-hosts', redirection, redirectionBody(interim))
+            }
+        }
+
+        let proxyHost: number
+        if (proxyRecord) {
+            await update('proxy-hosts', proxyRecord, proxyBody(spec.proxy))
+            proxyHost = proxyRecord.id
+        } else {
+            proxyHost = await create('proxy-hosts', proxyBody(spec.proxy))
+        }
+
         let redirectionHost: number | null = null
         if (spec.redirection) {
-            const body = redirectionBody(spec.redirection)
-            if (redirectionRecord) {
-                await update('redirection-hosts', redirectionRecord, body)
-                redirectionHost = redirectionRecord.id
+            if (redirection) {
+                if (!redirectionWritten) await update('redirection-hosts', redirection, redirectionBody(spec.redirection))
+                redirectionHost = redirection.id
             } else {
-                redirectionHost = await create('redirection-hosts', body)
+                redirectionHost = await create('redirection-hosts', redirectionBody(spec.redirection))
             }
-        } else if (redirectionRecord) {
-            // Last, so nothing after it can fail and need it back.
-            await deps.npm.remove('redirection-hosts', redirectionRecord.id)
+        } else if (redirection) {
+            await remove('redirection-hosts', redirection)
         }
         return { ok: true, verb: 'apply', ids: { proxyHost, redirectionHost }, previous }
     } catch (error) {
+        const notes: string[] = []
         const undoProblems: string[] = []
         for (const step of undo.reverse()) {
             try {
-                await step()
+                const note = await step()
+                if (note) notes.push(note)
             } catch (undoError) {
                 undoProblems.push(describeError(undoError))
             }
@@ -307,9 +407,12 @@ export async function applyHosts(deps: HostsDeps, owner: Owner, ids: NpmIds | nu
         const reply = error instanceof NginxRefused
             ? refuse(`NPM refused the configuration for ${owner.project} ${owner.environment}`, error.output)
             : failure(error)
-        if (reply.ok || undoProblems.length === 0) return reply
+        if (reply.ok) return reply
+        let problem = reply.problem
         // The site may be down: say so plainly rather than leave it to be found.
-        return { ...reply, problem: `${reply.problem}, and putting the previous state back failed: ${undoProblems.join('; ')}` }
+        if (undoProblems.length > 0) problem += `, and putting the previous state back failed: ${undoProblems.join('; ')}`
+        if (notes.length > 0) problem += `. ${notes.join('. ')}`
+        return { ...reply, problem }
     }
 }
 

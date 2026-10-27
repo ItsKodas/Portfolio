@@ -2,11 +2,16 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { markerFor, type HostsSpec, type Owner } from '../shared/edge-protocol.ts'
 import { applyHosts, findHosts, getHosts, removeHosts, type HostsDeps } from './hosts.ts'
+import { NpmError } from './npm-client.ts'
 import { FakeNpm } from './testing/fake-npm.ts'
 
 const OWNER: Owner = { project: 'spotondrones', environment: 'live' }
 const MARKER = markerFor(OWNER)
 const UPSTREAM = '192.168.0.8'
+const BS = String.fromCharCode(92)
+const BROTLI = `if ($http_content_encoding ~* "(^|,)${BS}s*br${BS}s*(,|$)") {
+    return 415;
+}`
 
 function setup(): { npm: FakeNpm, deps: HostsDeps } {
     const npm = new FakeNpm()
@@ -181,7 +186,7 @@ test('refuses an update of a proxy host that no longer exists', async () => {
 
 test('adopt may claim an unmarked host whose domains and upstream match', async () => {
     const { npm, deps } = setup()
-    const before = proxyRecord(10, { domain_names: ['spotondrones.com', 'www.spotondrones.com'], advanced_config: 'hand made', hsts_enabled: 1 })
+    const before = proxyRecord(10, { domain_names: ['spotondrones.com', 'www.spotondrones.com'], advanced_config: '', hsts_enabled: 1 })
     npm.seed('proxy-hosts', before)
     const reply = await applyHosts(deps, OWNER, { proxyHost: 10, redirectionHost: null }, spec(), true)
     assert.equal(reply.ok, true)
@@ -190,7 +195,7 @@ test('adopt may claim an unmarked host whose domains and upstream match', async 
         previous: {
             proxy: {
                 domain_names: ['spotondrones.com', 'www.spotondrones.com'], forward_host: UPSTREAM, forward_port: 5007, certificate_id: 16,
-                ssl_forced: true, http2_support: true, advanced_config: 'hand made',
+                ssl_forced: true, http2_support: true, advanced_config: '',
             },
             redirection: null,
         },
@@ -289,11 +294,12 @@ test('puts the previous state back when NPM reports nginx_online false', async (
 
 test('puts a hand-made host back as it was when the adopt write is refused by nginx', async () => {
     const { npm, deps } = setup()
-    npm.seed('proxy-hosts', proxyRecord(10, { domain_names: ['spotondrones.com', 'www.spotondrones.com'], advanced_config: 'hand made', hsts_enabled: 1 }))
+    npm.seed('proxy-hosts', proxyRecord(10, { domain_names: ['spotondrones.com', 'www.spotondrones.com'], advanced_config: BROTLI, hsts_enabled: 1 }))
     const start = npm.snapshot()
     npm.breakNext('proxy-hosts', 'update', 'bad')
     const reply = await applyHosts(deps, OWNER, { proxyHost: 10, redirectionHost: null }, spec(), true)
     assert.equal(reply.ok, false)
+    assert.deepEqual(writes(npm), ['update proxy-hosts 10', 'update proxy-hosts 10'])
     assert.deepEqual(normalised(npm.snapshot()), normalised(start))
 })
 
@@ -324,11 +330,11 @@ test('an NPM error mid-way undoes the earlier writes and is answered, not thrown
     const start = npm.snapshot()
     const create = npm.create.bind(npm)
     npm.create = async (kind, body) => {
-        if (kind === 'redirection-hosts') throw new Error('NPM did not answer POST /nginx/redirection-hosts within 30 seconds')
+        if (kind === 'redirection-hosts') throw new NpmError('NPM answered POST /nginx/redirection-hosts with 400', 400)
         return await create(kind, body)
     }
     const reply = await applyHosts(deps, OWNER, { proxyHost: 10, redirectionHost: null }, spec(), false)
-    assert.deepEqual(reply, { ok: false, problem: 'NPM did not answer POST /nginx/redirection-hosts within 30 seconds' })
+    assert.deepEqual(reply, { ok: false, problem: 'NPM answered POST /nginx/redirection-hosts with 400' })
     assert.deepEqual(normalised(npm.snapshot()), normalised(start))
 })
 
@@ -429,6 +435,134 @@ test('a failing NPM read is answered as a problem', async () => {
     const { npm, deps } = setup()
     npm.list = async () => { throw new Error('NPM answered GET /nginx/proxy-hosts with 500') }
     assert.deepEqual(await findHosts(deps, ['spotondrones.com']), { ok: false, problem: 'NPM answered GET /nginx/proxy-hosts with 500' })
+})
+
+// The adoption undo's spec: the hand-made proxy host as it was, aliases included, no marker.
+function handMade(): HostsSpec {
+    return {
+        proxy: {
+            domain_names: ['spotondrones.com', 'www.spotondrones.com'], forward_host: UPSTREAM, forward_port: 5007, certificate_id: 16,
+            ssl_forced: true, http2_support: true, advanced_config: BROTLI,
+        },
+        redirection: null,
+    }
+}
+
+test('restore puts the hand-made host back and deletes the redirection host', async () => {
+    const { npm, deps } = setup()
+    npm.seed('proxy-hosts', proxyRecord(10))
+    npm.seed('redirection-hosts', redirectionRecord(4))
+    const reply = await applyHosts(deps, OWNER, { proxyHost: 10, redirectionHost: 4 }, handMade(), false)
+    assert.equal(reply.ok, true)
+    assert.deepEqual((reply as { ids: unknown }).ids, { proxyHost: 10, redirectionHost: null })
+    // The redirection host lets go of www first, or NPM would refuse the proxy update.
+    assert.deepEqual(writes(npm), ['remove redirection-hosts 4', 'update proxy-hosts 10'])
+    const state = npm.snapshot()
+    assert.deepEqual(state['proxy-hosts'][0]!.domain_names, ['spotondrones.com', 'www.spotondrones.com'])
+    assert.equal(state['proxy-hosts'][0]!.advanced_config, BROTLI)
+    assert.deepEqual(state['redirection-hosts'], [])
+})
+
+test('a failed restore recreates the redirection host and names its new id', async () => {
+    const { npm, deps } = setup()
+    npm.seed('proxy-hosts', proxyRecord(10))
+    npm.seed('redirection-hosts', redirectionRecord(4))
+    npm.breakNext('proxy-hosts', 'update', 'bad')
+    const reply = await applyHosts(deps, OWNER, { proxyHost: 10, redirectionHost: 4 }, handMade(), false)
+    assert.deepEqual(reply, {
+        ok: false, output: 'bad',
+        problem: 'NPM refused the configuration for spotondrones live. NPM redirection host 4 was put back as NPM redirection host 100',
+    })
+    const state = normalised(npm.snapshot())
+    assert.deepEqual(state['proxy-hosts'], normalised({ 'proxy-hosts': [proxyRecord(10, { meta: { nginx_online: true, nginx_err: null } })], 'redirection-hosts': [], 'dead-hosts': [] } as never)['proxy-hosts'])
+    assert.deepEqual(state['redirection-hosts'].map(record => [record.id, record.domain_names, record.advanced_config]), [[100, ['www.spotondrones.com'], `${MARKER}\n`]])
+})
+
+test('a redirection host that keeps some aliases is trimmed before the proxy takes the rest', async () => {
+    const { npm, deps } = setup()
+    npm.seed('proxy-hosts', proxyRecord(10))
+    npm.seed('redirection-hosts', redirectionRecord(4, { domain_names: ['www.spotondrones.com', 'shop.spotondrones.com'] }))
+    const wanted = spec({ aliases: ['shop.spotondrones.com'] })
+    wanted.proxy.domain_names = ['spotondrones.com', 'www.spotondrones.com']
+    const reply = await applyHosts(deps, OWNER, { proxyHost: 10, redirectionHost: 4 }, wanted, false)
+    assert.equal(reply.ok, true)
+    assert.deepEqual(writes(npm), ['update redirection-hosts 4', 'update proxy-hosts 10'])
+    assert.deepEqual(npm.snapshot()['redirection-hosts'][0]!.domain_names, ['shop.spotondrones.com'])
+})
+
+test('refuses a spec that puts one domain on both hosts', async () => {
+    const { npm, deps } = setup()
+    const wanted = spec()
+    wanted.proxy.domain_names = ['spotondrones.com', 'www.spotondrones.com']
+    const reply = await applyHosts(deps, OWNER, null, wanted, false)
+    assert.deepEqual(reply, { ok: false, problem: 'www.spotondrones.com is on both the proxy host and the redirection host' })
+    assert.deepEqual(writes(npm), [])
+})
+
+test('an unmarked spec is refused on a create and on an adopt', async () => {
+    const { npm, deps } = setup()
+    assert.equal((await applyHosts(deps, OWNER, null, handMade(), false)).ok, false)
+    npm.seed('proxy-hosts', proxyRecord(10, { domain_names: ['spotondrones.com', 'www.spotondrones.com'], advanced_config: '' }))
+    assert.equal((await applyHosts(deps, OWNER, { proxyHost: 10, redirectionHost: null }, handMade(), true)).ok, false)
+    assert.deepEqual(writes(npm), [])
+})
+
+test('an update NPM stored but never answered is undone', async () => {
+    const { npm, deps } = setup()
+    npm.seed('proxy-hosts', proxyRecord(10))
+    npm.seed('redirection-hosts', redirectionRecord(4))
+    const start = npm.snapshot()
+    npm.loseReplyNext('proxy-hosts', 'update')
+    const reply = await applyHosts(deps, OWNER, { proxyHost: 10, redirectionHost: 4 }, spec({ port: 5008 }), false)
+    assert.deepEqual(reply, { ok: false, problem: 'NPM did not answer PUT /nginx/proxy-hosts within 30 seconds' })
+    assert.deepEqual(writes(npm), ['update proxy-hosts 10', 'update proxy-hosts 10'])
+    assert.deepEqual(normalised(npm.snapshot()), normalised(start))
+})
+
+test('a create NPM may have stored but never answered says to check NPM', async () => {
+    const { npm, deps } = setup()
+    npm.loseReplyNext('redirection-hosts', 'create')
+    const reply = await applyHosts(deps, OWNER, null, spec(), false)
+    assert.deepEqual(reply, {
+        ok: false,
+        problem: 'NPM did not answer POST /nginx/redirection-hosts within 30 seconds; NPM may have created the redirection host anyway, so check NPM for it',
+    })
+    // The proxy host this call did create is still undone.
+    assert.deepEqual(npm.snapshot()['proxy-hosts'], [])
+})
+
+test('adopt refuses a host with an access list', async () => {
+    const { npm, deps } = setup()
+    npm.seed('proxy-hosts', proxyRecord(9, { access_list_id: 1, advanced_config: '' }))
+    const reply = await applyHosts(deps, OWNER, { proxyHost: 9, redirectionHost: null }, spec({ aliases: [] }), true)
+    assert.equal(reply.ok, false)
+    assert.match((reply as { problem: string }).problem, /^NPM proxy host 9 has access list 1; remove it in NPM or /)
+    assert.deepEqual(writes(npm), [])
+})
+
+test('adopt refuses a host with custom nginx directives, on either host', async () => {
+    for (const config of ['proxy_read_timeout 600;', `${BROTLI}\nclient_max_body_size 1g;`, `\n  # tuned by hand\n${BROTLI}`]) {
+        const { npm, deps } = setup()
+        npm.seed('proxy-hosts', proxyRecord(9, { advanced_config: config }))
+        const reply = await applyHosts(deps, OWNER, { proxyHost: 9, redirectionHost: null }, spec({ aliases: [] }), true)
+        assert.equal(reply.ok, false, config)
+        assert.match((reply as { problem: string }).problem, /^NPM proxy host 9 has custom nginx directives: /, config)
+        assert.deepEqual(writes(npm), [])
+    }
+    const { npm, deps } = setup()
+    npm.seed('proxy-hosts', proxyRecord(9, { advanced_config: '' }))
+    npm.seed('redirection-hosts', redirectionRecord(4, { advanced_config: 'return 410;' }))
+    const reply = await applyHosts(deps, OWNER, { proxyHost: 9, redirectionHost: 4 }, spec(), true)
+    assert.deepEqual(reply, { ok: false, problem: 'NPM redirection host 4 has custom nginx directives: return 410; (move them out in NPM or leave this host to be managed by hand)' })
+    assert.deepEqual(writes(npm), [])
+})
+
+test('adopt accepts a host whose only directive is the brotli snippet', async () => {
+    const { npm, deps } = setup()
+    npm.seed('proxy-hosts', proxyRecord(9, { advanced_config: `\n${BROTLI}\r\n  ` }))
+    const reply = await applyHosts(deps, OWNER, { proxyHost: 9, redirectionHost: null }, spec({ aliases: [] }), true)
+    assert.equal(reply.ok, true)
+    assert.deepEqual(writes(npm), ['update proxy-hosts 9'])
 })
 
 // A revert writes booleans as booleans, where the seeded record had NPM's 0/1. Compare on meaning.
