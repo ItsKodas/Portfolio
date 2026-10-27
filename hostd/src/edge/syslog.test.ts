@@ -56,7 +56,7 @@ test('the receiver appends over UDP, survives a failed append, and ignores stran
     const appended: Array<[string, string]> = []
     let failures = 0
     let failNext = true
-    const socket = startSyslog({
+    const socket = await startSyslog({
         host: '127.0.0.1', port: 0, allowed: '127.0.0.1', logDir: '/logs', route: () => route,
         append: async (path, line) => {
             if (failNext) { failNext = false; throw new Error('disk full') }
@@ -64,7 +64,6 @@ test('the receiver appends over UDP, survives a failed append, and ignores stran
         },
         onError: () => { failures++ },
     })
-    await new Promise<void>(resolve => socket.once('listening', resolve))
     const { port } = socket.address()
     const client = createSocket('udp4')
     const send = (text: string) => new Promise<void>(resolve => client.send(text, port, '127.0.0.1', () => resolve()))
@@ -76,4 +75,22 @@ test('the receiver appends over UDP, survives a failed append, and ignores stran
     socket.close()
     assert.equal(failures, 1)
     assert.deepEqual(appended, [['/logs/hostd-spotondrones-live.access.log', '1730000000.123\t10.0.0.1\tGET\n']])
+})
+
+// A port already taken must stop edge starting, as the holding listener's does, rather than be reported
+// as a failed write while nothing receives the logs.
+test('a bind failure rejects the start and is not reported as a failed append', async () => {
+    const taken = createSocket('udp4')
+    await new Promise<void>(resolve => taken.bind(0, '127.0.0.1', () => resolve()))
+    const { port } = taken.address()
+    let failures = 0
+    try {
+        await assert.rejects(startSyslog({
+            host: '127.0.0.1', port, allowed: '127.0.0.1', logDir: '/logs', route: () => route,
+            append: async () => {}, onError: () => { failures++ },
+        }), /EADDRINUSE/)
+        assert.equal(failures, 0)
+    } finally {
+        taken.close()
+    }
 })

@@ -106,7 +106,9 @@ async function main(): Promise<void> {
     log(`holding pages on ${UPSTREAM_HOST}:${HTTP_PORT}`)
 
     let appendFailures = 0
-    startSyslog({
+    // A port that cannot be bound is as fatal as the holding listener's: edge running on with nothing
+    // receiving the logs would look healthy while every site's analytics went quiet.
+    await startSyslog({
         host: UPSTREAM_HOST,
         port: SYSLOG_PORT,
         allowed: NPM_ADDRESS,
@@ -121,7 +123,8 @@ async function main(): Promise<void> {
             appendFailures++
             if (appendFailures === 1 || appendFailures % 1000 === 0) log(`access log write failed (${appendFailures} so far): ${describeError(error)}`)
         },
-    })
+        onSocketError: error => log(`access log receiver error: ${describeError(error)}`),
+    }).catch(error => fail([`access logs could not listen on udp ${UPSTREAM_HOST}:${SYSLOG_PORT}: ${describeError(error)}`]))
     log(`access logs on udp ${UPSTREAM_HOST}:${SYSLOG_PORT} from ${NPM_ADDRESS}`)
 
     for (;;) {

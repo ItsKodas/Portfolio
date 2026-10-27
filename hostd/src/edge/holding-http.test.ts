@@ -53,8 +53,26 @@ for (const path of ['/holding/../etc/passwd', '/holding/Bad-Live', '/holding/x-n
     })
 }
 
-test('other methods answer 404', async () => {
-    const reply = await ask('/holding/spotondrones-live', {}, 'POST')
+// nginx's error_page to a named location keeps the visitor's method, so a form posted to a site that is
+// down arrives here as a POST, and a monitor's check as a HEAD.
+for (const method of ['POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS']) {
+    test(`${method} gets the holding page too`, async () => {
+        const reply = await ask('/holding/spotondrones-live', { '/pages/sites/spotondrones-live.html': '<p>back soon</p>' }, method)
+        assert.equal(reply.status, 503)
+        assert.equal(reply.headers['retry-after'], '120')
+        assert.equal(reply.body, '<p>back soon</p>')
+    })
+}
+
+test('HEAD answers 503 with Retry-After and no body', async () => {
+    const reply = await ask('/holding/spotondrones-live', { '/pages/sites/spotondrones-live.html': '<p>back soon</p>' }, 'HEAD')
+    assert.equal(reply.status, 503)
+    assert.equal(reply.headers['retry-after'], '120')
+    assert.equal(reply.body, '')
+})
+
+test('a POST to any other path still answers 404', async () => {
+    const reply = await ask('/elsewhere', {}, 'POST')
     assert.equal(reply.status, 404)
     assert.deepEqual(reply.reads, [])
 })

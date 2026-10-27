@@ -44,17 +44,31 @@ export type SyslogOptions = {
     append: (path: string, line: string) => Promise<void>
     // Called for a failed append, never for a malformed datagram
     onError?: (error: unknown) => void
+    // Called for an error on the socket once it is listening; a failure to bind rejects the start instead
+    onSocketError?: (error: unknown) => void
 }
 
-export function startSyslog(options: SyslogOptions): Socket {
+// Resolves once the socket is listening and rejects if it cannot bind, so the caller can treat a taken
+// port as fatal rather than run on with nothing receiving the logs.
+export function startSyslog(options: SyslogOptions): Promise<Socket> {
     const socket = createSocket('udp4')
     socket.on('message', (message, remote) => {
         const entry = syslogLine(message.toString('utf8'), remote.address, options.allowed, options.route(), options.logDir)
         if (entry === null) return
         options.append(entry.path, `${entry.line}\n`).catch(error => options.onError?.(error))
     })
-    // A socket error (not a bad datagram) is reported rather than left to crash the process
-    socket.on('error', error => options.onError?.(error))
-    socket.bind(options.port, options.host)
-    return socket
+    return new Promise((resolve, reject) => {
+        const failed = (error: Error) => {
+            socket.close()
+            reject(error)
+        }
+        socket.once('error', failed)
+        socket.once('listening', () => {
+            socket.off('error', failed)
+            // A socket error (not a bad datagram) is reported rather than left to crash the process
+            socket.on('error', error => options.onSocketError?.(error))
+            resolve(socket)
+        })
+        socket.bind(options.port, options.host)
+    })
 }

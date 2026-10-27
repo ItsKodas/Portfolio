@@ -9,7 +9,7 @@ import { applyHosts, findHosts, getHosts, removeHosts, type HostsDeps } from './
 
 // The hosts functions, overridable so a test can watch the order they run in without faking NPM.
 export type HostFns = { apply: typeof applyHosts, remove: typeof removeHosts }
-export type EdgeDeps = HostsDeps & { npmAge(): number | null, hosts?: Partial<HostFns> }
+export type EdgeDeps = HostsDeps & { npmAge(): number | null, hosts?: Partial<HostFns>, now?: () => number }
 
 // One queue per deps object. Every apply and remove goes through it: hosts.ts checks for a conflicting
 // host and then writes, and only running one write at a time closes the gap between the two. Reads do
@@ -23,13 +23,34 @@ function serialised<T>(deps: object, run: () => Promise<T>): Promise<T> {
     return result
 }
 
+// How often health asks NPM something itself. npmAge is the age of the last successful NPM call, and
+// with no environment holding hostnames nothing else calls NPM, so without this it would stay null (and
+// the portal would say NPM is unreachable) on a perfectly healthy setup.
+const PROBE_EVERY_MS = 60_000
+const probes = new WeakMap<object, { startedAt: number, running: boolean }>()
+
+// Fire and forget: the health reply never waits on NPM, which may take its full 30 seconds to fail.
+// A failure needs no handling, since a probe that failed simply leaves npmAge where it was.
+function probeNpm(deps: EdgeDeps): void {
+    const now = (deps.now ?? Date.now)()
+    const last = probes.get(deps)
+    if (last && (last.running || (now - last.startedAt < PROBE_EVERY_MS && now >= last.startedAt))) return
+    const state = { startedAt: now, running: true }
+    probes.set(deps, state)
+    deps.npm.certificateIds()
+        .catch(() => undefined)
+        .finally(() => { state.running = false })
+}
+
 async function dispatch(request: EdgeRequest, deps: EdgeDeps): Promise<EdgeReply> {
     switch (request.verb) {
-        case 'health': return { ok: true, verb: 'health', npmAge: deps.npmAge() }
+        case 'health':
+            probeNpm(deps)
+            return { ok: true, verb: 'health', npmAge: deps.npmAge() }
         case 'certificates': return { ok: true, verb: 'certificates', ids: await deps.npm.certificateIds() }
         case 'find': return findHosts(deps, request.domains)
         case 'get': return getHosts(deps, request.owner, request.ids)
-        case 'apply': return serialised(deps, () => (deps.hosts?.apply ?? applyHosts)(deps, request.owner, request.ids, request.spec, request.adopt))
+        case 'apply': return serialised(deps, () => (deps.hosts?.apply ?? applyHosts)(deps, request.owner, request.ids, request.spec, request.adopt, request.restoreFixed))
         case 'remove': return serialised(deps, () => (deps.hosts?.remove ?? removeHosts)(deps, request.owner, request.ids))
     }
 }

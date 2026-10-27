@@ -1,5 +1,5 @@
 // Serves holding pages to NPM's error_page: when a site's upstream is down or in maintenance, NPM asks
-// GET /holding/<id>-<environment> and relays the answer to the visitor. Only the agent's own files are
+// for /holding/<id>-<environment> and relays the answer to the visitor. Only the agent's own files are
 // ever read, and only after the name has been checked against the same rules the registry applies.
 
 import type { IncomingMessage, ServerResponse } from 'node:http'
@@ -17,8 +17,10 @@ export function holdingHandler(root: string, readFile: (path: string) => Promise
         void (async () => {
             // The query string is not part of the name. Anything with a further slash, dot segment or
             // escape fails the name rules below, so no path is ever built from it.
+            // Any method: nginx's error_page to a named location keeps the visitor's own, so a form posted to
+            // a site that is down arrives as a POST and must get the page, not a 404.
             const match = /^\/holding\/([^/?#]+)(?:\?.*)?$/.exec(req.url ?? '')
-            if (req.method !== 'GET' || !match) return notFound(res)
+            if (!match) return notFound(res)
             // Split on the LAST hyphen: project ids may contain hyphens, environment names never do.
             const name = match[1] as string
             const cut = name.lastIndexOf('-')
@@ -35,7 +37,7 @@ export function holdingHandler(root: string, readFile: (path: string) => Promise
             // 503 either way: the visitor is being told the site is temporarily away, and Retry-After
             // lets well behaved crawlers come back rather than drop the page.
             res.writeHead(503, { 'Content-Type': 'text/html; charset=utf-8', 'Retry-After': '120' })
-            res.end(body ?? FALLBACK)
+            res.end(req.method === 'HEAD' ? undefined : body ?? FALLBACK)
         })().catch(() => {
             if (!res.headersSent) res.writeHead(500)
             res.end()

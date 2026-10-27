@@ -41,6 +41,36 @@ describe('handleEdge', () => {
         assert.ok(got.ok ? got.verb === 'get' : typeof got.problem === 'string')
     })
 
+    // Without it npmAge stays null for as long as no environment has hostnames, since nothing else calls NPM.
+    it('health probes NPM in the background, at most once a minute, without waiting for it', async () => {
+        let clock = 1_000_000
+        let probes = 0
+        const hang: Array<() => void> = []
+        const d = deps({
+            now: () => clock,
+            npm: { certificateIds: () => { probes++; return new Promise<number[]>(resolve => hang.push(() => resolve([]))) } } as unknown as EdgeDeps['npm'],
+        })
+        // The probe never answers, and health still does
+        assert.deepEqual(await handleEdge({ verb: 'health' }, d), { ok: true, verb: 'health', npmAge: 1234 })
+        assert.equal(probes, 1)
+        await handleEdge({ verb: 'health' }, d)
+        assert.equal(probes, 1, 'one probe in flight at a time')
+        hang.shift()!()
+        await new Promise(resolve => setImmediate(resolve))
+        clock += 30_000
+        await handleEdge({ verb: 'health' }, d)
+        assert.equal(probes, 1, 'not again within the minute')
+        clock += 31_000
+        await handleEdge({ verb: 'health' }, d)
+        assert.equal(probes, 2)
+    })
+
+    it('a failed NPM probe is not a failed health', async () => {
+        const d = deps({ npm: { certificateIds: async () => { throw new Error('NPM is down') } } as unknown as EdgeDeps['npm'] })
+        assert.deepEqual(await handleEdge({ verb: 'health' }, d), { ok: true, verb: 'health', npmAge: 1234 })
+        await new Promise(resolve => setImmediate(resolve))
+    })
+
     it('turns a thrown error into ok false', async () => {
         const d = deps({ npm: { certificateIds: async () => { throw new Error('NPM is down') } } as unknown as EdgeDeps['npm'] })
         assert.deepEqual(await handleEdge({ verb: 'certificates' }, d), { ok: false, problem: 'NPM is down' })
