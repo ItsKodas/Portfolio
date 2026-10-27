@@ -46,7 +46,10 @@ export function bootGateIsRetryable(checks: BootChecks): boolean {
     return !checks.cloudflareRejected
 }
 
-export type Warning = { check: string, detail: string }
+// An advisory warning is reported and logged but does not flip ok, so it never makes the container
+// unhealthy. Everything else does. Advisory exists for the early half of a two-step alarm: something worth
+// looking at this week, before it becomes the failing version of itself.
+export type Warning = { check: string, detail: string, advisory?: boolean }
 
 export type StatusInput = {
     reconcile: ReconcileResult
@@ -65,7 +68,16 @@ export type StatusInput = {
 // is check-host having a moment; three, at a 15 minute cadence, is most of an hour with no real answer.
 export const INBOUND_INCONCLUSIVE_LIMIT = 3
 
-export const ACK_CERT_COMMAND = 'docker compose restart mailserver && docker compose exec mailops npm run ack-cert'
+export const RESTART_MAILSERVER_COMMAND = 'docker compose restart mailserver'
+
+// Renewal starts with 30 days left (day 60 of 90). Nine days of failed attempts is no longer a blip, so it
+// is reported; with 10 days left it fails the healthcheck, which still leaves time to fix it by hand.
+export const CERT_WARN_DAYS = 21
+export const CERT_FAIL_DAYS = 10
+
+// The changedetector polls every couple of seconds, but mailops probes in the same cycle that lego renewed
+// in. A mismatch that young is the reload still on its way, not a reload that never happened.
+export const CERT_RELOAD_GRACE_MS = 5 * 60_000
 
 export function collectWarnings(input: StatusInput): Warning[] {
     const warnings: Warning[] = []
@@ -101,20 +113,44 @@ export function collectWarnings(input: StatusInput): Warning[] {
         warnings.push({ check: 'cert-renewal', detail: `certificate renewal failed: ${input.certError}` })
     }
 
-    // mailserver runs SSL_TYPE=manual and does not reliably notice the certificate file changing, so a
-    // renewal around day 60 that nobody restarts for means Postfix keeps serving the old certificate
-    // until it expires on the wire around day 90, while the file mailops checks looks perfectly fine.
-    // Checking the file rather than what is actually being served is precisely how that stays invisible.
-    if (input.cert?.onDiskNotAfter) {
-        const onDisk = input.cert.onDiskNotAfter
-        const acked = input.cert.acknowledgedNotAfter
-        if (!acked || acked.getTime() !== onDisk.getTime()) {
-            const serving = acked
-                ? `mailserver was last restarted for a certificate expiring ${acked.toISOString()}`
-                : 'mailserver has never been restarted for a certificate mailops issued'
+    // The file on disk is what mailserver should be serving; the probe says what it is serving. They part
+    // ways when a renewal lands and the changedetector does not reload Postfix, and left alone the
+    // certificate on the wire then expires around day 90 while the file looks perfectly healthy.
+    const cert = input.cert
+    const onDisk = cert?.onDiskNotAfter ?? null
+    const served = cert?.servedNotAfter ?? null
+    if (cert?.servedError) {
+        warnings.push({
+            check: 'cert-served-unknown',
+            detail: `could not read the certificate mailserver is serving: ${cert.servedError}`,
+        })
+    }
+    if (onDisk && served && onDisk.getTime() !== served.getTime()) {
+        const changedAt = cert?.onDiskChangedAt
+        const settling = changedAt && input.now.getTime() - changedAt.getTime() < CERT_RELOAD_GRACE_MS
+        if (!settling) {
             warnings.push({
                 check: 'cert-reload-needed',
-                detail: `${serving}, but the certificate on disk expires ${onDisk.toISOString()}. Until they agree, assume Postfix is serving the older one. Run: ${ACK_CERT_COMMAND}`,
+                detail: `mailserver is serving a certificate expiring ${served.toISOString()}, but the certificate on disk expires ${onDisk.toISOString()}, so Postfix did not reload after the renewal. From the mail directory, run: ${RESTART_MAILSERVER_COMMAND}`,
+            })
+        }
+    }
+
+    // Judged against the clock, not against another file. A renewal that keeps failing quietly between
+    // backoff attempts, or a lego run that "succeeds" without replacing anything, otherwise leaves an
+    // expiring certificate behind ok: true. The earlier of the two is the one that bites first.
+    const expiries = [onDisk, served].filter((d): d is Date => d !== null)
+    if (expiries.length > 0) {
+        const soonest = new Date(Math.min(...expiries.map(d => d.getTime())))
+        const daysLeft = (soonest.getTime() - input.now.getTime()) / 86_400_000
+        const which = served && soonest.getTime() === served.getTime() ? 'the certificate mailserver is serving' : 'the certificate on disk'
+        if (daysLeft <= 0) {
+            warnings.push({ check: 'cert-expired', detail: `${which} expired ${soonest.toISOString()}` })
+        } else if (daysLeft < CERT_WARN_DAYS) {
+            warnings.push({
+                check: 'cert-expiring',
+                detail: `${which} expires ${soonest.toISOString()}, in ${Math.floor(daysLeft)} days, and renewal should have replaced it by now`,
+                ...(daysLeft >= CERT_FAIL_DAYS ? { advisory: true } : {}),
             })
         }
     }
@@ -153,7 +189,7 @@ export function collectWarnings(input: StatusInput): Warning[] {
 
 export async function writeStatus(path: string, warnings: Warning[], now: Date): Promise<void> {
     await mkdir(dirname(path), { recursive: true })
-    await writeFile(path, JSON.stringify({ ok: warnings.length === 0, checkedAt: now.toISOString(), warnings }, null, 2), 'utf8')
+    await writeFile(path, JSON.stringify({ ok: warnings.every(w => w.advisory), checkedAt: now.toISOString(), warnings }, null, 2), 'utf8')
 }
 
 // Turns a caught cycle error into the one warning the status file gets that cycle, so a failed

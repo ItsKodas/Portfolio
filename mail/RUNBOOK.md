@@ -167,35 +167,33 @@ If delivery to real recipients disappoints, switch to a relay: set `RELAY_HOST`,
 `RELAY_PASSWORD` and `RELAY_SPF_INCLUDE` in `mail/.env`, then `docker compose up -d`. SPF updates itself on
 the next reconcile cycle. No rebuild, no redesign.
 
-## Certificates: renewal needs a manual restart
+## Certificates: renewal and reload are automatic, and checked
 
-**This is currently a manual step, and skipping it eventually breaks TLS on the wire.**
+`mailops` renews the certificate over ACME DNS-01 around day 60 (30 days before expiry) and writes it
+into the `mail-certs` volume. `mailserver` runs `SSL_TYPE=manual`, and docker-mailserver's
+changedetector checksums `SSL_CERT_PATH` and `SSL_KEY_PATH` every few seconds: when they change it
+copies the new pair into place and reloads Postfix. No restart, and no operator step.
 
-`mailops` renews the certificate over ACME DNS-01 around day 60 and writes it into the `mail-certs`
-volume. `mailserver` runs `SSL_TYPE=manual` and does not reliably notice a manually supplied certificate
-changing on disk, so Postfix carries on presenting the old one until it expires around day 90, while the
-file `mailops` checks looks perfectly healthy. Nothing in the stack restarts `mailserver` on its own.
+`mailops` does not take that on trust. It connects to `mailserver:25` over the stack's own network,
+issues STARTTLS like any sending MTA would, and compares the certificate Postfix actually presents with
+the one on disk. It does this hourly, and every cycle while the two disagree. Earlier versions compared
+the file with a manually recorded acknowledgement instead (`npm run ack-cert`), which nobody ran after
+the first issuance, so the stack sat unhealthy over a certificate it was in fact serving correctly. That
+step and that command are gone.
 
-It could: the operator container would only need the Docker socket. That was rejected deliberately. It
-would hand the most privileged capability in the stack to the process that already holds a zone-edit
-token, to save one command every two months. A documented manual step is the better trade.
+The certificate checks in `status.json`:
 
-So `mailops` tracks it instead. It records the expiry of the certificate on disk and the expiry the
-operator last confirmed `mailserver` picked up, and it raises a `cert-reload-needed` warning, which
-flips the healthcheck unhealthy, for as long as the two disagree. An expired-on-the-wire certificate
-therefore cannot sit behind `ok: true`.
-
-**After any certificate renewal, and once after the very first issuance:**
-
-```bash
-cd mail
-docker compose restart mailserver
-docker compose exec mailops npm run ack-cert
-```
-
-The first command makes Postfix load the new certificate. The second records that it happened, which
-clears the warning. Run them together; acknowledging without restarting is lying to yourself, and the
-next renewal will simply raise the warning again.
+- `cert-reload-needed`: Postfix is still serving an older certificate than the one on disk, more than
+  five minutes after the file changed. The changedetector missed it. From the `mail` directory, run
+  `docker compose restart mailserver`, which drops port 25 for the few seconds the container takes to
+  come back (senders retry, nothing is lost).
+- `cert-served-unknown`: the probe could not read the served certificate at all, usually because
+  `mailserver` is down or not answering STARTTLS.
+- `cert-expiring`: the earlier of the served and on-disk certificates has under 21 days left, which means
+  renewal has been failing for over a week. Reported, but advisory: it does not flip `ok` until fewer
+  than 10 days are left.
+- `cert-expired`: what it says. Judged against the clock, so a renewal that keeps failing quietly
+  between backoff attempts cannot leave an expired certificate behind `ok: true`.
 
 A `cert-renewal` warning is different: it means `lego` itself is failing. `mailops` backs off
 exponentially rather than hammering Let's Encrypt's rate limits, and the rest of the cycle keeps running
@@ -226,6 +224,8 @@ After changing it, `docker compose up -d` and wait one cycle for `mailops` to re
   the conflicting record by hand, or rename ours.
 - A `cert-reload-needed` warning means the certificate on disk is not the one `mailserver` is serving.
   See the certificates section above. Left alone, TLS on the wire expires.
+- A `cert-expiring` or `cert-expired` warning means renewal has not replaced the certificate in time.
+  Look for `cert-renewal` warnings and the `lego` output in `docker compose logs mailops`.
 - A `cert-renewal` warning means `lego` is failing. The rest of the cycle still ran and still reported.
 - A `log-unreadable` warning means `MAIL_LOG_FILE` does not point at a readable file, so the
   inbound-staleness check, the only real evidence inbound 25 works, is not running. Check the path and

@@ -5,8 +5,8 @@ import { desiredRecords } from './desired.ts'
 import { createCloudflareApi, CloudflareApiError, type DnsApi } from './cloudflare.ts'
 import { reconcile, createWriteTracker } from './reconcile.ts'
 import { fetchPublicIp, readDkimKey, writeAliasMap, readLogTail } from './adapters.ts'
-import { probeOutboundSmtp, checkSpamhaus, lastInboundConnection, checkInboundPort } from './probes.ts'
-import type { SpamhausResult, InboundResult } from './probes.ts'
+import { probeOutboundSmtp, checkSpamhaus, lastInboundConnection, checkInboundPort, probeServedCertificate } from './probes.ts'
+import type { SpamhausResult, InboundResult, ServedCertificate } from './probes.ts'
 import { evaluateBootGate, bootGateIsRetryable, collectWarnings, writeStatus, cycleFailedWarning, resolveIntervalMs, BootGateError, type BootChecks } from './health.ts'
 import type { Config } from './config.ts'
 import { ensureCertificate, certificateStatus } from './certs.ts'
@@ -18,6 +18,8 @@ const LOG_FILE = process.env.MAIL_LOG_FILE ?? '/mail-logs/mail.log'
 const STATUS_FILE = process.env.MAILOPS_STATUS_FILE ?? '/health/status.json'
 const CERT_DIR = process.env.MAIL_CERT_DIR ?? '/mail-certs'
 const OUTBOUND_PROBE_HOST = process.env.MAILOPS_PROBE_HOST ?? 'gmail-smtp-in.l.google.com'
+// The compose service name, reached over the stack's own network rather than the published port.
+const MAILSERVER_HOST = process.env.MAILOPS_MAILSERVER_HOST ?? 'mailserver'
 
 // A malformed value here is a configuration error knowable before we accept anything, but
 // crashing the loop over it is the wrong response: fall back and log, rather than let a typo
@@ -40,6 +42,10 @@ const BOOT_GATE_BACKOFF_MS = [5_000, 10_000, 20_000, 40_000]
 // stuck at inconclusive. Fifteen minutes still finds a broken port forward within the hour, against the
 // 48 hours the log-staleness check needs.
 const INBOUND_CHECK_INTERVAL_MS = 15 * 60_000
+
+// Every probe is a connection in Postfix's log, so once an hour is enough while the served certificate
+// already matches the one on disk. Any disagreement, or a probe that failed, re-checks every cycle instead.
+const SERVED_CERT_CHECK_INTERVAL_MS = 60 * 60_000
 
 async function probeEnvironment(api: DnsApi, config: Config): Promise<BootChecks> {
     const outbound = await probeOutboundSmtp(OUTBOUND_PROBE_HOST)
@@ -105,6 +111,9 @@ async function main() {
     let lastInboundCheckAt = 0
     let inboundInconclusiveStreak = 0
 
+    let lastServed: ServedCertificate | null = null
+    let lastServedAt = 0
+
     for (;;) {
         let warnings
         try {
@@ -153,6 +162,14 @@ async function main() {
                 certError = (error as Error).message
             }
             const cert = await certificateStatus(config, CERT_DIR)
+            const servedMatches = lastServed?.notAfter && cert.onDiskNotAfter
+                && lastServed.notAfter.getTime() === cert.onDiskNotAfter.getTime()
+            if (!servedMatches || Date.now() - lastServedAt >= SERVED_CERT_CHECK_INTERVAL_MS) {
+                lastServed = await probeServedCertificate(MAILSERVER_HOST, config.mailHostname)
+                lastServedAt = Date.now()
+            }
+            cert.servedNotAfter = lastServed?.notAfter ?? null
+            cert.servedError = lastServed?.error ?? null
 
             warnings = collectWarnings({
                 reconcile: result, spamhaus: lastSpamhaus, lastInbound: lastInboundConnection(tail.text),

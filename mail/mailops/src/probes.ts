@@ -2,6 +2,7 @@
 // address we do not control, so all three are expected to change answer without warning.
 
 import net from 'node:net'
+import tls from 'node:tls'
 import { Resolver } from 'node:dns/promises'
 import { REQUEST_TIMEOUT_MS } from './adapters.ts'
 
@@ -30,6 +31,69 @@ export function probeOutboundSmtp(host: string, port = 25, timeoutMs = 8000): Pr
                 socket.removeAllListeners()
                 socket.destroy()
                 resolve({ ok: banner.startsWith('220'), banner })
+            }
+        })
+    })
+}
+
+export type ServedCertificate = { notAfter: Date | null, error?: string }
+
+// What Postfix is actually presenting on the wire, read the way a sending MTA would: banner, EHLO, STARTTLS,
+// then the peer certificate. This is the only honest answer to "did mailserver pick up the renewal". The
+// file on disk says what it should be serving, which is exactly how a stale certificate used to stay
+// invisible. Never throws: anything short of a certificate comes back as an error string.
+export function probeServedCertificate(host: string, servername: string, port = 25, timeoutMs = 8000): Promise<ServedCertificate> {
+    return new Promise(resolve => {
+        const socket = net.connect({ host, port })
+        let secure: tls.TLSSocket | null = null
+        let settled = false
+        const done = (result: ServedCertificate) => {
+            if (settled) return
+            settled = true
+            clearTimeout(timer)
+            socket.removeAllListeners()
+            secure?.removeAllListeners()
+            secure?.destroy()
+            socket.destroy()
+            resolve(result)
+        }
+        const timer = setTimeout(() => done({ notAfter: null, error: `no certificate from ${host}:${port} within ${timeoutMs}ms` }), timeoutMs)
+        socket.once('error', error => done({ notAfter: null, error: (error as Error).message }))
+
+        // SMTP replies end on a line whose code is followed by a space; "250-" lines are continuations.
+        let stage: 'banner' | 'ehlo' | 'starttls' = 'banner'
+        let buffer = ''
+        socket.on('data', chunk => {
+            buffer += chunk.toString('ascii')
+            let lineEnd
+            while ((lineEnd = buffer.indexOf('\r\n')) >= 0) {
+                const line = buffer.substring(0, lineEnd)
+                buffer = buffer.substring(lineEnd + 2)
+                if (line[3] === '-') continue
+                const expected = stage === 'ehlo' ? '250' : '220'
+                if (!line.startsWith(expected)) {
+                    return done({ notAfter: null, error: `unexpected reply during ${stage}: ${line.trim()}` })
+                }
+                if (stage === 'banner') {
+                    stage = 'ehlo'
+                    socket.write('EHLO mailops.cert-probe\r\n')
+                } else if (stage === 'ehlo') {
+                    stage = 'starttls'
+                    socket.write('STARTTLS\r\n')
+                } else {
+                    socket.removeAllListeners('data')
+                    // Not verifying the chain on purpose: this asks which certificate is served, not whether
+                    // the probe trusts it. Expiry is judged separately against the clock.
+                    secure = tls.connect({ socket, servername, rejectUnauthorized: false })
+                    secure.once('error', error => done({ notAfter: null, error: `TLS handshake failed: ${error.message}` }))
+                    secure.once('secureConnect', () => {
+                        const validTo = secure!.getPeerCertificate().valid_to
+                        if (!validTo) return done({ notAfter: null, error: 'TLS handshake completed without a peer certificate' })
+                        secure!.end('QUIT\r\n')
+                        done({ notAfter: new Date(validTo) })
+                    })
+                    return
+                }
             }
         })
     })
@@ -75,6 +139,9 @@ export async function checkSpamhaus(ip: string, resolve = defaultResolve): Promi
 }
 
 const CONNECT = /^(\w{3})\s+(\d+)\s+(\d{2}):(\d{2}):(\d{2}).*postfix\/smtpd.*connect from (?!localhost)/
+// The served-certificate probe connects from inside the Docker network, and so does anything on the host.
+// None of that proves the modem forwards port 25, so only a public source address counts as inbound.
+const PRIVATE_SOURCE = /\[(?:127\.|10\.|192\.168\.|172\.(?:1[6-9]|2\d|3[01])\.)[\d.]+\]/
 const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']
 
 // Evidence that inbound 25 actually reaches us. We cannot test that ourselves from inside the network, since
@@ -85,7 +152,7 @@ export function lastInboundConnection(log: string, now = new Date()): Date | nul
     const currentYear = now.getFullYear()
     for (const line of log.split('\n')) {
         const match = CONNECT.exec(line)
-        if (!match) continue
+        if (!match || PRIVATE_SOURCE.test(line)) continue
         const month = MONTHS.indexOf(match[1]!)
         if (month < 0) continue
         // If the parsed month is later than the current month, attribute it to the previous year

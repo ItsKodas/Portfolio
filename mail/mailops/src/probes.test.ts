@@ -1,8 +1,9 @@
 import { describe, it } from 'node:test'
 import assert from 'node:assert/strict'
 import net from 'node:net'
+import tls from 'node:tls'
 import {
-    interpretSpamhaus, checkSpamhaus, probeOutboundSmtp, lastInboundConnection, interpretPortCheck, checkInboundPort,
+    interpretSpamhaus, checkSpamhaus, probeOutboundSmtp, probeServedCertificate, lastInboundConnection, interpretPortCheck, checkInboundPort,
 } from './probes.ts'
 
 describe('interpretSpamhaus', () => {
@@ -117,6 +118,104 @@ describe('probeOutboundSmtp', () => {
     })
 })
 
+// A throwaway self-signed certificate and key for mail.dev.horizons.gg, generated for these tests only, so
+// the fake server below can complete a real TLS handshake. It expires 2036-10-24T11:51:24Z.
+const PROBE_KEY = [
+    '-----BEGIN PRIVATE KEY-----',
+    'MIGHAgEAMBMGByqGSM49AgEGCCqGSM49AwEHBG0wawIBAQQgfcE+4w8kJV2OD4tB',
+    'DbCyJwxeipICuLKZ84NwppwzT0ChRANCAAR1/KxY9rWLGve7kDzV/eUdDeCzfx03',
+    'Xo+KvRoSPIhNTs+DcphKGToD+NHIBL0rYomUUEwawdO+xFxNv2wSg+GA',
+    '-----END PRIVATE KEY-----',
+    '',
+].join('\n')
+
+const PROBE_CERT = [
+    '-----BEGIN CERTIFICATE-----',
+    'MIIBkzCCATmgAwIBAgIUR5r5j5Y8lzF4H7tkwca/m3v/gMIwCgYIKoZIzj0EAwIw',
+    'HzEdMBsGA1UEAwwUbWFpbC5kZXYuaG9yaXpvbnMuZ2cwHhcNMjYxMDI3MTE1MTI0',
+    'WhcNMzYxMDI0MTE1MTI0WjAfMR0wGwYDVQQDDBRtYWlsLmRldi5ob3Jpem9ucy5n',
+    'ZzBZMBMGByqGSM49AgEGCCqGSM49AwEHA0IABHX8rFj2tYsa97uQPNX95R0N4LN/',
+    'HTdej4q9GhI8iE1Oz4NymEoZOgP40cgEvStiiZRQTBrB077EXE2/bBKD4YCjUzBR',
+    'MB0GA1UdDgQWBBR0UZA02PM4hu1tu6c+5NBCDhbowTAfBgNVHSMEGDAWgBR0UZA0',
+    '2PM4hu1tu6c+5NBCDhbowTAPBgNVHRMBAf8EBTADAQH/MAoGCCqGSM49BAMCA0gA',
+    'MEUCIFzoJeyiROIZlO5W36O+x3hNjq/+w+9jwfPtZ5FBbGzvAiEA8otTDg4vaotP',
+    'mNZi+LiB6NcFL/Kqq1uUfVXEXo+E1XI=',
+    '-----END CERTIFICATE-----',
+    '',
+].join('\n')
+
+const PROBE_NOT_AFTER = '2036-10-24T11:51:24.000Z'
+
+// Just enough of an SMTP server to get a client through STARTTLS: a banner, a multi-line EHLO reply, and
+// then a TLS handshake on the same socket. `starttlsReply` lets a test refuse the upgrade instead.
+function fakeStarttlsServer(starttlsReply = '220 2.0.0 Ready to start TLS') {
+    return net.createServer(socket => {
+        socket.write('220 mail.dev.horizons.gg ESMTP\r\n')
+        let buffer = ''
+        const onData = (chunk: Buffer) => {
+            buffer += chunk.toString('ascii')
+            if (buffer.includes('EHLO') && !buffer.includes('STARTTLS')) {
+                if (buffer.endsWith('\r\n')) socket.write('250-mail.dev.horizons.gg\r\n250-PIPELINING\r\n250 STARTTLS\r\n')
+                return
+            }
+            if (buffer.includes('STARTTLS\r\n')) {
+                socket.off('data', onData)
+                socket.write(`${starttlsReply}\r\n`)
+                if (!starttlsReply.startsWith('220')) return
+                const secure = new tls.TLSSocket(socket, { isServer: true, key: PROBE_KEY, cert: PROBE_CERT })
+                secure.on('error', () => {})
+            }
+        }
+        socket.on('data', onData)
+        socket.on('error', () => {})
+    })
+}
+
+async function withServer(server: net.Server, run: (port: number) => Promise<void>) {
+    await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve))
+    try {
+        await run((server.address() as net.AddressInfo).port)
+    } finally {
+        server.close()
+    }
+}
+
+describe('probeServedCertificate', () => {
+    it('reads the expiry of the certificate presented after STARTTLS', async () => {
+        await withServer(fakeStarttlsServer(), async port => {
+            const result = await probeServedCertificate('127.0.0.1', 'mail.dev.horizons.gg', port, 2000)
+            assert.equal(result.error, undefined)
+            assert.equal(result.notAfter?.toISOString(), PROBE_NOT_AFTER)
+        })
+    })
+
+    it('reports a refused STARTTLS as an error rather than a certificate', async () => {
+        await withServer(fakeStarttlsServer('454 4.7.0 TLS not available'), async port => {
+            const result = await probeServedCertificate('127.0.0.1', 'mail.dev.horizons.gg', port, 2000)
+            assert.equal(result.notAfter, null)
+            assert.match(result.error ?? '', /454/)
+        })
+    })
+
+    it('times out when the server accepts but never speaks', async () => {
+        await withServer(net.createServer(() => {}), async port => {
+            const result = await probeServedCertificate('127.0.0.1', 'mail.dev.horizons.gg', port, 100)
+            assert.equal(result.notAfter, null)
+            assert.match(result.error ?? '', /within 100ms/)
+        })
+    })
+
+    it('reports a refused connection without throwing', async () => {
+        const server = net.createServer()
+        await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve))
+        const port = (server.address() as net.AddressInfo).port
+        await new Promise<void>(resolve => server.close(() => resolve()))
+        const result = await probeServedCertificate('127.0.0.1', 'mail.dev.horizons.gg', port, 2000)
+        assert.equal(result.notAfter, null)
+        assert.match(result.error ?? '', /ECONNREFUSED/)
+    })
+})
+
 describe('lastInboundConnection', () => {
     it('finds the most recent inbound connection', () => {
         const log = [
@@ -132,6 +231,22 @@ describe('lastInboundConnection', () => {
     it('ignores connections from localhost, which are our own health checks', () => {
         const log = 'Sep 18 09:00:01 mail postfix/smtpd[1]: connect from localhost[127.0.0.1]'
         assert.equal(lastInboundConnection(log), null)
+    })
+
+    // The served-certificate probe connects from mailops over the compose network every hour. Counting
+    // that as inbound would keep the staleness check green with the port forward gone.
+    it('ignores connections from private addresses, such as the certificate probe on the Docker network', () => {
+        const log = [
+            'Sep 18 09:00:01 mail postfix/smtpd[1]: connect from unknown[172.19.0.2]',
+            'Sep 18 09:00:02 mail postfix/smtpd[2]: connect from host[192.168.0.8]',
+            'Sep 18 09:00:03 mail postfix/smtpd[3]: connect from host[10.0.0.5]',
+        ].join('\n')
+        assert.equal(lastInboundConnection(log), null)
+    })
+
+    it('still counts a public address that merely starts like a private range', () => {
+        const log = 'Sep 18 09:00:01 mail postfix/smtpd[1]: connect from mx.example.com[172.32.0.1]'
+        assert.equal(lastInboundConnection(log)?.getHours(), 9)
     })
 
     it('returns null for a log with no connections yet', () => {
