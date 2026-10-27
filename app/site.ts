@@ -38,7 +38,7 @@ export const SKILLS = [
     'TypeScript', 'JavaScript', 'React', 'Next.js', 'Tailwind CSS', 'MUI',
     'Node.js', 'Deno', 'Express', 'Socket.IO', 'Payload CMS',
     'PostgreSQL', 'MongoDB', 'Prisma',
-    'Playwright', 'Docker', 'Linux', 'Windows Server', 'GitHub Actions', 'Git', 'Claude',
+    'Playwright', 'Docker', 'Linux', 'Proxmox', 'Windows Server', 'GitHub Actions', 'Git', 'Claude',
     'React Native', 'Expo', 'Discord.js', 'Three.js',
     'C#', '.NET', 'Python', 'Unreal Engine',
 ]
