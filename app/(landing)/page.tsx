@@ -24,7 +24,7 @@ import EmailLink from './EmailLink'
 const WHITE: React.CSSProperties = { filter: 'brightness(0) invert(1)' }
 // Each logo links to the site built for that client (a logo without an href is shown but not clickable)
 const clients: { src: typeof PMPC_Group, name: string, href?: string, box: string, style?: React.CSSProperties }[] = [
-    { src: PMPC_Group, name: 'PMPC Group', href: 'https://pmpcgroup.horizons.gg/', box: 'h-10 w-24', style: WHITE },
+    { src: PMPC_Group, name: 'PMPC Group', href: 'https://pmpcgroup.com.au/', box: 'h-10 w-24', style: WHITE },
     { src: SpotOnDrones, name: 'Spot On Drones', href: 'https://spotondrones.com.au/', box: 'h-10 w-32' },
     { src: Arbys, name: "Arby's Auto Glass", href: 'https://arbysauto.com/', box: 'h-11 w-11' },
     { src: ASOT, name: 'ASOT', href: 'https://www.asotmilsim.com/', box: 'h-10 w-28', style: WHITE },
