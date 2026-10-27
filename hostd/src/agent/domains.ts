@@ -11,8 +11,10 @@ import { hostnamesOf, type EnvironmentEntry, type NpmIds, type ProjectEntry, typ
 import { refuse, type AdoptPreview, type DomainsWritten, type Refusal } from '../shared/protocol.ts'
 import type { Change } from '../shared/registry-write.ts'
 import { describeError } from '../shared/formats.ts'
-import { ownerOf as ownerOfConfig, type FoundHost, type HostsSpec, type Owner, type ProxyHostSpec, type RedirectionHostSpec } from '../shared/edge-protocol.ts'
-import type { EdgeClient } from './edge-client.ts'
+import {
+    ownerOf as ownerOfConfig, type FoundHost, type HostsSpec, type Owner, type PreviousHosts, type ProxyFixed, type ProxyHostSpec, type RedirectionHostSpec,
+} from '../shared/edge-protocol.ts'
+import { EDGE_CONFIRM_TIMEOUT_MS, type EdgeClient } from './edge-client.ts'
 import type { AdoptedStore } from './adopted-store.ts'
 import { BROTLI, certificateFor, describeHosts, renderHosts, tokenFromHosts } from './npm-render.ts'
 
@@ -35,7 +37,7 @@ export type DomainsDeps = {
 }
 
 type Done = { ok: true } | Refusal
-type Applied = { ok: true, ids: NpmIds, previous: HostsSpec | null }
+type Applied = { ok: true, ids: NpmIds, previous: PreviousHosts | null }
 type Claim = AdoptPreview['preview']['claims'][number]
 
 const ownerOf = (project: ProjectEntry, environment: EnvironmentEntry): Owner => ({ project: project.id, environment: environment.name })
@@ -92,9 +94,9 @@ async function render(deps: DomainsDeps, project: ProjectEntry, environment: Env
     }
 }
 
-async function find(deps: DomainsDeps, domains: string[]): Promise<{ ok: true, hosts: FoundHost[] } | Refusal> {
+async function find(deps: DomainsDeps, domains: string[], timeoutMs?: number): Promise<{ ok: true, hosts: FoundHost[] } | Refusal> {
     try {
-        const reply = await deps.edge.call({ verb: 'find', domains })
+        const reply = await deps.edge.call({ verb: 'find', domains }, timeoutMs === undefined ? undefined : { timeoutMs })
         if (!reply.ok) return refuse('unavailable', `NPM could not be searched: ${reply.problem}`, reply.output)
         if (reply.verb !== 'find') return refuse('failed', `edge answered a find with ${reply.verb}`)
         return { ok: true, hosts: reply.hosts }
@@ -131,7 +133,7 @@ async function confirmApply(deps: DomainsDeps, owner: Owner, ids: NpmIds | null,
     if (ids !== null && !releasing && (ids.redirectionHost !== null || spec.redirection === null)) {
         let reply
         try {
-            reply = await deps.edge.call({ verb: 'get', owner, ids })
+            reply = await deps.edge.call({ verb: 'get', owner, ids }, { timeoutMs: EDGE_CONFIRM_TIMEOUT_MS })
         } catch (again) {
             return unknownOutcome(owner, why, describeError(again))
         }
@@ -142,7 +144,7 @@ async function confirmApply(deps: DomainsDeps, owner: Owner, ids: NpmIds | null,
         if (spec.redirection === null ? current.redirection !== null : current.redirection === null || !sameSpec(current.redirection, spec.redirection)) return notYet
         return { ok: true, ids: { proxyHost: ids.proxyHost, redirectionHost: spec.redirection === null ? null : ids.redirectionHost }, previous: null }
     }
-    const found = await find(deps, allDomains(spec))
+    const found = await find(deps, allDomains(spec), EDGE_CONFIRM_TIMEOUT_MS)
     if (!found.ok) return unknownOutcome(owner, why, found.message)
     // By id when there is one (a released host carries no marker to match on), by marker for a create
     const proxy = found.hosts.find(host => host.kind === 'proxy' && host.spec !== null && sameSpec(host.spec, spec.proxy)
@@ -161,10 +163,10 @@ async function confirmApply(deps: DomainsDeps, owner: Owner, ids: NpmIds | null,
     return { ok: true, ids: { proxyHost: proxy.id, redirectionHost }, previous: null }
 }
 
-async function apply(deps: DomainsDeps, owner: Owner, ids: NpmIds | null, spec: HostsSpec, adopt: boolean): Promise<Applied | Refusal> {
+async function apply(deps: DomainsDeps, owner: Owner, ids: NpmIds | null, spec: HostsSpec, adopt: boolean, restoreFixed?: ProxyFixed): Promise<Applied | Refusal> {
     let reply
     try {
-        reply = await deps.edge.call({ verb: 'apply', owner, ids, spec, adopt })
+        reply = await deps.edge.call(restoreFixed ? { verb: 'apply', owner, ids, spec, adopt, restoreFixed } : { verb: 'apply', owner, ids, spec, adopt })
     } catch (error) {
         return confirmApply(deps, owner, ids, spec, error)
     }
@@ -183,7 +185,7 @@ async function remove(deps: DomainsDeps, owner: Owner, ids: NpmIds): Promise<Don
         const why = `edge did not answer (${describeError(error)})`
         let current
         try {
-            current = await deps.edge.call({ verb: 'get', owner, ids })
+            current = await deps.edge.call({ verb: 'get', owner, ids }, { timeoutMs: EDGE_CONFIRM_TIMEOUT_MS })
         } catch (again) {
             return unknownOutcome(owner, why, describeError(again))
         }
@@ -519,8 +521,9 @@ export async function adopt(
     if (!applied.ok) return applied
 
     // edge's own copy of what it replaced, read inside its write queue, is the better one; the survey's
-    // is only for a reply that never arrived but was confirmed by reading NPM back.
-    const previous = applied.previous ?? { proxy: host.spec as ProxyHostSpec, redirection: null }
+    // is only for a reply that never arrived but was confirmed by reading NPM back. That one cannot say
+    // what the host's fixed fields were (Block Exploits and the like), so the undo then writes hostd's.
+    const previous = applied.previous ?? { proxy: host.spec as ProxyHostSpec, redirection: null, proxyFixed: null }
     const problems: string[] = []
     try {
         await deps.adopted.save(owner, { ids: applied.ids, previous })
@@ -559,7 +562,8 @@ export async function restoreAdopted(
         )
     }
 
-    const applied = await apply(deps, owner, environment.npm, { proxy: saved.previous.proxy, redirection: null }, false)
+    // The hand-made host's own fixed fields too, which hostd's render had replaced with its own
+    const applied = await apply(deps, owner, environment.npm, { proxy: saved.previous.proxy, redirection: null }, false, saved.previous.proxyFixed ?? undefined)
     if (!applied.ok) return { ...applied, message: `NPM proxy host ${saved.ids.proxyHost} could not be put back as it was: ${applied.message}` }
     const written = await deps.writeRegistry({ kind: 'set-npm', id: project.id, environment: environment.name, npm: null })
     if (!written.ok) {

@@ -13,6 +13,7 @@ const redirection = {
 }
 const spec: HostsSpec = { proxy, redirection }
 const ids = { proxyHost: 4, redirectionHost: null }
+const proxyFixed = { forward_scheme: 'http', block_exploits: false, allow_websocket_upgrade: true, hsts_enabled: true, hsts_subdomains: false, caching_enabled: false } as const
 
 describe('markerFor and ownerOf', () => {
     it('writes the exact marker line', () => {
@@ -40,6 +41,7 @@ describe('parseEdgeRequest', () => {
         { verb: 'get', owner, ids },
         { verb: 'apply', owner, ids: null, spec, adopt: false },
         { verb: 'apply', owner, ids, spec: { proxy, redirection: null }, adopt: true },
+        { verb: 'apply', owner, ids, spec: { proxy, redirection: null }, adopt: false, restoreFixed: proxyFixed },
         { verb: 'remove', owner, ids: { proxyHost: 1, redirectionHost: 2 } },
     ]
     for (const request of requests) {
@@ -60,6 +62,9 @@ describe('parseEdgeRequest', () => {
         assert.equal(parseEdgeRequest({ verb: 'apply', owner, ids: null, spec: { proxy: { ...proxy, domain_names: 'a.com' }, redirection: null }, adopt: false }), null)
         assert.equal(parseEdgeRequest({ verb: 'apply', owner, ids: null, spec: { proxy: { ...proxy, domain_names: [1] }, redirection: null }, adopt: false }), null)
         assert.equal(parseEdgeRequest({ verb: 'remove', owner, ids: { proxyHost: 1.5, redirectionHost: null } }), null)
+        assert.equal(parseEdgeRequest({ verb: 'apply', owner, ids, spec, adopt: false, restoreFixed: { ...proxyFixed, block_exploits: 0 } }), null)
+        assert.equal(parseEdgeRequest({ verb: 'apply', owner, ids, spec, adopt: false, restoreFixed: { ...proxyFixed, forward_scheme: 'ftp' } }), null)
+        assert.equal(parseEdgeRequest({ verb: 'apply', owner, ids, spec, adopt: false, restoreFixed: { ...proxyFixed, extra: true } }), null)
     })
 })
 
@@ -75,6 +80,8 @@ describe('parseEdgeReply', () => {
         { ok: true, verb: 'get', current: null },
         { ok: true, verb: 'get', current: spec },
         { ok: true, verb: 'apply', ids, previous: null },
+        { ok: true, verb: 'apply', ids, previous: { ...spec, proxyFixed } },
+        { ok: true, verb: 'apply', ids, previous: { ...spec, proxyFixed: null } },
         { ok: true, verb: 'remove' },
         { ok: false, problem: 'bad' },
         { ok: false, problem: 'bad', output: 'details' },
@@ -93,5 +100,11 @@ describe('parseEdgeReply', () => {
         assert.equal(parseEdgeReply({ ok: false }), null)
         assert.equal(parseEdgeReply({ ok: true, verb: 'find', hosts: [{ kind: 'weird' }] }), null)
         assert.equal(parseEdgeReply({ ok: true, verb: 'get', current: { proxy: { ...proxy, forward_port: 1.5 }, redirection: null } }), null)
+        assert.equal(parseEdgeReply({ ok: true, verb: 'apply', ids, previous: { ...spec, proxyFixed: { ...proxyFixed, hsts_enabled: 'yes' } } }), null)
+    })
+
+    // A record the adopted store saved before the fixed fields were carried still reads, as unknown
+    it('reads a previous without proxyFixed as null', () => {
+        assert.deepEqual(parseEdgeReply({ ok: true, verb: 'apply', ids, previous: spec }), { ok: true, verb: 'apply', ids, previous: { ...spec, proxyFixed: null } })
     })
 })

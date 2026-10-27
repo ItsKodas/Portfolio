@@ -3,7 +3,7 @@
 // recorder that would accept anything. It does not import edge/server.ts: the dispatch below is the
 // handful of lines that file's handleEdge is, minus the write queue a single test never needs.
 
-import { EdgeUnavailableError, type EdgeClient } from '../edge-client.ts'
+import { EdgeUnavailableError, type CallOptions, type EdgeClient } from '../edge-client.ts'
 import { applyHosts, findHosts, getHosts, removeHosts, type HostsDeps } from '../../edge/hosts.ts'
 import { FakeNpm } from '../../edge/testing/fake-npm.ts'
 import type { EdgeReply, EdgeRequest } from '../../shared/edge-protocol.ts'
@@ -17,6 +17,8 @@ type Failure = { verb: EdgeRequest['verb'], when: 'before' | 'after' }
 export class FakeEdge implements EdgeClient {
     readonly npm: FakeNpm
     readonly requests: EdgeRequest[] = []
+    // The timeout each request was given, by the same index, undefined for the client's default
+    readonly timeouts: (number | undefined)[] = []
     private readonly deps: HostsDeps
     private readonly failures: Failure[] = []
 
@@ -34,13 +36,14 @@ export class FakeEdge implements EdgeClient {
         return this.requests.filter(request => request.verb === 'apply' || request.verb === 'remove')
     }
 
-    async call(request: EdgeRequest): Promise<EdgeReply> {
+    async call(request: EdgeRequest, options?: CallOptions): Promise<EdgeReply> {
         this.requests.push(structuredClone(request))
+        this.timeouts.push(options?.timeoutMs)
         const at = this.failures.findIndex(failure => failure.verb === request.verb)
         const failure = at === -1 ? null : this.failures.splice(at, 1)[0]!
-        if (failure?.when === 'before') throw new EdgeUnavailableError('edge did not answer within 150 seconds')
+        if (failure?.when === 'before') throw new EdgeUnavailableError('edge did not answer within 100 seconds')
         const reply = await this.handle(request)
-        if (failure?.when === 'after') throw new EdgeUnavailableError('edge did not answer within 150 seconds')
+        if (failure?.when === 'after') throw new EdgeUnavailableError('edge did not answer within 100 seconds')
         return structuredClone(reply)
     }
 
@@ -50,7 +53,7 @@ export class FakeEdge implements EdgeClient {
             case 'certificates': return { ok: true, verb: 'certificates', ids: await this.npm.certificateIds() }
             case 'find': return findHosts(this.deps, request.domains)
             case 'get': return getHosts(this.deps, request.owner, request.ids)
-            case 'apply': return applyHosts(this.deps, request.owner, request.ids, request.spec, request.adopt)
+            case 'apply': return applyHosts(this.deps, request.owner, request.ids, request.spec, request.adopt, request.restoreFixed)
             case 'remove': return removeHosts(this.deps, request.owner, request.ids)
         }
     }

@@ -1,7 +1,8 @@
 import { describe, it } from 'node:test'
 import assert from 'node:assert/strict'
 import { duplexPair, type Duplex } from 'node:stream'
-import { edgeClient, EdgeUnavailableError, EDGE_TIMEOUT_MS, type Connect } from './edge-client.ts'
+import { edgeClient, EdgeUnavailableError, EDGE_CONFIRM_TIMEOUT_MS, EDGE_TIMEOUT_MS, type Connect } from './edge-client.ts'
+import { CALL_TIMEOUT_MS } from '../api/agent-client.ts'
 import { handleEdgeConnection } from '../edge/server.ts'
 import type { EdgeReply, EdgeRequest } from '../shared/edge-protocol.ts'
 
@@ -35,8 +36,18 @@ describe('call', () => {
         assert.deepEqual(await client.call({ verb: 'health' }), { ok: false, problem: 'NPM said no' })
     })
 
-    it('leaves room for a create, a redirection host and a revert', () => {
-        assert.equal(EDGE_TIMEOUT_MS, 150_000)
+    // api gives up on the agent after CALL_TIMEOUT_MS, and for an adopt that means it never runs its own
+    // rollback. An apply that times out is followed by one confirming read, so both together must end
+    // inside api's window, with room to spare for the agent's own work around them.
+    it('lets an apply and its confirming read finish before api gives up', () => {
+        assert.ok(EDGE_TIMEOUT_MS + EDGE_CONFIRM_TIMEOUT_MS <= CALL_TIMEOUT_MS - 10_000, `${EDGE_TIMEOUT_MS} + ${EDGE_CONFIRM_TIMEOUT_MS} against ${CALL_TIMEOUT_MS}`)
+    })
+
+    it('honours a per-call timeout', async () => {
+        const client = edgeClient(connectRaw(() => {}), { timeoutMs: 60_000 })
+        const started = Date.now()
+        await assert.rejects(client.call({ verb: 'health' }, { timeoutMs: 50 }), /within 0.05 seconds/)
+        assert.ok(Date.now() - started < 5_000)
     })
 
     it('throws EdgeUnavailableError when the socket closes with no reply', async () => {

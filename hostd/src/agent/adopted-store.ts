@@ -9,10 +9,10 @@ import { mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises'
 import { randomBytes } from 'node:crypto'
 import { posix } from 'node:path'
 
-import { parseEdgeReply, type HostsSpec, type Owner } from '../shared/edge-protocol.ts'
+import { parseEdgeReply, type Owner, type PreviousHosts } from '../shared/edge-protocol.ts'
 import type { NpmIds } from '../shared/registry.ts'
 
-export type AdoptedRecord = { ids: NpmIds, previous: HostsSpec }
+export type AdoptedRecord = { ids: NpmIds, previous: PreviousHosts }
 
 export type AdoptedStore = {
     save(owner: Owner, record: AdoptedRecord): Promise<void>

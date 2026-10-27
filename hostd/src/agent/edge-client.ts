@@ -15,11 +15,17 @@ export class EdgeUnavailableError extends Error {
 }
 
 export type Connect = () => Duplex
-export type EdgeClient = { call(request: EdgeRequest): Promise<EdgeReply> }
+export type CallOptions = { timeoutMs?: number }
+export type EdgeClient = { call(request: EdgeRequest, options?: CallOptions): Promise<EdgeReply> }
 
-// Room for the slowest apply: a proxy host create, a redirection host create and a revert, each of
-// which can take NPM's own 30 second call timeout.
-export const EDGE_TIMEOUT_MS = 150_000
+// api gives up on the agent after its own CALL_TIMEOUT_MS (150 seconds), and for an adopt that means
+// api never runs its automatic rollback. An apply that times out here is followed by one confirming
+// read (confirmApply in domains.ts), so the two together are kept well inside api's window: 100 seconds
+// for the apply, which covers the usual few NPM calls with room for one to hang to NPM's own 30 second
+// timeout, and 40 seconds for the read. An apply still running in edge when this gives up is what the
+// confirming read is for.
+export const EDGE_TIMEOUT_MS = 100_000
+export const EDGE_CONFIRM_TIMEOUT_MS = 40_000
 
 export function socketConnect(path: string): Connect {
     return () => createConnection(path)
@@ -82,10 +88,10 @@ export function edgeClient(connect: Connect, options: { timeoutMs?: number } = {
     const timeoutMs = options.timeoutMs ?? EDGE_TIMEOUT_MS
 
     return {
-        async call(request) {
+        async call(request, options = {}) {
             const connection = open(connect, request)
             try {
-                const reply = parseLine(await withTimeout(connection.first(), timeoutMs, connection.close))
+                const reply = parseLine(await withTimeout(connection.first(), options.timeoutMs ?? timeoutMs, connection.close))
                 const parsed = parseEdgeReply(reply)
                 if (!parsed) throw new EdgeUnavailableError('edge sent an unreadable reply')
                 return parsed

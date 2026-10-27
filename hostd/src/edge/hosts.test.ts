@@ -151,6 +151,7 @@ test('updates an owned host and answers the previous state, booleans normalised'
                 domain_names: ['www.spotondrones.com'], forward_domain_name: 'spotondrones.com', certificate_id: 16,
                 ssl_forced: true, http2_support: true, advanced_config: `${MARKER}\n`,
             },
+            proxyFixed: { forward_scheme: 'http', block_exploits: true, allow_websocket_upgrade: true, hsts_enabled: false, hsts_subdomains: false, caching_enabled: false },
         },
     })
     assert.deepEqual(writes(npm), ['update proxy-hosts 10', 'update redirection-hosts 4'])
@@ -198,6 +199,8 @@ test('adopt may claim an unmarked host whose domains and upstream match', async 
                 ssl_forced: true, http2_support: true, advanced_config: '',
             },
             redirection: null,
+            // The hand-made host's own choices, so the adoption undo can put them back
+            proxyFixed: { forward_scheme: 'http', block_exploits: true, allow_websocket_upgrade: true, hsts_enabled: true, hsts_subdomains: false, caching_enabled: false },
         },
     })
     const state = npm.snapshot()
@@ -476,6 +479,86 @@ test('a failed restore recreates the redirection host and names its new id', asy
     const state = normalised(npm.snapshot())
     assert.deepEqual(state['proxy-hosts'], normalised({ 'proxy-hosts': [proxyRecord(10, { meta: { nginx_online: true, nginx_err: null } })], 'redirection-hosts': [], 'dead-hosts': [] } as never)['proxy-hosts'])
     assert.deepEqual(state['redirection-hosts'].map(record => [record.id, record.domain_names, record.advanced_config]), [[100, ['www.spotondrones.com'], `${MARKER}\n`]])
+})
+
+// The release write puts back the fixed fields the hand-made host had, not hostd's own.
+test('restore with restoreFixed writes the hand-made host\'s own fixed fields back', async () => {
+    const { npm, deps } = setup()
+    npm.seed('proxy-hosts', proxyRecord(10))
+    npm.seed('redirection-hosts', redirectionRecord(4))
+    const fixed = { forward_scheme: 'http', block_exploits: false, allow_websocket_upgrade: false, hsts_enabled: true, hsts_subdomains: true, caching_enabled: true } as const
+    const reply = await applyHosts(deps, OWNER, { proxyHost: 10, redirectionHost: 4 }, handMade(), false, fixed)
+    assert.equal(reply.ok, true, JSON.stringify(reply))
+    const proxy = npm.snapshot()['proxy-hosts'][0]!
+    for (const [key, value] of Object.entries(fixed)) assert.equal(proxy[key], value, key)
+})
+
+test('restoreFixed is refused on anything but a release of an owned host', async () => {
+    const { npm, deps } = setup()
+    npm.seed('proxy-hosts', proxyRecord(10))
+    const fixed = { forward_scheme: 'http', block_exploits: false, allow_websocket_upgrade: true, hsts_enabled: false, hsts_subdomains: false, caching_enabled: false } as const
+    // A normal render (it carries the marker) always gets hostd's own fixed fields
+    const render = await applyHosts(deps, OWNER, { proxyHost: 10, redirectionHost: null }, spec({ aliases: [] }), false, fixed)
+    assert.equal(render.ok, false)
+    const create = await applyHosts(deps, OWNER, null, handMade(), false, fixed)
+    assert.equal(create.ok, false)
+    const adopting = await applyHosts(deps, OWNER, { proxyHost: 10, redirectionHost: null }, handMade(), true, fixed)
+    assert.equal(adopting.ok, false)
+    assert.deepEqual(writes(npm), [])
+})
+
+// A redirection host carrying this owner's marker that the registry's id no longer names (a lost
+// reply on the delete-then-create path, edge's own undo recreating it under a new id, recordIds
+// failing) is provably this environment's, so it is taken as the redirection record.
+test('a stale redirection id adopts the orphan carrying this owner\'s marker, and answers its id', async () => {
+    const { npm, deps } = setup()
+    npm.seed('proxy-hosts', proxyRecord(10))
+    npm.seed('redirection-hosts', redirectionRecord(7))
+    const reply = await applyHosts(deps, OWNER, { proxyHost: 10, redirectionHost: 4 }, spec({ port: 5008 }), false)
+    assert.equal(reply.ok, true, JSON.stringify(reply))
+    assert.deepEqual((reply as { ids: unknown }).ids, { proxyHost: 10, redirectionHost: 7 })
+    assert.deepEqual(writes(npm), ['update proxy-hosts 10', 'update redirection-hosts 7'])
+    assert.equal(npm.snapshot()['redirection-hosts'].length, 1)
+})
+
+test('a null redirection id adopts the orphan carrying this owner\'s marker', async () => {
+    const { npm, deps } = setup()
+    npm.seed('proxy-hosts', proxyRecord(10))
+    npm.seed('redirection-hosts', redirectionRecord(7))
+    const reply = await applyHosts(deps, OWNER, { proxyHost: 10, redirectionHost: null }, spec(), false)
+    assert.equal(reply.ok, true, JSON.stringify(reply))
+    assert.deepEqual((reply as { ids: unknown }).ids, { proxyHost: 10, redirectionHost: 7 })
+})
+
+test('an orphan with this owner\'s marker is deleted when the environment has no aliases now', async () => {
+    const { npm, deps } = setup()
+    npm.seed('proxy-hosts', proxyRecord(10))
+    npm.seed('redirection-hosts', redirectionRecord(7))
+    const reply = await applyHosts(deps, OWNER, { proxyHost: 10, redirectionHost: 4 }, spec({ aliases: [] }), false)
+    assert.equal(reply.ok, true, JSON.stringify(reply))
+    assert.deepEqual((reply as { ids: unknown }).ids, { proxyHost: 10, redirectionHost: null })
+    assert.deepEqual(npm.snapshot()['redirection-hosts'], [])
+})
+
+test('an orphan redirection host without this owner\'s exact marker is still a clash', async () => {
+    for (const advanced_config of ['', `${markerFor({ project: 'spotondrones', environment: 'redesign' })}\n`, `# note\n${MARKER}\n`]) {
+        const { npm, deps } = setup()
+        npm.seed('proxy-hosts', proxyRecord(10))
+        npm.seed('redirection-hosts', redirectionRecord(7, { advanced_config }))
+        const reply = await applyHosts(deps, OWNER, { proxyHost: 10, redirectionHost: 4 }, spec(), false)
+        assert.deepEqual(reply, { ok: false, problem: 'www.spotondrones.com is already on NPM redirection host 7' }, advanced_config)
+        assert.deepEqual(writes(npm), [])
+    }
+})
+
+test('a redirection id that still exists is used, never a second marked host', async () => {
+    const { npm, deps } = setup()
+    npm.seed('proxy-hosts', proxyRecord(10))
+    npm.seed('redirection-hosts', redirectionRecord(4))
+    npm.seed('redirection-hosts', redirectionRecord(7, { domain_names: ['old.spotondrones.com'] }))
+    const reply = await applyHosts(deps, OWNER, { proxyHost: 10, redirectionHost: 4 }, spec(), false)
+    assert.deepEqual((reply as { ids: unknown }).ids, { proxyHost: 10, redirectionHost: 4 })
+    assert.ok(writes(npm).every(call => !call.endsWith(' 7')))
 })
 
 test('a redirection host that keeps some aliases is trimmed before the proxy takes the rest', async () => {

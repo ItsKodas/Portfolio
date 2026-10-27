@@ -10,6 +10,7 @@ import {
 } from './domains.ts'
 import type { AdoptedStore } from './adopted-store.ts'
 import { FakeEdge, FAKE_UPSTREAM } from './testing/fake-edge.ts'
+import { EDGE_CONFIRM_TIMEOUT_MS } from './edge-client.ts'
 
 const OWNER: Owner = { project: 'acme', environment: 'live' }
 const BS = String.fromCharCode(92)
@@ -60,9 +61,9 @@ function setup(options: Parameters<typeof registryText>[0] = {}) {
     const adopted = memoryStore()
     const deps: DomainsDeps = {
         edge: {
-            async call(request) {
+            async call(request, options) {
                 order.push(`edge ${request.verb}`)
-                return edge.call(request)
+                return edge.call(request, options)
             },
         },
         adopted,
@@ -229,6 +230,17 @@ describe('writeHosts', () => {
         const result = await writeHosts(deps, current().project, current().environment, 'def456')
         assert.equal(result.ok, true)
         assert.ok(edge.requests.some(request => request.verb === 'get'))
+    })
+
+    // The confirming read runs on a shorter clock than the apply, so the two together fit inside api's
+    it('confirms a lost reply on the shorter confirm timeout', async () => {
+        const { deps, edge, current } = setup()
+        await writeHosts(deps, current().project, current().environment, 'abc123')
+        edge.failNext('apply', 'after')
+        await writeHosts(deps, current().project, current().environment, 'def456')
+        const at = edge.requests.findLastIndex(request => request.verb === 'get')
+        assert.equal(edge.timeouts[at], EDGE_CONFIRM_TIMEOUT_MS)
+        assert.equal(edge.timeouts[edge.requests.findLastIndex(request => request.verb === 'apply')], undefined)
     })
 
     it('removes the hosts it created when the registry will not record their ids', async () => {
@@ -574,6 +586,22 @@ describe('restoreAdopted', () => {
         // Released: hostd no longer owns it, so a write is refused rather than taking it back silently
         const again = await removeEdgeHosts(deps, current().project, { ...current().environment, npm: { proxyHost: 12, redirectionHost: null } })
         assert.equal(again.ok, false)
+    })
+
+    // pmpcgroup's host has Block Exploits off: undoing the adoption must not leave it switched on.
+    it('restore puts the hand-made host\'s own fixed fields back', async () => {
+        const { deps, npm, current, adopted } = setup()
+        npm.seed('proxy-hosts', handMade(12, { block_exploits: 0, hsts_enabled: 1 }))
+        await adopt(deps, current().project, current().environment, 'abc123', [])
+        assert.equal(npm.snapshot()['proxy-hosts'][0]!.block_exploits, true, 'adopting writes hostd\'s own')
+        assert.deepEqual((await adopted.read(OWNER))?.previous.proxyFixed, {
+            forward_scheme: 'http', block_exploits: false, allow_websocket_upgrade: true, hsts_enabled: true, hsts_subdomains: false, caching_enabled: false,
+        })
+        const result = await restoreAdopted(deps, current().project, current().environment, [])
+        assert.equal(result.ok, true, JSON.stringify(result))
+        const proxy = npm.snapshot()['proxy-hosts'][0]!
+        assert.equal(proxy.block_exploits, false)
+        assert.equal(proxy.hsts_enabled, true)
     })
 
     it('clears the ids when the reply was lost but NPM shows the host was put back', async () => {

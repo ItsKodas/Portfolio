@@ -113,6 +113,15 @@ describe('rolledBackReason', () => {
         assert.match(said, /reloaded/)
     })
 
+    // The proxy host is the hand-made one, put back; what hostd deletes is the redirection host it made
+    it('says the hand-made proxy host went back and the redirection host was deleted', () => {
+        const said = rolledBackReason('thebackroom.dev', before, after, ['npm/proxy-host/12'], null)
+        assert.match(said, /put npm\/proxy-host\/12 back as it was before the adopt/)
+        assert.match(said, /deleted the redirection host it had made/)
+        assert.equal(said.includes('removed its own proxy host'), false)
+        assert.equal(rolledBackReason('thebackroom.dev', before, after, [], null).includes('removed its own'), false)
+    })
+
     it('does not claim the site is back when putting it back failed', () => {
         const said = rolledBackReason('thebackroom.dev', before, after, ['npm/proxy-host/12'], 'NPM would not reload')
         assert.match(said, /NPM would not reload/)

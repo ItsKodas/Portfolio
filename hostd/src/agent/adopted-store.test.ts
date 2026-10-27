@@ -5,15 +5,17 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
 import { adoptedStore } from './adopted-store.ts'
-import type { HostsSpec, Owner } from '../shared/edge-protocol.ts'
+import type { Owner, PreviousHosts } from '../shared/edge-protocol.ts'
 
 const OWNER: Owner = { project: 'acme', environment: 'live' }
-const PREVIOUS: HostsSpec = {
+const PREVIOUS: PreviousHosts = {
     proxy: {
         domain_names: ['acme.com', 'www.acme.com'], forward_host: '192.168.0.8', forward_port: 5010, certificate_id: 16,
         ssl_forced: true, http2_support: true, advanced_config: '',
     },
     redirection: null,
+    // The hand-made host had Block Exploits off, which the adoption undo must put back
+    proxyFixed: { forward_scheme: 'http', block_exploits: false, allow_websocket_upgrade: true, hsts_enabled: false, hsts_subdomains: false, caching_enabled: false },
 }
 
 async function scratch() {

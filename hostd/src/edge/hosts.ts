@@ -10,7 +10,9 @@
 // site comes back as it was. The undo lives here because only edge holds the previous state.
 
 import { describeError } from '../shared/formats.ts'
-import { markerFor, ownerOf, type EdgeReply, type FoundHost, type HostsSpec, type Owner, type ProxyHostSpec, type RedirectionHostSpec } from '../shared/edge-protocol.ts'
+import {
+    markerFor, ownerOf, type EdgeReply, type FoundHost, type HostsSpec, type Owner, type PreviousHosts, type ProxyFixed, type ProxyHostSpec, type RedirectionHostSpec,
+} from '../shared/edge-protocol.ts'
 import type { NpmIds } from '../shared/registry.ts'
 import { NpmError, type NpmClient, type NpmHostKind, type NpmRecord } from './npm-client.ts'
 
@@ -39,11 +41,12 @@ function failure(error: unknown): EdgeReply {
     return error instanceof NpmError && error.body !== '' ? refuse(describeError(error), error.body) : refuse(describeError(error))
 }
 
-function proxyBody(spec: ProxyHostSpec): Record<string, unknown> {
+// restore is only ever the adoption undo's (applyHosts checks), giving a hand-made host its own values back.
+function proxyBody(spec: ProxyHostSpec, restore?: ProxyFixed): Record<string, unknown> {
     return {
         domain_names: spec.domain_names, forward_host: spec.forward_host, forward_port: spec.forward_port,
         certificate_id: spec.certificate_id, ssl_forced: spec.ssl_forced, http2_support: spec.http2_support,
-        advanced_config: spec.advanced_config, ...PROXY_FIXED, locations: [], meta: {},
+        advanced_config: spec.advanced_config, ...PROXY_FIXED, ...restore, locations: [], meta: {},
     }
 }
 
@@ -81,6 +84,19 @@ function redirectionSpecOf(record: NpmRecord): RedirectionHostSpec {
         domain_names: [...record.domain_names], forward_domain_name: text(record.forward_domain_name),
         certificate_id: int(record.certificate_id), ssl_forced: bool(record.ssl_forced), http2_support: bool(record.http2_support),
         advanced_config: text(record.advanced_config),
+    }
+}
+
+// A proxy host's fixed fields as it has them, each falling back to hostd's own value when NPM left it out.
+function fixedOf(record: NpmRecord): ProxyFixed {
+    const flag = (key: keyof typeof PROXY_FIXED, fallback: boolean) => record[key] === undefined || record[key] === null ? fallback : bool(record[key])
+    return {
+        forward_scheme: record.forward_scheme === 'https' ? 'https' : 'http',
+        block_exploits: flag('block_exploits', PROXY_FIXED.block_exploits),
+        allow_websocket_upgrade: flag('allow_websocket_upgrade', PROXY_FIXED.allow_websocket_upgrade),
+        hsts_enabled: flag('hsts_enabled', PROXY_FIXED.hsts_enabled),
+        hsts_subdomains: flag('hsts_subdomains', PROXY_FIXED.hsts_subdomains),
+        caching_enabled: flag('caching_enabled', PROXY_FIXED.caching_enabled),
     }
 }
 
@@ -255,11 +271,21 @@ function mayHaveCreated(kind: NpmHostKind, error: unknown): unknown {
     return error instanceof NpmError ? new NpmError(message, error.status, error.body) : new Error(message)
 }
 
+// This owner's redirection host that the registry's id does not name, if there is one. Several (which
+// hostd never makes on purpose) prefer the one sharing a name with the spec; the rest still clash.
+async function orphanedRedirection(deps: HostsDeps, owner: Owner, spec: HostsSpec): Promise<NpmRecord | null> {
+    const ours = (await deps.npm.list('redirection-hosts')).filter(record => sameOwner(ownerOf(text(record.advanced_config)), owner))
+    const wanted = allDomains(spec).map(hostname)
+    return ours.find(record => record.domain_names.some(name => wanted.includes(hostname(name)))) ?? ours[0] ?? null
+}
+
 // An undo step answers a note when it changed something the caller must hear about (a host recreated
 // under a new id), otherwise null.
 type Undo = () => Promise<string | null>
 
-export async function applyHosts(deps: HostsDeps, owner: Owner, ids: NpmIds | null, spec: HostsSpec, adopt: boolean): Promise<EdgeReply> {
+export async function applyHosts(
+    deps: HostsDeps, owner: Owner, ids: NpmIds | null, spec: HostsSpec, adopt: boolean, restoreFixed?: ProxyFixed,
+): Promise<EdgeReply> {
     const primary = spec.proxy.domain_names[0]
     if (primary === undefined) return refuse('The proxy host has no domain names')
     // hostd must never point an NPM host at another machine on the LAN, so every apply forwards to the upstream only.
@@ -273,6 +299,11 @@ export async function applyHosts(deps: HostsDeps, owner: Owner, ids: NpmIds | nu
     // that already carries the marker may drop it: that is how the adoption undo hands a host back, and
     // the guard that matters, the current host's marker, is checked below before anything is written.
     if ((ids === null || adopt) && !carriesMarker(spec, owner)) return refuse(`The hosts for ${ownerName(owner)} must start with its marker`)
+    // Another host's own fixed fields are only ever written back by the adoption undo: an update of an
+    // owned host that hands it back without the marker. Every render hostd keeps gets hostd's own values.
+    if (restoreFixed && (ids === null || adopt || sameOwner(ownerOf(spec.proxy.advanced_config), owner))) {
+        return refuse(`Only putting a hand-made host back may restore its own settings, not a write for ${ownerName(owner)}`)
+    }
 
     const undo: Undo[] = []
     try {
@@ -292,6 +323,12 @@ export async function applyHosts(deps: HostsDeps, owner: Owner, ids: NpmIds | nu
             if (proxyProblem) return refuse(proxyProblem)
             // A redirection host deleted by hand leaves nothing to protect: a new one is created below.
             if (ids.redirectionHost !== null) redirectionRecord = await deps.npm.get('redirection-hosts', ids.redirectionHost)
+            // The id may be stale while this environment's redirection host lives on under another: edge's
+            // own undo recreated it, a reply on the delete-then-create path was lost, or the agent could not
+            // record the new id. Left alone it would clash with every write from now on. One carrying this
+            // owner's exact marker is provably this environment's, so it is taken as the record and its id
+            // answered for the agent to record. Nothing without that marker is ever taken this way.
+            if (!redirectionRecord) redirectionRecord = await orphanedRedirection(deps, owner, spec)
             const redirectionProblem = redirectionRecord && redirectionClaimProblem(redirectionRecord, owner, spec, adopt)
             if (redirectionProblem) return refuse(redirectionProblem)
         }
@@ -307,8 +344,8 @@ export async function applyHosts(deps: HostsDeps, owner: Owner, ids: NpmIds | nu
             return refuse(`${domain} is already on NPM ${KIND_NAMES[clash.kind]} ${clash.host.id}`)
         }
 
-        const previous: HostsSpec | null = proxyRecord
-            ? { proxy: proxySpecOf(proxyRecord), redirection: redirectionRecord ? redirectionSpecOf(redirectionRecord) : null }
+        const previous: PreviousHosts | null = proxyRecord
+            ? { proxy: proxySpecOf(proxyRecord), redirection: redirectionRecord ? redirectionSpecOf(redirectionRecord) : null, proxyFixed: fixedOf(proxyRecord) }
             : null
 
         // A create's undo is registered once there is an id to delete, and before its result is judged,
@@ -377,7 +414,7 @@ export async function applyHosts(deps: HostsDeps, owner: Owner, ids: NpmIds | nu
 
         let proxyHost: number
         if (proxyRecord) {
-            await update('proxy-hosts', proxyRecord, proxyBody(spec.proxy))
+            await update('proxy-hosts', proxyRecord, proxyBody(spec.proxy, restoreFixed))
             proxyHost = proxyRecord.id
         } else {
             proxyHost = await create('proxy-hosts', proxyBody(spec.proxy))

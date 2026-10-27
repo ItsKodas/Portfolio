@@ -18,6 +18,16 @@ export type RedirectionHostSpec = {
 }
 export type HostsSpec = { proxy: ProxyHostSpec, redirection: RedirectionHostSpec | null }
 
+// The proxy host fields hostd always writes the same way, as one particular host had them. A normal render
+// never carries these (hostd's own values always apply); they exist so the adoption undo can give a
+// hand-made host back its own choices, Block Exploits off say, rather than hostd's.
+export type ProxyFixed = {
+    forward_scheme: 'http' | 'https', block_exploits: boolean, allow_websocket_upgrade: boolean,
+    hsts_enabled: boolean, hsts_subdomains: boolean, caching_enabled: boolean,
+}
+// What an apply replaced. proxyFixed is null when it is not known (a record saved before it was carried).
+export type PreviousHosts = HostsSpec & { proxyFixed: ProxyFixed | null }
+
 // A host found in NPM. owner is read from its marker, so null means hostd did not write it. 'dead' is a
 // 404 host, which has no forward target.
 export type FoundHost = {
@@ -30,7 +40,7 @@ export type EdgeRequest =
     | { verb: 'certificates' }
     | { verb: 'find', domains: string[] }
     | { verb: 'get', owner: Owner, ids: NpmIds }
-    | { verb: 'apply', owner: Owner, ids: NpmIds | null, spec: HostsSpec, adopt: boolean }
+    | { verb: 'apply', owner: Owner, ids: NpmIds | null, spec: HostsSpec, adopt: boolean, restoreFixed?: ProxyFixed }
     | { verb: 'remove', owner: Owner, ids: NpmIds }
 
 export type EdgeReply =
@@ -38,7 +48,7 @@ export type EdgeReply =
     | { ok: true, verb: 'certificates', ids: number[] }
     | { ok: true, verb: 'find', hosts: FoundHost[] }
     | { ok: true, verb: 'get', current: HostsSpec | null }
-    | { ok: true, verb: 'apply', ids: NpmIds, previous: HostsSpec | null }
+    | { ok: true, verb: 'apply', ids: NpmIds, previous: PreviousHosts | null }
     | { ok: true, verb: 'remove' }
     | { ok: false, problem: string, output?: string }
 
@@ -105,6 +115,30 @@ function parseRedirection(value: unknown): RedirectionHostSpec | null {
     }
 }
 
+const FIXED_FLAGS = ['block_exploits', 'allow_websocket_upgrade', 'hsts_enabled', 'hsts_subdomains', 'caching_enabled'] as const
+
+function parseFixed(value: unknown): ProxyFixed | null {
+    if (!isRecord(value) || !onlyKeys(value, ['forward_scheme', ...FIXED_FLAGS])) return null
+    if (value.forward_scheme !== 'http' && value.forward_scheme !== 'https') return null
+    if (!FIXED_FLAGS.every(key => typeof value[key] === 'boolean')) return null
+    return {
+        forward_scheme: value.forward_scheme, block_exploits: value.block_exploits as boolean, allow_websocket_upgrade: value.allow_websocket_upgrade as boolean,
+        hsts_enabled: value.hsts_enabled as boolean, hsts_subdomains: value.hsts_subdomains as boolean, caching_enabled: value.caching_enabled as boolean,
+    }
+}
+
+// A missing proxyFixed reads as null rather than refusing: the adopted store's records are parsed here
+// too, and one saved before the field existed must still be undoable.
+function parsePrevious(value: unknown): PreviousHosts | null {
+    if (!isRecord(value) || !onlyKeys(value, ['proxy', 'redirection', 'proxyFixed'])) return null
+    const { proxyFixed: rawFixed, ...rest } = value
+    const spec = parseSpec(rest)
+    if (!spec) return null
+    if (rawFixed === undefined || rawFixed === null) return { ...spec, proxyFixed: null }
+    const proxyFixed = parseFixed(rawFixed)
+    return proxyFixed ? { ...spec, proxyFixed } : null
+}
+
 function parseSpec(value: unknown): HostsSpec | null {
     if (!isRecord(value) || !onlyKeys(value, ['proxy', 'redirection'])) return null
     const proxy = parseProxy(value.proxy)
@@ -134,12 +168,14 @@ export function parseEdgeRequest(value: unknown): EdgeRequest | null {
         }
 
         case 'apply': {
-            if (!onlyKeys(value, ['verb', 'owner', 'ids', 'spec', 'adopt'])) return null
+            if (!onlyKeys(value, ['verb', 'owner', 'ids', 'spec', 'adopt', 'restoreFixed'])) return null
             const owner = parseOwner(value.owner)
             const ids = value.ids === null ? null : parseIds(value.ids)
             const spec = parseSpec(value.spec)
             if (!owner || !spec || (value.ids !== null && !ids) || typeof value.adopt !== 'boolean') return null
-            return { verb: 'apply', owner, ids, spec, adopt: value.adopt }
+            if (value.restoreFixed === undefined) return { verb: 'apply', owner, ids, spec, adopt: value.adopt }
+            const restoreFixed = parseFixed(value.restoreFixed)
+            return restoreFixed ? { verb: 'apply', owner, ids, spec, adopt: value.adopt, restoreFixed } : null
         }
 
         default:
@@ -204,7 +240,7 @@ export function parseEdgeReply(value: unknown): EdgeReply | null {
             const ids = parseIds(value.ids)
             if (!ids) return null
             if (value.previous === null) return { ok: true, verb: 'apply', ids, previous: null }
-            const previous = parseSpec(value.previous)
+            const previous = parsePrevious(value.previous)
             return previous ? { ok: true, verb: 'apply', ids, previous } : null
         }
 
