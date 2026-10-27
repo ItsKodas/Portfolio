@@ -5,7 +5,7 @@ import { createServer } from 'node:net'
 import { createServer as createHttpServer } from 'node:http'
 import { appendFile, chmod, chown, mkdir, readFile, rm } from 'node:fs/promises'
 import { dirname } from 'node:path'
-import { NpmClient } from './npm-client.ts'
+import { NpmClient, npmConnection } from './npm-client.ts'
 import { handleEdge, handleEdgeConnection } from './server.ts'
 import { holdingHandler } from './holding-http.ts'
 import { routesOf, startSyslog, type Route } from './syslog.ts'
@@ -44,14 +44,20 @@ async function main(): Promise<void> {
     if (!identity) failures.push('HOSTD_NPM_IDENTITY is not set')
     if (!secret) failures.push('HOSTD_NPM_SECRET is not set')
     if (!Number.isInteger(SOCKET_GID) || SOCKET_GID < 0) failures.push(`HOSTD_SOCKET_GID must be a group id, not ${process.env.HOSTD_SOCKET_GID}`)
+    // HOSTD_NPM_FLAVOUR is npm (stock NPM, the default) or npmplus. A typo must stop edge rather than
+    // fall back to stock NPM, whose writes NPMplus refuses and whose login it does not answer the same way.
+    const connection = npmConnection(process.env)
+    failures.push(...connection.problems)
     if (failures.length > 0) fail(failures)
 
     const npm = new NpmClient({
-        url: process.env.HOSTD_NPM_URL ?? 'http://192.168.0.6:81/api',
+        url: connection.url,
         identity: identity as string,
         secret: secret as string,
+        flavour: connection.flavour,
     })
-    const deps = { npm, upstreamHost: UPSTREAM_HOST, npmAge: () => npm.ageOfLastSuccess() }
+    const deps = { npm, upstreamHost: UPSTREAM_HOST, flavour: connection.flavour, npmAge: () => npm.ageOfLastSuccess() }
+    log(`talking to ${connection.flavour === 'npmplus' ? 'NPMplus' : 'NPM'} at ${connection.url}`)
 
     await rm(SOCKET_PATH, { force: true })
     // Created 0660 rather than chmodded afterwards, so there is no moment when it is wider.
