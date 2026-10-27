@@ -29,7 +29,7 @@ projects:
         branch: main
         domain: acme.com
         port: 5010
-        certificate: letsencrypt
+        certificate: cloudflare-origin
   other:
     client: cl_2
     name: Other
@@ -61,7 +61,7 @@ projects:
         branch: main
         domain: acme.com
         port: 5010
-        certificate: letsencrypt
+        certificate: cloudflare-origin
 `
 
 // A tiny in-memory env-file tree, keyed by full posix path to contents, enough to exercise the
@@ -237,7 +237,7 @@ const createArgs = (overrides: Partial<ProvisionCreateArgs> = {}): ProvisionCrea
     repo: 'git@github.com:ItsKodas/bakery.git',
     branch: 'main',
     domain: 'bakery.com',
-    certificate: 'letsencrypt',
+    certificate: 'cloudflare-origin',
     ...overrides,
 })
 
@@ -671,13 +671,13 @@ const NESTED_WITH_TEST_YAML = `${NESTED_LIVE_YAML}      test:
         branch: develop
         domain: test.acme.com
         port: 5110
-        certificate: letsencrypt
+        certificate: cloudflare-origin
 `
 
 describe('addEnvironment', () => {
     const project = (yaml = NESTED_LIVE_YAML): ProjectEntry => parseRegistry(yaml).projects.get('acme')!
     const args = (overrides: Partial<ProvisionAddEnvironmentArgs> = {}): ProvisionAddEnvironmentArgs => ({
-        action: 'add-environment', environment: 'uat1', branch: 'develop', domain: 'uat1.acme.com', certificate: 'letsencrypt',
+        action: 'add-environment', environment: 'uat1', branch: 'develop', domain: 'uat1.acme.com', certificate: 'cloudflare-origin',
         ...overrides,
     })
     // A nested site with its shared repository in place, which every add needs
@@ -1034,7 +1034,7 @@ ${NESTED_LIVE_YAML.trim()}
 describe('nested sites', () => {
     const nestedProject = (): ProjectEntry => parseRegistry(NESTED_LIVE_YAML).projects.get('acme')!
     const testArgs = (overrides: Partial<ProvisionAddEnvironmentArgs> = {}): ProvisionAddEnvironmentArgs => ({
-        action: 'add-environment', environment: 'test', branch: 'develop', domain: 'test.acme.com', certificate: 'letsencrypt',
+        action: 'add-environment', environment: 'test', branch: 'develop', domain: 'test.acme.com', certificate: 'cloudflare-origin',
         ...overrides,
     })
     const withRepository = { registryYaml: NESTED_LIVE_YAML, existsPaths: ['/var/www/acme/git/.git'] }
@@ -1260,7 +1260,7 @@ describe('secrecy', () => {
         const acme = parseRegistry(NESTED_LIVE_YAML).projects.get('acme')!
         const secret = 'DB_PASSWORD=super-secret-value'
         const { deps, logs, envFs } = setup({ registryYaml: NESTED_LIVE_YAML, existsPaths: ['/var/www/acme/git/.git'], envTree: { '/var/www/acme/live/.env': secret } })
-        const args: ProvisionAddEnvironmentArgs = { action: 'add-environment', environment: 'test', branch: 'develop', domain: 'test.acme.com', certificate: 'letsencrypt' }
+        const args: ProvisionAddEnvironmentArgs = { action: 'add-environment', environment: 'test', branch: 'develop', domain: 'test.acme.com', certificate: 'cloudflare-origin' }
         await addEnvironment(acme, args, deps, envFs)
         assert.ok(logs.length > 0)
         assert.ok(logs.every(line => !line.includes('super-secret-value')))

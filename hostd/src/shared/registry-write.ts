@@ -7,7 +7,7 @@ import { readFile, writeFile, rename, unlink, stat, chmod, chown } from 'node:fs
 import { randomBytes } from 'node:crypto'
 import { parseDocument, isMap, isNode, isScalar, isSeq, type Document } from 'yaml'
 
-import { parseRegistry, RegistryError, type Capability, type CertificateMode, type Contact, type EnvironmentFlag, type EnvironmentName } from './registry.ts'
+import { parseRegistry, RegistryError, type Capability, type CertificateMode, type Contact, type EnvironmentFlag, type EnvironmentName, type NpmIds } from './registry.ts'
 import { describeError, RESERVED_PROJECT_IDS, PROJECT_ID } from './formats.ts'
 
 export type RegistryWriteFs = {
@@ -73,6 +73,9 @@ export type Change =
     // race with the operator's own editor; handing over the list that should be there makes the write
     // idempotent and lets the existing conflict check do its job.
     | { kind: 'set-aliases', id: string, environment: EnvironmentName, aliases: string[] }
+    // The NPM host ids hostd created for this environment. null removes the key; a null redirectionHost
+    // writes no key of its own, the same way an absent alias list leaves no empty list behind.
+    | { kind: 'set-npm', id: string, environment: EnvironmentName, npm: NpmIds | null }
     | { kind: 'set-flag', id: string, environment: EnvironmentName, flag: EnvironmentFlag, enabled: boolean }
     // Written once per environment, by the deploy that moves it into the nested layout. Both keys at
     // once: the dir changes the folder compose would derive a name from, so the name it had is pinned
@@ -300,6 +303,17 @@ function edit(doc: Document, change: Change): EditResult {
             if (change.aliases.length === 0) doc.deleteIn(['projects', change.id, 'environments', change.environment, 'aliases'])
             else doc.setIn(['projects', change.id, 'environments', change.environment, 'aliases'], change.aliases)
             return null
+        case 'set-npm': {
+            if (!doc.hasIn(['projects', change.id, 'environments', change.environment])) {
+                return { problem: `${change.id} has no ${change.environment} environment` }
+            }
+            const path = ['projects', change.id, 'environments', change.environment, 'npm']
+            if (change.npm === null) doc.deleteIn(path)
+            else doc.setIn(path, change.npm.redirectionHost === null
+                ? { proxyHost: change.npm.proxyHost }
+                : { proxyHost: change.npm.proxyHost, redirectionHost: change.npm.redirectionHost })
+            return null
+        }
         case 'set-flag':
             if (!doc.hasIn(['projects', change.id, 'environments', change.environment])) {
                 return { problem: `${change.id} has no ${change.environment} environment` }

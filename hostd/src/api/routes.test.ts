@@ -9,7 +9,6 @@ import { createHandler, matchRoute, parseLogsQuery, RAIL_STALE_MS } from './rout
 // The agent's own end of railAge. Imported into an api test on purpose: the figure is produced in one
 // process and read in another, each side had its own passing tests, and what they disagreed about was
 // what the figure meant. Only a test that joins them can see that.
-import { ApacheRail, type RailFs } from '../agent/apache-rail.ts'
 import { AuditLog } from './audit.ts'
 import { AgentUnavailableError, type AgentClient } from './agent-client.ts'
 import { ScheduleStore, type ScheduleFs } from './schedule.ts'
@@ -18,7 +17,7 @@ import { DomainStore, domainKey, newRecord, type DomainRecord } from './domain-s
 // as the thing it actually is (a record the verifier will pick up) rather than as a state string.
 import { nextCheckAt } from './verifier.ts'
 import { parseRegistry, type Registry } from '../shared/registry.ts'
-import { DOMAIN_TOKEN, checkStructure, type AgentReply, type AgentRequest, type CopyRecord, type RestoreRecord, type LogLine } from '../shared/protocol.ts'
+import { DOMAIN_TOKEN, checkStructure, parseAgentRequest, type AgentReply, type AgentRequest, type CopyRecord, type RestoreRecord, type LogLine } from '../shared/protocol.ts'
 import type { SystemUsage } from '../shared/system.ts'
 
 const TOKEN = 'k'.repeat(64)
@@ -31,7 +30,7 @@ projects:
     services: { web: { role: site } }
     capabilities: [lifecycle, logs, provision, env, deploy, backups, domains]
     environments:
-      live: { dir: /var/www/acme, port: 5010, branch: main, domain: acme.example, aliases: [www.acme.example], certificate: letsencrypt, deployed: abc1234 }
+      live: { dir: /var/www/acme, port: 5010, branch: main, domain: acme.example, aliases: [www.acme.example], certificate: cloudflare-origin, deployed: abc1234 }
       test: { dir: /var/www/acme-test, port: 5013, branch: develop, domain: test.acme.example }
   quiet:
     client: cl_1
@@ -54,7 +53,7 @@ projects:
 // domain, certificate and deployed commit, and nothing about the machine underneath. quiet is the
 // single-environment shape, where the registry synthesises one live environment out of dir and upstream.
 const acmeEnvironmentsForClient = [
-    { name: 'live', branch: 'main', domain: 'acme.example', aliases: ['www.acme.example'], certificate: 'letsencrypt', websockets: false, flexibleSsl: false, deployed: 'abc1234' },
+    { name: 'live', branch: 'main', domain: 'acme.example', aliases: ['www.acme.example'], certificate: 'cloudflare-origin', websockets: false, flexibleSsl: false, deployed: 'abc1234' },
     { name: 'test', branch: 'develop', domain: 'test.acme.example', aliases: [], certificate: null, websockets: false, flexibleSsl: false, deployed: null },
 ]
 const quietEnvironmentsForClient = [{ name: 'live', branch: null, domain: null, aliases: [], certificate: null, websockets: false, flexibleSsl: false, deployed: null }]
@@ -428,7 +427,7 @@ describe('GET /projects', () => {
         assert.deepEqual(body.projects.find(project => project.id === 'acme')?.environments, [
             {
                 name: 'live', dir: '/var/www/acme', composePaths: ['/var/www/acme/docker-compose.yml'], port: 5010,
-                branch: 'main', domain: 'acme.example', aliases: ['www.acme.example'], certificate: 'letsencrypt', websockets: false, flexibleSsl: false, deployed: 'abc1234',
+                branch: 'main', domain: 'acme.example', aliases: ['www.acme.example'], certificate: 'cloudflare-origin', websockets: false, flexibleSsl: false, deployed: 'abc1234',
             },
             {
                 name: 'test', dir: '/var/www/acme-test', composePaths: ['/var/www/acme-test/docker-compose.yml'], port: 5013,
@@ -548,9 +547,8 @@ describe('GET /health', () => {
     it('gives the admin the machine\'s figures', async () => {
         const response = await request('/health', { actor: 'admin' })
         assert.equal(response.status, 200)
-        // acme live is set to letsencrypt, which 4a cannot serve yet, so health says so once.
         assert.deepEqual(await response.json(), {
-            ok: true, warnings: ['waiting for Let\'s Encrypt support: acme live'],
+            ok: true, warnings: [],
             invalid: { acme: 'guard says no' }, system: usage, railAge: 1_000,
         })
     })
@@ -825,52 +823,46 @@ describe('POST /projects', () => {
     // already in it with the domain the create names, which is what the refreshed registry would hold.
     describe('with a domain', () => {
         const CREATED: AgentReply = { ok: true, project: { id: 'acme', state: 'needs-setup' }, envFiles: [] }
-        const body = { ...CREATE_BODY, id: 'acme', domain: 'acme.example', certificate: 'letsencrypt' }
-        const previewWith = (claims: string[]): AgentReply => ({
-            ok: true,
-            preview: {
-                proposed: '<VirtualHost *:443>', extraNames: [], unreadable: [], adoptable: true, flexibleSsl: false,
-                claims: claims.map(path => ({ path, text: '', names: ['acme.example'], unsupported: [] })),
-            },
-        })
+        const body = { ...CREATE_BODY, id: 'acme', domain: 'acme.example', certificate: 'cloudflare-origin' }
 
-        it('writes the first vhost through an adopt with nothing to disable, and starts its hostnames verifying', async () => {
-            agent.reply = request => request.verb === 'provision' ? CREATED
-                : request.verb === 'domains' && request.args.action === 'preview' ? previewWith([])
-                : WRITTEN
+        it('writes the first NPM hosts through the ordinary write, and starts its hostnames verifying', async () => {
+            agent.reply = request => request.verb === 'provision' ? CREATED : WRITTEN
             const response = await request('/projects', { method: 'POST', actor: 'admin', body })
             assert.equal(response.status, 200)
             assert.deepEqual(await response.json(), { ...CREATED, vhost: { ok: true } })
 
-            const [, preview, adopt] = agent.calls
-            assert.ok(preview?.verb === 'domains' && preview.args.action === 'preview')
-            assert.ok(adopt?.verb === 'domains' && adopt.args.action === 'adopt')
-            assert.deepEqual(adopt.args.disable, [])
-            // One token, the one the preview rendered, is what the adopt wrote and what the record holds
-            assert.ok(preview.args.action === 'preview' && preview.args.token === adopt.args.token)
+            assert.deepEqual(agent.calls.map(call => call.verb === 'domains' ? call.args.action : call.verb), ['provision', 'write'])
+            const write = agent.calls[1]
+            assert.ok(write?.verb === 'domains' && write.args.action === 'write' && write.args.environment === 'live')
+            // The token the write carried is the one the record holds
             const record = domains.forEnvironment('acme', 'live').find(entry => entry.hostname === 'acme.example')
-            assert.deepEqual([record?.state, record?.token], ['pending', adopt.args.token])
+            assert.deepEqual([record?.state, record?.token], ['pending', write.args.token])
         })
 
-        it('leaves a hostname another file already serves for the operator to adopt, and still answers the create', async () => {
-            agent.reply = request => request.verb === 'provision' ? CREATED : previewWith(['/etc/apache2/sites-enabled/acme.conf'])
+        // A hand-made NPM host still serving the name: the agent refuses the create, and that refusal is
+        // shown beside the create rather than swallowed, with no hostname recorded as written
+        it('leaves a hostname another NPM host already serves for the operator to adopt, and still answers the create', async () => {
+            const message = 'acme.example is already served by NPM proxy host 12, which hostd does not manage; adopt acme live from the Domains tab to take it over, or remove it in NPM'
+            agent.reply = request => request.verb === 'provision' ? CREATED : { ok: false, code: 'bad-request', message }
             const response = await request('/projects', { method: 'POST', actor: 'admin', body })
             assert.equal(response.status, 200)
             const answer = await response.json() as { vhost: { ok: boolean, message: string } }
-            assert.equal(answer.vhost.ok, false)
-            assert.match(answer.vhost.message, /acme\.conf/)
-            assert.deepEqual(agent.calls.map(call => call.verb === 'domains' ? call.args.action : call.verb), ['provision', 'preview'])
+            assert.deepEqual(answer.vhost, { ok: false, message })
+            assert.deepEqual(agent.calls.map(call => call.verb === 'domains' ? call.args.action : call.verb), ['provision', 'write'])
+            const record = domains.forEnvironment('acme', 'live').find(entry => entry.hostname === 'acme.example')
+            assert.notEqual(record?.state, 'pending')
+            const [entry] = await audit.read({ limit: 1 })
+            assert.deepEqual([entry?.verb, entry?.outcome], ['domains', 'refused'])
         })
 
-        it('reports an Apache refusal beside the create rather than instead of it', async () => {
+        it('reports an NPM refusal beside the create rather than instead of it', async () => {
             agent.reply = request => request.verb === 'provision' ? CREATED
-                : request.verb === 'domains' && request.args.action === 'preview' ? previewWith([])
-                : { ok: false, code: 'failed', message: 'Apache refused the new configuration', output: 'Syntax error' }
+                : { ok: false, code: 'failed', message: 'NPM refused the configuration for acme live', output: 'nginx: [emerg] unexpected "}"' }
             const response = await request('/projects', { method: 'POST', actor: 'admin', body })
             assert.equal(response.status, 200)
-            assert.deepEqual((await response.json() as { vhost: unknown }).vhost, { ok: false, message: 'Apache refused the new configuration' })
+            assert.deepEqual((await response.json() as { vhost: unknown }).vhost, { ok: false, message: 'NPM refused the configuration for acme live' })
             const record = domains.forEnvironment('acme', 'live').find(entry => entry.hostname === 'acme.example')
-            assert.deepEqual(record?.vhost, { ok: false, output: 'Syntax error' })
+            assert.deepEqual(record?.vhost, { ok: false, output: 'nginx: [emerg] unexpected "}"' })
         })
 
         it('reports a lost agent connection during the vhost step without failing the create', async () => {
@@ -942,16 +934,12 @@ projects:
     services: { web: { role: site } }
     capabilities: [provision, domains]
     environments:
-      live: { dir: /var/www/acme/live, port: 5010, branch: main, domain: acme.example, certificate: letsencrypt }
+      live: { dir: /var/www/acme/live, port: 5010, branch: main, domain: acme.example, certificate: cloudflare-origin }
 `
 const nestedWithUat1 = (domain: string | null): Registry => parseRegistry(
     `${NESTED_ACME}      uat1: { dir: /var/www/acme/uat1, port: 5020, branch: main${domain === null ? '' : `, domain: ${domain}`} }\n`,
 )
-const UAT1_WRITTEN: AgentReply = { ok: true, written: { hostnames: ['uat1.acme.example'], path: '/etc/apache2/hostd/acme-uat1.conf' } }
-const EMPTY_PREVIEW: AgentReply = {
-    ok: true,
-    preview: { proposed: '<VirtualHost *:443>', extraNames: [], unreadable: [], adoptable: true, flexibleSsl: false, claims: [] },
-}
+const UAT1_WRITTEN: AgentReply = { ok: true, written: { hostnames: ['uat1.acme.example'], path: 'npm:proxy-host/100' } }
 
 // A handler whose registry moves the way the real one does: `from` until the refresh that follows an ok
 // write, `to` after it, exactly as RegistryStore.refresh brings api's copy level in production.
@@ -981,7 +969,7 @@ describe('POST /projects/:id/environments', () => {
         assert.equal(response.status, 200)
         assert.deepEqual(await response.json(), {
             ...provisionReply,
-            vhost: { ok: false, message: 'acme uat1 was created, but its entry could not be read back to write its vhost' },
+            vhost: { ok: false, message: 'acme uat1 was created, but its entry could not be read back to write its NPM hosts' },
         })
         assert.deepEqual(agent.calls, [{
             verb: 'provision', project: 'acme',
@@ -994,9 +982,9 @@ describe('POST /projects/:id/environments', () => {
     it('carries a certificate through when one is given', async () => {
         agent.reply = () => ({ ok: true, project: { id: 'acme', state: 'needs-setup' }, envFiles: [] })
         await request('/projects/acme/environments', {
-            method: 'POST', actor: 'admin', body: { name: 'uat1', branch: 'main', domain: 'uat1.acme.example', certificate: 'letsencrypt' },
+            method: 'POST', actor: 'admin', body: { name: 'uat1', branch: 'main', domain: 'uat1.acme.example', certificate: 'cloudflare-origin' },
         })
-        assert.equal((agent.calls[0] as { args: { certificate: unknown } }).args.certificate, 'letsencrypt')
+        assert.equal((agent.calls[0] as { args: { certificate: unknown } }).args.certificate, 'cloudflare-origin')
     })
 
     it('refuses live, a reserved or invalid name, a missing name and an unknown field, without calling the agent', async () => {
@@ -1024,27 +1012,24 @@ describe('POST /projects/:id/environments', () => {
         assert.deepEqual(agent.calls, [])
     })
 
-    it('writes the new environment\'s first vhost when it was given a domain, and starts its hostname verifying', async () => {
+    it('writes the new environment\'s first NPM hosts when it was given a domain, and starts its hostname verifying', async () => {
         const added: AgentReply = { ok: true, project: { id: 'acme', state: 'needs-setup' }, envFiles: [] }
-        agent.reply = sent => sent.verb === 'provision' ? added
-            : sent.verb === 'domains' && sent.args.action === 'preview' ? EMPTY_PREVIEW
-            : UAT1_WRITTEN
+        agent.reply = sent => sent.verb === 'provision' ? added : UAT1_WRITTEN
         const response = await through(movingHandler(parseRegistry(NESTED_ACME), nestedWithUat1('uat1.acme.example')), '/projects/acme/environments', {
             method: 'POST', actor: 'admin', body: { name: 'uat1', branch: 'main', domain: 'uat1.acme.example' },
         })
         assert.equal(response.status, 200)
         assert.deepEqual(await response.json(), { ...added, vhost: { ok: true } })
 
-        const [provision, preview, adopt] = agent.calls
+        const [provision, write] = agent.calls
         assert.deepEqual(provision, {
             verb: 'provision', project: 'acme',
             args: { action: 'add-environment', environment: 'uat1', branch: 'main', domain: 'uat1.acme.example', certificate: null },
         })
-        assert.ok(preview?.verb === 'domains' && preview.args.action === 'preview' && preview.args.environment === 'uat1')
-        assert.ok(adopt?.verb === 'domains' && adopt.args.action === 'adopt' && adopt.args.environment === 'uat1')
-        assert.deepEqual(adopt.args.disable, [])
+        assert.ok(write?.verb === 'domains' && write.args.action === 'write' && write.args.environment === 'uat1')
+        assert.equal(agent.calls.length, 2)
         const record = domains.forEnvironment('acme', 'uat1').find(entry => entry.hostname === 'uat1.acme.example')
-        assert.deepEqual([record?.primary, record?.state, record?.token], [true, 'pending', adopt.args.token])
+        assert.deepEqual([record?.primary, record?.state, record?.token], [true, 'pending', write.args.token])
     })
 
     it('refuses a missing domain before ever reaching the agent, on the moving handler too', async () => {
@@ -1434,8 +1419,8 @@ describe('GET /projects/:id/:env/domains', () => {
         assert.deepEqual(await response.json(), {
             ok: true,
             domains: [
-                { hostname: 'acme.example', primary: true, state: 'active', certificate: 'letsencrypt', checkedAt: CHECKED_AT, error: null, vhost: null },
-                { hostname: 'www.acme.example', primary: false, state: 'pending', certificate: 'letsencrypt', checkedAt: CHECKED_AT, error: 'No record exists yet.', vhost: null },
+                { hostname: 'acme.example', primary: true, state: 'active', certificate: 'cloudflare-origin', checkedAt: CHECKED_AT, error: null, vhost: null },
+                { hostname: 'www.acme.example', primary: false, state: 'pending', certificate: 'cloudflare-origin', checkedAt: CHECKED_AT, error: 'No record exists yet.', vhost: null },
             ],
         })
         assert.deepEqual(agent.calls, [])
@@ -1532,7 +1517,7 @@ describe('POST /projects/:id/:env/domains', () => {
 
         // Once for the environment, not once per hostname of it.
         const body = await (await request('/health', { actor: 'admin' })).json() as { warnings: string[] }
-        assert.deepEqual(body.warnings.filter(warning => warning.includes('rolled back')), ['the vhost for acme live was rolled back'])
+        assert.deepEqual(body.warnings.filter(warning => warning.includes('rolled back')), ['the NPM proxy host for acme live was rolled back'])
     })
 
     it('clears it again once a write succeeds, so the alarm does not outlive the rollback', async () => {
@@ -1558,23 +1543,20 @@ describe('POST /projects/:id/:env/domains', () => {
 describe('POST /projects/:id/:env/domains, on an environment with no primary yet', () => {
     const CONFIGURED: AgentReply = { ok: true, written: [], output: 'acme\'s registry entry was updated' }
 
-    it('makes the first hostname its primary through configure, then writes its vhost and records it as primary', async () => {
-        agent.reply = sent => sent.verb === 'configure' ? CONFIGURED
-            : sent.verb === 'domains' && sent.args.action === 'preview' ? EMPTY_PREVIEW
-            : UAT1_WRITTEN
+    it('makes the first hostname its primary through configure, then writes its NPM hosts and records it as primary', async () => {
+        agent.reply = sent => sent.verb === 'configure' ? CONFIGURED : UAT1_WRITTEN
         const response = await through(movingHandler(nestedWithUat1(null), nestedWithUat1('uat1.acme.example')), '/projects/acme/uat1/domains', {
             method: 'POST', actor: 'admin', body: { hostname: 'uat1.acme.example' },
         })
         assert.equal(response.status, 200)
 
-        const [configure, preview, adopt] = agent.calls
+        const [configure, write] = agent.calls
         assert.deepEqual(configure, { verb: 'configure', project: 'acme', args: { domains: { uat1: 'uat1.acme.example' } } })
-        assert.ok(preview?.verb === 'domains' && preview.args.action === 'preview' && preview.args.environment === 'uat1')
-        assert.ok(adopt?.verb === 'domains' && adopt.args.action === 'adopt' && adopt.args.environment === 'uat1')
-        assert.equal(agent.calls.length, 3)
+        assert.ok(write?.verb === 'domains' && write.args.action === 'write' && write.args.environment === 'uat1')
+        assert.equal(agent.calls.length, 2)
 
         const record = domains.get(domainKey('acme', 'uat1', 'uat1.acme.example'))
-        assert.deepEqual([record?.primary, record?.state, record?.token], [true, 'pending', adopt.args.token])
+        assert.deepEqual([record?.primary, record?.state, record?.token], [true, 'pending', write.args.token])
         const body = await response.json() as { ok: boolean, domains: Array<{ hostname: string, primary: boolean }>, vhost: unknown }
         assert.equal(body.ok, true)
         assert.deepEqual(body.domains.map(domain => [domain.hostname, domain.primary]), [['uat1.acme.example', true]])
@@ -1884,7 +1866,7 @@ describe('POST /projects/:id/:env/domains/:hostname/verify', () => {
         assert.deepEqual(verifier.checked, [domainKey('acme', 'live', 'www.acme.example')])
         assert.deepEqual(await response.json(), {
             ok: true,
-            domain: { hostname: 'www.acme.example', primary: false, state: 'active', certificate: 'letsencrypt', checkedAt: CHECKED_AT, error: null, vhost: null },
+            domain: { hostname: 'www.acme.example', primary: false, state: 'active', certificate: 'cloudflare-origin', checkedAt: CHECKED_AT, error: null, vhost: null },
         })
         // Nothing is written to the host to check a name, so the agent hears nothing about it.
         assert.deepEqual(agent.calls, [])
@@ -1901,8 +1883,8 @@ describe('POST /projects/:id/:env/domains/:hostname/verify', () => {
 
 describe('GET|POST /projects/:id/:env/adopt', () => {
     const claim: { path: string, text: string, names: string[], unsupported: string[] } = {
-        path: '/etc/apache2/sites-enabled/acme.conf',
-        text: '<VirtualHost *:443>\n    ServerName acme.example\n</VirtualHost>\n',
+        path: 'NPM proxy host 12',
+        text: 'Proxy host\nDomains: acme.example\nUpstream: 192.168.0.8:5010\n',
         names: ['acme.example'],
         unsupported: [],
     }
@@ -1965,6 +1947,8 @@ describe('GET|POST /projects/:id/:env/adopt', () => {
             verb: 'domains', project: 'acme',
             args: { action: 'adopt', environment: 'live', token: TOKEN_IN_PLACE, disable: [claim.path] },
         })
+        // What api sent is what the agent's own parser accepts, so the claim path survives the wire
+        assert.equal(parseAgentRequest(JSON.stringify(agent.calls[1])).ok, true)
         for (const record of domains.forEnvironment('acme', 'live')) {
             assert.equal(record.state, 'pending', record.hostname)
             // The 72 hour clock starts now, not when the registry first named the hostname: a record
@@ -2008,8 +1992,8 @@ describe('GET|POST /projects/:id/:env/adopt', () => {
 // network_mode: none; api is the process with a network, so api asks the hostname.
 describe('POST /projects/:id/:env/adopt: did the site survive it', () => {
     const claim: { path: string, text: string, names: string[], unsupported: string[] } = {
-        path: '/etc/apache2/sites-enabled/acme.conf',
-        text: '<VirtualHost *:80>\n    ServerName acme.example\n</VirtualHost>\n',
+        path: 'NPM proxy host 12',
+        text: 'Proxy host\nDomains: acme.example\nUpstream: 192.168.0.8:5010\n',
         names: ['acme.example'],
         unsupported: [],
     }
@@ -2053,10 +2037,12 @@ describe('POST /projects/:id/:env/adopt: did the site survive it', () => {
             verb: 'domains', project: 'acme',
             args: { action: 'restore', environment: 'live', restore: [claim.path] },
         })
+        // The adopt and the rollback both pass the agent's own parser, claim paths and all
+        for (const sent of agent.calls) assert.equal(parseAgentRequest(JSON.stringify(sent)).ok, true, JSON.stringify(sent))
         const said = (await response.json() as { message: string }).message
         assert.match(said, /answered 200/)
         assert.match(said, /answered 301/)
-        assert.match(said, /acme\.conf/)
+        assert.match(said, /NPM proxy host 12/)
     })
 
     it('does not start a verification countdown against a vhost it just removed', async () => {
@@ -2146,27 +2132,20 @@ describe('the domain routes a client may not use', () => {
 })
 
 describe('GET /health: what only health can see', () => {
-    it('names a hostname that stopped answering and a vhost that was rolled back', async () => {
+    it('names a hostname that stopped answering and an NPM proxy host that was rolled back', async () => {
         await seedDomains([
             domainRecord({ state: 'broken' }),
             domainRecord({ hostname: 'www.acme.example', primary: false, vhost: { ok: false, output: 'AH00526' } }),
         ])
         const body = await (await request('/health', { actor: 'admin' })).json() as { warnings: string[] }
         assert.ok(body.warnings.some(warning => warning === 'acme.example stopped answering (acme live)'), body.warnings.join('; '))
-        assert.ok(body.warnings.some(warning => warning === 'the vhost for acme live was rolled back'), body.warnings.join('; '))
-    })
-
-    // Said once, naming the environments, rather than once per hostname.
-    it('names an environment waiting for Let\'s Encrypt once, however many hostnames it has', async () => {
-        await seedDomains([domainRecord(), domainRecord({ hostname: 'www.acme.example', primary: false })])
-        const body = await (await request('/health', { actor: 'admin' })).json() as { warnings: string[] }
-        assert.deepEqual(body.warnings.filter(warning => warning.includes('Let\'s Encrypt')), ['waiting for Let\'s Encrypt support: acme live'])
+        assert.ok(body.warnings.some(warning => warning === 'the NPM proxy host for acme live was rolled back'), body.warnings.join('; '))
     })
 
     // The warning that matters most: with the unit dead, every domain action hangs for 30 seconds
     // rather than failing, and nothing else says so before somebody tries one.
     it('warns when the Apache host unit has never answered, or has gone quiet', async () => {
-        const railWarning = 'the Apache host unit has not answered; no domain change can take effect'
+        const railWarning = 'Nginx Proxy Manager has not answered through edge; no domain change can take effect'
         for (const railAge of [null, 11 * 60_000]) {
             agent.reply = () => ({ ok: true, warnings: [], invalid: {}, system: usage, railAge })
             const body = await (await request('/health', { actor: 'admin' })).json() as { warnings: string[] }
@@ -2175,49 +2154,6 @@ describe('GET /health: what only health can see', () => {
         agent.reply = () => ({ ok: true, warnings: [], invalid: {}, system: usage, railAge: 9 * 60_000 })
         const fresh = await (await request('/health', { actor: 'admin' })).json() as { warnings: string[] }
         assert.equal(fresh.warnings.includes(railWarning), false)
-    })
-
-    // The same warning again, but fed by the real ApacheRail rather than by a number this test chose:
-    // both ends of the figure at once, which is the only place the timestamp-for-an-age mismatch that
-    // kept this alarm permanently on could ever have been caught.
-    it('does not warn one second after a real handshake, and does warn ten minutes later', async () => {
-        const railWarning = 'the Apache host unit has not answered; no domain change can take effect'
-        // A real epoch, which is exactly the value that used to make every reading look stale.
-        let clock = 1_790_000_000_000
-        const files = new Map<string, string>()
-        const railFs: RailFs = {
-            async writeFile(path, text) { files.set(path, text) },
-            async rename(from, to) {
-                const text = files.get(from)!
-                files.delete(from)
-                files.set(to, text)
-                // The host unit, answering the request it was just handed.
-                if (to.endsWith('request.json')) {
-                    files.set('/rail/result.json', JSON.stringify({ seq: JSON.parse(text).seq, ok: true, output: 'Syntax OK' }))
-                    files.delete(to)
-                }
-            },
-            async readFile(path) {
-                const text = files.get(path)
-                if (text === undefined) throw Object.assign(new Error('ENOENT'), { code: 'ENOENT' })
-                return text
-            },
-            async unlink(path) { files.delete(path) },
-        }
-        const rail = new ApacheRail('/rail', railFs, { now: () => clock, sleep: async ms => { clock += ms } })
-        agent.reply = () => ({ ok: true, warnings: [], invalid: {}, system: usage, railAge: rail.ageOfLastSuccess() })
-
-        const never = await (await request('/health', { actor: 'admin' })).json() as { warnings: string[] }
-        assert.ok(never.warnings.includes(railWarning), 'a rail that has never been answered is not healthy')
-
-        await rail.send('reload', { write: null, remove: [], disable: [] })
-        clock += 1_000
-        const fresh = await (await request('/health', { actor: 'admin' })).json() as { warnings: string[] }
-        assert.equal(fresh.warnings.includes(railWarning), false, fresh.warnings.join('; '))
-
-        clock += RAIL_STALE_MS
-        const stale = await (await request('/health', { actor: 'admin' })).json() as { warnings: string[] }
-        assert.ok(stale.warnings.includes(railWarning), stale.warnings.join('; '))
     })
 
     it('keeps the agent\'s own warnings alongside them', async () => {
@@ -2280,7 +2216,7 @@ projects:
     services: { web: { role: site } }
     capabilities: [lifecycle, logs, provision, env, deploy, backups]
     environments:
-      live: { dir: /var/www/acme, port: 5010, branch: main, domain: acme.example, certificate: letsencrypt, deployed: abc1234 }
+      live: { dir: /var/www/acme, port: 5010, branch: main, domain: acme.example, certificate: cloudflare-origin, deployed: abc1234 }
       test: { dir: /var/www/acme-test, port: 5013, branch: develop, domain: test.acme.example }
 `)
 
@@ -2811,7 +2747,7 @@ describe('copying from live', () => {
 
     describe('when an environment is added with copyFromLive', () => {
         const added: AgentReply = { ok: true, project: { id: 'acme', state: 'needs-setup' }, envFiles: [] }
-        const VHOST_REFUSAL = { ok: false, message: 'acme uat1 was created, but its entry could not be read back to write its vhost' }
+        const VHOST_REFUSAL = { ok: false, message: 'acme uat1 was created, but its entry could not be read back to write its NPM hosts' }
 
         it('starts a copy once the add succeeded, and says so in the reply', async () => {
             agent.reply = sent => (sent.verb === 'copy' ? { ok: true, run: RUN } : added)

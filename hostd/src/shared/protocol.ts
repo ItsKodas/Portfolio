@@ -206,8 +206,8 @@ export type DomainsRemoveArgs = { action: 'remove', environment: EnvironmentName
 // what adopt will actually write, rather than differing from it in every security-relevant line.
 export type DomainsPreviewArgs = { action: 'preview', environment: EnvironmentName, token: string }
 export type DomainsAdoptArgs = { action: 'adopt', environment: EnvironmentName, token: string, disable: string[] }
-// Adoption undone: the vhost hostd wrote goes away and the files adopt moved aside come back, in one
-// reload. `restore` carries the same sites-enabled paths adopt was given as `disable`.
+// Adoption undone: the adopted NPM proxy host goes back to how it was and hostd's redirection host goes
+// away. `restore` carries the same NPM claim paths adopt was given as `disable`.
 //
 // It exists because an adoption can pass Apache's configtest, reload cleanly, be reported a success and
 // still take the site off the internet, which is exactly what thebackroom.dev did. Whether that happened
@@ -233,8 +233,8 @@ export type AdoptPreview = {
     ok: true
     preview: {
         proposed: string
-        // text is the claiming file verbatim. The handful of directives this parser reads are not the
-        // whole of what a hand-written vhost does, and adoption replaces the file rather than merging
+        // text is the claiming NPM proxy host as JSON. The fields this parser reads are not the
+        // whole of what a hand-made proxy host does, and adoption replaces it rather than merging
         // with it, so the operator is shown all of it before they confirm. Spelled out here rather than
         // imported, because shared/ must never import from agent/.
         //
@@ -244,7 +244,7 @@ export type AdoptPreview = {
         // outage lasts an afternoon.
         claims: { path: string, text: string, names: string[], unsupported: string[] }[]
         extraNames: string[]
-        // Paths in sites-enabled that could not be opened at all, so nothing is known about them, not
+        // NPM proxy hosts that could not be read at all (always empty now, kept for the portal), so nothing is known about them, not
         // even whether they name one of these hostnames. Usually a symlink whose target has gone. They
         // block no write, since a file Apache cannot read serves nothing, but they do fail Apache's
         // configuration test, so the operator is shown them before adopting rather than after.
@@ -330,11 +330,10 @@ export type ServiceStatus = {
 }
 // system carries figures only. Nothing in it is a check, and none of its problems reach warnings, so a
 // busy machine never makes hostd unhealthy (see system.ts).
-// railAge is how long ago the rail last heard back from the Apache host unit, in milliseconds, carried
-// out of the agent process so api can serve it at /health. An age and never a timestamp: api compares it
-// against a staleness threshold, and a timestamp would be larger than any threshold, so the alarm would
-// fire forever. null means the rail has never once heard back, not that it recently failed. Task 14 uses this to warn when the host unit has gone quiet, which nothing else surfaces before
-// a domain action hangs for 30 seconds and then fails.
+// railAge is how long ago edge last had a successful call to Nginx Proxy Manager, in milliseconds,
+// carried out of the agent process so api can serve it at /health. An age and never a timestamp: api
+// compares it against a staleness threshold, and a timestamp would be larger than any threshold, so the
+// alarm would fire forever. null means edge has had no successful call yet, or could not be asked.
 export type HealthReply = { ok: true, warnings: string[], invalid: Record<string, string>, system: SystemUsage, railAge: number | null }
 export type StatusReply = { ok: true, services: ServiceStatus[] }
 // One project's status inside a statuses reply. A project the agent refuses (unregistered, invalid, or a
@@ -797,9 +796,11 @@ function parseRestoreArgs(raw: unknown): RestoreArgs | Refusal {
 // vhost, so it is the one value from api that reaches Apache's configuration. Nothing that could be read
 // as a path, a quote or a directive is allowed to be a token.
 export const DOMAIN_TOKEN = /^[0-9a-f]{6,64}$/
-// The only directory an adopt may disable a file in. Checked here as well as in the agent, because this
-// is where a value from api first becomes something a root process will act on.
-const SITES_ENABLED = '/etc/apache2/sites-enabled/'
+// What adopt's disable and restore's restore may hold: the claim paths the preview names for the NPM
+// hosts it found, which api hands straight back. The agent finds the host to take over itself and reads
+// neither list, but api decides from disable whether to probe the site for the rollback, so the entries
+// still travel, and anything that is not one of these names is refused rather than carried.
+export const NPM_CLAIM_PATH = /^NPM (proxy|redirection|dead) host \d{1,9}$/
 
 export function parseDomainsArgs(args: unknown): { ok: true, args: DomainsArgs } | Refusal {
     if (!isRecord(args)) return refuse('bad-request', 'domains args must be an object')
@@ -834,14 +835,12 @@ export function parseDomainsArgs(args: unknown): { ok: true, args: DomainsArgs }
             const value = token()
             if (value === null) return refuse('bad-request', 'token must be lowercase hex')
             const disable = args.disable
-            // An empty list is allowed, and deliberately so: adopt is the only route to a vhost hostd
-            // owns, and an environment nobody has hand-written a file for has nothing to displace. What
-            // adopt means is "hostd owns this environment's vhost from now on, moving aside whatever
-            // was in the way, if anything", not "there must have been something in the way".
-            if (!Array.isArray(disable)) return refuse('bad-request', 'disable must be a list of files to move aside')
+            // An empty list is allowed: the agent refuses an adopt with nothing to take over itself, in
+            // words the portal can show.
+            if (!Array.isArray(disable)) return refuse('bad-request', 'disable must be a list of the NPM hosts being taken over')
             for (const path of disable) {
-                if (typeof path !== 'string' || !path.startsWith(SITES_ENABLED) || path.includes('/..') || path.includes('/.')) {
-                    return refuse('bad-request', 'every disable entry must be a plain path inside sites-enabled')
+                if (typeof path !== 'string' || !NPM_CLAIM_PATH.test(path)) {
+                    return refuse('bad-request', 'every disable entry must name an NPM host the preview found, such as NPM proxy host 12')
                 }
             }
             return { ok: true, args: { action: 'adopt', environment: name, token: value, disable: disable as string[] } }
@@ -851,12 +850,11 @@ export function parseDomainsArgs(args: unknown): { ok: true, args: DomainsArgs }
                 return refuse('bad-request', 'restore takes only environment and restore')
             }
             const restore = args.restore
-            // An empty list is allowed for the same reason adopt's is: an adoption that displaced
-            // nothing is still an adoption, and undoing it still means taking hostd's own vhost away.
-            if (!Array.isArray(restore)) return refuse('bad-request', 'restore must be a list of files to put back')
+            // An empty list is allowed: the agent undoes the adoption from its own saved copy, not from this.
+            if (!Array.isArray(restore)) return refuse('bad-request', 'restore must be a list of the NPM hosts being put back')
             for (const path of restore) {
-                if (typeof path !== 'string' || !path.startsWith(SITES_ENABLED) || path.includes('/..') || path.includes('/.')) {
-                    return refuse('bad-request', 'every restore entry must be a plain path inside sites-enabled')
+                if (typeof path !== 'string' || !NPM_CLAIM_PATH.test(path)) {
+                    return refuse('bad-request', 'every restore entry must name an NPM host the preview found, such as NPM proxy host 12')
                 }
             }
             return { ok: true, args: { action: 'restore', environment: name, restore: restore as string[] } }

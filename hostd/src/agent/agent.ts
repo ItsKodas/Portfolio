@@ -23,7 +23,11 @@ import { composeNameOf, deployTrees, locationIn, repositoryIn, upArgv } from './
 import type { DeployDeps } from './deploy.ts'
 import type { DeployRunner } from './deploy-runner.ts'
 import type { DeployStore } from './deploy-state.ts'
-import { adopt, previewAdopt, removeVhost, restoreAdopted, setAliases, writeVhost, type DomainsDeps } from './domains.ts'
+import {
+    adopt, currentToken, previewAdopt, recreateHosts, removeEdgeHosts, removeHosts, restoreAdopted, setAliases, writeHosts, type DomainsDeps,
+} from './domains.ts'
+import { driftWarnings } from './drift.ts'
+import type { EdgeClient } from './edge-client.ts'
 import type { FetchClient } from './fetch-client.ts'
 import { buildServiceStatuses, groupByProject, pickPerService, type ContainerInspect, type ContainerSummary, type DockerApi } from './docker.ts'
 import { createLogDecoder } from './logframes.ts'
@@ -36,9 +40,7 @@ import { restorePortEnv, writePortEnv } from './port-env.ts'
 import type { BackupRunner } from './backup-runner.ts'
 import type { BackupStore } from './backup-state.ts'
 import { repoPath, type Restic } from './restic.ts'
-import { tokenFromVhost, vhostPath } from './vhost.ts'
-import { holdingPagePath } from './holding-pages.ts'
-import { accessLogPath, type Analytics } from './analytics.ts'
+import type { Analytics } from './analytics.ts'
 import { copyRefusal, runCopy, type CopyFs } from './copy-run.ts'
 import type { IoHelper } from './io-helper.ts'
 import type { CopyStore } from './copy-store.ts'
@@ -99,18 +101,19 @@ export type AgentDeps = {
         newRunId: () => string
         backupDisk: () => Promise<DiskUsage | null>
     }
-    // Absent until the production entrypoint wires the Apache rail, the registry writer and the vhost
-    // configuration: the domains verb then refuses unavailable instead of crashing, exactly like
-    // provision and deploy do.
+    // Absent until the production entrypoint wires the edge client, the registry writer and the adopted
+    // store: the domains verb then refuses unavailable instead of crashing, exactly like provision and
+    // deploy do.
     domains?: DomainsDeps
     // Told after a lifecycle action, so the site's holding page can say "switched off" at once rather than
     // on the main loop's next pass. Optional, so the tests' fakes need not carry it; never throws.
     afterLifecycle?: (project: ProjectEntry, environment: EnvironmentName) => Promise<void>
-    // How long ago the rail last got an answer, read fresh on every health request exactly like system
-    // is. An age in milliseconds, never a timestamp: api compares it against a staleness threshold.
-    // Required rather than optional, unlike domains itself: health must always answer with a railAge,
-    // even one that stayed null because nothing ever configured the rail, so no caller can forget it.
-    railAge: () => number | null
+    // Read by health for drift: the registry's hosts compared with NPM's. Cached for a minute, because
+    // the portal polls health and each pass reads every owned host from NPM. Injected so tests can move it.
+    now?: () => number
+    // How long a drift sweep runs before health reports it as late (EDGE_DEADLINE_MS). Injected so a test
+    // need not wait seconds for it.
+    edgeDeadlineMs?: number
     // Page views and visitors out of the access logs. Absent until the production entrypoint wires the
     // log directory: the analytics verb then refuses unavailable instead of crashing.
     analytics?: Pick<Analytics, 'report'>
@@ -175,6 +178,28 @@ const reply = (value: AgentReply): Outcome => ({ kind: 'reply', reply: value })
 
 // How many commits' details the agent remembers. A commit never changes, so a remembered answer is never
 // stale; this only bounds the memory, at a few pages of history for every site on the machine.
+// How long a drift reading is reused. Health is polled, and each reading asks NPM about every owned host.
+const DRIFT_CACHE_MS = 60_000
+// How long edge's own health answer (railAge) is reused before it is asked again.
+const RAIL_CACHE_MS = 10_000
+// Health never waits on edge: api's boot gate and probe give it 15 seconds, and one edge call may take
+// far longer. A sweep still running after this is reported as late; its reading is used when it lands.
+const EDGE_DEADLINE_MS = 5_000
+// A drift reading older than this is said to be old, so a sweep that never finishes is not mistaken for
+// a clean bill of health.
+const DRIFT_STALE_MS = 5 * 60_000
+
+// Milliseconds since edge last had a successful NPM call: an age, never a timestamp (api compares it with a
+// staleness threshold). null means none yet, or that edge could not be asked.
+async function railAgeOf(edge: EdgeClient, timeoutMs: number): Promise<number | null> {
+    try {
+        const reply = await edge.call({ verb: 'health' }, { timeoutMs })
+        return reply.ok && reply.verb === 'health' ? reply.npmAge : null
+    } catch {
+        return null
+    }
+}
+
 const MAX_REMEMBERED_DETAILS = 2000
 // How long a history waits for one commit's details before answering without them (see withDetails)
 const DETAILS_WAIT_MS = 3000
@@ -565,13 +590,13 @@ export class Agent {
         }
     }
 
-    // Public, unlike env/deploy/lifecycle, because writing a vhost is dangerous enough that nothing here
+    // Public, unlike env/deploy/lifecycle, because writing NPM hosts is dangerous enough that nothing here
     // may act on a registry any staler than the moment this runs. It re-reads the registry, checks
     // structure and the capability itself against that fresh read, rather than trusting the checked
     // project handle() already produced from its own (merely per-connection) registry() snapshot.
     async domains(request: DomainsRequest): Promise<DomainsWritten | AdoptPreview | Refusal> {
         if (!this.deps.domains) return refuse('unavailable', 'domains is not configured')
-        // Every action writes a vhost or the registry, which a port change on the project is doing too.
+        // Every action writes NPM hosts or the registry, which a port change on the project is doing too.
         // The whole project rather than the one environment, for simplicity: a change takes seconds.
         if (this.portChangingIn(request.project)) return refuse('busy', `${request.project} is moving an environment to another port`)
         // The whole project here too, not only the named environment: a restore decides which hostnames
@@ -592,9 +617,9 @@ export class Agent {
 
         switch (request.args.action) {
             case 'write':
-                return writeVhost(domains, checked.project, environment, request.args.token)
+                return writeHosts(domains, checked.project, environment, request.args.token)
             case 'remove':
-                return removeVhost(domains, checked.project, environment)
+                return removeHosts(domains, checked.project, environment)
             case 'preview':
                 return previewAdopt(domains, checked.project, environment, request.args.token)
             case 'adopt':
@@ -798,22 +823,22 @@ export class Agent {
     // widens to include it and stops compiling). { ok: true, output } is the shape the codebase already
     // uses for "nothing else to carry" (see env()'s write case and provision.ts's removeProject above).
     private async configure(project: ProjectEntry, args: ConfigureArgs): Promise<AgentReply> {
-        // It writes the registry entry and may rewrite the vhost a port change is rewriting too
+        // It writes the registry entry and may rewrite the NPM hosts a port change is rewriting too
         if (this.portChangingIn(project.id)) return refuse('busy', `${project.id} is moving an environment to another port`)
         // And it rewrites the registry entry a delete or a restore is removing or writing back
         if (this.trashingIn(project.id)) return refuse('busy', `${project.id} has an environment being deleted or restored`)
-        // And it may rewrite the vhost, or the registry entry, of an environment a copy is working in
+        // And it may rewrite the NPM hosts, or the registry entry, of an environment a copy is working in
         if (this.copyingIn(project.id)) return refuse('busy', `${project.id} has an environment being copied from live`)
         // And it may change the services and storage a restore is putting back
         const restoringNow = this.restoringRefusal(project.id)
         if (restoringNow) return restoringNow
         // Which environments are having an address REPLACED rather than given one for the first time.
         // Read before the writes below, because they are what makes the old value unreadable, and it is
-        // the old value that decides whether Apache has a file to rewrite afterwards.
+        // the old value that decides whether there are NPM hosts to rewrite afterwards.
         //
         // A change used to be refused here outright. It is allowed now: the portal puts the four things
         // it does (the old name stops resolving, every hostname is unverified again, aliases redirect
-        // somewhere new, the vhost is rewritten) in front of the operator behind a typed confirmation,
+        // somewhere new, the NPM hosts are rewritten) in front of the operator behind a typed confirmation,
         // so the decision is made where it can be explained rather than in a refusal nobody can act on
         // without an SSH session. Setting the same address twice changes nothing and is not counted.
         // An environment that does not exist is not checked here: the writer answers that in its own
@@ -824,7 +849,7 @@ export class Agent {
             if (existing && existing !== domain) replacing.push(name as EnvironmentName)
         }
         // And which are having a render-only switch flipped (WebSockets, Flexible SSL), read for the same
-        // reason: the vhost has to follow the registry, and only the old value says whether this call
+        // reason: the NPM hosts have to follow the registry, and only the old value says whether this call
         // changes anything.
         const flips: Array<{ name: EnvironmentName, flag: EnvironmentFlag, enabled: boolean }> = []
         for (const flag of ENVIRONMENT_FLAGS) {
@@ -863,7 +888,7 @@ export class Agent {
         if (!written.ok) return refuse('bad-request', written.problem)
 
         // A write of its own per domain, rather than a field on the configure change: an address is set
-        // rarely and rewrites Apache when it moves, so folding it into the change that carries
+        // rarely and rewrites the NPM hosts when it moves, so folding it into the change that carries
         // capabilities, repo and branches would put it on the path of every routine capability save.
         //
         // Giving an environment its FIRST address does nothing beyond recording it. The hand-written
@@ -884,8 +909,8 @@ export class Agent {
         // look absent. set-branch and both provisioning paths refresh for the same reason.
         await this.deps.refreshRegistry()
 
-        // Replacing an address, on the other hand, has to reach Apache: the old hostname is still in the
-        // file hostd wrote, and a vhost naming a hostname the registry no longer claims is the one state
+        // Replacing an address, on the other hand, has to reach NPM: the old hostname is still on the
+        // hosts hostd wrote, and a host naming a hostname the registry no longer claims is the one state
         // nothing else in hostd knows how to correct. After the registry write, never before, for the
         // reason setAliases writes the registry first.
         const problems: string[] = []
@@ -893,7 +918,7 @@ export class Agent {
         // Once per environment, even when one save moves its address and flips a switch or two: the
         // rewrite renders from the registry as it now is, so a single pass carries both.
         for (const name of new Set([...replacing, ...switching])) {
-            const result = await this.rewriteMovedVhost(project.id, name)
+            const result = await this.rewriteHosts(project.id, name)
             if (result.problem !== null) problems.push(result.problem)
             else if (result.written !== null) rewritten.push(result.written)
         }
@@ -902,7 +927,7 @@ export class Agent {
         if (problems.length > 0) {
             return refuse(
                 'failed',
-                `${project.id}'s registry entry was updated, but the Apache configuration behind it was not:`
+                `${project.id}'s registry entry was updated, but its NPM hosts were not:`
                 + ` ${problems.join(' ')} The two no longer agree until this is put right.`,
             )
         }
@@ -910,7 +935,7 @@ export class Agent {
         // not either). server.ts's handleConnection logs every reply generically, including this one, via
         // its own describe()/log() after handle() returns.
         //
-        // written carries what Apache is now serving, because api keeps the verification state and has no
+        // written carries what NPM is now serving, because api keeps the verification state and has no
         // other way to learn it: without this, the moved hostname would reach the store through
         // reconcile, as an unmanaged record with no token, which says hostd serves that name by hand. It
         // does not, and the operator would be left with a row they cannot even re-check.
@@ -919,7 +944,7 @@ export class Agent {
             written: rewritten,
             output: rewritten.length === 0
                 ? `${project.id}'s registry entry was updated`
-                : `${project.id}'s registry entry was updated and its Apache configuration was rewritten`,
+                : `${project.id}'s registry entry was updated and its NPM hosts were rewritten`,
         }
     }
 
@@ -970,8 +995,9 @@ export class Agent {
                     if (result.exitCode !== 0) return { ok: false, message: `up exited with code ${result.exitCode}: ${tail(result.stderr.trim(), 300)}` }
                     return { ok: true }
                 },
-                rewriteVhost: async () => (await this.rewriteMovedVhost(project.id, environment)).problem,
-                hasOwnVhost: () => this.ownsVhost(project.id, environment),
+                rewriteHosts: async () => (await this.rewriteHosts(project.id, environment)).problem,
+                // From the registry: hostd manages exactly the hosts it holds ids for
+                hasOwnHosts: async entry => this.deps.domains !== undefined && entry.npm !== null,
             })
         } finally {
             this.provisioningBusy = false
@@ -981,81 +1007,21 @@ export class Agent {
         }
     }
 
-    // Brings every vhost hostd wrote with an older template up to date: one from before per-site holding
-    // pages, which serves the shared fallback page, or one from before analytics, which logs nowhere the
-    // portal can count. Run once at boot; a vhost that already names both its page and its access log is
-    // left alone, so after the first boot of this version it changes nothing. Each rewrite goes through
-    // rewriteMovedVhost, which keeps the file's own token and puts the old file back if Apache refuses.
-    async refreshStaleVhosts(): Promise<string[]> {
-        if (!this.deps.domains) return []
-        const domains = this.deps.domains
-        const problems: string[] = []
-        for (const project of this.deps.registry().projects.values()) {
-            for (const environment of project.environments.values()) {
-                if (environment.domain === null) continue
-                const path = vhostPath(domains.config.includeDir, project.id, environment.name)
-                let text: string | null
-                try {
-                    text = await domains.readFile(path)
-                } catch (error) {
-                    problems.push(`${path} could not be read: ${describeError(error)}.`)
-                    continue
-                }
-                if (text === null) continue
-                const current = text.includes(holdingPagePath(domains.config.maintenancePageDir, project.id, environment.name))
-                    && text.includes(accessLogPath(domains.config.accessLogDir, project.id, environment.name))
-                if (current) continue
-                const result = await this.rewriteMovedVhost(project.id, environment.name)
-                if (result.problem !== null) problems.push(result.problem)
-            }
-        }
-        return problems
-    }
-
-    // Whether hostd wrote the vhost for this environment, read off the same file rewriteMovedVhost reads.
-    // With no rail wired up hostd has never written one, so an environment with an address is served by
-    // hand. A read that throws is left to the caller, which refuses rather than guessing.
-    private async ownsVhost(id: string, name: EnvironmentName): Promise<boolean> {
-        if (!this.deps.domains) return false
-        return (await this.deps.domains.readFile(vhostPath(this.deps.domains.config.includeDir, id, name))) !== null
-    }
-
-    // The vhost behind an address that has just moved. hostd only owns a file it wrote itself, so the
-    // absence of one means this environment is still served by hand and there is nothing here to rewrite:
-    // the operator displaces that file by adopting the site, which is a separate, previewed decision. The
-    // absence is read exactly as domains.ts reads it, off readFile answering null.
+    // The NPM hosts behind an environment whose address, port or a render-only switch has just changed.
+    // hostd only rewrites hosts it holds ids for; an environment without them is still served by a host
+    // made by hand in NPM, and the operator takes that over by adopting it, a previewed decision of its
+    // own.
     //
-    // Answers a problem rather than throwing one: the caller has already written the registry, and a rail
-    // that never answers (which throws, after 30 seconds) must be reported as a disagreement rather than
-    // crash the reply.
-    private async rewriteMovedVhost(id: string, name: EnvironmentName): Promise<{ written: ConfigureWritten | null, problem: string | null }> {
-        // Nothing wired the rail up, so hostd has never written a vhost for anything and there is no file
-        // of its own to bring level. removeVhosts reads an absent domains dep the same way.
+    // Answers a problem rather than throwing one: the caller has already written the registry, and an
+    // edge that never answers must be reported as a disagreement rather than crash the reply.
+    private async rewriteHosts(id: string, name: EnvironmentName): Promise<{ written: ConfigureWritten | null, problem: string | null }> {
+        // Nothing wired edge up, so hostd has never written hosts for anything
         if (!this.deps.domains) return { written: null, problem: null }
         const domains = this.deps.domains
 
-        const path = vhostPath(domains.config.includeDir, id, name)
-        let previous: string | null
-        try {
-            previous = await domains.readFile(path)
-        } catch (error) {
-            return { written: null, problem: `${path} could not be read: ${describeError(error)}.` }
-        }
-        if (previous === null) return { written: null, problem: null }
-
-        // The token the file already carries, not a new one. Every hostname of the environment proves
-        // itself against the one value in this file, so minting another would fail the aliases that were
-        // answering perfectly well a moment ago, which reads as a DNS fault and gets debugged in the
-        // wrong place. api mints tokens; nothing in the agent can, so a file this cannot read one out of
-        // is left exactly as it is rather than rewritten with a value invented here.
-        const token = tokenFromVhost(previous)
-        if (token === null) {
-            return { written: null, problem: `no verification token could be read out of ${path}, so it was left alone.` }
-        }
-
         // Re-read rather than trusting the write, exactly as setAliases does: parseRegistry is what
         // enforces reserved names, the allowed carve-out and cross-project uniqueness, and a hostname the
-        // wire grammar took can still fail those. The vhost is rendered from what came back, never from
+        // wire grammar took can still fail those. The hosts are rendered from what came back, never from
         // the request.
         let registry: Registry
         try {
@@ -1066,18 +1032,33 @@ export class Agent {
         const entry = registry.projects.get(id)
         const environment = entry === undefined ? null : environmentOf(entry, name)
         if (!entry || !environment) {
-            return { written: null, problem: `${id} ${name} did not survive the change, so its configuration was left alone.` }
+            return { written: null, problem: `${id} ${name} did not survive the change, so its NPM hosts were left alone.` }
+        }
+        if (environment.npm === null) return { written: null, problem: null }
+
+        // The token the hosts already carry, not a new one. Every hostname of the environment proves
+        // itself against that one value, so minting another would fail the aliases that were answering
+        // perfectly well a moment ago, which reads as a DNS fault and gets debugged in the wrong place.
+        // api mints tokens; nothing in the agent can, so hosts this cannot read one out of are left alone.
+        let token: string | null
+        try {
+            token = await currentToken(domains, entry, environment)
+        } catch (error) {
+            return { written: null, problem: `NPM proxy host ${environment.npm.proxyHost} could not be read: ${describeError(error)}.` }
+        }
+        if (token === null) {
+            return { written: null, problem: `no verification token could be read out of NPM proxy host ${environment.npm.proxyHost}, so it was left alone.` }
         }
 
         try {
-            const result = await writeVhost(domains, entry, environment, token)
-            // The environment is carried alongside the hostnames and the path writeVhost answers with,
+            const result = await writeHosts(domains, entry, environment, token)
+            // The environment is carried alongside the hostnames and the path writeHosts answers with,
             // because one configure can move several and api records them per environment.
             return result.ok
                 ? { written: { environment: name, ...result.written }, problem: null }
                 : { written: null, problem: result.message }
         } catch (error) {
-            return { written: null, problem: `${path} could not be rewritten: ${describeError(error)}.` }
+            return { written: null, problem: `NPM proxy host ${environment.npm.proxyHost} could not be rewritten: ${describeError(error)}.` }
         }
     }
 
@@ -1097,7 +1078,85 @@ export class Agent {
             if (problem) warnings.push(problem)
             warnings.push(...this.deps.backups.store.failures())
         }
-        return { ok: true, warnings, invalid, system: await this.deps.system(), railAge: this.deps.railAge() }
+        // railAge and drift both come from edge, and an edge that cannot answer is a warning, never a failure
+        // of health itself: health is what the operator reads when something is already wrong. Both are
+        // read in the background and health serves the last reading, so it never waits on edge or NPM.
+        const domains = this.deps.domains
+        if (domains) {
+            this.refreshDrift(domains)
+            this.refreshRail(domains)
+            warnings.push(...this.driftReading())
+        }
+        return { ok: true, warnings, invalid, system: await this.deps.system(), railAge: domains ? this.railAge() : null }
+    }
+
+    private drifted: { at: number, warnings: string[] } | null = null
+    private driftSweep: Promise<void> | null = null
+    private rail: { at: number, npmAge: number | null } | null = null
+    private railRead: Promise<void> | null = null
+
+    private now(): number {
+        return (this.deps.now ?? Date.now)()
+    }
+
+    // Stale means older than maxAge, or from the future (a clock that stepped back).
+    private stale(at: number, maxAge: number): boolean {
+        const now = this.now()
+        return now - at >= maxAge || now < at
+    }
+
+    // At most one sweep at a time, however many health calls arrive while it runs. Past the deadline the
+    // reading says so; the sweep goes on, and what it finds replaces that when it lands.
+    private refreshDrift(domains: DomainsDeps): void {
+        if (this.driftSweep !== null) return
+        if (this.drifted !== null && !this.stale(this.drifted.at, DRIFT_CACHE_MS)) return
+        const deadlineMs = this.deps.edgeDeadlineMs ?? EDGE_DEADLINE_MS
+        let landed = false
+        const timer = setTimeout(() => {
+            if (landed) return
+            this.drifted = {
+                at: this.now(),
+                warnings: [`NPM could not be checked for drift within ${deadlineMs / 1000} seconds; edge or NPM is slow, and the check carries on in the background`],
+            }
+        }, deadlineMs)
+        timer.unref()
+        this.driftSweep = driftWarnings(this.deps.registry(), domains.edge, domains.config)
+            .then(warnings => { this.drifted = { at: this.now(), warnings } })
+            .finally(() => {
+                landed = true
+                clearTimeout(timer)
+                this.driftSweep = null
+            })
+    }
+
+    private refreshRail(domains: DomainsDeps): void {
+        if (this.railRead !== null) return
+        if (this.rail !== null && !this.stale(this.rail.at, RAIL_CACHE_MS)) return
+        // edge answers health without touching NPM, so a short timeout only cuts off an edge that hangs
+        this.railRead = railAgeOf(domains.edge, this.deps.edgeDeadlineMs ?? EDGE_DEADLINE_MS)
+            .then(npmAge => { this.rail = { at: this.now(), npmAge } })
+            .finally(() => { this.railRead = null })
+    }
+
+    // The age edge gave, plus the time since it was asked: an age kept for ten seconds is ten seconds older.
+    private railAge(): number | null {
+        if (this.rail === null || this.rail.npmAge === null) return null
+        return this.rail.npmAge + Math.max(0, this.now() - this.rail.at)
+    }
+
+    private driftReading(): string[] {
+        if (this.drifted === null) return ['NPM has not been checked for drift yet; the first check is running']
+        const warnings = [...this.drifted.warnings]
+        if (this.stale(this.drifted.at, DRIFT_STALE_MS)) {
+            warnings.unshift(`the last drift reading is ${Math.max(0, Math.round((this.now() - this.drifted.at) / 60_000))} minutes old; edge or NPM has not answered a newer one`)
+        }
+        return warnings
+    }
+
+    // Resolves once no background reading is running. For tests, which otherwise could not tell when
+    // the readings health started have landed.
+    async edgeReadingsSettled(): Promise<void> {
+        while (this.driftSweep !== null || this.railRead !== null) await Promise.all([this.driftSweep, this.railRead])
     }
 
     // live's containers are found by the project id, as they always have been. Another environment's are
@@ -1188,7 +1247,7 @@ export class Agent {
             if (restoringNow) return restoringNow
             const reply = await removeProject(project, this.deps.provision)
             if (!reply.ok) return reply
-            const note = await this.removeVhosts(project, null)
+            const note = await this.removeAllHosts(project)
             if (note === '') return reply
             return { ok: true, output: `${'output' in reply ? reply.output : ''}${note}` }
         } finally {
@@ -1280,45 +1339,49 @@ export class Agent {
         }
     }
 
-    // The vhost operations a delete and a restore need, through the same rail every domain verb uses
+    // The NPM host operations a delete and a restore need, through the same edge every domain verb uses
     private trashVhosts(): TrashVhosts | null {
         const domains = this.deps.domains
         if (!domains) return null
-        const pathOf = (id: string, name: EnvironmentName) => vhostPath(domains.config.includeDir, id, name)
         const done = (result: { ok: true } | Refusal) => (result.ok ? { ok: true as const } : { ok: false as const, message: result.message })
         return {
-            read: (project, environment) => domains.readFile(pathOf(project.id, environment.name)),
-            remove: async (project, environment) => done(await removeVhost(domains, project, environment)),
-            put: async (project, environment, text) => {
-                const result = await domains.rail.send('reload', { write: { path: pathOf(project.id, environment.name), text }, remove: [], disable: [] })
-                return result.ok ? { ok: true } : { ok: false, message: result.output }
+            // Throws when edge cannot say, which refuses the delete before anything moved: deleting an
+            // environment whose hosts might still proxy to its port is exactly what this step prevents.
+            read: async (project, environment) => {
+                if (environment.npm === null) return null
+                const reply = await domains.edge.call({ verb: 'get', owner: { project: project.id, environment: environment.name }, ids: environment.npm })
+                if (!reply.ok) throw new Error(reply.problem)
+                return reply.verb === 'get' ? reply.current : null
             },
-            write: async (project, environment, token) => done(await writeVhost(domains, project, environment, token)),
+            // Off NPM only: the remove-environment write that ends a delete drops the ids with the entry,
+            // and a set-npm of its own that failed after the hosts were gone would leave the delete
+            // reporting itself undone while nothing had put the hosts back.
+            remove: async (project, environment) => done(await removeEdgeHosts(domains, project, environment)),
+            put: async (project, environment, previous) => done(await recreateHosts(domains, project, environment, previous)),
+            write: async (project, environment, token) => done(await writeHosts(domains, project, environment, token)),
         }
     }
 
-    // Removing an environment has to take its vhost with it. Left behind, the file goes on claiming
-    // that environment's hostnames and goes on proxying to a port choosePort is free to hand to another
-    // project, which is one client's visitors reaching another client's application.
+    // Removing a project has to take its NPM hosts with it. Left behind, they go on claiming that
+    // project's hostnames and proxying to ports choosePort is free to hand to another project, which is
+    // one client's visitors reaching another client's application.
     //
-    // After the registry write and never before, for the reason setAliases writes the registry first:
-    // the registry is the record of what a site may serve, and the vhost is a rendering of it. The entry
-    // is therefore already gone when this runs, so a failure here is reported in the output rather than
-    // returned as one, and a rail that never answers (which throws, after 30 seconds) must not turn a
+    // After the registry write and never before, for the reason setAliases writes the registry first: the
+    // registry is the record of what a site may serve, and the hosts are a rendering of it. The entry, ids
+    // and all, is therefore already gone when this runs, so nothing is written back to it, a failure is
+    // reported in the output rather than returned as one, and an edge that never answers must not turn a
     // removal that did happen into an error the operator would retry.
-    private async removeVhosts(project: ProjectEntry, environment: EnvironmentName | null): Promise<string> {
-        // No capability means hostd never wrote a vhost for this project, and asking the rail to remove
-        // a file that was never there would cost an Apache reload per removal for nothing.
-        if (!this.deps.domains || !project.capabilities.has('domains')) return ''
+    private async removeAllHosts(project: ProjectEntry): Promise<string> {
+        if (!this.deps.domains) return ''
         const domains = this.deps.domains
         const problems: string[] = []
         for (const entry of project.environments.values()) {
-            if (environment !== null && entry.name !== environment) continue
+            if (entry.npm === null) continue
             try {
-                const result = await removeVhost(domains, project, entry)
-                if (!result.ok) problems.push(result.message)
+                const result = await removeEdgeHosts(domains, project, entry)
+                if (!result.ok) problems.push(`the NPM hosts for ${project.id} ${entry.name} could not be removed: ${result.message}`)
             } catch (error) {
-                problems.push(`the vhost for ${project.id} ${entry.name} could not be removed: ${describeError(error)}`)
+                problems.push(`the NPM hosts for ${project.id} ${entry.name} could not be removed: ${describeError(error)}`)
             }
         }
         return problems.length === 0 ? '' : ` ${problems.join(' ')}`

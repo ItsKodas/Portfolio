@@ -102,9 +102,8 @@ export function deployKey(id: string, environment: EnvironmentName): string {
     return `${id}:${environment}`
 }
 
-// The name of the maintenance flag file, which the design spells <id>-<env>. Deliberately not the deploy
-// key above: that one is only ever a map key, while this becomes a filename Apache is configured to look
-// for, and a colon in a path is a needless thing to make a vhost template quote.
+// The <id>-<env> name a holding page file is known by. Deliberately not the deploy key above: that one is
+// only ever a map key, while this becomes a filename, and a colon in a path is a needless thing to quote.
 export function maintenanceKey(id: string, environment: EnvironmentName): string {
     return `${id}-${environment}`
 }

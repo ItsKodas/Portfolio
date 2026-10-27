@@ -1,39 +1,36 @@
-// Keeps every environment's holding page saying why that site is down. Apache cannot tell a deploy from a
-// stopped container from a crash loop: all it sees is a 503, and it answers every one with the same file.
-// So the agent, which can tell, rewrites that file whenever the answer changes, and the page a visitor
-// meets is never more than one loop behind what Docker says.
+// Keeps every environment's holding page saying why that site is down. NPM cannot tell a deploy from a
+// stopped container from a crash loop: all it sees is the upstream answering 502 or 504, and it sends
+// every one to the same place. So the agent, which can tell, rewrites that page whenever the answer
+// changes, and the page a visitor meets is never more than one loop behind what Docker says. A deploy
+// refreshes the page to 'upgrading' before its swap; the next refresh or sweep puts it back to what
+// Docker says.
 //
-// Written for every environment with a domain, whether or not its vhost points here yet: a page nobody
-// serves costs a file, and one that is missing when a vhost starts serving it costs the visitor Apache's
-// own bare error.
+// Written for every environment with a domain, whether or not its proxy host points here yet: a page
+// nobody serves costs a file, and one that is missing when a proxy host starts serving it costs the
+// visitor NPM's own bare error.
 
 import { posix } from 'node:path'
-import { maintenanceKey } from '../shared/deploys.ts'
 import { describeError } from '../shared/formats.ts'
+import { holdingPagePath, maintenanceKey } from '../shared/holding.ts'
 import { environmentOf, hostnamesOf, type EnvironmentEntry, type EnvironmentName, type ProjectEntry, type Registry } from '../shared/registry.ts'
 import { groupByProject, pickPerService, type ContainerSummary } from './docker.ts'
 import { renderHoldingPage, type HoldingState } from './holding-page.ts'
+
+// Callers import these from here; they live in shared/holding.ts so edge can use them too
+export { holdingPagePath, maintenanceKey }
 
 export type HoldingPagesDeps = {
     registry(): Registry
     // One listing of every container, the same call the status read makes, so a sweep over every site
     // costs one request to Docker however many sites there are
     listContainers(): Promise<ContainerSummary[]>
-    // Whether a deploy's maintenance flag is up for this <id>-<env>
-    flagUp(key: string): Promise<boolean>
-    // Write then rename, so Apache never serves half a page
+    // Write then rename, so a page is never served half written
     writeFile(path: string, text: string): Promise<void>
     pageDir: string
     now(): number
 }
 
-// Where an environment's own page lives, which the vhost names as its holding page. Under sites/ so the
-// shared fallback, index.html, can never be overwritten by a project whose id happens to be "index".
-export function holdingPagePath(pageDir: string, id: string, environment: EnvironmentName): string {
-    return posix.join(pageDir, 'sites', `${maintenanceKey(id, environment)}.html`)
-}
-
-// The page every vhost rendered before per-site pages existed still points at, until it is re-rendered
+// The page every proxy host served before per-site pages existed, until it is re-rendered
 export function fallbackPagePath(pageDir: string): string {
     return posix.join(pageDir, 'index.html')
 }
@@ -48,13 +45,12 @@ function exitCodeOf(container: ContainerSummary): number | null {
     return found ? Number(found[1]) : null
 }
 
-// Why the site is down, from what hostd can see without asking the site anything. A deploy's flag wins
-// over whatever the containers are doing, because mid-swap they are down on purpose. A container that is
+// Why the site is down, from what hostd can see without asking the site anything. (A deploy's
+// 'upgrading' is not derived here: the deploy forces it through refresh() before its swap.) A container that is
 // restarting is in a crash loop (Docker only says "restarting" while it waits out the back-off between
 // attempts), and one that exited with a code docker stop does not leave died and was not brought back.
 // A running container is not something this can explain, so it gets the plain "back shortly".
-export function holdingStateOf(flagUp: boolean, site: ContainerSummary | undefined): HoldingState {
-    if (flagUp) return 'upgrading'
+export function holdingStateOf(site: ContainerSummary | undefined): HoldingState {
     if (!site) return 'stopped'
     switch (site.State) {
         case 'restarting':
@@ -107,8 +103,8 @@ export class HoldingPages {
     }
 
     // One environment's page, now rather than on the next sweep: a deploy about to raise its flag passes
-    // 'upgrading', so the page already says so by the time Apache starts serving it; a vhost about to name
-    // the page for the first time passes nothing, so the page exists before Apache looks for it.
+    // 'upgrading', so the page already says so by the time NPM starts sending visitors to it; a proxy host
+    // about to name the page for the first time passes nothing, so the page exists before NPM looks for it.
     async refresh(id: string, name: EnvironmentName, state: HoldingState | null = null): Promise<void> {
         const project = this.deps.registry().projects.get(id)
         const environment = project ? environmentOf(project, name) : null
@@ -117,7 +113,7 @@ export class HoldingPages {
         await this.render(project, environment, grouped, state)
     }
 
-    // The same, for a caller that only holds the <id>-<env> key a maintenance flag is named by. Found by
+    // The same, for a caller that only holds the <id>-<env> key a deploy is known by. Found by
     // matching rather than splitting it, because a project id may itself contain a dash.
     async refreshKey(key: string, state: HoldingState): Promise<void> {
         for (const project of this.deps.registry().projects.values()) {
@@ -135,7 +131,7 @@ export class HoldingPages {
         if (state === null) {
             const service = siteServiceOf(project)
             const site = service === null ? undefined : pickPerService(grouped.get(environment.composeName) ?? []).get(service)
-            state = holdingStateOf(await this.deps.flagUp(key), site)
+            state = holdingStateOf(site)
         }
 
         const previous = this.seen.get(key)

@@ -536,19 +536,6 @@ function parseAdoptBody(value: Record<string, unknown>): { ok: true, confirm: st
 // whether railAge was an age or a timestamp, which no test on either side alone could see.
 export const RAIL_STALE_MS = 10 * 60_000
 
-// Named once, listing the environments, rather than once per hostname: a site with three aliases would
-// otherwise produce three copies of the same sentence about the same certificate.
-function environmentsAwaitingCertbot(registry: Registry): string[] {
-    const waiting: string[] = []
-    for (const project of registry.projects.values()) {
-        if (!project.capabilities.has('domains')) continue
-        for (const environment of project.environments.values()) {
-            if (environment.certificate === 'letsencrypt') waiting.push(`${project.id} ${environment.name}`)
-        }
-    }
-    return waiting
-}
-
 function parseEnvWriteBody(value: Record<string, unknown>): { ok: true, text: string } | { ok: false, message: string } {
     if (!onlyKeys(value, ['text'])) return { ok: false, message: 'writing an env file takes only text' }
     if (typeof value.text !== 'string') return { ok: false, message: 'text is malformed' }
@@ -1001,12 +988,12 @@ export function createHandler(deps: ApiDeps): (req: IncomingMessage, res: Server
             return sendJson(res, 200, { ok: true, domains: domainsFor(entry, environment) })
         }
 
-        // An environment's first vhost, written straight after whatever gave it its first address: a new
-        // site's create (live), an add-environment with a domain, or a first hostname added from the
-        // Domains tab. The operator does not have to go and adopt a site that has nothing to adopt. The
-        // same preview and adopt the Domains tab runs, with nothing to disable: if another file already
-        // serves the hostname, that is a displacement the operator should preview and confirm
-        // themselves, so this stops and says so.
+        // An environment's first NPM hosts, written straight after whatever gave it its first address: a
+        // new site's create (live), an add-environment with a domain, or a first hostname added from the
+        // Domains tab. The operator does not have to go and adopt a site that has nothing to adopt, and
+        // adopt no longer creates anything: this is the agent's ordinary write. If another NPM host
+        // already serves the hostname, edge refuses the create naming that host, and taking it over is a
+        // displacement the operator previews and confirms themselves from the Domains tab.
         //
         // Never throws and never answers the request itself: the environment already exists by the time
         // this runs, so whatever goes wrong here is reported beside the change that succeeded, not instead
@@ -1016,22 +1003,14 @@ export function createHandler(deps: ApiDeps): (req: IncomingMessage, res: Server
             const environment = entry?.environments.get(name)
             if (!entry || !environment || environment.domain === null) {
                 const what = name === 'live' ? id : `${id} ${name}`
-                return { ok: false, message: `${what} was created, but its entry could not be read back to write its vhost` }
+                return { ok: false, message: `${what} was created, but its entry could not be read back to write its NPM hosts` }
             }
             const target = environment.domain
             try {
                 // Records for the new hostname first, so the token minted below is stored on them
                 await deps.domains.reconcile(deps.registry(), new Date(now()).toISOString())
                 const token = await tokenFor(id, name)
-                const preview = await deps.agent.call({ verb: 'domains', project: id, args: { action: 'preview', environment: name, token } })
-                if (!preview.ok) return { ok: false, message: preview.message }
-                if (!('preview' in preview)) return { ok: false, message: 'the agent did not answer the preview with one' }
-                const claims = preview.preview.claims.map(claim => claim.path)
-                if (claims.length > 0) {
-                    return { ok: false, message: `${target} is already served by ${claims.join(', ')}. Adopt it from the Domains tab to replace that file.` }
-                }
-
-                const reply = await deps.agent.call({ verb: 'domains', project: id, args: { action: 'adopt', environment: name, token, disable: [] } })
+                const reply = await deps.agent.call({ verb: 'domains', project: id, args: { action: 'write', environment: name, token } })
                 if (!reply.ok) {
                     if (reply.code === 'failed') await recordVhost(id, name, { ok: false, output: reply.output ?? '' })
                     const outcome: AuditOutcome = reply.code === 'failed' ? 'failed' : 'refused'
@@ -1131,28 +1110,23 @@ export function createHandler(deps: ApiDeps): (req: IncomingMessage, res: Server
                 // a reading of the machine.
                 if (!('railAge' in reply)) return refuseRoute(502, 'failed', 'the agent did not answer the health request with health', null, 'health')
 
-                // Everything the agent could not see. Domain state lives in api, so these four warnings
+                // Everything the agent could not see. Domain state lives in api, so these warnings
                 // can only be added here, on top of the agent's own.
                 const warnings = [...reply.warnings]
                 // A rolled-back vhost is recorded on every record of the environment, because the file
-                // is the environment's rather than any one hostname's. Collected and said once, for the
-                // same reason the Let's Encrypt line below is: a site with three aliases would
-                // otherwise repeat one sentence about one file three times.
+                // is the environment's rather than any one hostname's. Collected and said once: a site with
+                // three aliases would otherwise repeat one sentence about one file three times.
                 const rolledBack = new Set<string>()
                 for (const record of deps.domains.all()) {
                     if (record.state === 'broken') warnings.push(`${record.hostname} stopped answering (${record.project} ${record.environment})`)
                     if (record.vhost && !record.vhost.ok) rolledBack.add(`${record.project} ${record.environment}`)
                 }
-                for (const environment of rolledBack) warnings.push(`the vhost for ${environment} was rolled back`)
-                // An environment set to letsencrypt is serving the Origin certificate until 4b lands. Said once,
-                // naming the environments, rather than once per hostname.
-                const waiting = environmentsAwaitingCertbot(deps.registry())
-                if (waiting.length) warnings.push(`waiting for Let's Encrypt support: ${waiting.join(', ')}`)
-                // The rail not answering means no domain action can work at all, and every one of them will look
+                for (const environment of rolledBack) warnings.push(`the NPM proxy host for ${environment} was rolled back`)
+                // edge not reaching NPM means no domain action can work at all, and every one of them will look
                 // like a hang rather than a failure until somebody tries one. railAge comes off the agent's health
                 // reply (Task 10), because lastSuccessAt lives in the agent and only api serves /health.
                 if (reply.railAge === null || reply.railAge > RAIL_STALE_MS) {
-                    warnings.push('the Apache host unit has not answered; no domain change can take effect')
+                    warnings.push('Nginx Proxy Manager has not answered through edge; no domain change can take effect')
                 }
                 return sendJson(res, 200, { ...reply, warnings })
             }
@@ -1684,9 +1658,9 @@ export function createHandler(deps: ApiDeps): (req: IncomingMessage, res: Server
                 }
 
                 const token = await tokenFor(entry.id, environment.name)
-                // adopt takes the files to disable rather than finding them itself, so the preview is
+                // adopt takes the NPM claim paths rather than finding them itself, so the preview is
                 // what chooses them, with the token the adopt will carry. The agent re-establishes every
-                // claim against sites-enabled as it is before it moves anything, so a preview that has
+                // claim against NPM as it is before it changes anything, so a preview that has
                 // gone stale in between is refused there rather than acted on.
                 const preview = await callAgentAudited(
                     { verb: 'domains', project: entry.id, args: { action: 'preview', environment: environment.name, token } },
@@ -1698,14 +1672,14 @@ export function createHandler(deps: ApiDeps): (req: IncomingMessage, res: Server
                     return refuseRoute(502, 'failed', 'the agent did not answer the preview with one', entry.id, 'domains', target)
                 }
 
-                // Whatever the preview found, including nothing. An environment nobody hand-wrote a file
-                // for has nothing to displace, and adopt is the only route to a vhost hostd owns: were
+                // Whatever the preview found, including nothing. An environment with no NPM proxy host
+                // yet has nothing to displace, and adopt is the only route to a proxy host hostd owns: were
                 // an empty list refused here, a newly provisioned site would sit with a domain in the
-                // registry and no vhost forever.
+                // registry and no proxy host forever.
                 const { claims, adoptable } = preview.preview
                 if (!adoptable) {
                     // Every reason of every file, rather than a count or the first one: the operator's
-                    // next move is to edit those files by hand, and each reason names a different edit.
+                    // next move is to edit those proxy hosts in NPM, and each reason names a different edit.
                     const blocked = claims
                         .filter(claim => claim.unsupported.length > 0)
                         .map(claim => `${claim.path}: ${claim.unsupported.join(' ')}`)
@@ -1736,7 +1710,7 @@ export function createHandler(deps: ApiDeps): (req: IncomingMessage, res: Server
                 )
                 if (!reply) return
 
-                // The rail said the configtest passed and the reload succeeded. That is exactly what it
+                // edge said the write succeeded and NPM reloaded. That is exactly what Apache
                 // said when thebackroom.dev went dark, so it is not the last word: ask the hostname.
                 if (reply.ok && checking !== null && before !== null) {
                     const after = await probeSite(deps.fetch ?? fetch, checking)
@@ -1753,8 +1727,8 @@ export function createHandler(deps: ApiDeps): (req: IncomingMessage, res: Server
                         // deliberately NOT recorded as written, because after the rollback hostd's
                         // vhost is gone and there is nothing for the verifier to prove against.
                         const message = rolledBackReason(checking, before, after, disable, problem)
-                        // Apache's own words only when there are any: this rollback's failure output,
-                        // never the adopt's, which was a configtest that passed and says nothing.
+                        // NPM's own words only when there are any: this rollback's failure output,
+                        // never the adopt's, which succeeded and says nothing.
                         const rolledBack: Refusal = undo.ok || undo.output === undefined
                             ? { ok: false, code: 'failed', message }
                             : { ok: false, code: 'failed', message, output: undo.output }

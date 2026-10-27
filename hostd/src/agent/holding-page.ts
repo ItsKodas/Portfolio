@@ -1,14 +1,14 @@
 // The holding page a visitor meets while a site is not serving: the Horizons landing page's closing night
 // scene (mountains, a lake and a campfire on the shore), with the site's name, why it is down, and who to
 // reach about it. One self-contained file per environment, rendered here and written by holding-pages.ts:
-// Apache serves it from the maintenance directory as the ErrorDocument for every 503, so it can load
+// edge serves it, with a 503, whenever NPM finds the site answering 502 or 504, so it can load
 // nothing from the site it stands in for, and nothing from anywhere else either.
 
 import { readFileSync } from 'node:fs'
 import type { Contact } from '../shared/registry.ts'
 
-// Why the site is down, as far as hostd can tell. upgrading is a deploy's swap (the maintenance flag is
-// up), stopped is a site container that was taken down on purpose, crashed is one that keeps dying or
+// Why the site is down, as far as hostd can tell. upgrading is a deploy's swap (the deploy
+// refreshes the page to it before the swap), stopped is a site container that was taken down on purpose, crashed is one that keeps dying or
 // died and stayed down, and unavailable is everything else: running but not answering, or not yet looked at.
 export const HOLDING_STATES = ['upgrading', 'stopped', 'crashed', 'unavailable'] as const
 export type HoldingState = typeof HOLDING_STATES[number]
@@ -247,7 +247,7 @@ ${input.contact ? contactSection(input.contact) : ''}
     if (host) host.textContent = location.hostname
     var address = document.querySelector('[data-address]')
     if (address) { address.querySelector('dd').textContent = location.hostname; address.hidden = false }
-    // Apache answers 503 for as long as the site is down, so anything else means it is back
+    // edge answers 503 for as long as the site is down, so anything else means it is back
     function check() {
         if (document.hidden) return
         fetch(location.href, { method: 'HEAD', cache: 'no-store', redirect: 'manual' })

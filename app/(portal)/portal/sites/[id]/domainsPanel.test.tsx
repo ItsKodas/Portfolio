@@ -97,18 +97,18 @@ describe('DomainsPanel, for the operator', () => {
     })
 
     // The switches belong to the environment, so they sit on the main address's row alone
-    it('draws the WebSockets and Flexible switches on the main address\'s row and flips one', async () => {
+    // There is no WebSockets switch: NPM passes WebSockets through on every site hostd serves
+    it('draws the Flexible switch on the main address\'s row and flips it', async () => {
         render(<DomainsPanel {...props} flexibleSsl domains={[domain(), domain({ hostname: 'www.acme.com', primary: false })]} />)
         const flexible = screen.getByRole('switch', { name: 'live Cloudflare Flexible SSL' })
         expect(flexible).toHaveAttribute('aria-checked', 'true')
-        const sockets = screen.getByRole('switch', { name: 'live WebSockets' })
-        expect(sockets).toHaveAttribute('aria-checked', 'false')
-        expect(screen.getAllByRole('switch')).toHaveLength(2)
+        expect(screen.queryByRole('switch', { name: 'live WebSockets' })).toBeNull()
+        expect(screen.getAllByRole('switch')).toHaveLength(1)
         expect(screen.getByText('redirects to acme.com')).toBeInTheDocument()
 
-        fireEvent.click(sockets)
-        await vi.waitFor(() => expect(saveSettings).toHaveBeenCalledWith('acme', { websockets: { live: true } }))
-        expect(sockets).toHaveAttribute('aria-checked', 'true')
+        fireEvent.click(flexible)
+        await vi.waitFor(() => expect(saveSettings).toHaveBeenCalledWith('acme', { flexibleSsl: { live: false } }))
+        expect(flexible).toHaveAttribute('aria-checked', 'false')
     })
 
     // The swap: an alias row offers to become the main address, and the main address row does not.
@@ -175,20 +175,19 @@ describe('DomainsPanel, for the operator', () => {
         expect(screen.getByText(/cannot be read here/)).toBeInTheDocument()
     })
 
-    // A dangling symlink in sites-enabled fails Apache's own configuration test, and hostd runs that test
-    // before every reload, so the adopt this dialog is about will be refused while it is there. Naming it
-    // here is the difference between an operator fixing a link and an operator retrying a button.
-    it('names a file Apache lists but cannot open, and says it stops the change', async () => {
+    // A proxy host NPM lists but hostd cannot read could be one that serves this site's names, so naming
+    // it here is the difference between an operator looking at it and an operator retrying a button.
+    it('names an NPM proxy host that cannot be read, and says to look at it before adopting', async () => {
         adoptPreview.mockResolvedValue({
             ok: true,
-            preview: preview({ unreadable: ['/etc/apache2/sites-enabled/010-arbys.horizons.gg.conf'] }),
+            preview: preview({ unreadable: ['npm/proxy-host/12'] }),
         })
 
         render(<DomainsPanel {...props} domains={[domain({ state: 'unmanaged' })]} />)
         fireEvent.click(screen.getByRole('button', { name: /adopt/i }))
 
-        expect(await screen.findByText(/010-arbys\.horizons\.gg\.conf/)).toBeInTheDocument()
-        expect(screen.getByText(/no domain change on this server/i)).toBeInTheDocument()
+        expect(await screen.findByText(/npm\/proxy-host\/12/)).toBeInTheDocument()
+        expect(screen.getByText(/in Nginx Proxy Manager before adopting/i)).toBeInTheDocument()
     })
 
     // thebackroom.dev's shape: a file with no port 443 block, behind Cloudflare on Flexible. Adopting it

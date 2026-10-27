@@ -1,5 +1,5 @@
 // One environment's visits, for the Overview's analytics panel. hostd counts them out of the access log
-// Apache writes for the environment, so nothing is added to the client's site to collect them. Any
+// edge writes for the environment, so nothing is added to the client's site to collect them. Any
 // actor who may see the site may read them: hostd checks them against its status policy.
 
 import 'server-only'
@@ -23,7 +23,7 @@ export type Analytics = {
     countries: AnalyticsCount[]
     // The first day anything was ever counted, or null
     since: string | null
-    // Whether Apache is writing this environment's access log at all
+    // Whether NPM is logging this environment's requests at all
     logging: boolean
 }
 

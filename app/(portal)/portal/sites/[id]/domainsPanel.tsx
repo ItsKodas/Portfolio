@@ -44,10 +44,10 @@ function when(iso: string | null): string {
 }
 
 // Why this row wants the operator. hostd's own sentence when it wrote one, and otherwise the fact that
-// a vhost was rolled back, which is the other thing needsYou counts.
+// an NPM proxy host was rolled back, which is the other thing needsYou counts.
 function why(domain: Domain): string {
     if (domain.error) return domain.error
-    if (domain.vhost && !domain.vhost.ok) return 'Apache refused the file, so hostd put the previous one back.'
+    if (domain.vhost && !domain.vhost.ok) return 'Nginx Proxy Manager refused the change, so hostd put the previous proxy host back.'
     return 'hostd gave no reason.'
 }
 
@@ -68,13 +68,13 @@ type Props = {
     environment: EnvironmentName
     domains: Domain[]
     isAdmin: boolean
-    // hostd makes an adoption name the project back before it will replace a live vhost, and it is the
+    // hostd makes an adoption name the project back before it will replace a live proxy host, and it is the
     // name it asks for rather than the id.
     projectName: string
     // The site's root domain, one of live's addresses, or null when it names none. Chosen on live alone.
     rootDomain: string | null
-    // The environment's render-only switches, drawn on its main address's row. Absent reads as off.
-    websockets?: boolean
+    // The environment's render-only switch, drawn on its main address's row. Absent reads as off. There is
+    // no WebSockets switch: every NPM proxy host hostd writes passes WebSockets through.
     flexibleSsl?: boolean
     // Why the list is empty, when it is empty because nobody could read it. hostd's own words for the
     // operator and a plain sentence for a client, decided before it reaches here.
@@ -104,7 +104,7 @@ function MainAddress({ environment, current, rootDomain }: { environment: Enviro
     )
 }
 
-export function DomainsPanel({ id, environment, domains, isAdmin, projectName, rootDomain, websockets = false, flexibleSsl = false, trouble }: Props) {
+export function DomainsPanel({ id, environment, domains, isAdmin, projectName, rootDomain, flexibleSsl = false, trouble }: Props) {
     const ordered = sortDomains(domains)
 
     // A client asked one question: does my website address work. They get the answer to it. No table, no
@@ -152,7 +152,6 @@ export function DomainsPanel({ id, environment, domains, isAdmin, projectName, r
         switches: domain.primary
             ? (
                 <span className={styles.rowActions}>
-                    <RowSwitch key={`ws:${websockets}`} id={id} environment={environment} flag="websockets" on={websockets} />
                     <RowSwitch key={`fx:${flexibleSsl}`} id={id} environment={environment} flag="flexibleSsl" on={flexibleSsl} />
                 </span>
             )
@@ -161,12 +160,12 @@ export function DomainsPanel({ id, environment, domains, isAdmin, projectName, r
             ? (
                 <>
                     <span className={styles.stateBad}>{why(domain)}</span>
-                    {/* Apache's own words about a file it refused, folded away: it is the one thing an
+                    {/* Nginx Proxy Manager's own words about a change it refused, folded away: it is the one thing an
                         operator opens when a reload went wrong, and six lines of it in a table cell
                         would make every other row unreadable. */}
                     {domain.vhost && !domain.vhost.ok && (
                         <details className={styles.outputBlock}>
-                            <summary>What Apache said</summary>
+                            <summary>What Nginx Proxy Manager said</summary>
                             <Tail>{domain.vhost.output}</Tail>
                         </details>
                     )}

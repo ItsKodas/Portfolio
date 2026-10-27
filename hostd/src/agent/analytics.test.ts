@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { gzipSync } from 'node:zlib'
 
-import { ACCESS_LOG_FORMAT, Analytics, accessLogName, isBot, parseLine } from './analytics.ts'
+import { Analytics, NGINX_LOG_FORMAT, accessLogName, isBot, parseLine } from './analytics.ts'
 
 const CHROME = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/129.0 Safari/537.36'
 const HTML = 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8'
@@ -29,7 +29,7 @@ type Line = {
     country?: string
 }
 
-// One line as Apache would write it in ACCESS_LOG_FORMAT, "-" for anything not sent
+// One line as edge writes it once the host is stripped, "-" for anything not sent
 function line(over: Line = {}): string {
     const value = { time: '1760097600', peer: '203.0.113.9', method: 'GET', path: '/', status: '200', agent: CHROME, accept: HTML, ...over }
     return [
@@ -38,13 +38,43 @@ function line(over: Line = {}): string {
     ].map(field => field ?? '-').join('\t')
 }
 
-describe('ACCESS_LOG_FORMAT', () => {
-    it('has a field for every column parseLine reads', () => {
-        assert.equal(ACCESS_LOG_FORMAT.split('\\t').length, line().split('\t').length)
+describe('NGINX_LOG_FORMAT', () => {
+    // nginx variable to the Apache field it stands in for, in the order FIELDS lists them
+    const EQUIVALENT: Array<[string, string]> = [
+        ['$msec', '%{sec}t'], ['$remote_addr', '%a'], ['$http_cf_connecting_ip', '%{CF-Connecting-IP}i'],
+        ['$http_x_forwarded_for', '%{X-Forwarded-For}i'], ['$request_method', '%m'], ['$uri', '%U'], ['$status', '%>s'],
+        ['$http_referer', '%{Referer}i'], ['$http_user_agent', '%{User-Agent}i'], ['$http_accept', '%{Accept}i'],
+        ['$http_rsc', '%{RSC}i'], ['$http_next_router_prefetch', '%{Next-Router-Prefetch}i'],
+        ['$http_sec_purpose', '%{Sec-Purpose}i'], ['$http_purpose', '%{Purpose}i'], ['$http_cf_ipcountry', '%{CF-IPCountry}i'],
+    ]
+
+    it("lists sixteen fields, host first, then FIELDS' order", () => {
+        const quoted = /'(.*)'/.exec(NGINX_LOG_FORMAT)?.[1] ?? ''
+        const fields = quoted.split('\\t')
+        assert.equal(fields.length, 16)
+        assert.equal(fields[0], '$host')
+        assert.deepEqual(fields.slice(1), EQUIVALENT.map(([nginx]) => nginx))
+        assert.equal(fields.length - 1, line().split('	').length)
     })
 })
 
 describe('parseLine', () => {
+    it("reads nginx's fractional epoch time", () => {
+        assert.equal(parseLine(line({ time: '1730000000.789' }), OWN)?.time, 1730000000000)
+    })
+
+    it('reads an nginx line end to end', () => {
+        const nginx = [
+            '1730000000.789', '203.0.113.9', '-', '-', 'GET', '/pricing', '200', 'https://news.example.org/post',
+            'Mozilla/5.0 (X11) \\x22Quoted\\x22 Firefox/130.0', HTML, '-', '-', '-', '-', 'AU',
+        ].join('\t')
+        const hit = parseLine(nginx, OWN)
+        assert.equal(hit?.path, '/pricing')
+        assert.equal(hit?.referrer, 'news.example.org')
+        assert.equal(hit?.country, 'AU')
+        assert.equal(hit?.time, 1730000000000)
+    })
+
     it('counts a browser loading a page', () => {
         const hit = parseLine(line({ path: '/about/', referer: 'https://www.google.com/', country: 'AU' }), OWN)
         assert.equal(hit?.path, '/about')

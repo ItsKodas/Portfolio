@@ -65,7 +65,8 @@ describe('the New site form', () => {
         await userEvent.click(screen.getByRole('button', { name: 'Add a compose file' }))
         await userEvent.type(screen.getByLabelText('Compose file 2'), 'docker-compose.prod.yml')
         await userEvent.click(within(screen.getByRole('group', { name: 'Features' })).getByRole('checkbox', { name: 'logs' }))
-        await userEvent.click(screen.getByRole('checkbox', { name: 'WebSockets' }))
+        // NPM passes WebSockets through on every site hostd serves, so there is no switch for it
+        expect(screen.queryByRole('checkbox', { name: 'WebSockets' })).toBeNull()
         await userEvent.type(screen.getByLabelText('Domain'), 'bakery.com')
         await userEvent.click(screen.getByRole('checkbox', { name: 'Deploy after creating' }))
         await waitFor(() => expect(screen.getByRole('button', { name: 'Create site' })).toBeEnabled())
@@ -76,7 +77,7 @@ describe('the New site form', () => {
             repo: 'git@github.com:ItsKodas/bakery.git', credential: 'acme', branch: 'main',
             compose: ['docker-compose.yml', 'docker-compose.prod.yml'],
             capabilities: ['lifecycle', 'domains', 'env', 'deploy'],
-            websockets: true, flexibleSsl: false, domain: 'bakery.com', certificate: 'letsencrypt', deploy: true,
+            websockets: false, flexibleSsl: false, domain: 'bakery.com', certificate: 'letsencrypt', deploy: true,
             port: '5012',
         })
         expect(push).toHaveBeenCalledWith('/portal/sites/the-bakery')
@@ -123,7 +124,7 @@ describe('the New site form', () => {
     })
 
     it('keeps the dialog open to say what is left to do on a site that was created', async () => {
-        createSiteAction.mockResolvedValue({ ok: true, id: 'the-bakery', warnings: ['The vhost was not written: x.conf serves it.'] })
+        createSiteAction.mockResolvedValue({ ok: true, id: 'the-bakery', warnings: ['The NPM proxy host was not set up: another host serves it.'] })
         await open()
         await screen.findByDisplayValue('5012')
         await userEvent.type(screen.getByLabelText('Name'), 'The Bakery')
@@ -131,7 +132,7 @@ describe('the New site form', () => {
         await waitFor(() => expect(screen.getByRole('button', { name: 'Create site' })).toBeEnabled())
         await userEvent.click(screen.getByRole('button', { name: 'Create site' }))
 
-        expect(await screen.findByText('The vhost was not written: x.conf serves it.')).toBeInTheDocument()
+        expect(await screen.findByText('The NPM proxy host was not set up: another host serves it.')).toBeInTheDocument()
         expect(push).not.toHaveBeenCalled()
         await userEvent.click(screen.getByRole('button', { name: 'Open the site' }))
         expect(push).toHaveBeenCalledWith('/portal/sites/the-bakery')

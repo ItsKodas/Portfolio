@@ -32,19 +32,11 @@ const BOOT_BACKOFF_MS = [5_000, 10_000, 20_000, 40_000]
 const log = (message: string) => console.log(`[api] ${new Date().toISOString()} ${message}`)
 const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms))
 
-// What a hostname is verified against, which is a function of the environment's certificate mode rather
-// than of anything the record itself carries.
-//
-// cloudflare-origin means the name is expected to be proxied, so https is asked for and Cloudflare's own
-// certificate is what answers it: that is what makes a TLS failure readable as "the proxy is off".
-// letsencrypt means the name points straight at this dedi, and until 4b lands the vhost still presents
-// the Origin certificate, which no public trust store will accept; https would fail every such check for
-// a reason that has nothing to do with the client's DNS. Port 80 answers the token before it redirects
-// (see agent/vhost.ts), so http is what proves an unproxied name. A mode nobody has chosen is read as
-// proxied, because every site on this machine is today.
-function verifyTarget(registry: () => Registry, record: DomainRecord): VerifyTarget {
-    const certificate = registry().projects.get(record.project)?.environments.get(record.environment)?.certificate ?? null
-    return certificate === 'letsencrypt' ? { scheme: 'http', proxied: false } : { scheme: 'https', proxied: true }
+// What a hostname is verified against. Every site is expected to be proxied, so https is asked for and
+// Cloudflare's own certificate is what answers it: that is what makes a TLS failure readable as "the
+// proxy is off".
+function verifyTarget(): VerifyTarget {
+    return { scheme: 'https', proxied: true }
 }
 
 function fail(failures: string[]): never {
@@ -105,7 +97,7 @@ async function main(): Promise<void> {
     } catch (error) {
         log(`WARN domain state could not be loaded: ${describeError(error)}`)
     }
-    const verifier = new Verifier(domains, fetch, record => verifyTarget(() => store.current(), record), message => log(`WARN ${message}`))
+    const verifier = new Verifier(domains, fetch, () => verifyTarget(), message => log(`WARN ${message}`))
     verifier.start()
 
     // Lifecycle calls get the full timeout; only the health probe above uses the short one.

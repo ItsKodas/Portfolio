@@ -7,7 +7,7 @@
 // height is left, and the side column scrolls inside itself if its lists outgrow the screen. A phone
 // stacks it all and scrolls the page, as every other tab does.
 //
-// hostd counts visits from the access log Apache keeps for the site, so nothing runs in the visitor's
+// hostd counts visits from the access log Nginx Proxy Manager sends for the site, so nothing runs in the visitor's
 // browser and nothing about a visitor is kept but counts. See hostd/src/agent/analytics.ts.
 
 import type { ReactNode } from 'react'
@@ -110,14 +110,14 @@ function Visits({ reading, isAdmin }: { reading: Reading, isAdmin: boolean }) {
     }
 
     const analytics = reading.value
-    // Nothing ever counted and nothing being logged: the site is served by a vhost hostd did not write,
-    // or the agent has not brought its vhost up to date yet. Saying so beats an empty chart.
+    // Nothing ever counted and nothing being logged: the site is served by an NPM proxy host hostd did not write,
+    // or the agent has not brought its proxy host up to date yet. Saying so beats an empty chart.
     if (!analytics.logging && analytics.since === null) {
         return (
             <section className={styles.visits} aria-label="Visits">
                 <Callout title="Visits are not being counted yet">
                     {isAdmin
-                        ? 'Apache is not writing an access log for this site. hostd adds one to every vhost it writes; a site still served by a hand-written vhost needs adopting first.'
+                        ? 'Nginx Proxy Manager is not logging requests for this site. hostd adds the logging to every NPM proxy host it writes; a site still served by a proxy host hostd did not make needs adopting first.'
                         : 'They will appear here once they are.'}
                 </Callout>
             </section>

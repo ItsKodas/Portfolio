@@ -103,7 +103,7 @@ export async function createSiteAction(input: unknown): Promise<NewSiteResult> {
     })
 
     const warnings: string[] = []
-    if (result.value.vhost && !result.value.vhost.ok) warnings.push(`The vhost was not written: ${result.value.vhost.message}`)
+    if (result.value.vhost && !result.value.vhost.ok) warnings.push(`The NPM proxy host was not set up: ${result.value.vhost.message}`)
 
     // The client picked in the form is given the site the way the Access tab gives it, with everything a
     // new grant starts with (all but the env files). hostd is not told: access is the portal's record, sent with each request.

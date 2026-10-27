@@ -30,17 +30,15 @@ services:
       HOSTD_SOCKET_GID: "1000"
       HOSTD_STATUS_FILE: /tmp/hostd-status.json
       HOSTD_DEPLOY_STATE_FILE: /var/lib/hostd/deploys.json
-      HOSTD_MAINTENANCE_DIR: /run/hostd/maintenance
       HOSTD_BACKUP_DIR: /backups
       HOSTD_BACKUP_STATE_FILE: /var/lib/hostd/backups.json
-      HOSTD_APACHE_RAIL_DIR: /etc/hostd/apache
-      HOSTD_APACHE_INCLUDE_DIR: /etc/apache2/hostd
-      HOSTD_APACHE_SITES_ENABLED: /etc/apache2/sites-enabled
-      HOSTD_ORIGIN_CERT: /etc/ssl/hostd/origin.pem
-      HOSTD_ORIGIN_KEY: /etc/ssl/hostd/origin.key
-      HOSTD_ACME_WEBROOT: /var/www/hostd-acme
       HOSTD_MAINTENANCE_ROOT: /var/www/hostd-maintenance
-      HOSTD_ACCESS_LOG_DIR: /var/log/apache2
+      HOSTD_EDGE_SOCKET: /run/hostd-edge/edge.sock
+      # Where edge's holding pages and logs are reachable: the VM's own address, which NPM forwards to.
+      HOSTD_UPSTREAM_HOST: 192.168.0.8
+      HOSTD_EDGE_HTTP_PORT: "8790"
+      # Where edge writes the per-site access logs the analytics read; see the read-only mount below.
+      HOSTD_ACCESS_LOG_DIR: /var/log/hostd
       HOSTD_ANALYTICS_DIR: /var/lib/hostd/analytics
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
@@ -58,10 +56,6 @@ services:
       # survive a restart: an environment paused after three failed builds would otherwise come back
       # rebuilding every two minutes.
       - hostd-agent-state:/var/lib/hostd
-      # The maintenance flags, on the host's own /run so Apache can see them. Nested inside the volume
-      # above on purpose: the design names this exact path, and /run is a tmpfs, so a flag can never
-      # outlive the deploy that wrote it.
-      - /run/hostd/maintenance:/run/hostd/maintenance
       # Shared only with fetcher, never with api: api must never be able to reach the fetch protocol
       # directly, and fetcher must never be able to touch agent.sock (in hostd-sock) to impersonate the
       # agent to api. See fetcher's own volumes below for the other half of this.
@@ -69,33 +63,13 @@ services:
       # The host's backup disk. Its own bind mount rather than a volume: the operator chooses which disk
       # this is, and a restore has to be able to reach these files without Docker.
       - ${HOSTD_BACKUP_DIR:-/srv/backups/hostd}:/backups
-      # The handshake with the host's systemd unit. A directory of its own holding nothing but
-      # request.json and result.json, so neither container can see anything else through it.
-      - /etc/hostd/apache:/etc/hostd/apache
-      # hostd's own include directory, which Apache is configured to IncludeOptional. Writable, because
-      # this is the whole point: hostd owns every file in here and no file anywhere else.
-      - /etc/apache2/hostd:/etc/apache2/hostd
-      # Read-only, and it stays read-only. The agent reads this to refuse a hostname another vhost
-      # already claims; moving a file out of it during an adoption is the host unit's job, precisely so
-      # that a compromised agent cannot disable every site on the machine.
-      - /etc/apache2/sites-enabled:/etc/apache2/sites-enabled:ro
-      # Do NOT remove this as unused: no code path names this directory, and it is what makes the mount
-      # above readable at all. a2ensite fills sites-enabled with RELATIVE symlinks into sites-available
-      # (../sites-available/<name>.conf), so without this directory mounted beside it every one of those
-      # links dangles inside the container: readdir lists the entry and open() answers ENOENT, while the
-      # host reads the same file perfectly well. hostd would then read none of the hand-written vhosts,
-      # find no claim on any hostname, and adopt a site without displacing the file still serving it.
-      # Read-only for the same reason as sites-enabled: the agent only ever reads these, and moving one
-      # aside during an adoption is the host unit's job.
-      - /etc/apache2/sites-available:/etc/apache2/sites-available:ro
-      # The Origin certificate the vhosts present. Read-only, and never named by anything that arrives
-      # over the wire.
-      - /etc/ssl/hostd:/etc/ssl/hostd:ro
-      # Apache's logs, for the portal's analytics. Every vhost hostd writes logs its requests to a file of
-      # its own in here, and logrotate's rule for this directory rotates it with Apache's own. Read-only:
-      # Apache is what writes these, and the agent only counts them. The same path inside as outside,
-      # because the vhost names the file and the agent reads that name back.
-      - /var/log/apache2:/var/log/apache2:ro
+      # The access logs edge writes from NPM's syslog stream, for the analytics.
+      # Read-only: edge is what writes these, and the agent only counts them. The same path inside as
+      # outside, because edge names each file and the agent reads that name back.
+      - /var/log/hostd:/var/log/hostd:ro
+      # Shared only with edge, never with api: api must never be able to reach the edge protocol, which
+      # is the only way to change what NPM serves. Its own volume for the same reason fetch has one.
+      - hostd-edge-sock:/run/hostd-edge
     healthcheck:
       test: ["CMD", "node", "--import", "tsx", "src/shared/healthcheck.ts", "/tmp/hostd-status.json"]
       interval: 60s
@@ -103,6 +77,8 @@ services:
       retries: 3
       start_period: 120s
     restart: unless-stopped
+    depends_on:
+      - edge
 
   api:
     build:
@@ -165,6 +141,76 @@ services:
       start_period: 120s
     restart: unless-stopped
 
+  edge:
+    build:
+      context: .
+      target: edge
+    container_name: hostd-edge
+    # See the note on agent.
+    init: true
+    # The host's network, not the hostd one. NPM's syslog datagrams must arrive with NPM's real source
+    # address, which Docker NAT would rewrite, and the holding page port binds 192.168.0.8 directly rather
+    # than through a published port. It binds only HOSTD_UPSTREAM_HOST, never every interface, so nothing
+    # else on the machine can reach either listener. This is also why there is no `networks:` key here.
+    # The source-address check does not authenticate the stream: UDP source addresses can be forged on the
+    # LAN, so it only filters stray traffic. The worst a forged line can do is skew one site's visit counts,
+    # and the VM firewall (see the RUNBOOK) is what limits who can reach the port.
+    network_mode: host
+    # Root, like fetcher: it chowns its socket to HOSTD_SOCKET_GID, so that the agent (and nothing else)
+    # can connect. HOSTD_NPM_IDENTITY and HOSTD_NPM_SECRET live here, and nowhere else, because this file is committed.
+    env_file: .env.edge
+    # No setuid binary or file capability can raise the process's privileges again.
+    security_opt: ["no-new-privileges:true"]
+    # Root still, but with every capability dropped bar the one below.
+    cap_drop: [ALL]
+    # CHOWN, to hand its socket to HOSTD_SOCKET_GID. Nothing else needs one: the ports are above 1024 and it
+    # writes only to directories it owns as root.
+    cap_add: [CHOWN]
+    environment:
+      HOSTD_EDGE_SOCKET: /run/hostd-edge/edge.sock
+      HOSTD_REGISTRY_FILE: /etc/hostd/registry/projects.yaml
+      # The node user's group in the api image, as on agent: the agent runs as root, but keeping the one
+      # value means a later change to who connects touches one setting.
+      HOSTD_SOCKET_GID: "1000"
+      HOSTD_STATUS_FILE: /tmp/hostd-status.json
+      # npm (stock Nginx Proxy Manager) or npmplus. edge refuses to start on anything else. NPMplus serves
+      # its API over https only, so with npmplus HOSTD_NPM_URL must be an https URL, and edge has to trust
+      # NPMplus's admin certificate: export it to /opt/horizons/hostd/npm-ca.pem, add a read-only mount of it
+      # under volumes (- /opt/horizons/hostd/npm-ca.pem:/etc/hostd/npm-ca.pem:ro) and set
+      # NODE_EXTRA_CA_CERTS: /etc/hostd/npm-ca.pem here. The mount is not here already because the file
+      # does not exist until then, and Docker would make a directory in its place. RUNBOOK.md, "6. Moving
+      # to NPMplus", has the steps. HOSTD_NPM_ADDRESS becomes NPMplus's address too (its syslog source).
+      # NPMplus since 2026-10-27, reached through its own proxy host for nginx.horizons.gg, whose
+      # certificate is the publicly trusted *.horizons.gg one: that needs none of the certificate steps above.
+      HOSTD_NPM_FLAVOUR: npmplus
+      HOSTD_NPM_URL: https://nginx.horizons.gg/api
+      HOSTD_NPM_ADDRESS: 192.168.0.6
+      HOSTD_UPSTREAM_HOST: 192.168.0.8
+      HOSTD_EDGE_HTTP_PORT: "8790"
+      HOSTD_EDGE_SYSLOG_PORT: "5514"
+      HOSTD_ACCESS_LOG_DIR: /var/log/hostd
+      HOSTD_MAINTENANCE_ROOT: /var/www/hostd-maintenance
+    volumes:
+      # Shared only with agent, never with api or fetcher. See the note on agent's mount of it.
+      - hostd-edge-sock:/run/hostd-edge
+      # The directory, for the reason given on the agent's registry mount. Read-only: edge only reads it,
+      # to map a hostname in a log line to the site that owns it. A line for a host the registry does not
+      # know is dropped, so nothing is ever written under a name a stranger chose.
+      - ./registry:/etc/hostd/registry:ro
+      # The agent's holding pages, served to NPM while a site is down. Read-only: the agent writes them.
+      # The same path inside as outside, because it is the path the agent's own setting names.
+      - /var/www/hostd-maintenance:/var/www/hostd-maintenance:ro
+      # The one place edge writes: a log file per site, from NPM's syslog stream. The agent reads it back
+      # read-only. On the host, not a volume, so logrotate can rotate it and the operator can read it.
+      - /var/log/hostd:/var/log/hostd
+    healthcheck:
+      test: ["CMD", "node", "--import", "tsx", "src/shared/healthcheck.ts", "/tmp/hostd-status.json"]
+      interval: 60s
+      timeout: 15s
+      retries: 3
+      start_period: 120s
+    restart: unless-stopped
+
 networks:
   hostd:
     name: hostd
@@ -174,3 +220,4 @@ volumes:
   hostd-agent-state:
   hostd-sock:
   hostd-fetch-sock:
+  hostd-edge-sock:

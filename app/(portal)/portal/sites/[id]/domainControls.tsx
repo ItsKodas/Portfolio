@@ -157,7 +157,7 @@ export function RootDomainField({ id, current, livePrimary }: RootProps) {
 // One of an environment's render-only switches, drawn on its main address's row like Cloudflare's proxy
 // cloud: lit when on, grey when off, and one click flips it. They belong to the environment rather than to
 // any one hostname (an alias only redirects to the main address), which is why only that row has them.
-// Flipping one rewrites the environment's Apache configuration if hostd serves it.
+// Flipping one updates the environment's NPM proxy host if hostd serves it.
 type SwitchProps = {
     id: string
     environment: string
@@ -357,7 +357,7 @@ export function AdoptSite({ id, environment, projectName }: AdoptProps) {
     const [said, setSaid] = useState<SiteActionResult | null>(null)
 
     // The preview is read when the dialog opens rather than while the page renders, because it is the
-    // only thing on this tab that makes the agent walk sites-enabled, and almost nobody opens it.
+    // only thing on this tab that makes the agent search Nginx Proxy Manager, and almost nobody opens it.
     async function look() {
         setOpen(true)
         setTyped('')
@@ -392,12 +392,11 @@ export function AdoptSite({ id, environment, projectName }: AdoptProps) {
         }
     }
 
-    // Typed back exactly, because this replaces the file a live site is being served from
+    // Typed back exactly, because this replaces the proxy host a live site is being served from
     const named = typed.trim() === projectName
     const ready = preview !== null && preview.adoptable && named && !pending
-    // A file Apache lists but cannot open fails its own configuration test, and hostd runs that test
-    // before every reload, so this stops the adopt as surely as an unparseable file does. It is not made
-    // to block the button, because the operator cannot fix it from this page, only on the server.
+    // Proxy hosts that could not be read at all. Always empty with NPM (the field stays on the wire for
+    // older agents), and not made to block the button, because the operator cannot fix it from this page.
     const unreadable = preview?.unreadable ?? []
     const onlyOne = unreadable.length === 1
 
@@ -432,11 +431,10 @@ export function AdoptSite({ id, environment, projectName }: AdoptProps) {
                         {!preview.adoptable && (
                             <div className={styles.said}>
                                 <Callout tone="crit" title="This one cannot be taken over from here">
-                                    One of the files below does something the configuration hostd writes
-                                    cannot do, or uses a directive this parser will not follow. Each
-                                    reason is spelled out under the file it came from. hostd refuses the
-                                    change rather than replacing the file and hoping, so those have to be
-                                    settled by hand on the server first.
+                                    One of the proxy hosts below does something the proxy host hostd writes
+                                    cannot do. Each reason is spelled out under the proxy host it came
+                                    from. hostd refuses the change rather than replacing it and hoping,
+                                    so those have to be settled in Nginx Proxy Manager first.
                                 </Callout>
                             </div>
                         )}
@@ -445,11 +443,10 @@ export function AdoptSite({ id, environment, projectName }: AdoptProps) {
                         {preview.flexibleSsl && (
                             <div className={styles.said}>
                                 <Callout title="Port 80 will keep serving the site (Flexible SSL)">
-                                    The file below answers plain HTTP on port 80 and has no port 443 block,
-                                    so whatever sits in front of this site (Cloudflare on Flexible) reaches
-                                    it over HTTP. Adopting it switches Flexible SSL on for this environment,
-                                    so hostd serves the site on port 80 as well, rather than redirecting
-                                    it to https and sending that CDN round in a loop. Once the CDN reaches
+                                    This environment has Flexible SSL on, so whatever sits in front of
+                                    this site (Cloudflare on Flexible) reaches it over HTTP and hostd
+                                    serves the site on port 80 as well, rather than redirecting it to
+                                    https and sending that CDN round in a loop. Once the CDN reaches
                                     port 443 instead (Cloudflare: Full), untick Flexible SSL in Settings.
                                 </Callout>
                             </div>
@@ -457,13 +454,10 @@ export function AdoptSite({ id, environment, projectName }: AdoptProps) {
 
                         {unreadable.length > 0 && (
                             <div className={styles.said}>
-                                <Callout tone="crit" title="Apache cannot read everything in sites-enabled">
-                                    {`${unreadable.join(', ')}. Apache lists ${onlyOne ? 'that file' : 'those files'} `
-                                        + `but cannot open ${onlyOne ? 'it' : 'them'}, which almost always means a link `
-                                        + `pointing at something that has been deleted or renamed. Apache checks its own `
-                                        + `configuration before every reload and that check fails while ${onlyOne ? 'it is' : 'they are'} `
-                                        + `there, so no domain change on this server, including this one, can take effect `
-                                        + `until ${onlyOne ? 'it is' : 'they are'} removed on the server itself.`}
+                                <Callout tone="crit" title="Some NPM proxy hosts could not be read">
+                                    {`${unreadable.join(', ')}. Nginx Proxy Manager lists ${onlyOne ? 'that proxy host' : 'those proxy hosts'} `
+                                        + `but hostd cannot read ${onlyOne ? 'it' : 'them'}, so it cannot tell whether ${onlyOne ? 'it serves' : 'they serve'} `
+                                        + `one of this site's names. Look at ${onlyOne ? 'it' : 'them'} in Nginx Proxy Manager before adopting.`}
                                 </Callout>
                             </div>
                         )}
@@ -471,7 +465,7 @@ export function AdoptSite({ id, environment, projectName }: AdoptProps) {
                         {preview.extraNames.length > 0 && (
                             <div className={styles.said}>
                                 <Callout tone="warn" title="These names would stop being served">
-                                    {`${preview.extraNames.join(', ')}. The file below answers them today `
+                                    {`${preview.extraNames.join(', ')}. The proxy host below answers them today `
                                         + 'and hostd has never been told about them. Add them above first '
                                         + 'if they are still wanted.'}
                                 </Callout>
@@ -483,8 +477,8 @@ export function AdoptSite({ id, environment, projectName }: AdoptProps) {
                                 <h3 className={styles.paneHead}>What is there now</h3>
                                 {preview.claims.length === 0
                                     ? <p className={styles.empty}>
-                                        Nothing hand-written answers for this site, so there is nothing to
-                                        replace. It gets a configuration hostd owns from here on.
+                                        No NPM proxy host answers for this site, so there is nothing to
+                                        replace. It gets one hostd owns from here on.
                                     </p>
                                     : preview.claims.map(claim => (
                                         <div className={styles.claim} key={claim.path}>
@@ -523,7 +517,7 @@ export function AdoptSite({ id, environment, projectName }: AdoptProps) {
                             value={typed}
                             spellCheck={false}
                             autoComplete="off"
-                            hint="The old file is switched off and the new one goes in, in one reload. If Apache refuses it, hostd puts the previous one back by itself."
+                            hint="The old proxy host is replaced by the new one in a single change. If Nginx Proxy Manager refuses it, hostd puts the previous one back by itself."
                             onChange={event => setTyped(event.target.value)}
                         />
                     </>

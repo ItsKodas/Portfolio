@@ -482,12 +482,12 @@ export async function adoptAction(id: string, environment: string, confirm: stri
     revalidatePath(`/portal/sites/${id}`)
     return {
         ok: true,
-        message: 'Done. hostd owns this site\'s configuration now, and the hand-written one is switched off.',
+        message: 'Done. hostd owns this site\'s NPM proxy host now.',
     }
 }
 
 // Deleting the site is the operator's alone: hostd puts removal among its admin-only policy verbs, and this
-// is the same rule applied a step earlier. hostd stops the site, unregisters it and takes its vhost off; the
+// is the same rule applied a step earlier. hostd stops the site, unregisters it and takes its NPM proxy host off; the
 // folder, volumes and databases stay on the server.
 export async function deleteSiteAction(id: string, confirm: string): Promise<SiteActionResult> {
     if (typeof confirm !== 'string') return { ok: false, error: 'That is not something this page can do.' }
@@ -564,7 +564,7 @@ export async function addEnvironmentAction(
     })
 
     revalidatePath(`/portal/sites/${id}`)
-    // The environment exists either way; only its vhost is missing, and its Domains section can add it
+    // The environment exists either way; only its NPM proxy host is missing, and its Domains section can add it
     const vhost = result.value.vhost
     const said = vhost && !vhost.ok
         ? `${name} is added, but its address was not set up: ${vhost.message}. Add it again from its Domains section on the Environments tab.`

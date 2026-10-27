@@ -1,8 +1,8 @@
 // Moving an environment to another port. Six steps, in this order, because each is only undoable while
 // the ones after it have not happened: check the port, write it into .env, write hostd.ports.yml if the
 // environment has none, make sure compose publishes it, write the registry, recreate the containers
-// (which rereads .env), and rewrite the vhost to proxy there. A failure puts back every step before it,
-// so the site is never left listening on one port while Apache proxies to another. The recreate is a few
+// (which rereads .env), and rewrite the NPM hosts to proxy there. A failure puts back every step before
+// it, so the site is never left listening on one port while NPM proxies to another. The recreate is a few
 // seconds of downtime, which the portal says before it asks.
 
 import { posix } from 'node:path'
@@ -23,16 +23,16 @@ export type PortChangeDeps = {
     override: (environment: EnvironmentEntry) => Promise<PortOverrideResult>
     removeOverride: (environment: EnvironmentEntry) => Promise<void>
     published: (environment: EnvironmentEntry) => Promise<{ ok: true, ports: number[] } | { ok: false, problem: string }>
-    // Writes the registry and refreshes the agent's copy of it, so the vhost rewrite reads the new port.
+    // Writes the registry and refreshes the agent's copy of it, so the hosts rewrite reads the new port.
     // compose, relative to the environment's dir, is written in the same edit when given.
     writePort: (port: number, compose?: string[]) => Promise<{ ok: true } | { ok: false, problem: string }>
     running: (environment: EnvironmentEntry) => Promise<boolean>
     up: (environment: EnvironmentEntry) => Promise<{ ok: true } | { ok: false, message: string }>
-    // A problem, or null when the vhost is rewritten or there is no hostd vhost to rewrite
-    rewriteVhost: () => Promise<string | null>
-    // Whether the vhost for this environment is a file hostd wrote itself. Only asked of an environment
-    // with an address: one served by a hand-written file is refused, since nothing here can rewrite it.
-    hasOwnVhost: (environment: EnvironmentEntry) => Promise<boolean>
+    // A problem, or null when the NPM hosts are rewritten or hostd has no hosts to rewrite
+    rewriteHosts: () => Promise<string | null>
+    // Whether hostd manages this environment's NPM hosts. Only asked of an environment with an address:
+    // one served by a host made by hand in NPM is refused, since nothing here may rewrite it.
+    hasOwnHosts: (environment: EnvironmentEntry) => Promise<boolean>
 }
 
 export async function changePort(
@@ -44,19 +44,19 @@ export async function changePort(
     const old = environment.port
     if (port === old) return { ok: true, output: `${where} already uses port ${port}` }
 
-    // Before anything is written: a hand-written vhost goes on proxying to the old port, and the rewrite
-    // below finds no file of hostd's to bring level, so the change would report success with the site
-    // unreachable. The operator adopts the file first (a previewed decision of its own) or moves by hand.
+    // Before anything is written: a host made by hand in NPM goes on proxying to the old port, and the
+    // rewrite below finds no hosts of hostd's to bring level, so the change would report success with the
+    // site unreachable. The operator adopts the host first (a previewed decision of its own) or moves by hand.
     const address = environment.domain ?? environment.aliases[0] ?? null
     if (address !== null) {
         let owned: boolean
         try {
-            owned = await deps.hasOwnVhost(environment)
+            owned = await deps.hasOwnHosts(environment)
         } catch (error) {
-            return refuse('failed', `${where} could not be moved to port ${port}: whether hostd owns its vhost could not be read: ${describeError(error)}`)
+            return refuse('failed', `${where} could not be moved to port ${port}: whether hostd manages its NPM hosts could not be read: ${describeError(error)}`)
         }
         if (!owned) {
-            return refuse('bad-request', `${address} is served by a hand-written vhost; adopt it from the Domains tab first, or move the port by hand`)
+            return refuse('bad-request', `${address} is served by an NPM proxy host hostd does not manage; adopt it from the Domains tab first, or move the port by hand in Nginx Proxy Manager`)
         }
     }
 
@@ -84,7 +84,7 @@ export async function changePort(
     const relative = (entry: EnvironmentEntry) => entry.composePaths.map(path => posix.relative(entry.dir, path))
     let registryWritten = false
     let recreated = false
-    let vhostTouched = false
+    let hostsTouched = false
     const undo = async () => {
         await attempt('.env could not be put back', async () => {
             const restored = await deps.restorePortEnv(environment, written.previous)
@@ -105,7 +105,7 @@ export async function changePort(
                 return back.ok ? null : back.message
             })
         }
-        if (vhostTouched) await attempt('the vhost could not be put back', () => deps.rewriteVhost())
+        if (hostsTouched) await attempt('the NPM hosts could not be put back', () => deps.rewriteHosts())
     }
     const failed = (message: string) => refuse('failed', undone.length === 0 ? message : `${message} ${undone.join('. ')}.`)
 
@@ -158,11 +158,11 @@ export async function changePort(
             }
         }
 
-        vhostTouched = true
-        const vhostProblem = await deps.rewriteVhost()
-        if (vhostProblem !== null) {
+        hostsTouched = true
+        const hostsProblem = await deps.rewriteHosts()
+        if (hostsProblem !== null) {
             await undo()
-            return failed(`the vhost for ${where} could not be rewritten: ${vhostProblem} It was moved back to ${old}.`)
+            return failed(`the NPM hosts for ${where} could not be rewritten: ${hostsProblem} It was moved back to ${old}.`)
         }
     } catch (error) {
         await undo()

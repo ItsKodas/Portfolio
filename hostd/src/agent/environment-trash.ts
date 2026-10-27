@@ -18,6 +18,7 @@ import { hostnamesOf, type EnvironmentEntry, type EnvironmentName, type ProjectE
 import { isFlatDir, isNestedDir, siteOf } from '../shared/layout.ts'
 import type { PortVerdict } from '../shared/ports.ts'
 import type { Change } from '../shared/registry-write.ts'
+import type { HostsSpec } from '../shared/edge-protocol.ts'
 import { refuse, type AgentReply, type DeletedEnvironment, type Refusal, type RestoreEnvironmentReply } from '../shared/protocol.ts'
 import type { ComposeLocation, Runner } from './compose.ts'
 import { deployTrees, downArgv, locationIn, runCompose, upArgv, SWAP_TIMEOUT_MS } from './deploy-compose.ts'
@@ -32,13 +33,13 @@ const TRASH_DIR = /^\/var\/www\/[A-Za-z0-9][A-Za-z0-9._-]{0,63}\/\.deleted\/[a-z
 
 type Done = { ok: true } | { ok: false, message: string }
 
-// The vhost hostd wrote for an environment. read answers null when hostd never wrote one, which is not an
-// error: that environment is served by hand, or not at all. put writes back exactly the text read, which
-// is how a delete's undo puts a removed vhost back without minting a token only api may mint.
+// The NPM hosts hostd wrote for an environment. read answers null when hostd holds none, which is not an
+// error: that environment is served by hand, or not at all. put creates them again from exactly what was
+// read, which is how a delete's undo puts removed hosts back without minting a token only api may mint.
 export type TrashVhosts = {
-    read(project: ProjectEntry, environment: EnvironmentEntry): Promise<string | null>
+    read(project: ProjectEntry, environment: EnvironmentEntry): Promise<HostsSpec | null>
     remove(project: ProjectEntry, environment: EnvironmentEntry): Promise<Done>
-    put(project: ProjectEntry, environment: EnvironmentEntry, text: string): Promise<Done>
+    put(project: ProjectEntry, environment: EnvironmentEntry, previous: HostsSpec): Promise<Done>
     write(project: ProjectEntry, environment: EnvironmentEntry, token: string): Promise<Done>
 }
 
@@ -71,7 +72,7 @@ export type TrashDeps = {
     }
     // The docker CLI: compose down and up, and the volume listing and removal a purge runs
     runner: Runner
-    // null when nothing wired the Apache rail up, so hostd has never written a vhost for anything
+    // null when nothing wired edge up, so hostd has never written NPM hosts for anything
     vhosts: TrashVhosts | null
     checkPort(port: number): Promise<PortVerdict>
     choosePort(): Promise<{ ok: true, port: number } | { ok: false, problem: string }>
@@ -122,7 +123,7 @@ function entryFrom(name: EnvironmentName, node: Record<string, unknown>, compose
     return {
         name, dir, composePaths: compose.map(file => posix.join(dir, file)), composeName,
         branch: typeof node.branch === 'string' ? node.branch : null,
-        domain: null, aliases: [], port, certificate: null, deployed: null, websockets: false, flexibleSsl: false,
+        domain: null, aliases: [], port, certificate: null, deployed: null, websockets: false, flexibleSsl: false, npm: null,
     }
 }
 
@@ -166,10 +167,10 @@ export async function deleteEnvironment(project: ProjectEntry, name: Environment
         const vhosts = deps.vhosts
         const previous = vhosts ? await vhosts.read(project, environment) : null
         if (vhosts && previous !== null) {
-            ensure(await vhosts.remove(project, environment), `the vhost for ${id} could not be removed`)
+            ensure(await vhosts.remove(project, environment), `the NPM hosts for ${id} could not be removed`)
             steps.push({
-                what: `removed the vhost for ${id}`,
-                undo: async () => ensure(await vhosts.put(project, environment, previous), 'the vhost could not be put back'),
+                what: `removed the NPM hosts for ${id}`,
+                undo: async () => ensure(await vhosts.put(project, environment, previous), 'the NPM hosts could not be put back'),
             })
         }
 
@@ -260,6 +261,9 @@ export async function restoreEnvironment(
     const restoredNode: Record<string, unknown> = { ...node, port }
     delete restoredNode.domain
     delete restoredNode.aliases
+    // The NPM ids the environment had name hosts the delete removed. NPM never reuses an id, so they
+    // would point at nothing, or at a host made since; the hosts are made afresh below instead.
+    delete restoredNode.npm
     if (kept.length > 0) restoredNode.domain = kept[0]
     if (kept.length > 1) restoredNode.aliases = kept.slice(1)
 
@@ -319,9 +323,9 @@ export async function restoreEnvironment(
             try {
                 const wrote = await deps.vhosts.write(current, restored, token)
                 if (wrote.ok) vhost = true
-                else warnings.push(`its vhost could not be written: ${wrote.message}`)
+                else warnings.push(`its NPM proxy host could not be written: ${wrote.message}`)
             } catch (error) {
-                warnings.push(`its vhost could not be written: ${describeError(error)}`)
+                warnings.push(`its NPM proxy host could not be written: ${describeError(error)}`)
             }
         }
         const up = await runCompose(upArgv(locationIn(restored, restored.dir), restored.composeName), SWAP_TIMEOUT_MS, deps.runner)

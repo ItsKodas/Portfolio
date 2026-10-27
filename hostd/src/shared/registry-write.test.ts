@@ -18,7 +18,7 @@ projects:
         branch: main
         domain: acme.com
         port: 5010
-        certificate: letsencrypt
+        certificate: cloudflare-origin
 `
 
 // The real entries on the dedi look like this: a note above a key and another trailing one on the same
@@ -75,7 +75,7 @@ const addProject: Change = {
     project: {
         client: 'cl_2', name: 'Bakery', repo: 'git@github.com:ItsKodas/bakery.git',
         services: { web: { role: 'site' } },
-        environment: { name: 'live', dir: '/var/www/bakery', branch: 'main', domain: 'bakery.com', aliases: [], port: 5011, certificate: 'letsencrypt' },
+        environment: { name: 'live', dir: '/var/www/bakery', branch: 'main', domain: 'bakery.com', aliases: [], port: 5011, certificate: 'cloudflare-origin' },
     },
 }
 
@@ -150,7 +150,7 @@ describe('applyChange', () => {
     it('adds an environment to an existing project', () => {
         const result = applyChange(BASE, {
             kind: 'add-environment', id: 'acme',
-            environment: { name: 'test', dir: '/var/www/acme-test', branch: 'develop', domain: 'test.acme.com', aliases: [], port: 5110, certificate: 'letsencrypt' },
+            environment: { name: 'test', dir: '/var/www/acme-test', branch: 'develop', domain: 'test.acme.com', aliases: [], port: 5110, certificate: 'cloudflare-origin' },
         })
         assert.ok(result.ok)
         assert.equal(parseRegistry(result.text).projects.get('acme')!.environments.get('test')!.branch, 'develop')
@@ -905,5 +905,23 @@ describe('restoring a deleted environment', () => {
         const writer = new RegistryWriter('/etc/hostd/projects.yaml', fs)
         assert.equal((await writer.environmentNode('acme', 'uat1'))?.port, 5020)
         assert.equal(await writer.environmentNode('acme', 'nope'), null)
+    })
+})
+
+describe('set-npm', () => {
+    it('writes and clears the ids', () => {
+        const written = applyChange(BASE, { kind: 'set-npm', id: 'acme', environment: 'live', npm: { proxyHost: 10, redirectionHost: null } })
+        assert.equal(written.ok, true)
+        const text = written.ok ? written.text : ''
+        assert.deepEqual(parseRegistry(text).projects.get('acme')?.environments.get('live')?.npm, { proxyHost: 10, redirectionHost: null })
+        assert.doesNotMatch(text, /redirectionHost/)
+
+        const cleared = applyChange(text, { kind: 'set-npm', id: 'acme', environment: 'live', npm: null })
+        assert.equal(cleared.ok, true)
+        assert.doesNotMatch(cleared.ok ? cleared.text : '', /npm/)
+    })
+
+    it('refuses an environment the project does not have', () => {
+        assert.equal(applyChange(BASE, { kind: 'set-npm', id: 'acme', environment: 'test', npm: { proxyHost: 10, redirectionHost: 4 } }).ok, false)
     })
 })

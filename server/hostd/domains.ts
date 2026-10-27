@@ -1,5 +1,5 @@
 // Domains, per environment. Six calls: the list, adding one, removing one, verifying one, and the two
-// that adopt a hand-written vhost (a preview, then the adopt itself).
+// that adopt a hand-made NPM proxy host (a preview, then the adopt itself).
 //
 // Every type here is copied from hostd's own source rather than from any description of it:
 // hostd/src/api/domain-state.ts for a record, hostd/src/shared/protocol.ts for the replies and
@@ -21,7 +21,7 @@ export type Domain = {
     state: DomainState
     checkedAt: string | null
     error: string | null
-    // Apache's raw words about a configuration it refused. hostd omits this for a client, so null here
+    // Nginx Proxy Manager's raw words about a change it refused. hostd omits this for a client, so null here
     // can mean either nothing went wrong or that the caller was not allowed to see what did.
     vhost: { ok: boolean, output: string } | null
     // The environment's own certificate mode, joined on by hostd when it answers rather than stored per
@@ -31,17 +31,16 @@ export type Domain = {
 
 export type AdoptPreview = {
     proposed: string
-    // text is the claiming file verbatim, and it is the point of the preview rather than a detail of it:
-    // adoption switches this file off and puts hostd's own in its place on a site serving somebody right
-    // now, and the handful of directives hostd's parser reads are not the whole of what the file does.
+    // text is the claiming NPM proxy host as JSON, and it is the point of the preview rather than a detail
+    // of it: adoption replaces this proxy host with hostd's own on a site serving somebody right now, and
+    // the handful of fields hostd's parser reads are not the whole of what it does.
     //
-    // unsupported is every reason this file cannot be adopted, empty when none was found. A file can be
+    // unsupported is every reason this proxy host cannot be adopted, empty when none was found. One can be
     // several kinds of unadoptable at once, so they all travel rather than only the first.
     claims: { path: string, text: string, names: string[], unsupported: string[] }[]
     extraNames: string[]
-    // Files in Apache's sites-enabled that could not be opened at all, so nothing at all is known about
-    // them. Usually a symlink whose target has gone. They claim no hostname and block no write, but
-    // Apache's own configuration test fails while they are there, so every reload is refused.
+    // NPM proxy hosts that could not be read at all, so nothing is known about them. Always empty now;
+    // kept so the portal and an older agent still agree on the shape.
     unreadable: string[]
     adoptable: boolean
     // Whether adopting switches the environment to Flexible SSL, because a file being replaced answers

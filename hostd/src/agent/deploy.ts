@@ -66,7 +66,8 @@ export type DeployFs = {
     // env file and must not become reachable through the capability that edits those.
     copyFile(from: string, to: string): Promise<void>
     freeBytes(path: string): Promise<number>
-    // The flag Apache reads to serve the holding page, keyed <id>-<env> as the design names it.
+    // Puts the holding page up as 'upgrading' for the swap, keyed <id>-<env>. Nothing is cleared afterwards:
+    // the next holding page refresh puts it back.
     setMaintenance(key: string): Promise<void>
     clearMaintenance(key: string): Promise<void>
     // The ownership and mode an existing path already has, read before it is used as the pattern for a
@@ -651,7 +652,7 @@ export async function runDeploy(
     // does. Both can change once, below, when a move an earlier deploy started is finished first.
     let { trees, target } = sourceTrees(project, environment, deps)
     const name = composeNameOf(environment)
-    // The maintenance flag's own name, not the deploy key: this one becomes a filename Apache reads.
+    // The maintenance flag's own name, not the deploy key: this one becomes a holding page filename.
     const key = maintenanceKey(project.id, environment.name)
 
     const record = (
