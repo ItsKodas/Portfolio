@@ -1,8 +1,8 @@
-# Deploys the site to the dedi on every push to Master, through a self-hosted runner that runs on the dedi
-# itself. The runner connects out to GitHub, so nothing new is exposed to the internet and the dedi's
-# dynamic IP does not matter. Setup is in the README, under "Automatic deploys".
+# Deploys the site to the websites VM (192.168.0.8, Proxmox VM 105) on every push to Master, through a
+# self-hosted runner that runs on that VM itself. The runner connects out to GitHub, so nothing new is exposed
+# to the internet and the home connection's dynamic IP does not matter. Setup is in the README, under "Automatic deploys".
 #
-# Never add a pull_request trigger here: the runner has the Docker socket, which is root on the dedi.
+# Never add a pull_request trigger here: the runner has the Docker socket, which is root on the VM.
 
 name: Deploy
 
@@ -14,7 +14,7 @@ on:
 # One deploy at a time. A push that lands mid-deploy waits for it rather than cancelling it, since a
 # cancelled deploy could stop between the pull and the rebuild.
 concurrency:
-  group: deploy-dedi
+  group: deploy-websites
   cancel-in-progress: false
 
 permissions:
@@ -22,13 +22,13 @@ permissions:
 
 jobs:
   deploy:
-    runs-on: [self-hosted, dedi]
+    runs-on: [self-hosted, websites]
     environment:
       name: production
       url: https://www.horizons.gg
     timeout-minutes: 30
     env:
-      SITE_DIR: /var/www/horizons
+      SITE_DIR: /opt/horizons
       SITE_URL: http://127.0.0.1:5004/
     steps:
       - name: Pull the pushed commit
@@ -39,7 +39,7 @@ jobs:
           set -eu
           cd "$SITE_DIR"
 
-          # A tracked file edited by hand on the dedi would otherwise either block the merge or quietly
+          # A tracked file edited by hand on the VM would otherwise either block the merge or quietly
           # outlive the deploy. Gitignored files (.env, the hostd registry) are not affected.
           if ! git diff --quiet HEAD; then
             echo "::error::$SITE_DIR has local changes to tracked files; commit or discard them first"
@@ -48,7 +48,7 @@ jobs:
           fi
 
           # The job's own token, passed the way actions/checkout passes it: as config in the environment,
-          # so it never lands in argv or in .git/config, and the dedi needs no stored GitHub credential.
+          # so it never lands in argv or in .git/config, and the VM needs no stored GitHub credential.
           export GIT_CONFIG_COUNT=1
           export GIT_CONFIG_KEY_0="http.https://github.com/.extraheader"
           export GIT_CONFIG_VALUE_0="AUTHORIZATION: basic $(printf 'x-access-token:%s' "$TOKEN" | base64 | tr -d '\n')"
@@ -95,4 +95,4 @@ jobs:
 
       - name: Mail is deployed by hand
         if: steps.pull.outputs.mail == 'yes'
-        run: echo "::warning::This push changed mail/, which is not deployed automatically. Run ./scripts/stack.sh up --build mail on the dedi when ready."
+        run: echo "::warning::This push changed mail/, which is not deployed automatically. Run ./scripts/stack.sh up --build mail on the websites VM when ready."
