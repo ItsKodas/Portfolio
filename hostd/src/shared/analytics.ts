@@ -2,7 +2,18 @@
 // read out of the access log Apache writes for it. Shared because api and the agent both name it, and
 // the portal mirrors it in server/hostd/analytics.ts.
 
+import { posix } from 'node:path'
 import type { EnvironmentName } from './registry.ts'
+
+export function accessLogName(id: string, environment: EnvironmentName): string {
+    // .log last, so Debian's logrotate rule for /var/log/apache2/*.log rotates it with Apache's own.
+    // Environment names have no hyphen, so the last hyphen always splits the two, as in vhostPath.
+    return `hostd-${id}-${environment}.access.log`
+}
+
+export function accessLogPath(dir: string, id: string, environment: EnvironmentName): string {
+    return posix.join(dir, accessLogName(id, environment))
+}
 
 // How far back one request may look. The access logs themselves only go back as far as logrotate keeps
 // them (fourteen days on Debian), so anything older comes out of the agent's own record of past days.

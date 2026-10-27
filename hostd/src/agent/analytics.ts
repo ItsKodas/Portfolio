@@ -18,7 +18,7 @@ import { mkdir, readdir, readFile, rename, stat, writeFile } from 'node:fs/promi
 import { posix } from 'node:path'
 import { createInterface } from 'node:readline'
 import { createGunzip } from 'node:zlib'
-import { TOP_ROWS, type AnalyticsCount, type AnalyticsDay, type AnalyticsReply } from '../shared/analytics.ts'
+import { TOP_ROWS, accessLogName, accessLogPath, type AnalyticsCount, type AnalyticsDay, type AnalyticsReply } from '../shared/analytics.ts'
 import type { EnvironmentName } from '../shared/registry.ts'
 
 // Tab separated, because Apache escapes every control character in a logged value (a tab arrives as \t),
@@ -35,18 +35,11 @@ const FIELDS = [
     '%{sec}t', '%a', '%{CF-Connecting-IP}i', '%{X-Forwarded-For}i', '%m', '%U', '%>s', '%{Referer}i', '%{User-Agent}i',
     '%{Accept}i', '%{RSC}i', '%{Next-Router-Prefetch}i', '%{Sec-Purpose}i', '%{Purpose}i', '%{CF-IPCountry}i',
 ] as const
+// accessLogName and accessLogPath moved to shared/analytics.ts so edge can name the same files.
+export { accessLogName, accessLogPath }
+
 // Written into the vhost as it stands here: a backslash and a t, which mod_log_config reads as a tab.
 export const ACCESS_LOG_FORMAT = FIELDS.join('\\t')
-
-export function accessLogName(id: string, environment: EnvironmentName): string {
-    // .log last, so Debian's logrotate rule for /var/log/apache2/*.log rotates it with Apache's own.
-    // Environment names have no hyphen, so the last hyphen always splits the two, as in vhostPath.
-    return `hostd-${id}-${environment}.access.log`
-}
-
-export function accessLogPath(dir: string, id: string, environment: EnvironmentName): string {
-    return posix.join(dir, accessLogName(id, environment))
-}
 
 export type Hit = {
     time: number
