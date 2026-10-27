@@ -245,14 +245,20 @@ function proxyClaimProblem(deps: HostsDeps, record: NpmRecord, owner: Owner, spe
     return null
 }
 
-// What NPMplus can put in front of a proxy host that adopting would break or lose. Its auth_request
-// and its custom location config both sit in front of /.well-known/hostd/<token>, so verification
-// would fail. hostd writes forward_scheme http, and with no fixed fields on NPMplus the adoption undo
+// What NPMplus can put in front of a proxy host that adopting would break or lose. Its auth_request, a
+// required client certificate and its custom location config all sit in front of
+// /.well-known/hostd/<token>, so verification would fail. hostd writes forward_scheme http, and with no fixed fields on NPMplus the adoption undo
 // could not put https back, so a host forwarding over https is left to be managed by hand.
 function npmplusAdoptProblem(record: NpmRecord): string | null {
     const auth = text(record.npmplus_auth_request)
     if (auth !== '' && auth !== 'none') {
         return `NPM proxy host ${record.id} puts ${auth} auth in front of every request (npmplus_auth_request), which hostd's verification cannot pass; turn it off in NPMplus or leave this host to be managed by hand`
+    }
+    // A required client certificate turns away the verifier's request, which carries none. An optional
+    // one lets it through.
+    const mtls = int(record.npmplus_mtls_certificate_id)
+    if (mtls > 0 && !bool(record.npmplus_mtls_verify_client_optional)) {
+        return `NPM proxy host ${record.id} requires a client certificate (mTLS, certificate ${mtls}), which hostd's verification cannot present; make it optional or turn it off in NPMplus, or leave this host to be managed by hand`
     }
     const locations = text(record.npmplus_location_config).replace(/\r\n/g, '\n').trim()
     if (locations !== '') {

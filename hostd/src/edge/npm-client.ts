@@ -163,7 +163,9 @@ export class NpmClient {
             parsed = null
         }
         // A login answered with a two-factor challenge has no session to use, and edge cannot type a code.
-        if (isRecord(parsed) && parsed.requiresTotp === true) {
+        // Any requiresTotp key is a challenge: NPMplus answers false for a user with another two-factor
+        // method, and then the __Host-Http-token it sets is a short-lived challenge token, not a session.
+        if (isRecord(parsed) && 'requiresTotp' in parsed) {
             throw new NpmError(`NPM asked for a two-factor code on ${method} ${path}; turn off two-factor for the hostd user, since edge cannot answer it`, reply.status)
         }
         if (!isRecord(parsed) || typeof parsed.expires !== 'string' || Number.isNaN(Date.parse(parsed.expires))) {

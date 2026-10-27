@@ -986,6 +986,7 @@ describe('npmplus only', () => {
             [{ npmplus_auth_request: 'authelia' }, /^NPM proxy host 10 puts authelia auth in front of every request/],
             [{ npmplus_location_config: 'location /admin {\n    deny all;\n}' }, /^NPM proxy host 10 has custom location config: location \/admin \{/],
             [{ forward_scheme: 'https' }, /^NPM proxy host 10 forwards over https/],
+            [{ npmplus_mtls_certificate_id: 5, npmplus_mtls_verify_client_optional: false }, /^NPM proxy host 10 requires a client certificate \(mTLS, certificate 5\)/],
         ]
         for (const [over, problem] of refusals) {
             const { npm, deps } = plus()
@@ -1001,6 +1002,11 @@ describe('npmplus only', () => {
             const reply = await applyHosts(deps, OWNER, { proxyHost: 10, redirectionHost: null }, spec({ aliases: [] }), true)
             assert.equal(reply.ok, true, `${auth}: ${JSON.stringify(reply)}`)
         }
+        // A client certificate that is only optional lets the verification request through.
+        const { npm, deps } = plus()
+        npm.seed('proxy-hosts', plusProxyRecord(10, { advanced_config: '', npmplus_mtls_certificate_id: 5, npmplus_mtls_verify_client_optional: true }))
+        const optional = await applyHosts(deps, OWNER, { proxyHost: 10, redirectionHost: null }, spec({ aliases: [] }), true)
+        assert.equal(optional.ok, true, JSON.stringify(optional))
     })
 
     test('an owned host reads back with HTTP/2 on whenever it has a certificate, as NPMplus serves it', async () => {

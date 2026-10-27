@@ -2200,12 +2200,25 @@ What is different for a reader on NPMplus:
   for either. The Block Exploits and Cache Assets switches do not exist there.
 - **Adopt** no longer refuses a host with an access list (nothing hostd writes can drop it). It still refuses
   custom advanced config beyond the brotli snippet and custom `locations`, and on NPMplus also a host with an
-  auth provider set (`npmplus_auth_request` other than none), custom location config, or an upstream scheme
-  other than `http`, because the first two sit in front of hostd's verification path and the last one
-  could not be put back by the undo. The refusal names what it found.
+  auth provider set (`npmplus_auth_request` other than none), a required client certificate (mTLS that is
+  not optional), custom location config, or an upstream scheme other than `http`, because the first three
+  sit in front of hostd's verification path and the last one could not be put back by the undo. The
+  refusal names what it found.
 - **The undo** (the automatic rollback after a bad adopt, and step 8 of **1. Rollout, done once**) puts back
   the managed fields only. The saved file's `previous.proxyFixed` is `null` for an adopt done on NPMplus:
   there are no NPM switches to restore.
+
+Before moving:
+
+- **Finish or undo every adoption first.** An adoption made on stock NPM saved the hand-made host's NPM
+  switches (Block Exploits, Websockets, Cache Assets) for its undo; those switches do not exist on NPMplus,
+  so after the move that undo can put back only the managed fields. Decide each pending one on NPM.
+- **If NPMplus takes over NPM's database in place, the ids are kept** and the id checks in step 8 do not
+  apply: hostd carries on as before.
+- **Otherwise check `/health` straight after the move** (step 8). Until a stale id is put right, removing
+  that environment's domain skips the host the id no longer names and leaves the marked host behind in
+  NPMplus, and a later create of the same name is then refused until that host is deleted in NPMplus by
+  hand.
 
 Do these in order. Nothing here changes a live site until the last step, and up to then going back is
 setting `HOSTD_NPM_FLAVOUR` and `HOSTD_NPM_URL` back and recreating `edge`.
@@ -2252,7 +2265,9 @@ setting `HOSTD_NPM_FLAVOUR` and `HOSTD_NPM_URL` back and recreating `edge`.
    `does not match certificate's altnames` error. In that case set NPMplus's `DEFAULT_CERT_ID` to a
    certificate that does name the host `edge` will use, restart NPMplus, and export again (when that
    certificate is not self-signed, save the CA that signed it instead of the first certificate). Do not
-   turn certificate checking off.
+   turn certificate checking off. `DEFAULT_CERT_ID` is not only port 81's: it is also the certificate of
+   NPMplus's default catch-all server on 443, which answers any name no host serves, so pick one you are
+   content to show there.
 
 4. **Compose.** In `/opt/horizons/hostd/docker-compose.yml`, on `edge`: set `HOSTD_NPM_FLAVOUR: npmplus`,
    `HOSTD_NPM_URL: https://<npmplus-host>:81/api` (the host the certificate names), `HOSTD_NPM_ADDRESS` to
@@ -2317,10 +2332,19 @@ setting `HOSTD_NPM_FLAVOUR` and `HOSTD_NPM_URL` back and recreating `edge`.
      carries its `# hostd: <id>/<env>.` first line, `edge` takes it as that environment's own on the next
      domain action there, such as an alias or SSL change (it looks for exactly that marker when the recorded
      id is gone), and the agent records the new id. The warning stays until then.
-   - **`does not carry the marker`** (not owned) means the migration lost or changed the first line of the
-     Advanced tab. Put the marker back as the first line, or treat the host as hand-made: remove that
-     environment's `npm:` block from the registry (as in step 8 of **1. Rollout, done once**) and adopt it
-     again from the portal, preview first. An adopt that is still refused names what NPMplus has on the host.
+   - **`does not carry the marker`** (not owned) has two causes, and they need opposite fixes. First open the
+     host the warning names in NPMplus and check whether it serves this environment's primary domain.
+     - **It does not:** the migration renumbered the hosts and reused the id, so the registry's id now names
+       another environment's host or a hand-made one. **Never add the marker to it**: that would hand
+       someone else's host to this environment. Find this environment's own host in NPMplus by its primary
+       domain (its Advanced tab starts with `# hostd: <id>/<env>.`) and correct the `proxyHost` and
+       `redirectionHost` ids in that environment's `npm:` block in
+       `/opt/horizons/hostd/registry/projects.yaml`, or remove the `npm:` block and adopt the host from the
+       portal, preview first.
+     - **It does:** the migration lost or changed the first line of the Advanced tab. Put the marker back
+       as the first line, or treat the host as hand-made: remove that environment's `npm:` block from the
+       registry (as in step 8 of **1. Rollout, done once**) and adopt it again from the portal, preview
+       first. An adopt that is still refused names what NPMplus has on the host.
 
 ## Analytics
 

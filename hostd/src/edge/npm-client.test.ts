@@ -199,21 +199,28 @@ test('npmplus logs in again once on a 401, then gives up', async () => {
     assert.equal(calls.length, 7)
 })
 
-test('npmplus refuses a two-factor challenge and says to turn two-factor off', async () => {
-    const now = 1_000_000
-    const challenge: Reply = {
-        status: 200, body: { requiresTotp: true, expires: new Date(now + 300_000).toISOString() },
-        cookies: [`__Host-Http-challenge_token=${COOKIE}; Path=/; HttpOnly; Secure`],
+// requiresTotp false is NPMplus challenging a user with another two-factor method, and it then sets
+// __Host-Http-token to a short-lived challenge token, which must not be taken for a session.
+test('npmplus refuses a two-factor challenge, whatever requiresTotp says, and says to turn two-factor off', async () => {
+    for (const requiresTotp of [true, false]) {
+        const now = 1_000_000
+        const challenge: Reply = {
+            status: 200, body: { requiresTotp, expires: new Date(now + 300_000).toISOString() },
+            cookies: [
+                `__Host-Http-challenge_token=${COOKIE}; Path=/; HttpOnly; Secure`,
+                `__Host-Http-token=${COOKIE}; Path=/; HttpOnly; Secure`,
+            ],
+        }
+        const { calls, npm } = plusClient([challenge], { now: () => now })
+        await assert.rejects(npm.list('proxy-hosts'), (error: unknown) => {
+            assert.ok(error instanceof NpmError, String(requiresTotp))
+            assert.match(error.message, /turn off two-factor for the hostd user/)
+            assert.equal(`${error.message}${error.body}`.includes(COOKIE), false)
+            return true
+        })
+        // Nothing is asked of NPMplus on a session that does not exist.
+        assert.equal(calls.length, 1, String(requiresTotp))
     }
-    const { calls, npm } = plusClient([challenge], { now: () => now })
-    await assert.rejects(npm.list('proxy-hosts'), (error: unknown) => {
-        assert.ok(error instanceof NpmError)
-        assert.match(error.message, /turn off two-factor for the hostd user/)
-        assert.equal(`${error.message}${error.body}`.includes(COOKIE), false)
-        return true
-    })
-    // Nothing is asked of NPMplus on a session that does not exist.
-    assert.equal(calls.length, 1)
 })
 
 test('npmplus login without the session cookie fails without repeating any cookie', async () => {
