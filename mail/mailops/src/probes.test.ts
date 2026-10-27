@@ -280,6 +280,39 @@ describe('lastInboundConnection', () => {
         assert.equal(found?.getFullYear(), 2026)
         assert.equal(found?.getMonth(), 7) // August is month 7
     })
+
+    // docker-mailserver 15 writes mail.log with RFC3339 timestamps rather than the syslog form.
+    it('reads RFC3339 timestamps, including the offset', () => {
+        const log = [
+            '2026-10-27T07:17:19.039460+00:00 mail postfix/smtpd[8269]: connect from host[35.195.92.148]',
+            '2026-10-27T09:05:00.000001+02:00 mail postfix/smtpd[8270]: connect from mx.example.com[1.2.3.4]',
+        ].join('\n')
+        const found = lastInboundConnection(log)
+        assert.equal(found?.toISOString(), '2026-10-27T07:17:19.039Z')
+    })
+
+    it('reads RFC3339 timestamps with a Z suffix and no fraction', () => {
+        const log = '2026-10-27T07:17:19Z mail postfix/smtpd[1]: connect from mx.example.com[1.2.3.4]'
+        assert.equal(lastInboundConnection(log)?.toISOString(), '2026-10-27T07:17:19.000Z')
+    })
+
+    it('applies the localhost and private exclusions to RFC3339 lines too', () => {
+        const log = [
+            '2026-10-27T07:00:00.000000+00:00 mail postfix/smtpd[1]: connect from localhost[127.0.0.1]',
+            '2026-10-27T07:00:01.000000+00:00 mail postfix/smtpd[2]: connect from unknown[172.19.0.2]',
+            '2026-10-27T07:00:02.000000+00:00 mail postfix/smtpd[3]: disconnect from mx.example.com[1.2.3.4]',
+        ].join('\n')
+        assert.equal(lastInboundConnection(log), null)
+    })
+
+    it('picks the latest connection across a log that mixes both formats', () => {
+        const log = [
+            '2026-10-27T07:17:19.039460+00:00 mail postfix/smtpd[1]: connect from host[35.195.92.148]',
+            'Oct 25 23:00:00 mail postfix/smtpd[2]: connect from mx.example.com[1.2.3.4]',
+        ].join('\n')
+        const found = lastInboundConnection(log, new Date('2026-10-27T12:00:00Z'))
+        assert.equal(found?.toISOString(), '2026-10-27T07:17:19.039Z')
+    })
 })
 
 describe('interpretPortCheck', () => {

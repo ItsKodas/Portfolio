@@ -138,7 +138,10 @@ export async function checkSpamhaus(ip: string, resolve = defaultResolve): Promi
     }
 }
 
-const CONNECT = /^(\w{3})\s+(\d+)\s+(\d{2}):(\d{2}):(\d{2}).*postfix\/smtpd.*connect from (?!localhost)/
+const CONNECT = /^(\w{3})\s+(\d+)\s+(\d{2}):(\d{2}):(\d{2}).*postfix\/smtpd.*\]: connect from (?!localhost)/
+// docker-mailserver 15 logs RFC3339 instead, e.g. 2026-10-27T07:17:19.039460+00:00. That carries its own year
+// and offset, so Date can parse it as is once the fraction is cut to milliseconds.
+const CONNECT_ISO = /^(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2})(?:\.(\d+))?(Z|[+-]\d{2}:\d{2})\s.*postfix\/smtpd.*\]: connect from (?!localhost)/
 // The served-certificate probe connects from inside the Docker network, and so does anything on the host.
 // None of that proves the modem forwards port 25, so only a public source address counts as inbound.
 const PRIVATE_SOURCE = /\[(?:127\.|10\.|192\.168\.|172\.(?:1[6-9]|2\d|3[01])\.)[\d.]+\]/
@@ -151,8 +154,16 @@ export function lastInboundConnection(log: string, now = new Date()): Date | nul
     const currentMonth = now.getMonth()
     const currentYear = now.getFullYear()
     for (const line of log.split('\n')) {
+        if (PRIVATE_SOURCE.test(line)) continue
+        const iso = CONNECT_ISO.exec(line)
+        if (iso) {
+            const millis = (iso[2] ?? '').padEnd(3, '0').slice(0, 3)
+            const when = new Date(`${iso[1]}.${millis}${iso[3]}`)
+            if (!Number.isNaN(when.getTime()) && (!latest || when > latest)) latest = when
+            continue
+        }
         const match = CONNECT.exec(line)
-        if (!match || PRIVATE_SOURCE.test(line)) continue
+        if (!match) continue
         const month = MONTHS.indexOf(match[1]!)
         if (month < 0) continue
         // If the parsed month is later than the current month, attribute it to the previous year
