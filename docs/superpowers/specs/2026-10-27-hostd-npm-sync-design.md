@@ -271,6 +271,51 @@ Cloudflare's `CF-Connecting-IP`, the epoch time). So:
 - `HOSTD_NPM_URL` defaults to `http://192.168.0.6:81/api`. Builder to confirm which address `edge`
   reaches the API on from the VM; `nginx.home.arpa/api` answered from Koda's PC.
 
+### NPMplus (added 2026-10-27)
+
+Koda plans to move from stock NPM 2.16 to [NPMplus](https://github.com/ZoeyVid/NPMplus), a fork whose API
+has drifted in the places edge depends on. edge supports both, chosen by `HOSTD_NPM_FLAVOUR` (`npm`, the
+default, or `npmplus`). Everything above the NPM client and the host body builder stays the same: the
+marker and ownership guard, the advanced config hostd renders, verification, the holding page, syslog
+analytics, adoption, drift. Facts below are from NPMplus's `develop` branch schemas and backend source.
+
+| | Stock NPM 2.16 | NPMplus |
+|---|---|---|
+| Login | `POST /api/tokens` answers `{ token, expires }`; send `Authorization: Bearer` | `POST /api/tokens` answers `{ expires }` and sets a signed `__Host-Http-token` cookie; send it back as `Cookie`. Refresh with `GET /api/tokens`, which sets a new cookie |
+| Two-factor | not used | a user with TOTP gets `{ requiresTotp: true }` and no session; the hostd user must not have 2FA |
+| Transport | `http://192.168.0.6:81/api` | HTTPS only on port 81 (`__Host-` cookies require it). edge trusts NPMplus's admin certificate through `NODE_EXTRA_CA_CERTS` |
+| Request checks | none | rejects a request whose `Origin` differs from its own host and a `Sec-Fetch-Site` other than same-origin or none; Node's fetch sends neither, so edge passes |
+| Failed config | 200 with `meta.nginx_online: false`, `meta.nginx_err` | 200 with top-level `npmplus_nginx_online: false`, `npmplus_nginx_err` |
+| Unknown fields | ignored | rejected (`additionalProperties: false`) |
+| PUT | full body | partial (`minProperties: 1`): fields left out keep their values |
+| Fields edge must not send | none | `block_exploits`, `caching_enabled`, `allow_websocket_upgrade` (websockets are always on), `http2_support`, `access_list_id`, `meta` |
+| Access lists | `access_list_id` | `npmplus_access_list_ids` (write) and `access_lists` (read) |
+| Custom http include | `/data/nginx/custom/http_top.conf` | `custom_nginx/http_top.conf` under NPMplus's data directory (`/opt/npmplus/custom_nginx/` on the host in the README's layout) |
+
+On NPMplus, edge sends **only the fields hostd manages**: for a proxy host `domain_names`,
+`forward_scheme` (`http`), `forward_host`, `forward_port`, `certificate_id`, `ssl_forced`,
+`advanced_config`; for a redirection host `domain_names`, `forward_domain_name`, `forward_scheme`
+(`https`), `forward_http_code` (301), `preserve_path` (true), `certificate_id`, `ssl_forced`,
+`advanced_config`. Because PUT is partial, every NPMplus feature Koda sets by hand on a host (CrowdSec
+appsec, noindex, HTTP/3, buffering, access lists, mTLS, X-Frame-Options) is left exactly as it is, on
+adopt, on every later write and on the adoption undo. A host created by hostd gets NPMplus's defaults
+for all of them. *My call:* this keeps "what works keeps working" without hostd having to model features
+it does not use.
+
+Consequences for the guard and adoption on NPMplus:
+- Adopt no longer has to refuse a host with an access list, since nothing drops it. It still refuses
+  custom `advanced_config` beyond the brotli snippet (hostd replaces that field), `locations`, and a
+  host with `npmplus_auth_request` other than `none` or a non-empty `npmplus_location_config`, because
+  those sit in front of `/.well-known/hostd/<token>` and verification would fail.
+- The adoption undo restores the managed fields only; there are no fixed fields to put back.
+- Drift compares the managed fields only, as on stock NPM.
+
+Moving from NPM to NPMplus is Koda's migration, done outside hostd. If the migrated hosts keep their
+ids and their first `advanced_config` line, hostd simply carries on. If ids change, edge finds them
+again: when the recorded proxy host id is gone, it takes the proxy host that carries this environment's
+exact marker as its own (the same rule it already applies to an orphaned redirection host), and the
+agent records the new ids. A host without that exact marker is never taken this way.
+
 ### Adoption
 
 Every registry environment with a domain has an NPM host today (the eight in the table, `pmpcold`
