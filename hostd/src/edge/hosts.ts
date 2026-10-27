@@ -8,15 +8,26 @@
 // config aside, so the host is offline. Each write's meta.nginx_online is therefore checked, and on a
 // failure (or any NPM error part-way) every write this call made is undone in reverse order, so the
 // site comes back as it was. The undo lives here because only edge holds the previous state.
+//
+// NPMplus (HOSTD_NPM_FLAVOUR=npmplus) differs in what may be written and how a record reads, never in
+// the guard. Its schemas refuse any unknown key and its PUT is partial, so edge sends only the fields
+// hostd manages and every NPMplus feature set by hand on a host (CrowdSec, access lists, HTTP/3,
+// mTLS...) stays exactly as it is, on adopt, on every later write and on the adoption undo. Its nginx
+// state is the top-level npmplus_nginx_online/npmplus_nginx_err rather than meta's.
 
 import { describeError } from '../shared/formats.ts'
 import {
     markerFor, ownerOf, type EdgeReply, type FoundHost, type HostsSpec, type Owner, type PreviousHosts, type ProxyFixed, type ProxyHostSpec, type RedirectionHostSpec,
 } from '../shared/edge-protocol.ts'
 import type { NpmIds } from '../shared/registry.ts'
-import { NpmError, type NpmClient, type NpmHostKind, type NpmRecord } from './npm-client.ts'
+import { NpmError, type NpmClient, type NpmFlavour, type NpmHostKind, type NpmRecord } from './npm-client.ts'
 
-export type HostsDeps = { npm: Pick<NpmClient, 'list' | 'get' | 'create' | 'update' | 'remove' | 'certificateIds'>, upstreamHost: string }
+// flavour defaults to stock NPM, which is what every caller that does not say meant before NPMplus.
+export type HostsDeps = { npm: Pick<NpmClient, 'list' | 'get' | 'create' | 'update' | 'remove' | 'certificateIds'>, upstreamHost: string, flavour?: NpmFlavour }
+
+function flavourOf(deps: HostsDeps): NpmFlavour {
+    return deps.flavour ?? 'npm'
+}
 
 // The values hostd always writes (Global Constraints). Redirection hosts get only the ones NPM's
 // redirection-host schema accepts: it refuses unknown keys such as locations or caching_enabled.
@@ -28,6 +39,14 @@ const REDIRECTION_FIXED = {
     forward_scheme: 'https', forward_http_code: 301, preserve_path: true,
     hsts_enabled: false, hsts_subdomains: false, block_exploits: true,
 } as const
+
+// What NPMplus accepts on a redirection host write (its post.json, certificate request keys left out),
+// used only to recreate a deleted one as it was rather than with NPMplus's defaults.
+const NPMPLUS_REDIRECTION_WRITABLE = [
+    'domain_names', 'forward_http_code', 'forward_scheme', 'forward_domain_name', 'preserve_path', 'certificate_id', 'ssl_forced',
+    'hsts_enabled', 'hsts_subdomains', 'npmplus_http3_support', 'advanced_config', 'npmplus_directory', 'npmplus_mtls_certificate_id',
+    'npmplus_mtls_verify_client_optional',
+]
 
 const KIND_NAMES: Record<NpmHostKind, string> = { 'proxy-hosts': 'proxy host', 'redirection-hosts': 'redirection host', 'dead-hosts': '404 host' }
 
@@ -42,7 +61,15 @@ function failure(error: unknown): EdgeReply {
 }
 
 // restore is only ever the adoption undo's (applyHosts checks), giving a hand-made host its own values back.
-function proxyBody(spec: ProxyHostSpec, restore?: ProxyFixed): Record<string, unknown> {
+// NPMplus gets the managed fields alone: there are no fixed fields to force or restore (websockets are
+// always on there), and a field left out of its partial PUT keeps the value it had.
+function proxyBody(flavour: NpmFlavour, spec: ProxyHostSpec, restore?: ProxyFixed): Record<string, unknown> {
+    if (flavour === 'npmplus') {
+        return {
+            domain_names: spec.domain_names, forward_scheme: 'http', forward_host: spec.forward_host, forward_port: spec.forward_port,
+            certificate_id: spec.certificate_id, ssl_forced: spec.ssl_forced, advanced_config: spec.advanced_config,
+        }
+    }
     return {
         domain_names: spec.domain_names, forward_host: spec.forward_host, forward_port: spec.forward_port,
         certificate_id: spec.certificate_id, ssl_forced: spec.ssl_forced, http2_support: spec.http2_support,
@@ -50,7 +77,14 @@ function proxyBody(spec: ProxyHostSpec, restore?: ProxyFixed): Record<string, un
     }
 }
 
-function redirectionBody(spec: RedirectionHostSpec): Record<string, unknown> {
+function redirectionBody(flavour: NpmFlavour, spec: RedirectionHostSpec): Record<string, unknown> {
+    if (flavour === 'npmplus') {
+        return {
+            domain_names: spec.domain_names, forward_domain_name: spec.forward_domain_name, forward_scheme: REDIRECTION_FIXED.forward_scheme,
+            forward_http_code: REDIRECTION_FIXED.forward_http_code, preserve_path: REDIRECTION_FIXED.preserve_path,
+            certificate_id: spec.certificate_id, ssl_forced: spec.ssl_forced, advanced_config: spec.advanced_config,
+        }
+    }
     return {
         domain_names: spec.domain_names, forward_domain_name: spec.forward_domain_name,
         certificate_id: spec.certificate_id, ssl_forced: spec.ssl_forced, http2_support: spec.http2_support,
@@ -71,18 +105,25 @@ function text(value: unknown): string {
     return typeof value === 'string' ? value : ''
 }
 
-function proxySpecOf(record: NpmRecord): ProxyHostSpec {
+// NPMplus has no per-host HTTP/2 switch: its nginx.conf turns http2 on for every TLS listener, so a
+// host serves HTTP/2 exactly when it has a certificate. Reading it that way keeps drift quiet about a
+// field NPMplus does not have, while still telling the truth about what the host serves.
+function http2Of(flavour: NpmFlavour, record: NpmRecord): boolean {
+    return flavour === 'npmplus' ? int(record.certificate_id) > 0 : bool(record.http2_support)
+}
+
+function proxySpecOf(flavour: NpmFlavour, record: NpmRecord): ProxyHostSpec {
     return {
         domain_names: [...record.domain_names], forward_host: text(record.forward_host), forward_port: int(record.forward_port),
-        certificate_id: int(record.certificate_id), ssl_forced: bool(record.ssl_forced), http2_support: bool(record.http2_support),
+        certificate_id: int(record.certificate_id), ssl_forced: bool(record.ssl_forced), http2_support: http2Of(flavour, record),
         advanced_config: text(record.advanced_config),
     }
 }
 
-function redirectionSpecOf(record: NpmRecord): RedirectionHostSpec {
+function redirectionSpecOf(flavour: NpmFlavour, record: NpmRecord): RedirectionHostSpec {
     return {
         domain_names: [...record.domain_names], forward_domain_name: text(record.forward_domain_name),
-        certificate_id: int(record.certificate_id), ssl_forced: bool(record.ssl_forced), http2_support: bool(record.http2_support),
+        certificate_id: int(record.certificate_id), ssl_forced: bool(record.ssl_forced), http2_support: http2Of(flavour, record),
         advanced_config: text(record.advanced_config),
     }
 }
@@ -101,15 +142,36 @@ function fixedOf(record: NpmRecord): ProxyFixed {
 }
 
 // The body that puts a host back as it was: the managed fields from the pre-call spec, and the fixed
-// fields as the record had them, so a hand-made host's own choices (HSTS, say) come back too.
-function revertBody(kind: 'proxy-hosts' | 'redirection-hosts', record: NpmRecord): Record<string, unknown> {
+// fields as the record had them, so a hand-made host's own choices (HSTS, say) come back too. On NPMplus
+// only the managed fields were written, so only they go back (with the record's own scheme, code and
+// path setting); the partial PUT leaves everything else as it still is.
+function revertBody(flavour: NpmFlavour, kind: 'proxy-hosts' | 'redirection-hosts', record: NpmRecord): Record<string, unknown> {
+    if (flavour === 'npmplus') {
+        const body = kind === 'proxy-hosts' ? proxyBody(flavour, proxySpecOf(flavour, record)) : redirectionBody(flavour, redirectionSpecOf(flavour, record))
+        for (const key of ['forward_scheme', 'forward_http_code', 'preserve_path']) {
+            if (!(key in body) || record[key] === undefined || record[key] === null) continue
+            body[key] = key === 'preserve_path' ? bool(record[key]) : record[key]
+        }
+        return body
+    }
     const fixed: Record<string, unknown> = kind === 'proxy-hosts' ? PROXY_FIXED : REDIRECTION_FIXED
-    const body = kind === 'proxy-hosts' ? proxyBody(proxySpecOf(record)) : redirectionBody(redirectionSpecOf(record))
+    const body = kind === 'proxy-hosts' ? proxyBody(flavour, proxySpecOf(flavour, record)) : redirectionBody(flavour, redirectionSpecOf(flavour, record))
     for (const [key, value] of Object.entries(fixed)) {
         if (record[key] === undefined || record[key] === null) continue
         body[key] = typeof value === 'boolean' ? bool(record[key]) : record[key]
     }
     if (kind === 'proxy-hosts' && Array.isArray(record.locations)) body.locations = record.locations
+    return body
+}
+
+// A deleted redirection host recreated by an undo. On NPMplus a create takes NPMplus's defaults for
+// whatever it leaves out, so every setting the record had that NPMplus accepts goes back with it.
+function recreateBody(flavour: NpmFlavour, record: NpmRecord): Record<string, unknown> {
+    const body = revertBody(flavour, 'redirection-hosts', record)
+    if (flavour !== 'npmplus') return body
+    for (const key of NPMPLUS_REDIRECTION_WRITABLE) {
+        if (!(key in body) && record[key] !== undefined && record[key] !== null) body[key] = record[key]
+    }
     return body
 }
 
@@ -150,6 +212,7 @@ function customDirectives(kind: 'proxy-hosts' | 'redirection-hosts', record: Npm
 // Whether this call may write over the proxy host it was given. An owned host always; an unmarked one
 // only under adopt, and only when it is unmistakably this environment's site.
 function proxyClaimProblem(deps: HostsDeps, record: NpmRecord, owner: Owner, spec: HostsSpec, adopt: boolean): string | null {
+    const flavour = flavourOf(deps)
     const marked = ownerOf(text(record.advanced_config))
     if (sameOwner(marked, owner)) return null
     const refusal = notOwned('proxy-hosts', record, owner)!
@@ -165,14 +228,40 @@ function proxyClaimProblem(deps: HostsDeps, record: NpmRecord, owner: Owner, spe
     }
     // hostd writes locations: [], so adopting would silently drop them.
     if (hasLocations(record)) return `NPM proxy host ${record.id} has custom locations, so hostd will not adopt it`
-    // hostd writes access_list_id 0, so adopting would silently open a host that is meant to be private.
-    const accessList = int(record.access_list_id)
-    if (accessList !== 0) return `NPM proxy host ${record.id} has access list ${accessList}; remove it in NPM or leave this host to be managed by hand`
+    if (flavour === 'npm') {
+        // hostd writes access_list_id 0, so adopting would silently open a host that is meant to be private.
+        // NPMplus needs no such refusal: edge never sends its access list fields, so they stay as they are.
+        const accessList = int(record.access_list_id)
+        if (accessList !== 0) return `NPM proxy host ${record.id} has access list ${accessList}; remove it in NPM or leave this host to be managed by hand`
+    } else {
+        const problem = npmplusAdoptProblem(record)
+        if (problem) return problem
+    }
     const directives = customDirectives('proxy-hosts', record)
     if (directives) return directives
     const covered = allDomains(spec).map(hostname)
     const stray = record.domain_names.find(name => !covered.includes(hostname(name)))
     if (stray !== undefined) return `NPM proxy host ${record.id} also serves ${stray}, which this environment does not list, so hostd will not adopt it`
+    return null
+}
+
+// What NPMplus can put in front of a proxy host that adopting would break or lose. Its auth_request
+// and its custom location config both sit in front of /.well-known/hostd/<token>, so verification
+// would fail. hostd writes forward_scheme http, and with no fixed fields on NPMplus the adoption undo
+// could not put https back, so a host forwarding over https is left to be managed by hand.
+function npmplusAdoptProblem(record: NpmRecord): string | null {
+    const auth = text(record.npmplus_auth_request)
+    if (auth !== '' && auth !== 'none') {
+        return `NPM proxy host ${record.id} puts ${auth} auth in front of every request (npmplus_auth_request), which hostd's verification cannot pass; turn it off in NPMplus or leave this host to be managed by hand`
+    }
+    const locations = text(record.npmplus_location_config).replace(/\r\n/g, '\n').trim()
+    if (locations !== '') {
+        return `NPM proxy host ${record.id} has custom location config: ${locations.split('\n', 1)[0]!.trim()} (move it out in NPMplus or leave this host to be managed by hand)`
+    }
+    const scheme = text(record.forward_scheme)
+    if (scheme !== '' && scheme !== 'http') {
+        return `NPM proxy host ${record.id} forwards over ${scheme}, and hostd forwards over http; change it in NPMplus or leave this host to be managed by hand`
+    }
     return null
 }
 
@@ -197,18 +286,18 @@ function allDomains(spec: HostsSpec): string[] {
     return [...spec.proxy.domain_names, ...(spec.redirection?.domain_names ?? [])]
 }
 
-function foundHost(kind: NpmHostKind, record: NpmRecord): FoundHost {
+function foundHost(flavour: NpmFlavour, kind: NpmHostKind, record: NpmRecord): FoundHost {
     const owner = ownerOf(text(record.advanced_config))
     if (kind === 'proxy-hosts') {
         return {
             kind: 'proxy', id: record.id, domain_names: [...record.domain_names], owner,
-            forward_host: text(record.forward_host), forward_port: int(record.forward_port), hasLocations: hasLocations(record), spec: proxySpecOf(record),
+            forward_host: text(record.forward_host), forward_port: int(record.forward_port), hasLocations: hasLocations(record), spec: proxySpecOf(flavour, record),
         }
     }
     if (kind === 'redirection-hosts') {
         return {
             kind: 'redirection', id: record.id, domain_names: [...record.domain_names], owner,
-            forward_host: null, forward_port: null, hasLocations: false, spec: redirectionSpecOf(record),
+            forward_host: null, forward_port: null, hasLocations: false, spec: redirectionSpecOf(flavour, record),
         }
     }
     return { kind: 'dead', id: record.id, domain_names: [...record.domain_names], owner, forward_host: null, forward_port: null, hasLocations: false, spec: null }
@@ -219,7 +308,7 @@ async function find(deps: HostsDeps, domains: string[]): Promise<{ kind: NpmHost
     const out: { kind: NpmHostKind, host: FoundHost }[] = []
     for (const kind of ['proxy-hosts', 'redirection-hosts', 'dead-hosts'] as const) {
         for (const record of await deps.npm.list(kind)) {
-            if (record.domain_names.some(name => wanted.includes(hostname(name)))) out.push({ kind, host: foundHost(kind, record) })
+            if (record.domain_names.some(name => wanted.includes(hostname(name)))) out.push({ kind, host: foundHost(flavourOf(deps), kind, record) })
         }
     }
     return out
@@ -242,10 +331,13 @@ class NginxRefused extends Error {
     }
 }
 
-function offline(record: NpmRecord): NginxRefused | null {
-    const meta = record.meta
-    if (!meta || meta.nginx_online !== false) return null
-    return new NginxRefused(meta.nginx_err === undefined || meta.nginx_err === null ? undefined : String(meta.nginx_err))
+// The one place a write's nginx state is read. NPM keeps it in meta, NPMplus at the top level.
+function offline(flavour: NpmFlavour, record: NpmRecord): NginxRefused | null {
+    const state = flavour === 'npmplus'
+        ? { online: record.npmplus_nginx_online, err: record.npmplus_nginx_err }
+        : { online: record.meta?.nginx_online, err: record.meta?.nginx_err }
+    if (state.online !== false && state.online !== 0) return null
+    return new NginxRefused(state.err === undefined || state.err === null || state.err === '' ? undefined : String(state.err))
 }
 
 function firstLine(config: string): string {
@@ -279,6 +371,15 @@ async function orphanedRedirection(deps: HostsDeps, owner: Owner, spec: HostsSpe
     return ours.find(record => record.domain_names.some(name => wanted.includes(hostname(name)))) ?? ours[0] ?? null
 }
 
+// This owner's proxy host when the registry's id names none: a migration (NPM to NPMplus) or a restore
+// that gave the hosts new ids. Only one carrying this owner's exact marker on its first line is taken;
+// several prefer the one serving the primary, the rest then clash as any other host would.
+async function orphanedProxy(deps: HostsDeps, owner: Owner, spec: HostsSpec): Promise<NpmRecord | null> {
+    const ours = (await deps.npm.list('proxy-hosts')).filter(record => sameOwner(ownerOf(text(record.advanced_config)), owner))
+    const primary = hostname(spec.proxy.domain_names[0]!)
+    return ours.find(record => record.domain_names.some(name => hostname(name) === primary)) ?? ours[0] ?? null
+}
+
 // An undo step answers a note when it changed something the caller must hear about (a host recreated
 // under a new id), otherwise null.
 type Undo = () => Promise<string | null>
@@ -305,6 +406,7 @@ export async function applyHosts(
         return refuse(`Only putting a hand-made host back may restore its own settings, not a write for ${ownerName(owner)}`)
     }
 
+    const flavour = flavourOf(deps)
     const undo: Undo[] = []
     try {
         const certificates = [spec.proxy.certificate_id, spec.redirection?.certificate_id ?? 0].filter(id => id !== 0)
@@ -318,6 +420,10 @@ export async function applyHosts(
         let redirectionRecord: NpmRecord | null = null
         if (ids) {
             proxyRecord = await deps.npm.get('proxy-hosts', ids.proxyHost)
+            // A recorded id that is gone, while this environment's host lives on under another id, is taken
+            // the same way as an orphaned redirection host below, and its id answered for the agent to
+            // record. Never under adopt: adopt takes over the host it was pointed at and nothing else.
+            if (!proxyRecord && !adopt) proxyRecord = await orphanedProxy(deps, owner, spec)
             if (!proxyRecord) return refuse(`NPM proxy host ${ids.proxyHost} does not exist`)
             const proxyProblem = proxyClaimProblem(deps, proxyRecord, owner, spec, adopt)
             if (proxyProblem) return refuse(proxyProblem)
@@ -345,7 +451,11 @@ export async function applyHosts(
         }
 
         const previous: PreviousHosts | null = proxyRecord
-            ? { proxy: proxySpecOf(proxyRecord), redirection: redirectionRecord ? redirectionSpecOf(redirectionRecord) : null, proxyFixed: fixedOf(proxyRecord) }
+            // NPMplus has no fixed fields for the adoption undo to put back, so none are kept.
+            ? {
+                proxy: proxySpecOf(flavour, proxyRecord), redirection: redirectionRecord ? redirectionSpecOf(flavour, redirectionRecord) : null,
+                proxyFixed: flavour === 'npmplus' ? null : fixedOf(proxyRecord),
+            }
             : null
 
         // A create's undo is registered once there is an id to delete, and before its result is judged,
@@ -361,7 +471,7 @@ export async function applyHosts(
                 await deps.npm.remove(kind, record.id)
                 return null
             })
-            const refused = offline(record)
+            const refused = offline(flavour, record)
             if (refused) throw refused
             return record.id
         }
@@ -369,11 +479,11 @@ export async function applyHosts(
         // writing the before-state again is harmless when it did not.
         const update = async (kind: 'proxy-hosts' | 'redirection-hosts', before: NpmRecord, body: Record<string, unknown>): Promise<void> => {
             undo.push(async () => {
-                const back = await deps.npm.update(kind, before.id, revertBody(kind, before))
-                if (offline(back)) throw new Error(`NPM ${KIND_NAMES[kind]} ${before.id} is still offline after putting it back`)
+                const back = await deps.npm.update(kind, before.id, revertBody(flavour, kind, before))
+                if (offline(flavour, back)) throw new Error(`NPM ${KIND_NAMES[kind]} ${before.id} is still offline after putting it back`)
                 return null
             })
-            const refused = offline(await deps.npm.update(kind, before.id, body))
+            const refused = offline(flavour, await deps.npm.update(kind, before.id, body))
             if (refused) throw refused
         }
         // Registered before the call for the same reason. If the host is gone it is recreated, and NPM
@@ -381,13 +491,13 @@ export async function applyHosts(
         const remove = async (kind: 'redirection-hosts', before: NpmRecord): Promise<void> => {
             undo.push(async () => {
                 if (await deps.npm.get(kind, before.id)) {
-                    const back = await deps.npm.update(kind, before.id, revertBody(kind, before))
-                    if (offline(back)) throw new Error(`NPM ${KIND_NAMES[kind]} ${before.id} is still offline after putting it back`)
+                    const back = await deps.npm.update(kind, before.id, revertBody(flavour, kind, before))
+                    if (offline(flavour, back)) throw new Error(`NPM ${KIND_NAMES[kind]} ${before.id} is still offline after putting it back`)
                     return null
                 }
-                const back = await deps.npm.create(kind, revertBody(kind, before))
+                const back = await deps.npm.create(kind, recreateBody(flavour, before))
                 const moved = `NPM ${KIND_NAMES[kind]} ${before.id} was put back as NPM ${KIND_NAMES[kind]} ${back.id}`
-                if (offline(back)) throw new Error(`${moved}, which is offline`)
+                if (offline(flavour, back)) throw new Error(`${moved}, which is offline`)
                 return moved
             })
             await deps.npm.remove(kind, before.id)
@@ -407,26 +517,27 @@ export async function applyHosts(
                 redirection = null
             } else {
                 redirectionWritten = sameDomains(remaining, spec.redirection.domain_names)
-                const interim = redirectionWritten ? spec.redirection : { ...redirectionSpecOf(redirection), domain_names: remaining }
-                await update('redirection-hosts', redirection, redirectionBody(interim))
+                const interim = redirectionWritten ? spec.redirection : { ...redirectionSpecOf(flavour, redirection), domain_names: remaining }
+                await update('redirection-hosts', redirection, redirectionBody(flavour, interim))
             }
         }
 
         let proxyHost: number
         if (proxyRecord) {
-            await update('proxy-hosts', proxyRecord, proxyBody(spec.proxy, restoreFixed))
+            // restoreFixed has been checked above in both flavours; NPMplus has nothing it could restore.
+            await update('proxy-hosts', proxyRecord, proxyBody(flavour, spec.proxy, restoreFixed))
             proxyHost = proxyRecord.id
         } else {
-            proxyHost = await create('proxy-hosts', proxyBody(spec.proxy))
+            proxyHost = await create('proxy-hosts', proxyBody(flavour, spec.proxy))
         }
 
         let redirectionHost: number | null = null
         if (spec.redirection) {
             if (redirection) {
-                if (!redirectionWritten) await update('redirection-hosts', redirection, redirectionBody(spec.redirection))
+                if (!redirectionWritten) await update('redirection-hosts', redirection, redirectionBody(flavour, spec.redirection))
                 redirectionHost = redirection.id
             } else {
-                redirectionHost = await create('redirection-hosts', redirectionBody(spec.redirection))
+                redirectionHost = await create('redirection-hosts', redirectionBody(flavour, spec.redirection))
             }
         } else if (redirection) {
             await remove('redirection-hosts', redirection)
@@ -481,7 +592,8 @@ export async function getHosts(deps: HostsDeps, owner: Owner, ids: NpmIds): Prom
         const redirection = ids.redirectionHost === null ? null : await deps.npm.get('redirection-hosts', ids.redirectionHost)
         const redirectionProblem = redirection && notOwned('redirection-hosts', redirection, owner)
         if (redirectionProblem) return refuse(redirectionProblem)
-        return { ok: true, verb: 'get', current: { proxy: proxySpecOf(proxy), redirection: redirection ? redirectionSpecOf(redirection) : null } }
+        const flavour = flavourOf(deps)
+        return { ok: true, verb: 'get', current: { proxy: proxySpecOf(flavour, proxy), redirection: redirection ? redirectionSpecOf(flavour, redirection) : null } }
     } catch (error) {
         return failure(error)
     }

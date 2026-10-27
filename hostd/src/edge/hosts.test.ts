@@ -1,9 +1,9 @@
-import { test } from 'node:test'
+import { describe, test } from 'node:test'
 import assert from 'node:assert/strict'
 import { markerFor, type HostsSpec, type Owner } from '../shared/edge-protocol.ts'
 import { applyHosts, findHosts, getHosts, removeHosts, type HostsDeps } from './hosts.ts'
-import { NpmError } from './npm-client.ts'
-import { FakeNpm } from './testing/fake-npm.ts'
+import { NpmClient, NpmError, type NpmFlavour } from './npm-client.ts'
+import { FakeNpm, NPMPLUS_WRITABLE } from './testing/fake-npm.ts'
 
 const OWNER: Owner = { project: 'spotondrones', environment: 'live' }
 const MARKER = markerFor(OWNER)
@@ -677,3 +677,359 @@ function normalised(state: ReturnType<FakeNpm['snapshot']>) {
     }
     return out
 }
+
+// The guard tests again, under both flavours, each through a real NpmClient talking HTTP to the fake:
+// NPMplus's fake refuses any key its schema does not allow, keeps what a PUT leaves out, wants the
+// session cookie and reports nginx's state at the top level. The npm run shows the shared logic did not
+// move; the npmplus run shows it holds there too.
+const FLAVOURS: NpmFlavour[] = ['npm', 'npmplus']
+
+function setupFor(flavour: NpmFlavour): { npm: FakeNpm, deps: HostsDeps } {
+    const npm = new FakeNpm({ flavour })
+    npm.certificates = [16]
+    const url = flavour === 'npmplus' ? 'https://npmplus.test:81/api' : 'http://npm.test:81/api'
+    const client = new NpmClient({ url, identity: 'hostd@x.test', secret: 'pw', flavour, fetch: npm.fetch })
+    return { npm, deps: { npm: client, upstreamHost: UPSTREAM, flavour } }
+}
+
+// A proxy host as NPMplus returns it: no fixed NPM fields, its own features, booleans as booleans.
+function plusProxyRecord(id: number, over: Record<string, unknown> = {}) {
+    return {
+        id, domain_names: ['spotondrones.com'], forward_scheme: 'http', forward_host: UPSTREAM, forward_port: 5007,
+        certificate_id: 16, ssl_forced: true, hsts_enabled: false, hsts_subdomains: false, npmplus_http3_support: false,
+        npmplus_access_list_ids: [], access_lists: [], npmplus_access_list_type: 'any', npmplus_noindex: false, npmplus_crowdsec_appsec: true,
+        npmplus_x_frame_options: 'SAMEORIGIN', npmplus_auth_request: 'none', npmplus_auth_request_upstream: '', npmplus_location_config: '',
+        locations: [], enabled: true, advanced_config: `${MARKER}\nold`, ...over,
+    }
+}
+
+function plusRedirectionRecord(id: number, over: Record<string, unknown> = {}) {
+    return {
+        id, domain_names: ['www.spotondrones.com'], forward_scheme: 'https', forward_domain_name: 'spotondrones.com',
+        forward_http_code: 301, preserve_path: true, certificate_id: 16, ssl_forced: true, hsts_enabled: false,
+        hsts_subdomains: false, npmplus_http3_support: false, enabled: true, advanced_config: `${MARKER}\n`, ...over,
+    }
+}
+
+function recordsFor(flavour: NpmFlavour) {
+    return flavour === 'npmplus' ? { proxy: plusProxyRecord, redirection: plusRedirectionRecord } : { proxy: proxyRecord, redirection: redirectionRecord }
+}
+
+const PROXY_MANAGED = ['advanced_config', 'certificate_id', 'domain_names', 'forward_host', 'forward_port', 'forward_scheme', 'ssl_forced']
+const REDIRECTION_MANAGED = ['advanced_config', 'certificate_id', 'domain_names', 'forward_domain_name', 'forward_http_code', 'forward_scheme', 'preserve_path', 'ssl_forced']
+const NEVER_ON_NPMPLUS = ['block_exploits', 'caching_enabled', 'allow_websocket_upgrade', 'http2_support', 'access_list_id', 'meta']
+
+// Nothing edge sent was refused, nor would it have been: every key is one NPMplus allows.
+function assertOnlyAllowedKeys(npm: FakeNpm): void {
+    assert.deepEqual(npm.refusedRequests, [])
+    for (const { call, body } of npm.sent) {
+        const kind = call.split(' ')[1] as keyof typeof NPMPLUS_WRITABLE
+        for (const key of Object.keys(body)) {
+            assert.ok(NPMPLUS_WRITABLE[kind]!.includes(key), `${call} sent ${key}`)
+            assert.equal(NEVER_ON_NPMPLUS.includes(key), false, `${call} sent ${key}`)
+        }
+    }
+}
+
+for (const flavour of FLAVOURS) {
+    describe(`on ${flavour}`, () => {
+        const records = recordsFor(flavour)
+        const afterEach = (npm: FakeNpm) => { if (flavour === 'npmplus') assertOnlyAllowedKeys(npm) }
+
+        test('creates a proxy and a redirection host and answers their ids', async () => {
+            const { npm, deps } = setupFor(flavour)
+            const reply = await applyHosts(deps, OWNER, null, spec(), false)
+            assert.deepEqual(reply, { ok: true, verb: 'apply', ids: { proxyHost: 100, redirectionHost: 101 }, previous: null })
+            assert.deepEqual(writes(npm), ['create proxy-hosts', 'create redirection-hosts'])
+            const state = npm.snapshot()
+            const proxy = state['proxy-hosts'][0]!
+            assert.deepEqual([proxy.forward_scheme, proxy.forward_host, proxy.forward_port], ['http', UPSTREAM, 5007])
+            assert.equal(proxy.advanced_config.split('\n')[0], MARKER)
+            const redirection = state['redirection-hosts'][0]!
+            assert.deepEqual([redirection.forward_scheme, redirection.forward_http_code, redirection.preserve_path], ['https', 301, true])
+            afterEach(npm)
+        })
+
+        test('refuses to update a host without this owner\'s marker', async () => {
+            const cases = ['hand made', `${markerFor({ project: 'spotondrones', environment: 'staging' })}\n`, `${markerFor({ project: 'pmpcold', environment: 'live' })}\n`, `# hand made\n${MARKER}`]
+            for (const config of cases) {
+                const { npm, deps } = setupFor(flavour)
+                npm.seed('proxy-hosts', records.proxy(10, { advanced_config: config }))
+                const reply = await applyHosts(deps, OWNER, { proxyHost: 10, redirectionHost: null }, spec({ aliases: [] }), false)
+                assert.match((reply as { problem: string }).problem, /NPM proxy host 10 does not carry the marker for spotondrones\/live/, config)
+                assert.deepEqual(writes(npm), [], config)
+            }
+            const { npm, deps } = setupFor(flavour)
+            npm.seed('proxy-hosts', records.proxy(10))
+            npm.seed('redirection-hosts', records.redirection(4, { advanced_config: '' }))
+            const reply = await applyHosts(deps, OWNER, { proxyHost: 10, redirectionHost: 4 }, spec(), false)
+            assert.match((reply as { problem: string }).problem, /NPM redirection host 4 does not carry the marker/)
+            assert.deepEqual(writes(npm), [])
+        })
+
+        test('adopt claims an unmarked host whose domains and upstream match', async () => {
+            const { npm, deps } = setupFor(flavour)
+            npm.seed('proxy-hosts', records.proxy(10, { domain_names: ['spotondrones.com', 'www.spotondrones.com'], advanced_config: BROTLI }))
+            const reply = await applyHosts(deps, OWNER, { proxyHost: 10, redirectionHost: null }, spec(), true)
+            assert.equal(reply.ok, true, JSON.stringify(reply))
+            const { ids, previous } = reply as { ids: unknown, previous: { proxy: unknown } }
+            assert.deepEqual(ids, { proxyHost: 10, redirectionHost: 100 })
+            assert.deepEqual(previous.proxy, {
+                domain_names: ['spotondrones.com', 'www.spotondrones.com'], forward_host: UPSTREAM, forward_port: 5007, certificate_id: 16,
+                ssl_forced: true, http2_support: true, advanced_config: BROTLI,
+            })
+            const state = npm.snapshot()
+            assert.deepEqual(state['proxy-hosts'][0]!.domain_names, ['spotondrones.com'])
+            assert.equal(state['proxy-hosts'][0]!.advanced_config.split('\n')[0], MARKER)
+            assert.deepEqual(state['redirection-hosts'][0]!.domain_names, ['www.spotondrones.com'])
+            // The proxy gives the alias up before the redirection host takes it.
+            assert.deepEqual(writes(npm), ['update proxy-hosts 10', 'create redirection-hosts'])
+            afterEach(npm)
+        })
+
+        test('adopt refuses what it cannot take over safely', async () => {
+            const refusals: [Record<string, unknown>, RegExp][] = [
+                [{ forward_port: 5008 }, /forwards to 192\.168\.0\.8:5008, not 192\.168\.0\.8:5007/],
+                [{ domain_names: ['other.com'] }, /does not serve spotondrones\.com/],
+                [{ locations: [{ path: '/api', forward_host: '10.0.0.1' }] }, /has custom locations/],
+                [{ domain_names: ['spotondrones.com', 'shop.spotondrones.com'] }, /also serves shop\.spotondrones\.com/],
+                [{ advanced_config: `${markerFor({ project: 'spotondrones', environment: 'staging' })}\n` }, /does not carry the marker/],
+                [{ advanced_config: `${BROTLI}\nclient_max_body_size 1g;` }, /^NPM proxy host 10 has custom nginx directives: /],
+            ]
+            for (const [over, problem] of refusals) {
+                const { npm, deps } = setupFor(flavour)
+                npm.seed('proxy-hosts', records.proxy(10, { advanced_config: '', ...over }))
+                const reply = await applyHosts(deps, OWNER, { proxyHost: 10, redirectionHost: null }, spec({ aliases: [] }), true)
+                assert.equal(reply.ok, false, JSON.stringify(over))
+                assert.match((reply as { problem: string }).problem, problem, JSON.stringify(over))
+                assert.deepEqual(writes(npm), [], JSON.stringify(over))
+            }
+            const { npm, deps } = setupFor(flavour)
+            npm.seed('proxy-hosts', records.proxy(9, { advanced_config: '' }))
+            npm.seed('redirection-hosts', records.redirection(4, { advanced_config: 'return 410;' }))
+            const reply = await applyHosts(deps, OWNER, { proxyHost: 9, redirectionHost: 4 }, spec(), true)
+            assert.match((reply as { problem: string }).problem, /^NPM redirection host 4 has custom nginx directives: return 410;/)
+            assert.equal((await applyHosts(deps, OWNER, null, spec(), true)).ok, false)
+            assert.deepEqual(writes(npm), [])
+        })
+
+        test('puts the previous state back when nginx refuses the write', async () => {
+            const { npm, deps } = setupFor(flavour)
+            npm.seed('proxy-hosts', records.proxy(10))
+            npm.seed('redirection-hosts', records.redirection(4))
+            const start = npm.snapshot()
+            npm.breakNext('proxy-hosts', 'update', 'bad')
+            const reply = await applyHosts(deps, OWNER, { proxyHost: 10, redirectionHost: 4 }, spec({ port: 5008 }), false)
+            assert.deepEqual(reply, { ok: false, problem: 'NPM refused the configuration for spotondrones live', output: 'bad' })
+            assert.deepEqual(writes(npm), ['update proxy-hosts 10', 'update proxy-hosts 10'])
+            assert.deepEqual(normalised(npm.snapshot()), normalised(start))
+            afterEach(npm)
+        })
+
+        test('undoes every earlier write when a later one is refused by nginx', async () => {
+            const { npm, deps } = setupFor(flavour)
+            npm.seed('proxy-hosts', records.proxy(10, { domain_names: ['spotondrones.com', 'www.spotondrones.com'] }))
+            const start = npm.snapshot()
+            npm.breakNext('redirection-hosts', 'create', 'bad redirect')
+            const reply = await applyHosts(deps, OWNER, { proxyHost: 10, redirectionHost: null }, spec(), false)
+            assert.deepEqual(reply, { ok: false, problem: 'NPM refused the configuration for spotondrones live', output: 'bad redirect' })
+            assert.deepEqual(writes(npm), ['update proxy-hosts 10', 'create redirection-hosts', 'remove redirection-hosts 100', 'update proxy-hosts 10'])
+            assert.deepEqual(normalised(npm.snapshot()), normalised(start))
+            afterEach(npm)
+        })
+
+        test('the release puts the hand-made host back, the redirection host letting go first', async () => {
+            const { npm, deps } = setupFor(flavour)
+            npm.seed('proxy-hosts', records.proxy(10))
+            npm.seed('redirection-hosts', records.redirection(4))
+            const reply = await applyHosts(deps, OWNER, { proxyHost: 10, redirectionHost: 4 }, handMade(), false)
+            assert.equal(reply.ok, true, JSON.stringify(reply))
+            assert.deepEqual((reply as { ids: unknown }).ids, { proxyHost: 10, redirectionHost: null })
+            assert.deepEqual(writes(npm), ['remove redirection-hosts 4', 'update proxy-hosts 10'])
+            const state = npm.snapshot()
+            assert.deepEqual(state['proxy-hosts'][0]!.domain_names, ['spotondrones.com', 'www.spotondrones.com'])
+            assert.equal(state['proxy-hosts'][0]!.advanced_config, BROTLI)
+            assert.deepEqual(state['redirection-hosts'], [])
+            afterEach(npm)
+        })
+
+        test('a redirection host that keeps some aliases is trimmed before the proxy takes the rest', async () => {
+            const { npm, deps } = setupFor(flavour)
+            npm.seed('proxy-hosts', records.proxy(10))
+            npm.seed('redirection-hosts', records.redirection(4, { domain_names: ['www.spotondrones.com', 'shop.spotondrones.com'] }))
+            const wanted = spec({ aliases: ['shop.spotondrones.com'] })
+            wanted.proxy.domain_names = ['spotondrones.com', 'www.spotondrones.com']
+            const reply = await applyHosts(deps, OWNER, { proxyHost: 10, redirectionHost: 4 }, wanted, false)
+            assert.equal(reply.ok, true, JSON.stringify(reply))
+            assert.deepEqual(writes(npm), ['update redirection-hosts 4', 'update proxy-hosts 10'])
+            afterEach(npm)
+        })
+
+        test('a stale redirection id takes the orphan carrying this owner\'s marker, and answers its id', async () => {
+            const { npm, deps } = setupFor(flavour)
+            npm.seed('proxy-hosts', records.proxy(10))
+            npm.seed('redirection-hosts', records.redirection(7))
+            const reply = await applyHosts(deps, OWNER, { proxyHost: 10, redirectionHost: 4 }, spec({ port: 5008 }), false)
+            assert.deepEqual((reply as { ids: unknown }).ids, { proxyHost: 10, redirectionHost: 7 })
+            assert.deepEqual(writes(npm), ['update proxy-hosts 10', 'update redirection-hosts 7'])
+            afterEach(npm)
+        })
+
+        // A migration (NPM to NPMplus, say) that gave the hosts new ids: the one carrying this owner's
+        // exact marker on its first line is provably this environment's, so it is taken and its id answered.
+        test('a stale proxy id takes the proxy host carrying this owner\'s marker, and answers its id', async () => {
+            const { npm, deps } = setupFor(flavour)
+            npm.seed('proxy-hosts', records.proxy(31))
+            npm.seed('redirection-hosts', records.redirection(32))
+            const reply = await applyHosts(deps, OWNER, { proxyHost: 10, redirectionHost: 4 }, spec({ port: 5008 }), false)
+            assert.equal(reply.ok, true, JSON.stringify(reply))
+            assert.deepEqual((reply as { ids: unknown }).ids, { proxyHost: 31, redirectionHost: 32 })
+            assert.deepEqual(writes(npm), ['update proxy-hosts 31', 'update redirection-hosts 32'])
+            assert.equal(npm.snapshot()['proxy-hosts'][0]!.forward_port, 5008)
+            afterEach(npm)
+        })
+
+        test('a stale proxy id never takes a host without this owner\'s exact marker', async () => {
+            const configs = ['', BROTLI, `${markerFor({ project: 'spotondrones', environment: 'staging' })}\n`, `# note\n${MARKER}\n`, ` ${MARKER}\n`]
+            for (const advanced_config of configs) {
+                const { npm, deps } = setupFor(flavour)
+                npm.seed('proxy-hosts', records.proxy(31, { advanced_config }))
+                const reply = await applyHosts(deps, OWNER, { proxyHost: 10, redirectionHost: null }, spec({ aliases: [] }), false)
+                assert.deepEqual(reply, { ok: false, problem: 'NPM proxy host 10 does not exist' }, advanced_config)
+                assert.deepEqual(writes(npm), [], advanced_config)
+                // Not under adopt either: adopt takes over the host it was given, never one found by marker hunting.
+                const adopting = await applyHosts(deps, OWNER, { proxyHost: 10, redirectionHost: null }, spec({ aliases: [] }), true)
+                assert.equal(adopting.ok, false, advanced_config)
+                assert.deepEqual(writes(npm), [], advanced_config)
+            }
+        })
+
+        test('remove refuses an unowned host and deletes nothing', async () => {
+            for (const [proxy, redirection] of [['hand made', `${MARKER}\n`], [`${MARKER}\n`, 'hand made']]) {
+                const { npm, deps } = setupFor(flavour)
+                npm.seed('proxy-hosts', records.proxy(10, { advanced_config: proxy }))
+                npm.seed('redirection-hosts', records.redirection(4, { advanced_config: redirection }))
+                const reply = await removeHosts(deps, OWNER, { proxyHost: 10, redirectionHost: 4 })
+                assert.equal(reply.ok, false)
+                assert.deepEqual(writes(npm), [])
+            }
+        })
+    })
+}
+
+describe('npmplus only', () => {
+    function plus() {
+        return setupFor('npmplus')
+    }
+    function bodyOf(npm: FakeNpm, call: string, nth = 0): Record<string, unknown> {
+        return npm.sent.filter(entry => entry.call === call)[nth]!.body
+    }
+
+    test('writes carry only the managed fields, with hostd\'s values for the fixed ones', async () => {
+        const { npm, deps } = plus()
+        assert.equal((await applyHosts(deps, OWNER, null, spec(), false)).ok, true)
+        const proxy = bodyOf(npm, 'create proxy-hosts')
+        assert.deepEqual(Object.keys(proxy).sort(), PROXY_MANAGED)
+        assert.equal(proxy.forward_scheme, 'http')
+        const redirection = bodyOf(npm, 'create redirection-hosts')
+        assert.deepEqual(Object.keys(redirection).sort(), REDIRECTION_MANAGED)
+        assert.deepEqual([redirection.forward_scheme, redirection.forward_http_code, redirection.preserve_path], ['https', 301, true])
+        // A host hostd creates gets NPMplus's own defaults for everything else.
+        assert.equal(npm.snapshot()['proxy-hosts'][0]!.npmplus_crowdsec_appsec, true)
+        assertOnlyAllowedKeys(npm)
+    })
+
+    test('hand-set NPMplus features survive adopt, a later write and the release', async () => {
+        const { npm, deps } = plus()
+        const hand = {
+            npmplus_crowdsec_appsec: false, npmplus_access_list_ids: [3], access_lists: [{ id: 3, name: 'office' }], npmplus_noindex: true,
+            npmplus_http3_support: true, hsts_enabled: true, npmplus_x_frame_options: 'DENY',
+        }
+        npm.seed('proxy-hosts', plusProxyRecord(10, { domain_names: ['spotondrones.com', 'www.spotondrones.com'], advanced_config: BROTLI, ...hand }))
+        const kept = () => {
+            const proxy = npm.snapshot()['proxy-hosts'].find(record => record.id === 10)!
+            for (const [key, value] of Object.entries(hand)) assert.deepEqual(proxy[key], value, key)
+        }
+        // An access list no longer stops an adopt: nothing edge sends can drop it.
+        const adopted = await applyHosts(deps, OWNER, { proxyHost: 10, redirectionHost: null }, spec(), true)
+        assert.equal(adopted.ok, true, JSON.stringify(adopted))
+        assert.equal((adopted as { previous: { proxyFixed: unknown } }).previous.proxyFixed, null)
+        kept()
+        const ids = (adopted as { ids: { proxyHost: number, redirectionHost: number } }).ids
+        assert.equal((await applyHosts(deps, OWNER, ids, spec({ port: 5008 }), false)).ok, true)
+        kept()
+        // The release, with a restoreFixed the agent kept from a stock NPM adopt: there is nothing fixed
+        // on NPMplus to put back, so it is ignored and the hand-set values stay.
+        const fixed = { forward_scheme: 'http', block_exploits: false, allow_websocket_upgrade: false, hsts_enabled: false, hsts_subdomains: false, caching_enabled: true } as const
+        const released = await applyHosts(deps, OWNER, ids, handMade(), false, fixed)
+        assert.equal(released.ok, true, JSON.stringify(released))
+        kept()
+        const proxy = npm.snapshot()['proxy-hosts'][0]!
+        assert.deepEqual([proxy.domain_names, proxy.advanced_config, proxy.forward_port], [['spotondrones.com', 'www.spotondrones.com'], BROTLI, 5007])
+        assertOnlyAllowedKeys(npm)
+    })
+
+    test('a failed write is put back with the managed fields only, leaving the rest alone', async () => {
+        const { npm, deps } = plus()
+        npm.seed('proxy-hosts', plusProxyRecord(10, { npmplus_crowdsec_appsec: false, forward_scheme: 'http' }))
+        npm.breakNext('proxy-hosts', 'update', 'bad')
+        const reply = await applyHosts(deps, OWNER, { proxyHost: 10, redirectionHost: null }, spec({ aliases: [], port: 5008 }), false)
+        assert.equal(reply.ok, false)
+        assert.deepEqual(Object.keys(bodyOf(npm, 'update proxy-hosts 10', 1)).sort(), PROXY_MANAGED)
+        const proxy = npm.snapshot()['proxy-hosts'][0]!
+        assert.deepEqual([proxy.forward_port, proxy.npmplus_crowdsec_appsec, proxy.npmplus_nginx_online], [5007, false, true])
+        assertOnlyAllowedKeys(npm)
+    })
+
+    test('adopt refuses what sits in front of hostd\'s verification, naming it', async () => {
+        const refusals: [Record<string, unknown>, RegExp][] = [
+            [{ npmplus_auth_request: 'authelia' }, /^NPM proxy host 10 puts authelia auth in front of every request/],
+            [{ npmplus_location_config: 'location /admin {\n    deny all;\n}' }, /^NPM proxy host 10 has custom location config: location \/admin \{/],
+            [{ forward_scheme: 'https' }, /^NPM proxy host 10 forwards over https/],
+        ]
+        for (const [over, problem] of refusals) {
+            const { npm, deps } = plus()
+            npm.seed('proxy-hosts', plusProxyRecord(10, { advanced_config: '', ...over }))
+            const reply = await applyHosts(deps, OWNER, { proxyHost: 10, redirectionHost: null }, spec({ aliases: [] }), true)
+            assert.equal(reply.ok, false, JSON.stringify(over))
+            assert.match((reply as { problem: string }).problem, problem)
+            assert.deepEqual(writes(npm), [])
+        }
+        for (const auth of ['none', '']) {
+            const { npm, deps } = plus()
+            npm.seed('proxy-hosts', plusProxyRecord(10, { advanced_config: '', npmplus_auth_request: auth, npmplus_location_config: '  \n' }))
+            const reply = await applyHosts(deps, OWNER, { proxyHost: 10, redirectionHost: null }, spec({ aliases: [] }), true)
+            assert.equal(reply.ok, true, `${auth}: ${JSON.stringify(reply)}`)
+        }
+    })
+
+    test('an owned host reads back with HTTP/2 on whenever it has a certificate, as NPMplus serves it', async () => {
+        const { npm, deps } = plus()
+        npm.seed('proxy-hosts', plusProxyRecord(10))
+        const reply = await getHosts(deps, OWNER, { proxyHost: 10, redirectionHost: null })
+        assert.deepEqual(reply, {
+            ok: true, verb: 'get', current: {
+                proxy: {
+                    domain_names: ['spotondrones.com'], forward_host: UPSTREAM, forward_port: 5007, certificate_id: 16,
+                    ssl_forced: true, http2_support: true, advanced_config: `${MARKER}\nold`,
+                },
+                redirection: null,
+            },
+        })
+        npm.seed('proxy-hosts', plusProxyRecord(11, { certificate_id: 0, ssl_forced: false }))
+        const flexible = await getHosts(deps, OWNER, { proxyHost: 11, redirectionHost: null })
+        assert.equal((flexible as { current: { proxy: { http2_support: boolean } } }).current.proxy.http2_support, false)
+    })
+
+    test('a redirection host recreated by an undo keeps its NPMplus settings', async () => {
+        const { npm, deps } = plus()
+        npm.seed('proxy-hosts', plusProxyRecord(10))
+        npm.seed('redirection-hosts', plusRedirectionRecord(4, { npmplus_http3_support: true, hsts_enabled: true }))
+        npm.breakNext('proxy-hosts', 'update', 'bad')
+        const reply = await applyHosts(deps, OWNER, { proxyHost: 10, redirectionHost: 4 }, handMade(), false)
+        assert.equal(reply.ok, false)
+        const back = npm.snapshot()['redirection-hosts'][0]!
+        assert.deepEqual([back.id, back.domain_names, back.npmplus_http3_support, back.hsts_enabled], [100, ['www.spotondrones.com'], true, true])
+        assertOnlyAllowedKeys(npm)
+    })
+})
