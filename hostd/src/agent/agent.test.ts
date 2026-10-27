@@ -1438,10 +1438,13 @@ describe('the domains verb', () => {
     // registry with the domains capability and a domain to write, which nothing above this point
     // provides, and every domains test below wants the rail's own recorders back rather than the ones
     // the base setup returns.
-    function setup(options: { capabilities?: string, now?: () => number } = {}) {
+    function setup(options: { capabilities?: string, now?: () => number, edgeDeadlineMs?: number } = {}) {
         const registry = options.capabilities === undefined ? domainsRegistry : parseRegistry(domainsRegistrySource(options.capabilities))
         const context = fakeDomains(registry)
-        const base = baseSetup({ registry: () => registry, domains: context.domains, ...(options.now ? { now: options.now } : {}) })
+        const base = baseSetup({
+            registry: () => registry, domains: context.domains,
+            ...(options.now ? { now: options.now } : {}), ...(options.edgeDeadlineMs ? { edgeDeadlineMs: options.edgeDeadlineMs } : {}),
+        })
         return { ...base, edge: context.edge, reload: context.reload }
     }
 
@@ -1487,12 +1490,20 @@ describe('the domains verb', () => {
         assert.ok(result.ok && 'preview' in result && result.preview.proposed.includes('deadbeef'))
     })
 
-    it('health answers railAge from edge\'s npmAge', async () => {
-        const { agent, edge } = setup()
+    it('health answers railAge from edge\'s npmAge, aged by how long ago it was read', async () => {
+        let clock = 1_000_000
+        const { agent, edge } = setup({ now: () => clock })
         const call = edge.call.bind(edge)
         edge.call = async request => request.verb === 'health' ? { ok: true, verb: 'health', npmAge: 4321 } : call(request)
+        assert.equal(healthOf(await agent.handle({ verb: 'health' })).railAge, null, 'nothing read yet')
+        await agent.edgeReadingsSettled()
         assert.equal(healthOf(await agent.handle({ verb: 'health' })).railAge, 4321)
+        clock += 5_000
+        assert.equal(healthOf(await agent.handle({ verb: 'health' })).railAge, 9321, 'a reading kept is older by the time since')
         edge.call = async request => { if (request.verb === 'health') throw new Error('edge is down'); return call(request) }
+        clock += 30_000
+        await agent.handle({ verb: 'health' })
+        await agent.edgeReadingsSettled()
         assert.equal(healthOf(await agent.handle({ verb: 'health' })).railAge, null, 'an edge that cannot answer is no age')
     })
 
@@ -1501,21 +1512,68 @@ describe('the domains verb', () => {
         const { agent, edge } = setup({ now: () => clock })
         edge.npm.seed('proxy-hosts', { id: 300, domain_names: ['acme.com'], forward_host: '10.0.0.9', forward_port: 80 })
         const finds = () => edge.requests.filter(request => request.verb === 'find').length
+        const before = healthOf(await agent.handle({ verb: 'health' }))
+        assert.ok(before.warnings.some(warning => /not been checked for drift yet/.test(warning)), String(before.warnings))
+        await agent.edgeReadingsSettled()
         const first = healthOf(await agent.handle({ verb: 'health' }))
         assert.ok(first.warnings.some(warning => /proxy host 300 serves acme\.com/.test(warning)), String(first.warnings))
         clock += 30_000
         await agent.handle({ verb: 'health' })
+        await agent.edgeReadingsSettled()
         assert.equal(finds(), 1, 'the portal polling must not hammer NPM')
         clock += 31_000
         await agent.handle({ verb: 'health' })
+        await agent.edgeReadingsSettled()
         assert.equal(finds(), 2)
     })
 
     it('health still answers when edge is down, with one warning', async () => {
         const { agent, edge } = setup()
         edge.failNext('find', 'before')
+        await agent.handle({ verb: 'health' })
+        await agent.edgeReadingsSettled()
         const reply = healthOf(await agent.handle({ verb: 'health' }))
         assert.ok(reply.warnings.some(warning => /could not be checked for drift/.test(warning)))
+    })
+
+    // api's boot gate and probe give health 15 seconds, and each edge call may take far longer than that
+    it('health answers at once while edge hangs, and says the reading is late', async () => {
+        const { agent, edge } = setup({ edgeDeadlineMs: 20 })
+        const release: Array<() => void> = []
+        edge.call = request => new Promise(resolve => release.push(() => resolve(request.verb === 'health' ? { ok: true, verb: 'health', npmAge: 0 } : { ok: false, problem: 'late' })))
+        const started = Date.now()
+        const reply = healthOf(await agent.handle({ verb: 'health' }))
+        assert.ok(Date.now() - started < 1_000, 'health waited on edge')
+        assert.equal(reply.railAge, null)
+        assert.ok(reply.warnings.some(warning => /not been checked for drift yet/.test(warning)), String(reply.warnings))
+        await new Promise(resolve => setTimeout(resolve, 60))
+        const later = healthOf(await agent.handle({ verb: 'health' }))
+        assert.ok(later.warnings.some(warning => /could not be checked for drift within/.test(warning)), String(later.warnings))
+        for (const done of release.splice(0)) done()
+        await agent.edgeReadingsSettled()
+    })
+
+    it('concurrent health calls start at most one sweep', async () => {
+        const { agent, edge } = setup()
+        const release: Array<() => void> = []
+        const seen: string[] = []
+        const call = edge.call.bind(edge)
+        edge.call = async request => {
+            seen.push(request.verb)
+            await new Promise<void>(resolve => release.push(resolve))
+            return call(request)
+        }
+        await Promise.all([1, 2, 3, 4, 5].map(() => agent.handle({ verb: 'health' })))
+        // acme has no ids, so a sweep's first call is its find
+        assert.equal(seen.filter(verb => verb === 'find').length, 1, String(seen))
+        assert.equal(seen.filter(verb => verb === 'health').length, 1, String(seen))
+        // Let the one sweep run to the end, releasing each call as it comes
+        for (let i = 0; i < 50 && release.length > 0; i++) {
+            for (const done of release.splice(0)) done()
+            await new Promise(resolve => setImmediate(resolve))
+        }
+        await agent.edgeReadingsSettled()
+        assert.equal(seen.filter(verb => verb === 'find').length, 1, String(seen))
     })
 })
 

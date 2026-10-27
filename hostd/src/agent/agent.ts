@@ -111,6 +111,9 @@ export type AgentDeps = {
     // Read by health for drift: the registry's hosts compared with NPM's. Cached for a minute, because
     // the portal polls health and each pass reads every owned host from NPM. Injected so tests can move it.
     now?: () => number
+    // How long a drift sweep runs before health reports it as late (EDGE_DEADLINE_MS). Injected so a test
+    // need not wait seconds for it.
+    edgeDeadlineMs?: number
     // Page views and visitors out of the access logs. Absent until the production entrypoint wires the
     // log directory: the analytics verb then refuses unavailable instead of crashing.
     analytics?: Pick<Analytics, 'report'>
@@ -177,12 +180,20 @@ const reply = (value: AgentReply): Outcome => ({ kind: 'reply', reply: value })
 // stale; this only bounds the memory, at a few pages of history for every site on the machine.
 // How long a drift reading is reused. Health is polled, and each reading asks NPM about every owned host.
 const DRIFT_CACHE_MS = 60_000
+// How long edge's own health answer (railAge) is reused before it is asked again.
+const RAIL_CACHE_MS = 10_000
+// Health never waits on edge: api's boot gate and probe give it 15 seconds, and one edge call may take
+// far longer. A sweep still running after this is reported as late; its reading is used when it lands.
+const EDGE_DEADLINE_MS = 5_000
+// A drift reading older than this is said to be old, so a sweep that never finishes is not mistaken for
+// a clean bill of health.
+const DRIFT_STALE_MS = 5 * 60_000
 
 // Milliseconds since edge last had a successful NPM call: an age, never a timestamp (api compares it with a
 // staleness threshold). null means none yet, or that edge could not be asked.
-async function railAgeOf(edge: EdgeClient): Promise<number | null> {
+async function railAgeOf(edge: EdgeClient, timeoutMs: number): Promise<number | null> {
     try {
-        const reply = await edge.call({ verb: 'health' })
+        const reply = await edge.call({ verb: 'health' }, { timeoutMs })
         return reply.ok && reply.verb === 'health' ? reply.npmAge : null
     } catch {
         return null
@@ -1068,20 +1079,84 @@ export class Agent {
             warnings.push(...this.deps.backups.store.failures())
         }
         // railAge and drift both come from edge, and an edge that cannot answer is a warning, never a failure
-        // of health itself: health is what the operator reads when something is already wrong.
+        // of health itself: health is what the operator reads when something is already wrong. Both are
+        // read in the background and health serves the last reading, so it never waits on edge or NPM.
         const domains = this.deps.domains
-        if (domains) warnings.push(...await this.drift(domains))
-        return { ok: true, warnings, invalid, system: await this.deps.system(), railAge: domains ? await railAgeOf(domains.edge) : null }
+        if (domains) {
+            this.refreshDrift(domains)
+            this.refreshRail(domains)
+            warnings.push(...this.driftReading())
+        }
+        return { ok: true, warnings, invalid, system: await this.deps.system(), railAge: domains ? this.railAge() : null }
     }
 
     private drifted: { at: number, warnings: string[] } | null = null
+    private driftSweep: Promise<void> | null = null
+    private rail: { at: number, npmAge: number | null } | null = null
+    private railRead: Promise<void> | null = null
 
-    private async drift(domains: DomainsDeps): Promise<string[]> {
-        const now = (this.deps.now ?? Date.now)()
-        if (this.drifted === null || now - this.drifted.at >= DRIFT_CACHE_MS || now < this.drifted.at) {
-            this.drifted = { at: now, warnings: await driftWarnings(this.deps.registry(), domains.edge, domains.config) }
+    private now(): number {
+        return (this.deps.now ?? Date.now)()
+    }
+
+    // Stale means older than maxAge, or from the future (a clock that stepped back).
+    private stale(at: number, maxAge: number): boolean {
+        const now = this.now()
+        return now - at >= maxAge || now < at
+    }
+
+    // At most one sweep at a time, however many health calls arrive while it runs. Past the deadline the
+    // reading says so; the sweep goes on, and what it finds replaces that when it lands.
+    private refreshDrift(domains: DomainsDeps): void {
+        if (this.driftSweep !== null) return
+        if (this.drifted !== null && !this.stale(this.drifted.at, DRIFT_CACHE_MS)) return
+        const deadlineMs = this.deps.edgeDeadlineMs ?? EDGE_DEADLINE_MS
+        let landed = false
+        const timer = setTimeout(() => {
+            if (landed) return
+            this.drifted = {
+                at: this.now(),
+                warnings: [`NPM could not be checked for drift within ${deadlineMs / 1000} seconds; edge or NPM is slow, and the check carries on in the background`],
+            }
+        }, deadlineMs)
+        timer.unref()
+        this.driftSweep = driftWarnings(this.deps.registry(), domains.edge, domains.config)
+            .then(warnings => { this.drifted = { at: this.now(), warnings } })
+            .finally(() => {
+                landed = true
+                clearTimeout(timer)
+                this.driftSweep = null
+            })
+    }
+
+    private refreshRail(domains: DomainsDeps): void {
+        if (this.railRead !== null) return
+        if (this.rail !== null && !this.stale(this.rail.at, RAIL_CACHE_MS)) return
+        // edge answers health without touching NPM, so a short timeout only cuts off an edge that hangs
+        this.railRead = railAgeOf(domains.edge, this.deps.edgeDeadlineMs ?? EDGE_DEADLINE_MS)
+            .then(npmAge => { this.rail = { at: this.now(), npmAge } })
+            .finally(() => { this.railRead = null })
+    }
+
+    // The age edge gave, plus the time since it was asked: an age kept for ten seconds is ten seconds older.
+    private railAge(): number | null {
+        if (this.rail === null || this.rail.npmAge === null) return null
+        return this.rail.npmAge + Math.max(0, this.now() - this.rail.at)
+    }
+
+    private driftReading(): string[] {
+        if (this.drifted === null) return ['NPM has not been checked for drift yet; the first check is running']
+        const warnings = [...this.drifted.warnings]
+        if (this.stale(this.drifted.at, DRIFT_STALE_MS)) {
+            warnings.unshift(`the last drift reading is ${Math.max(0, Math.round((this.now() - this.drifted.at) / 60_000))} minutes old; edge or NPM has not answered a newer one`)
         }
-        return [...this.drifted.warnings]
+        return warnings
+    }
+
+    // Resolves once no background reading is running. For tests, which otherwise could not tell when
+    // the readings health started have landed.
+    async edgeReadingsSettled(): Promise<void> {
+        while (this.driftSweep !== null || this.railRead !== null) await Promise.all([this.driftSweep, this.railRead])
     }
 
     // live's containers are found by the project id, as they always have been. Another environment's are
