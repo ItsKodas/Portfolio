@@ -2180,6 +2180,148 @@ Undoing an adoption is described in step 8 of **1. Rollout, done once**.
 | An adoption is refused because the host forwards somewhere else | The hand-made host's upstream is not `192.168.0.8:<the environment's port>`. Fix the port in the NPM host or in the registry, whichever is wrong, and preview again. |
 | The registry will not load, naming `letsencrypt` | An environment's `certificate` is `letsencrypt`, which is not supported with NPM. Change it to `cloudflare-origin` (and make sure its zone is in `certificates`). |
 
+### 6. Moving to NPMplus
+
+`edge` also speaks [NPMplus](https://github.com/ZoeyVid/NPMplus), chosen by `HOSTD_NPM_FLAVOUR` in
+`hostd/docker-compose.yml` (`npm`, the default, or `npmplus`; anything else stops `edge` with a `FATAL`).
+Moving the hosts themselves from NPM to NPMplus is done outside hostd, with NPMplus's own tools; this
+section is what hostd needs around it. Everything else in **Domains** still holds: the marker, the
+ownership guard, verification, the holding page, analytics, adoption and drift.
+
+What is different for a reader on NPMplus:
+
+- **hostd writes only the fields it manages.** On a proxy host: the domain names, the upstream (always
+  `http` to `192.168.0.8:<port>`), the certificate, Force SSL and the advanced config. On a redirection host
+  the same plus the 301, the `https` scheme and keeping the path. Every NPMplus feature set by hand on a host
+  (CrowdSec AppSec, access lists, HTTP/3, noindex, buffering, mTLS, X-Frame-Options, HSTS) is kept exactly as
+  it is, on adopt, on every later write and on the undo. A host hostd creates gets NPMplus's own defaults
+  for all of them.
+- **Websockets are always on** and **HTTP/2 is on whenever a host has a certificate**: NPMplus has no switch
+  for either. The Block Exploits and Cache Assets switches do not exist there.
+- **Adopt** no longer refuses a host with an access list (nothing hostd writes can drop it). It still refuses
+  custom advanced config beyond the brotli snippet and custom `locations`, and on NPMplus also a host with an
+  auth provider set (`npmplus_auth_request` other than none), custom location config, or an upstream scheme
+  other than `http`, because the first two sit in front of hostd's verification path and the last one
+  could not be put back by the undo. The refusal names what it found.
+- **The undo** (the automatic rollback after a bad adopt, and step 8 of **1. Rollout, done once**) puts back
+  the managed fields only. The saved file's `previous.proxyFixed` is `null` for an adopt done on NPMplus:
+  there are no NPM switches to restore.
+
+Do these in order. Nothing here changes a live site until the last step, and up to then going back is
+setting `HOSTD_NPM_FLAVOUR` and `HOSTD_NPM_URL` back and recreating `edge`.
+
+1. **The NPMplus user.** In NPMplus, add `hostd@horizons.gg` with exactly the permissions in step 1 of
+   **1. Rollout, done once** (not an admin; visibility All; Proxy Hosts and Redirection Hosts Manage; 404
+   Hosts and Certificates View; the rest Hidden), and **without two-factor**. `edge` cannot answer a
+   two-factor prompt: a user with it on makes every NPM call fail with `turn off two-factor for the hostd
+   user`. If its password differs from NPM's, put it in `HOSTD_NPM_SECRET` in
+   `/opt/horizons/hostd/.env.edge`.
+
+2. **The log format.** NPMplus reads custom http config from `custom_nginx/http_top.conf` under its data
+   directory, which is `/opt/npmplus/custom_nginx/http_top.conf` on the host in NPMplus's README layout
+   (`/opt/npmplus` mounted at `/data`). Check the path against your own install first
+   (`ssh <npmplus-host> "docker inspect npmplus --format '{{json .Mounts}}'"`). If NPM's data directory was
+   carried over, NPMplus moved the old `nginx/custom` files there on its first start, so look before adding:
+
+   ```bash
+   ssh <npmplus-host> "mkdir -p /opt/npmplus/custom_nginx && touch /opt/npmplus/custom_nginx/http_top.conf && cat /opt/npmplus/custom_nginx/http_top.conf"
+   ```
+
+   If `log_format hostd` is not there, append the same line as step 2 of **1. Rollout, done once**, then test
+   and reload NPMplus's nginx (the reload runs only if the test passed):
+
+   ```bash
+   ssh <npmplus-host> 'cat >> /opt/npmplus/custom_nginx/http_top.conf' <<'EOF'
+   log_format hostd escape=default '$host\t$msec\t$remote_addr\t$http_cf_connecting_ip\t$http_x_forwarded_for\t$request_method\t$uri\t$status\t$http_referer\t$http_user_agent\t$http_accept\t$http_rsc\t$http_next_router_prefetch\t$http_sec_purpose\t$http_purpose\t$http_cf_ipcountry';
+   EOF
+   ssh <npmplus-host> "docker exec npmplus nginx -t && docker exec npmplus nginx -s reload"
+   ```
+
+3. **NPMplus's admin certificate.** NPMplus serves its API on port 81 over https only, so `edge` must trust
+   its certificate. On the VM, save it next to `.env.edge`:
+
+   ```bash
+   openssl s_client -connect <npmplus-host>:81 -showcerts </dev/null | openssl x509 | sudo tee /opt/horizons/hostd/npm-ca.pem >/dev/null
+   openssl x509 -in /opt/horizons/hostd/npm-ca.pem -noout -subject -ext subjectAltName
+   ```
+
+   **Read the second command's output.** Node checks the name as well as the signature, so the certificate
+   must name the host that `HOSTD_NPM_URL` uses (`IP Address:192.168.0.x` for an address, `DNS:...` for a
+   name). NPMplus's own default certificate is a self-signed one with an empty subject and no names, which
+   no name or address matches: trusting it is not enough, and `edge` will fail every call with a
+   `does not match certificate's altnames` error. In that case set NPMplus's `DEFAULT_CERT_ID` to a
+   certificate that does name the host `edge` will use, restart NPMplus, and export again (when that
+   certificate is not self-signed, save the CA that signed it instead of the first certificate). Do not
+   turn certificate checking off.
+
+4. **Compose.** In `/opt/horizons/hostd/docker-compose.yml`, on `edge`: set `HOSTD_NPM_FLAVOUR: npmplus`,
+   `HOSTD_NPM_URL: https://<npmplus-host>:81/api` (the host the certificate names), `HOSTD_NPM_ADDRESS` to
+   NPMplus's address (the source of its syslog datagrams; NPMplus normally runs with host networking, so it
+   is the machine's own address) and `NODE_EXTRA_CA_CERTS: /etc/hostd/npm-ca.pem`, and add the mount under
+   `volumes:`:
+
+   ```yaml
+         - /opt/horizons/hostd/npm-ca.pem:/etc/hostd/npm-ca.pem:ro
+   ```
+
+   The file must exist before the mount is added, or Docker makes an empty directory in its place.
+
+5. **The firewall.** If `sudo ufw status` is not `inactive`, let NPMplus's address in to the two ports and
+   take NPM's out:
+
+   ```bash
+   sudo ufw allow from <npmplus-address> to any port 5514 proto udp
+   sudo ufw allow from <npmplus-address> to any port 8790 proto tcp
+   sudo ufw delete allow from 192.168.0.6 to any port 5514 proto udp
+   sudo ufw delete allow from 192.168.0.6 to any port 8790 proto tcp
+   ```
+
+   Keep NPM's rules until NPMplus is serving the sites, if both run side by side for a while.
+
+6. **Check the login** from the VM, the way `edge` will do it (the cookie is kept in a private temporary
+   file and deleted at the end; NPMplus allows five failed logins in five minutes):
+
+   ```bash
+   JAR=$(mktemp)
+   SECRET=$(sudo sed -n 's/^HOSTD_NPM_SECRET=//p' /opt/horizons/hostd/.env.edge)
+   printf '{"identity":"hostd@horizons.gg","secret":"%s"}' "$SECRET" \
+     | curl -s --cacert /opt/horizons/hostd/npm-ca.pem -c "$JAR" https://<npmplus-host>:81/api/tokens -H 'Content-Type: application/json' -d @-; echo
+   unset SECRET
+   for list in proxy-hosts redirection-hosts dead-hosts certificates; do
+     printf '%s ' "$list"
+     curl -s --cacert /opt/horizons/hostd/npm-ca.pem -b "$JAR" -o /dev/null -w '%{http_code}\n' "https://<npmplus-host>:81/api/nginx/$list"
+   done
+   rm -f "$JAR"
+   ```
+
+   The login prints `{"expires":"..."}`; `requiresTotp` in it means two-factor is still on (step 1), and a
+   certificate error means step 3 is not done. Every list line must end `200`, as in step 4 of
+   **1. Rollout, done once**.
+
+7. **Recreate `edge`** once the hosts are on NPMplus:
+
+   ```bash
+   docker compose -f hostd/docker-compose.yml up -d --force-recreate edge
+   docker logs hostd-edge
+   ```
+
+   Expect `talking to NPMplus at https://...` and the usual three lines; a `FATAL` names the setting at
+   fault (a flavour other than `npm` or `npmplus`, or an `http` URL with `npmplus`).
+
+8. **Check `/health`** (see **3. Drift, ownership and health**) once the first drift reading lands:
+
+   - **No warnings** means every host came across with its id and its `# hostd:` first line intact.
+   - **Drift** on an environment means the migration changed one of the fields hostd manages; the next
+     domain action on that environment writes it back, or fix it in NPMplus.
+   - **`is missing`** for a proxy or redirection host means its id changed in the migration. If the host still
+     carries its `# hostd: <id>/<env>.` first line, `edge` takes it as that environment's own on the next
+     domain action there, such as an alias or SSL change (it looks for exactly that marker when the recorded
+     id is gone), and the agent records the new id. The warning stays until then.
+   - **`does not carry the marker`** (not owned) means the migration lost or changed the first line of the
+     Advanced tab. Put the marker back as the first line, or treat the host as hand-made: remove that
+     environment's `npm:` block from the registry (as in step 8 of **1. Rollout, done once**) and adopt it
+     again from the portal, preview first. An adopt that is still refused names what NPMplus has on the host.
+
 ## Analytics
 
 Each site's Overview shows visits and unique visitors per day for the last 30 days, its top pages, the sites

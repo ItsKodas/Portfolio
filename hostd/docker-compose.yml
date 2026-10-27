@@ -173,6 +173,14 @@ services:
       # value means a later change to who connects touches one setting.
       HOSTD_SOCKET_GID: "1000"
       HOSTD_STATUS_FILE: /tmp/hostd-status.json
+      # npm (stock Nginx Proxy Manager) or npmplus. edge refuses to start on anything else. NPMplus serves
+      # its API over https only, so with npmplus HOSTD_NPM_URL must be an https URL, and edge has to trust
+      # NPMplus's admin certificate: export it to /opt/horizons/hostd/npm-ca.pem, add a read-only mount of it
+      # under volumes (- /opt/horizons/hostd/npm-ca.pem:/etc/hostd/npm-ca.pem:ro) and set
+      # NODE_EXTRA_CA_CERTS: /etc/hostd/npm-ca.pem here. The mount is not here already because the file
+      # does not exist until then, and Docker would make a directory in its place. RUNBOOK.md, "6. Moving
+      # to NPMplus", has the steps. HOSTD_NPM_ADDRESS becomes NPMplus's address too (its syslog source).
+      HOSTD_NPM_FLAVOUR: npm
       HOSTD_NPM_URL: http://192.168.0.6:81/api
       HOSTD_NPM_ADDRESS: 192.168.0.6
       HOSTD_UPSTREAM_HOST: 192.168.0.8
