@@ -8,11 +8,14 @@
 // own bare error.
 
 import { posix } from 'node:path'
-import { maintenanceKey } from '../shared/deploys.ts'
 import { describeError } from '../shared/formats.ts'
+import { holdingPagePath, maintenanceKey } from '../shared/holding.ts'
 import { environmentOf, hostnamesOf, type EnvironmentEntry, type EnvironmentName, type ProjectEntry, type Registry } from '../shared/registry.ts'
 import { groupByProject, pickPerService, type ContainerSummary } from './docker.ts'
 import { renderHoldingPage, type HoldingState } from './holding-page.ts'
+
+// Callers import these from here; they live in shared/holding.ts so edge can use them too
+export { holdingPagePath, maintenanceKey }
 
 export type HoldingPagesDeps = {
     registry(): Registry
@@ -25,12 +28,6 @@ export type HoldingPagesDeps = {
     writeFile(path: string, text: string): Promise<void>
     pageDir: string
     now(): number
-}
-
-// Where an environment's own page lives, which the vhost names as its holding page. Under sites/ so the
-// shared fallback, index.html, can never be overwritten by a project whose id happens to be "index".
-export function holdingPagePath(pageDir: string, id: string, environment: EnvironmentName): string {
-    return posix.join(pageDir, 'sites', `${maintenanceKey(id, environment)}.html`)
 }
 
 // The page every vhost rendered before per-site pages existed still points at, until it is re-rendered
