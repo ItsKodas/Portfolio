@@ -387,7 +387,7 @@ async function provisionOnDisk(attempt: ProvisionAttempt, deps: ProvisionDeps): 
 
         // Before own, so .env is covered by it, and before resolve, which interpolates it
         const portWritten = await deps.setPortEnv(
-            { name: 'live', dir, composePaths, composeName: attempt.composeName, branch: attempt.branch, domain: null, aliases: [], port: attempt.port, certificate: null, deployed: null, websockets: false, flexibleSsl: false },
+            { name: 'live', dir, composePaths, composeName: attempt.composeName, branch: attempt.branch, domain: null, aliases: [], port: attempt.port, certificate: null, deployed: null, websockets: false, flexibleSsl: false, npm: null },
             attempt.portEnv, attempt.port,
         )
         if (!portWritten.ok) {
@@ -545,7 +545,7 @@ export async function createProject(args: ProvisionCreateArgs, deps: ProvisionDe
     if (!attempt.ok) return attempt
 
     const live: EnvironmentEntry = {
-        name: 'live', dir, composePaths: attempt.composePaths, composeName: args.id, branch: args.branch, domain: args.domain, aliases: [], port: port.port, certificate: args.certificate, deployed: null, ...flags,
+        name: 'live', dir, composePaths: attempt.composePaths, composeName: args.id, branch: args.branch, domain: args.domain, aliases: [], port: port.port, certificate: args.certificate, deployed: null, npm: null, ...flags,
     }
     const envFiles = await listEnvFiles(live, envFs)
     return { ok: true, project: { id: args.id, state: 'needs-setup' }, envFiles }
@@ -634,7 +634,7 @@ export async function addEnvironment(project: ProjectEntry, args: ProvisionAddEn
             const live = project.environments.get('live')
             if (!live) return { ok: true }
             const added: EnvironmentEntry = {
-                name, dir, composePaths: [composePath], composeName, branch: args.branch, domain: args.domain, aliases: [], port: port.port, certificate: args.certificate, deployed: null, websockets: false, flexibleSsl: false,
+                name, dir, composePaths: [composePath], composeName, branch: args.branch, domain: args.domain, aliases: [], port: port.port, certificate: args.certificate, deployed: null, websockets: false, flexibleSsl: false, npm: null,
             }
             const failures = await copyEnvFiles(project.id, live, added, envFs, deps)
             if (failures.length > 0) return { ok: false, problem: `could not copy ${failures.join(', ')} from the live environment` }
@@ -653,7 +653,7 @@ export async function addEnvironment(project: ProjectEntry, args: ProvisionAddEn
     if (!attempt.ok) return attempt
 
     const added: EnvironmentEntry = {
-        name, dir, composePaths: attempt.composePaths, composeName, branch: args.branch, domain: args.domain, aliases: [], port: port.port, certificate: args.certificate, deployed: null, websockets: false, flexibleSsl: false,
+        name, dir, composePaths: attempt.composePaths, composeName, branch: args.branch, domain: args.domain, aliases: [], port: port.port, certificate: args.certificate, deployed: null, websockets: false, flexibleSsl: false, npm: null,
     }
     const envFiles = await listEnvFiles(added, envFs)
     return { ok: true, project: { id: project.id, state: 'needs-setup' }, envFiles }

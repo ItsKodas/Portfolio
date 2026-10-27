@@ -122,7 +122,7 @@ function entryFrom(name: EnvironmentName, node: Record<string, unknown>, compose
     return {
         name, dir, composePaths: compose.map(file => posix.join(dir, file)), composeName,
         branch: typeof node.branch === 'string' ? node.branch : null,
-        domain: null, aliases: [], port, certificate: null, deployed: null, websockets: false, flexibleSsl: false,
+        domain: null, aliases: [], port, certificate: null, deployed: null, websockets: false, flexibleSsl: false, npm: null,
     }
 }
 
