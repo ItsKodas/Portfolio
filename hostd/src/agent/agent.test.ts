@@ -16,7 +16,7 @@ import { FakeEdge, FAKE_UPSTREAM } from './testing/fake-edge.ts'
 import type { DomainsDeps } from './domains.ts'
 import type { DeletedRecord } from './deleted-store.ts'
 import type { FetchReply, FetchRequest } from '../shared/fetch-protocol.ts'
-import type { AgentRequest, BackupArgs, ConfigureArgs, DeployArgs, LogLine } from '../shared/protocol.ts'
+import type { AgentRequest, BackupArgs, ConfigureArgs, DeployArgs, HealthReply, LogLine } from '../shared/protocol.ts'
 import type { SystemUsage } from '../shared/system.ts'
 import { emptyBackups, type BackupRecord, type Snapshot } from '../shared/backups.ts'
 import type { BackupRequest } from './backup-run.ts'
@@ -117,7 +117,6 @@ function setup(options: SetupOptions = {}) {
         docker,
         runner,
         system: async () => usage,
-        railAge: () => null,
         recheck: async (project: ProjectEntry) => {
             rechecked.push(project.id)
             return null
@@ -1428,15 +1427,21 @@ function seedOwned(edge: FakeEdge, options: { environment?: 'live' | 'test', dom
     }
 }
 
+function healthOf(outcome: Outcome): HealthReply {
+    const reply = replyOf(outcome)
+    assert.ok(reply && 'railAge' in reply, 'not a health reply')
+    return reply
+}
+
 describe('the domains verb', () => {
     // Shadows the module's own setup(), only within this describe block: the domains verb needs a
     // registry with the domains capability and a domain to write, which nothing above this point
     // provides, and every domains test below wants the rail's own recorders back rather than the ones
     // the base setup returns.
-    function setup(options: { capabilities?: string } = {}) {
+    function setup(options: { capabilities?: string, now?: () => number } = {}) {
         const registry = options.capabilities === undefined ? domainsRegistry : parseRegistry(domainsRegistrySource(options.capabilities))
         const context = fakeDomains(registry)
-        const base = baseSetup({ registry: () => registry, domains: context.domains })
+        const base = baseSetup({ registry: () => registry, domains: context.domains, ...(options.now ? { now: options.now } : {}) })
         return { ...base, edge: context.edge, reload: context.reload }
     }
 
@@ -1482,10 +1487,35 @@ describe('the domains verb', () => {
         assert.ok(result.ok && 'preview' in result && result.preview.proposed.includes('deadbeef'))
     })
 
-    it('reports the rail\'s last answer in health, so a dead host unit is visible', async () => {
-        const { agent } = setup()
-        const health = replyOf(await agent.handle({ verb: 'health' }))
-        assert.ok(health && 'railAge' in health)
+    it('health answers railAge from edge\'s npmAge', async () => {
+        const { agent, edge } = setup()
+        const call = edge.call.bind(edge)
+        edge.call = async request => request.verb === 'health' ? { ok: true, verb: 'health', npmAge: 4321 } : call(request)
+        assert.equal(healthOf(await agent.handle({ verb: 'health' })).railAge, 4321)
+        edge.call = async request => { if (request.verb === 'health') throw new Error('edge is down'); return call(request) }
+        assert.equal(healthOf(await agent.handle({ verb: 'health' })).railAge, null, 'an edge that cannot answer is no age')
+    })
+
+    it('health includes drift warnings, reading NPM once a minute', async () => {
+        let clock = 1_000_000
+        const { agent, edge } = setup({ now: () => clock })
+        edge.npm.seed('proxy-hosts', { id: 300, domain_names: ['acme.com'], forward_host: '10.0.0.9', forward_port: 80 })
+        const finds = () => edge.requests.filter(request => request.verb === 'find').length
+        const first = healthOf(await agent.handle({ verb: 'health' }))
+        assert.ok(first.warnings.some(warning => /proxy host 300 serves acme\.com/.test(warning)), String(first.warnings))
+        clock += 30_000
+        await agent.handle({ verb: 'health' })
+        assert.equal(finds(), 1, 'the portal polling must not hammer NPM')
+        clock += 31_000
+        await agent.handle({ verb: 'health' })
+        assert.equal(finds(), 2)
+    })
+
+    it('health still answers when edge is down, with one warning', async () => {
+        const { agent, edge } = setup()
+        edge.failNext('find', 'before')
+        const reply = healthOf(await agent.handle({ verb: 'health' }))
+        assert.ok(reply.warnings.some(warning => /could not be checked for drift/.test(warning)))
     })
 })
 

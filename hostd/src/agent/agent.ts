@@ -26,6 +26,8 @@ import type { DeployStore } from './deploy-state.ts'
 import {
     adopt, currentToken, previewAdopt, recreateHosts, removeEdgeHosts, removeHosts, restoreAdopted, setAliases, writeHosts, type DomainsDeps,
 } from './domains.ts'
+import { driftWarnings } from './drift.ts'
+import type { EdgeClient } from './edge-client.ts'
 import type { FetchClient } from './fetch-client.ts'
 import { buildServiceStatuses, groupByProject, pickPerService, type ContainerInspect, type ContainerSummary, type DockerApi } from './docker.ts'
 import { createLogDecoder } from './logframes.ts'
@@ -106,11 +108,9 @@ export type AgentDeps = {
     // Told after a lifecycle action, so the site's holding page can say "switched off" at once rather than
     // on the main loop's next pass. Optional, so the tests' fakes need not carry it; never throws.
     afterLifecycle?: (project: ProjectEntry, environment: EnvironmentName) => Promise<void>
-    // How long ago the rail last got an answer, read fresh on every health request exactly like system
-    // is. An age in milliseconds, never a timestamp: api compares it against a staleness threshold.
-    // Required rather than optional, unlike domains itself: health must always answer with a railAge,
-    // even one that stayed null because nothing ever configured the rail, so no caller can forget it.
-    railAge: () => number | null
+    // Read by health for drift: the registry's hosts compared with NPM's. Cached for a minute, because
+    // the portal polls health and each pass reads every owned host from NPM. Injected so tests can move it.
+    now?: () => number
     // Page views and visitors out of the access logs. Absent until the production entrypoint wires the
     // log directory: the analytics verb then refuses unavailable instead of crashing.
     analytics?: Pick<Analytics, 'report'>
@@ -175,6 +175,20 @@ const reply = (value: AgentReply): Outcome => ({ kind: 'reply', reply: value })
 
 // How many commits' details the agent remembers. A commit never changes, so a remembered answer is never
 // stale; this only bounds the memory, at a few pages of history for every site on the machine.
+// How long a drift reading is reused. Health is polled, and each reading asks NPM about every owned host.
+const DRIFT_CACHE_MS = 60_000
+
+// Milliseconds since edge last had a successful NPM call: an age, never a timestamp (api compares it with a
+// staleness threshold). null means none yet, or that edge could not be asked.
+async function railAgeOf(edge: EdgeClient): Promise<number | null> {
+    try {
+        const reply = await edge.call({ verb: 'health' })
+        return reply.ok && reply.verb === 'health' ? reply.npmAge : null
+    } catch {
+        return null
+    }
+}
+
 const MAX_REMEMBERED_DETAILS = 2000
 // How long a history waits for one commit's details before answering without them (see withDetails)
 const DETAILS_WAIT_MS = 3000
@@ -1053,7 +1067,21 @@ export class Agent {
             if (problem) warnings.push(problem)
             warnings.push(...this.deps.backups.store.failures())
         }
-        return { ok: true, warnings, invalid, system: await this.deps.system(), railAge: this.deps.railAge() }
+        // railAge and drift both come from edge, and an edge that cannot answer is a warning, never a failure
+        // of health itself: health is what the operator reads when something is already wrong.
+        const domains = this.deps.domains
+        if (domains) warnings.push(...await this.drift(domains))
+        return { ok: true, warnings, invalid, system: await this.deps.system(), railAge: domains ? await railAgeOf(domains.edge) : null }
+    }
+
+    private drifted: { at: number, warnings: string[] } | null = null
+
+    private async drift(domains: DomainsDeps): Promise<string[]> {
+        const now = (this.deps.now ?? Date.now)()
+        if (this.drifted === null || now - this.drifted.at >= DRIFT_CACHE_MS || now < this.drifted.at) {
+            this.drifted = { at: now, warnings: await driftWarnings(this.deps.registry(), domains.edge, domains.config) }
+        }
+        return [...this.drifted.warnings]
     }
 
     // live's containers are found by the project id, as they always have been. Another environment's are

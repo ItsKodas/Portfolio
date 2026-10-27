@@ -2146,7 +2146,7 @@ describe('GET /health: what only health can see', () => {
     // The warning that matters most: with the unit dead, every domain action hangs for 30 seconds
     // rather than failing, and nothing else says so before somebody tries one.
     it('warns when the Apache host unit has never answered, or has gone quiet', async () => {
-        const railWarning = 'the Apache host unit has not answered; no domain change can take effect'
+        const railWarning = 'Nginx Proxy Manager has not answered through edge; no domain change can take effect'
         for (const railAge of [null, 11 * 60_000]) {
             agent.reply = () => ({ ok: true, warnings: [], invalid: {}, system: usage, railAge })
             const body = await (await request('/health', { actor: 'admin' })).json() as { warnings: string[] }
@@ -2161,7 +2161,7 @@ describe('GET /health: what only health can see', () => {
     // both ends of the figure at once, which is the only place the timestamp-for-an-age mismatch that
     // kept this alarm permanently on could ever have been caught.
     it('does not warn one second after a real handshake, and does warn ten minutes later', async () => {
-        const railWarning = 'the Apache host unit has not answered; no domain change can take effect'
+        const railWarning = 'Nginx Proxy Manager has not answered through edge; no domain change can take effect'
         // A real epoch, which is exactly the value that used to make every reading look stale.
         let clock = 1_790_000_000_000
         const files = new Map<string, string>()

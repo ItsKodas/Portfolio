@@ -342,13 +342,13 @@ async function main(): Promise<void> {
                 const info = await statfs(path)
                 return info.bavail * info.bsize
             },
+            // No flag any more: NPM falls back to the holding page when the upstream is down, so the page
+            // saying "upgrading" is all a swap needs, and there is nothing to clear afterwards (the main
+            // loop rewrites the page once the site is up).
             setMaintenance: async key => {
-                // The page first, so it already says "upgrading" when the flag starts Apache serving it
                 await holdingPages.refreshKey(key, 'upgrading').catch(error => log(`WARN holding page for ${key}: ${describeError(error)}`))
-                await mkdir(MAINTENANCE_DIR, { recursive: true })
-                await writeFile(posix.join(MAINTENANCE_DIR, key), '')
             },
-            clearMaintenance: key => rm(posix.join(MAINTENANCE_DIR, key), { force: true }),
+            clearMaintenance: async () => {},
             owner: ownerOf,
             own: (dir, like) => ownTree(dir, like),
         },
@@ -557,9 +557,6 @@ async function main(): Promise<void> {
         afterLifecycle: async (project, environment) => {
             await holdingPages.refresh(project.id, environment).catch(error => log(`WARN holding page for ${project.id}: ${describeError(error)}`))
         },
-        // Nothing answers for the Apache rail any more. Null until health reads edge's own figure for the
-        // last good NPM call instead, which keeps this field's name and meaning (an age, or none).
-        railAge: () => null,
         analytics: new Analytics({ logDir: ACCESS_LOG_DIR, stateDir: ANALYTICS_DIR, timeZone: ANALYTICS_TIMEZONE }),
         // The same client provision and deploy already hold: branches needs nothing else from it, so it
         // is never gated behind fetcherProblem/'unavailable' any more than configure is behind the

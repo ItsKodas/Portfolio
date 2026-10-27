@@ -536,19 +536,6 @@ function parseAdoptBody(value: Record<string, unknown>): { ok: true, confirm: st
 // whether railAge was an age or a timestamp, which no test on either side alone could see.
 export const RAIL_STALE_MS = 10 * 60_000
 
-// Named once, listing the environments, rather than once per hostname: a site with three aliases would
-// otherwise produce three copies of the same sentence about the same certificate.
-function environmentsAwaitingCertbot(registry: Registry): string[] {
-    const waiting: string[] = []
-    for (const project of registry.projects.values()) {
-        if (!project.capabilities.has('domains')) continue
-        for (const environment of project.environments.values()) {
-            if (environment.certificate === 'letsencrypt') waiting.push(`${project.id} ${environment.name}`)
-        }
-    }
-    return waiting
-}
-
 function parseEnvWriteBody(value: Record<string, unknown>): { ok: true, text: string } | { ok: false, message: string } {
     if (!onlyKeys(value, ['text'])) return { ok: false, message: 'writing an env file takes only text' }
     if (typeof value.text !== 'string') return { ok: false, message: 'text is malformed' }
@@ -1123,28 +1110,23 @@ export function createHandler(deps: ApiDeps): (req: IncomingMessage, res: Server
                 // a reading of the machine.
                 if (!('railAge' in reply)) return refuseRoute(502, 'failed', 'the agent did not answer the health request with health', null, 'health')
 
-                // Everything the agent could not see. Domain state lives in api, so these four warnings
+                // Everything the agent could not see. Domain state lives in api, so these warnings
                 // can only be added here, on top of the agent's own.
                 const warnings = [...reply.warnings]
                 // A rolled-back vhost is recorded on every record of the environment, because the file
-                // is the environment's rather than any one hostname's. Collected and said once, for the
-                // same reason the Let's Encrypt line below is: a site with three aliases would
-                // otherwise repeat one sentence about one file three times.
+                // is the environment's rather than any one hostname's. Collected and said once: a site with
+                // three aliases would otherwise repeat one sentence about one file three times.
                 const rolledBack = new Set<string>()
                 for (const record of deps.domains.all()) {
                     if (record.state === 'broken') warnings.push(`${record.hostname} stopped answering (${record.project} ${record.environment})`)
                     if (record.vhost && !record.vhost.ok) rolledBack.add(`${record.project} ${record.environment}`)
                 }
                 for (const environment of rolledBack) warnings.push(`the vhost for ${environment} was rolled back`)
-                // An environment set to letsencrypt is serving the Origin certificate until 4b lands. Said once,
-                // naming the environments, rather than once per hostname.
-                const waiting = environmentsAwaitingCertbot(deps.registry())
-                if (waiting.length) warnings.push(`waiting for Let's Encrypt support: ${waiting.join(', ')}`)
                 // The rail not answering means no domain action can work at all, and every one of them will look
                 // like a hang rather than a failure until somebody tries one. railAge comes off the agent's health
                 // reply (Task 10), because lastSuccessAt lives in the agent and only api serves /health.
                 if (reply.railAge === null || reply.railAge > RAIL_STALE_MS) {
-                    warnings.push('the Apache host unit has not answered; no domain change can take effect')
+                    warnings.push('Nginx Proxy Manager has not answered through edge; no domain change can take effect')
                 }
                 return sendJson(res, 200, { ...reply, warnings })
             }
