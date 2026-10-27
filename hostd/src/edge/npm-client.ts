@@ -1,10 +1,15 @@
 // The only code that talks to Nginx Proxy Manager's REST API. It owns the login: one token is reused,
 // refreshed before it lapses, and a 401 (NPM restarted, token revoked) costs exactly one fresh login and
 // one retry, never a loop. Neither the secret nor a token is ever put in an error or a log line.
+//
+// Two flavours share everything but the session. Stock NPM answers a login with a token sent back as
+// a bearer header. NPMplus answers with a signed __Host-Http-token cookie and accepts nothing else, so
+// the cookie's value is kept exactly as it came and sent back in a Cookie header.
 
 import { describeError, isRecord } from '../shared/formats.ts'
 
 export type NpmHostKind = 'proxy-hosts' | 'redirection-hosts' | 'dead-hosts'
+export type NpmFlavour = 'npm' | 'npmplus'
 export type NpmRecord = Record<string, unknown> & { id: number, domain_names: string[], advanced_config: string, meta?: Record<string, unknown> }
 
 export class NpmError extends Error {
@@ -18,16 +23,45 @@ export class NpmError extends Error {
     }
 }
 
-export type NpmClientOptions = { url: string, identity: string, secret: string, fetch?: typeof fetch, now?: () => number, timeoutMs?: number }
+export type NpmClientOptions = {
+    url: string, identity: string, secret: string, flavour?: NpmFlavour, fetch?: typeof fetch, now?: () => number, timeoutMs?: number,
+}
+
+export const DEFAULT_NPM_URL = 'http://192.168.0.6:81/api'
+
+// edge's NPM settings from its environment. Kept here, beside the client, so the rules are tested: an
+// unknown flavour is refused rather than guessed, and NPMplus needs https because its __Host- cookie is
+// only ever set over a secure connection (the stock default URL is plain http, so it must be set).
+export function npmConnection(env: Record<string, string | undefined>): { flavour: NpmFlavour, url: string, problems: string[] } {
+    const problems: string[] = []
+    const raw = env.HOSTD_NPM_FLAVOUR ?? 'npm'
+    const flavour: NpmFlavour = raw === 'npmplus' ? 'npmplus' : 'npm'
+    if (raw !== 'npm' && raw !== 'npmplus') problems.push(`HOSTD_NPM_FLAVOUR must be npm or npmplus, not "${raw}"`)
+    const url = env.HOSTD_NPM_URL ?? DEFAULT_NPM_URL
+    if (flavour === 'npmplus') {
+        let protocol: string | null = null
+        try {
+            protocol = new URL(url).protocol
+        } catch {
+            protocol = null
+        }
+        if (protocol !== 'https:') problems.push(`HOSTD_NPM_URL must be an https URL when HOSTD_NPM_FLAVOUR is npmplus, not ${url}`)
+    }
+    return { flavour, url, problems }
+}
+
+const SESSION_COOKIE = '__Host-Http-token'
 
 export const NPM_TIMEOUT_MS = 30_000
 // Refresh once fewer than this remain, so a call never starts on a token about to die.
 const REFRESH_WITHIN_MS = 10 * 60_000
 
-type Session = { token: string, expiresAt: number }
-type Reply = { status: number, text: string }
+// credential is the bearer token on stock NPM and the session cookie's value on NPMplus.
+type Session = { credential: string, expiresAt: number }
+type Reply = { status: number, text: string, cookies: string[] }
 
 export class NpmClient {
+    readonly flavour: NpmFlavour
     private readonly base: string
     private readonly identity: string
     private readonly secret: string
@@ -38,6 +72,7 @@ export class NpmClient {
     private lastSuccess: number | null = null
 
     constructor(options: NpmClientOptions) {
+        this.flavour = options.flavour ?? 'npm'
         this.base = options.url.replace(/\/+$/, '')
         this.identity = options.identity
         this.secret = options.secret
@@ -88,10 +123,13 @@ export class NpmClient {
     }
 
     // One round trip. A transport failure or timeout becomes an NpmError naming the path.
-    private async send(method: string, path: string, body: unknown, token: string | null): Promise<Reply> {
+    // Only these headers are ever set. NPMplus refuses a request whose Origin or Sec-Fetch-Site names
+    // another site, and Node's fetch adds neither, so none is added here either.
+    private async send(method: string, path: string, body: unknown, credential: string | null): Promise<Reply> {
         const headers: Record<string, string> = {}
         if (body !== undefined) headers['Content-Type'] = 'application/json'
-        if (token) headers.Authorization = `Bearer ${token}`
+        if (credential && this.flavour === 'npmplus') headers.Cookie = `${SESSION_COOKIE}=${credential}`
+        else if (credential) headers.Authorization = `Bearer ${credential}`
         // A ref'd timer rather than AbortSignal.timeout, whose timer is unref'd: with nothing else holding the
         // event loop open, the process could exit before the abort fired and the hang would never end in an error.
         const controller = new AbortController()
@@ -103,7 +141,7 @@ export class NpmClient {
                 body: body === undefined ? undefined : JSON.stringify(body),
                 signal: controller.signal,
             })
-            return { status: response.status, text: await response.text() }
+            return { status: response.status, text: await response.text(), cookies: response.headers.getSetCookie() }
         } catch (error) {
             const timedOut = error instanceof Error && (error.name === 'TimeoutError' || error.name === 'AbortError')
             throw new NpmError(timedOut ? `NPM did not answer ${method} ${path} within ${this.timeoutMs / 1000} seconds` : `NPM ${method} ${path} failed: ${describeError(error)}`, null)
@@ -124,10 +162,22 @@ export class NpmClient {
         } catch {
             parsed = null
         }
-        if (!isRecord(parsed) || typeof parsed.token !== 'string' || typeof parsed.expires !== 'string' || Number.isNaN(Date.parse(parsed.expires))) {
+        // A login answered with a two-factor challenge has no session to use, and edge cannot type a code.
+        if (isRecord(parsed) && parsed.requiresTotp === true) {
+            throw new NpmError(`NPM asked for a two-factor code on ${method} ${path}; turn off two-factor for the hostd user, since edge cannot answer it`, reply.status)
+        }
+        if (!isRecord(parsed) || typeof parsed.expires !== 'string' || Number.isNaN(Date.parse(parsed.expires))) {
             throw new NpmError(`NPM sent an unreadable reply to ${method} ${path}`, reply.status)
         }
-        return { token: parsed.token, expiresAt: Date.parse(parsed.expires) }
+        const expiresAt = Date.parse(parsed.expires)
+        if (this.flavour === 'npmplus') {
+            const credential = sessionCookie(reply.cookies)
+            // Named, never quoted: whatever cookies did come back are not repeated.
+            if (credential === null) throw new NpmError(`NPM answered ${method} ${path} without the ${SESSION_COOKIE} session cookie`, reply.status)
+            return { credential, expiresAt }
+        }
+        if (typeof parsed.token !== 'string') throw new NpmError(`NPM sent an unreadable reply to ${method} ${path}`, reply.status)
+        return { credential: parsed.token, expiresAt }
     }
 
     private async login(): Promise<Session> {
@@ -141,7 +191,7 @@ export class NpmClient {
         if (!session) return await this.login()
         if (session.expiresAt - this.now() >= REFRESH_WITHIN_MS) return session
         try {
-            const reply = await this.send('GET', '/tokens', undefined, session.token)
+            const reply = await this.send('GET', '/tokens', undefined, session.credential)
             this.session = this.readSession(reply, 'GET', '/tokens')
             return this.session
         } catch {
@@ -153,14 +203,27 @@ export class NpmClient {
     // Any non-2xx throws, except a 404 when the caller asked for it (get answers null on one).
     private async authed(method: string, path: string, body?: unknown, allow404 = false): Promise<Reply> {
         let session = await this.ensureSession()
-        let reply = await this.send(method, path, body, session.token)
+        let reply = await this.send(method, path, body, session.credential)
         if (reply.status === 401) {
             session = await this.login()
-            reply = await this.send(method, path, body, session.token)
+            reply = await this.send(method, path, body, session.credential)
         }
         if (allow404 && reply.status === 404) return reply
         if (reply.status < 200 || reply.status >= 300) throw this.fail(method, path, reply)
         this.lastSuccess = this.now()
         return reply
     }
+}
+
+// The session cookie's value from a reply's Set-Cookie headers, exactly as sent (it is signed, so it is
+// never decoded or altered). An empty value is NPMplus clearing the cookie, which is no session.
+function sessionCookie(cookies: string[]): string | null {
+    for (const cookie of cookies) {
+        const pair = cookie.split(';', 1)[0]!
+        const at = pair.indexOf('=')
+        if (at === -1 || pair.slice(0, at).trim() !== SESSION_COOKIE) continue
+        const value = pair.slice(at + 1).trim()
+        return value === '' ? null : value
+    }
+    return null
 }

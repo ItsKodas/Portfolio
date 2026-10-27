@@ -1,9 +1,9 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { NpmClient, NpmError } from './npm-client.ts'
+import { NpmClient, NpmError, npmConnection } from './npm-client.ts'
 
 type Call = { method: string, url: string, headers: Record<string, string>, body: unknown }
-type Reply = { status: number, body: unknown } | 'hang'
+type Reply = { status: number, body: unknown, cookies?: string[] } | 'hang'
 
 const BASE = 'http://npm.test:81/api'
 
@@ -29,7 +29,9 @@ function fake(replies: Reply[]) {
                 signal?.addEventListener('abort', () => reject(signal.reason))
             })
         }
-        return new Response(JSON.stringify(reply.body), { status: reply.status })
+        const headers = new Headers()
+        for (const cookie of reply.cookies ?? []) headers.append('Set-Cookie', cookie)
+        return new Response(JSON.stringify(reply.body), { status: reply.status, headers })
     }) as unknown as typeof fetch
     return { calls, impl }
 }
@@ -126,4 +128,142 @@ test('ageOfLastSuccess is null until a call succeeds', async () => {
     await npm.list('proxy-hosts')
     now += 5000
     assert.equal(npm.ageOfLastSuccess(), 5000)
+})
+
+// NPMplus: the session is a signed __Host- cookie, never a bearer token, and the server refuses a
+// request whose Origin or Sec-Fetch-Site says it came from another site.
+const PLUS = 'https://npmplus.test:81/api'
+const COOKIE = 's%3Aeyabc.signature%2Bpart'
+const cookieReply = (value: string, expiresAt: number): Reply => ({
+    status: 200,
+    body: { expires: new Date(expiresAt).toISOString() },
+    cookies: [
+        'other=1; Path=/',
+        `__Host-Http-token=${value}; Path=/; Expires=${new Date(expiresAt).toUTCString()}; HttpOnly; Secure; SameSite=Strict`,
+    ],
+})
+
+function plusClient(replies: Reply[], extra: { now?: () => number } = {}) {
+    const { calls, impl } = fake(replies)
+    const at = (index: number): Call => calls[index] as Call
+    return { calls, at, npm: new NpmClient({ url: PLUS, identity: 'me@x.test', secret: 's3cret', fetch: impl, flavour: 'npmplus', ...extra }) }
+}
+
+test('npmplus logs in with a cookie and sends it back exactly, with no bearer token', async () => {
+    const now = 1_000_000
+    const { calls, at, npm } = plusClient([cookieReply(COOKIE, now + HOUR), json(200, []), json(200, [])], { now: () => now })
+    await npm.list('proxy-hosts')
+    await npm.list('redirection-hosts')
+    assert.equal(calls.length, 3)
+    assert.deepEqual([at(0).method, at(0).url, at(0).body], ['POST', `${PLUS}/tokens`, { identity: 'me@x.test', secret: 's3cret' }])
+    for (const index of [1, 2]) {
+        assert.equal(at(index).headers.Cookie, `__Host-Http-token=${COOKIE}`)
+        assert.equal(at(index).headers.Authorization, undefined)
+    }
+})
+
+test('npmplus requests carry no Origin or Sec-Fetch-Site, which NPMplus would refuse', async () => {
+    const now = 1_000_000
+    const { calls, npm } = plusClient([cookieReply(COOKIE, now + HOUR), json(201, { id: 9 }), json(200, { id: 9 })], { now: () => now })
+    await npm.create('proxy-hosts', { a: 1 })
+    await npm.update('proxy-hosts', 9, { a: 2 })
+    assert.equal(calls.length, 3)
+    for (const call of calls) {
+        const names = Object.keys(call.headers).map(name => name.toLowerCase())
+        assert.equal(names.includes('origin'), false, call.url)
+        assert.equal(names.includes('sec-fetch-site'), false, call.url)
+    }
+})
+
+test('npmplus refreshes with GET /tokens before expiry and uses the new cookie', async () => {
+    let now = 1_000_000
+    const expires = now + HOUR
+    const { at, npm } = plusClient([cookieReply('c1', expires), json(200, []), cookieReply('c2', expires + HOUR), json(200, [])], { now: () => now })
+    await npm.list('proxy-hosts')
+    now = expires - 5 * 60_000
+    await npm.list('proxy-hosts')
+    assert.deepEqual([at(2).method, at(2).url, at(2).headers.Cookie], ['GET', `${PLUS}/tokens`, '__Host-Http-token=c1'])
+    assert.equal(at(3).headers.Cookie, '__Host-Http-token=c2')
+})
+
+test('npmplus logs in again once on a 401, then gives up', async () => {
+    const now = 1_000_000
+    const { calls, at, npm } = plusClient([
+        cookieReply('c1', now + HOUR), json(401, { error: { code: 401, message: 'Unauthorized' } }),
+        cookieReply('c2', now + HOUR), json(200, [{ id: 1 }]),
+        json(401, {}), cookieReply('c3', now + HOUR), json(401, { error: { code: 401, message: 'nope' } }),
+    ], { now: () => now })
+    assert.deepEqual(await npm.list('proxy-hosts'), [{ id: 1 }])
+    assert.equal(at(3).headers.Cookie, '__Host-Http-token=c2')
+    await assert.rejects(npm.list('proxy-hosts'), (error: unknown) => error instanceof NpmError && error.status === 401)
+    assert.equal(calls.length, 7)
+})
+
+test('npmplus refuses a two-factor challenge and says to turn two-factor off', async () => {
+    const now = 1_000_000
+    const challenge: Reply = {
+        status: 200, body: { requiresTotp: true, expires: new Date(now + 300_000).toISOString() },
+        cookies: [`__Host-Http-challenge_token=${COOKIE}; Path=/; HttpOnly; Secure`],
+    }
+    const { calls, npm } = plusClient([challenge], { now: () => now })
+    await assert.rejects(npm.list('proxy-hosts'), (error: unknown) => {
+        assert.ok(error instanceof NpmError)
+        assert.match(error.message, /turn off two-factor for the hostd user/)
+        assert.equal(`${error.message}${error.body}`.includes(COOKIE), false)
+        return true
+    })
+    // Nothing is asked of NPMplus on a session that does not exist.
+    assert.equal(calls.length, 1)
+})
+
+test('npmplus login without the session cookie fails without repeating any cookie', async () => {
+    const now = 1_000_000
+    const { npm } = plusClient([{ status: 200, body: { expires: new Date(now + HOUR).toISOString() }, cookies: ['other=s%3Asecretish; Path=/'] }], { now: () => now })
+    await assert.rejects(npm.list('proxy-hosts'), (error: unknown) => {
+        assert.ok(error instanceof NpmError)
+        assert.match(error.message, /session cookie/)
+        assert.equal(`${error.message}${error.body}`.includes('secretish'), false)
+        return true
+    })
+})
+
+test('npmplus never puts the cookie value in an error', async () => {
+    const now = 1_000_000
+    const { npm } = plusClient([cookieReply(COOKIE, now + HOUR), json(500, { error: { message: 'boom' } })], { now: () => now })
+    await assert.rejects(npm.list('proxy-hosts'), (error: unknown) => {
+        assert.ok(error instanceof NpmError)
+        assert.equal(`${error.message}${error.body}${error.stack}`.includes(COOKIE), false)
+        return true
+    })
+})
+
+test('the npm flavour keeps the bearer token and sends no cookie', async () => {
+    const now = 1_000_000
+    const { at, npm } = client([token('t1', now + HOUR), json(200, [])], { now: () => now })
+    await npm.list('proxy-hosts')
+    assert.equal(at(1).headers.Authorization, 'Bearer t1')
+    assert.equal(at(1).headers.Cookie, undefined)
+    assert.equal(npm.flavour, 'npm')
+})
+
+test('npmConnection reads the flavour and the URL, refusing what cannot work', () => {
+    assert.deepEqual(npmConnection({}), { flavour: 'npm', url: 'http://192.168.0.6:81/api', problems: [] })
+    assert.deepEqual(
+        npmConnection({ HOSTD_NPM_FLAVOUR: 'npm', HOSTD_NPM_URL: 'http://10.0.0.1:81/api' }),
+        { flavour: 'npm', url: 'http://10.0.0.1:81/api', problems: [] },
+    )
+    assert.deepEqual(
+        npmConnection({ HOSTD_NPM_FLAVOUR: 'npmplus', HOSTD_NPM_URL: 'https://192.168.0.6:81/api' }),
+        { flavour: 'npmplus', url: 'https://192.168.0.6:81/api', problems: [] },
+    )
+    // The default URL is stock NPM's plain http, which NPMplus does not serve.
+    const plain = npmConnection({ HOSTD_NPM_FLAVOUR: 'npmplus' })
+    assert.equal(plain.problems.length, 1)
+    assert.match(plain.problems[0]!, /HOSTD_NPM_URL must be an https URL when HOSTD_NPM_FLAVOUR is npmplus/)
+    assert.equal(npmConnection({ HOSTD_NPM_FLAVOUR: 'npmplus', HOSTD_NPM_URL: 'not a url' }).problems.length, 1)
+    for (const value of ['NPMplus', 'npm-plus', '', ' npm']) {
+        const read = npmConnection({ HOSTD_NPM_FLAVOUR: value })
+        assert.equal(read.problems.length, 1, value)
+        assert.match(read.problems[0]!, /HOSTD_NPM_FLAVOUR must be npm or npmplus/, value)
+    }
 })
