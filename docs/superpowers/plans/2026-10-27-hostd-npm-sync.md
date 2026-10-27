@@ -12,7 +12,7 @@
 
 ## Global Constraints
 
-- No em dashes (U+2014) anywhere except code comments: not in copy, docs, commit messages or PR text (CLAUDE.md). Check with Python, not a bash `$'—'` grep (it can match nothing).
+- No em dashes (U+2014) anywhere except code comments: not in copy, docs, commit messages or PR text (CLAUDE.md). Check with Python, not a bash grep for the character (it can match nothing).
 - Match hostd's style: four-space indent, no semicolons, single quotes, comments that explain why, `refuse(...)` for refusals, `{ ok: true, ... } | { ok: false, problem }` results rather than throws across process boundaries.
 - `shared/` never imports from `agent/`, `api/`, `fetcher/` or `edge/`.
 - hostd never updates or deletes an NPM host unless it carries that environment's marker, except the adopt verb (Task 5).
@@ -362,7 +362,7 @@
 - [ ] **Step 1: Delete and edit** as listed.
 - [ ] **Step 2: Run** `rg -n "ApacheRail|renderVhost|vhostPath|sites-enabled|HOSTD_APACHE|hostd-apache" hostd/src app server`. Expected: no matches outside comments that explain history (none should be needed).
 - [ ] **Step 3: Run** `cd hostd && npm test`, then `npx tsc --noEmit -p hostd`, then from the repo root `npx vitest run app/(portal)/portal/sites app/(portal)/portal/newSite`. Expected: all pass.
-- [ ] **Step 4: Scan** the diff for em dashes with Python (`git diff | python -I -c "import sys; print(sum('—' in l for l in sys.stdin.read().splitlines() if l.startswith('+')))"`). Expected: `0`.
+- [ ] **Step 4: Scan** the diff for em dashes with Python (`git diff | python -I -c "import sys; print(sum(chr(0x2014) in l for l in sys.stdin.read().splitlines() if l.startswith('+')))"`). Expected: `0`.
 - [ ] **Step 5: Commit** `git commit -m "Remove the Apache rail now that NPM serves the sites"`
 
 ### Task 13: RUNBOOK rollout
