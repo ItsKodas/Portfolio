@@ -41,6 +41,12 @@ export { accessLogName, accessLogPath }
 // Written into the vhost as it stands here: a backslash and a t, which mod_log_config reads as a tab.
 export const ACCESS_LOG_FORMAT = FIELDS.join('\\t')
 
+// The same fifteen fields as nginx writes them for NPM, with $host in front: edge's syslog receiver uses
+// it to find the environment and strips it, so what lands in the per-environment file is the line
+// parseLine already reads. escape=default writes " and \ and bytes outside 0x20-0x7E as \xXX, which
+// unescape undoes; $msec is seconds with a fraction, which parseLine floors; a missing value is "-".
+export const NGINX_LOG_FORMAT = String.raw`log_format hostd escape=default '$host\t$msec\t$remote_addr\t$http_cf_connecting_ip\t$http_x_forwarded_for\t$request_method\t$uri\t$status\t$http_referer\t$http_user_agent\t$http_accept\t$http_rsc\t$http_next_router_prefetch\t$http_sec_purpose\t$http_purpose\t$http_cf_ipcountry';`
+
 export type Hit = {
     time: number
     visitor: string
@@ -132,7 +138,8 @@ export function parseLine(line: string, own: ReadonlySet<string>): Hit | null {
     const address = cfIp ?? forwarded?.split(',')[0]?.trim() ?? peer ?? ''
     const visitor = createHash('sha256').update(`${address}\n${agent}`).digest('base64').slice(0, 16)
     return {
-        time: time * 1000,
+        // nginx's $msec carries milliseconds as a fraction; a visit is counted by the second
+        time: Math.floor(time) * 1000,
         visitor,
         path: pageOf(path),
         referrer: referrerOf(referer === null ? null : unescape(referer), own),

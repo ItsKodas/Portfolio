@@ -96,9 +96,10 @@ const ACME_WEBROOT = process.env.HOSTD_ACME_WEBROOT ?? '/var/www/hostd-acme'
 // flag files a deploy writes and clears, this one holds the page Apache actually serves while a flag is
 // up. Crossing them makes the holding page silently never appear during a deploy.
 const MAINTENANCE_ROOT = process.env.HOSTD_MAINTENANCE_ROOT ?? '/var/www/hostd-maintenance'
-// Apache's own log directory, where each vhost hostd writes logs its requests for the portal's analytics.
-// The same path inside as outside, because the vhost names it and the agent reads it back.
-const ACCESS_LOG_DIR = process.env.HOSTD_ACCESS_LOG_DIR ?? '/var/log/apache2'
+// Where the access logs for the portal's analytics are: edge writes them from NPM's syslog datagrams and
+// the agent reads them back. The same path inside as outside, because the Apache vhosts (until they go)
+// name it too.
+const ACCESS_LOG_DIR = process.env.HOSTD_ACCESS_LOG_DIR ?? '/var/log/hostd'
 // The record of each environment's finished days, which outlives the fortnight logrotate keeps
 const ANALYTICS_DIR = process.env.HOSTD_ANALYTICS_DIR ?? '/var/lib/hostd/analytics'
 // Where a day starts and ends for the analytics panel. The portal prints times in Brisbane, so a day of
