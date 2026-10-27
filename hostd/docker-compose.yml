@@ -40,7 +40,12 @@ services:
       HOSTD_ORIGIN_KEY: /etc/ssl/hostd/origin.key
       HOSTD_ACME_WEBROOT: /var/www/hostd-acme
       HOSTD_MAINTENANCE_ROOT: /var/www/hostd-maintenance
-      HOSTD_ACCESS_LOG_DIR: /var/log/apache2
+      HOSTD_EDGE_SOCKET: /run/hostd-edge/edge.sock
+      # Where edge's holding pages and logs are reachable: the VM's own address, which NPM forwards to.
+      HOSTD_UPSTREAM_HOST: 192.168.0.8
+      HOSTD_EDGE_HTTP_PORT: "8790"
+      # Where edge writes the per-site access logs the analytics read; see the read-only mount below.
+      HOSTD_ACCESS_LOG_DIR: /var/log/hostd
       HOSTD_ANALYTICS_DIR: /var/lib/hostd/analytics
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
@@ -96,6 +101,13 @@ services:
       # Apache is what writes these, and the agent only counts them. The same path inside as outside,
       # because the vhost names the file and the agent reads that name back.
       - /var/log/apache2:/var/log/apache2:ro
+      # The access logs edge writes from NPM's syslog stream, which replace Apache's for the analytics.
+      # Read-only: edge is what writes these, and the agent only counts them. The same path inside as
+      # outside, because edge names each file and the agent reads that name back.
+      - /var/log/hostd:/var/log/hostd:ro
+      # Shared only with edge, never with api: api must never be able to reach the edge protocol, which
+      # is the only way to change what NPM serves. Its own volume for the same reason fetch has one.
+      - hostd-edge-sock:/run/hostd-edge
     healthcheck:
       test: ["CMD", "node", "--import", "tsx", "src/shared/healthcheck.ts", "/tmp/hostd-status.json"]
       interval: 60s
@@ -103,6 +115,8 @@ services:
       retries: 3
       start_period: 120s
     restart: unless-stopped
+    depends_on:
+      - edge
 
   api:
     build:
@@ -165,6 +179,57 @@ services:
       start_period: 120s
     restart: unless-stopped
 
+  edge:
+    build:
+      context: .
+      target: edge
+    container_name: hostd-edge
+    # See the note on agent.
+    init: true
+    # The host's network, not the hostd one. NPM's syslog datagrams must arrive with NPM's real source
+    # address (the edge drops anything else), which Docker NAT would rewrite, and the holding page port
+    # binds 192.168.0.8 directly rather than through a published port. It binds only HOSTD_UPSTREAM_HOST,
+    # never every interface, so nothing else on the machine can reach either listener. This is also why
+    # there is no `networks:` key here.
+    network_mode: host
+    # Root, like fetcher: it chowns its socket to HOSTD_SOCKET_GID, so that the agent (and nothing else)
+    # can connect. HOSTD_NPM_IDENTITY and HOSTD_NPM_SECRET live here, and nowhere else, because this file is committed.
+    env_file: .env.edge
+    environment:
+      HOSTD_EDGE_SOCKET: /run/hostd-edge/edge.sock
+      HOSTD_REGISTRY_FILE: /etc/hostd/registry/projects.yaml
+      # The node user's group in the api image, as on agent: the agent runs as root, but keeping the one
+      # value means a later change to who connects touches one setting.
+      HOSTD_SOCKET_GID: "1000"
+      HOSTD_STATUS_FILE: /tmp/hostd-status.json
+      HOSTD_NPM_URL: http://192.168.0.5:81/api
+      HOSTD_NPM_ADDRESS: 192.168.0.5
+      HOSTD_UPSTREAM_HOST: 192.168.0.8
+      HOSTD_EDGE_HTTP_PORT: "8790"
+      HOSTD_EDGE_SYSLOG_PORT: "5514"
+      HOSTD_ACCESS_LOG_DIR: /var/log/hostd
+      HOSTD_MAINTENANCE_ROOT: /var/www/hostd-maintenance
+    volumes:
+      # Shared only with agent, never with api or fetcher. See the note on agent's mount of it.
+      - hostd-edge-sock:/run/hostd-edge
+      # The directory, for the reason given on the agent's registry mount. Read-only: edge only reads it,
+      # to map a hostname in a log line to the site that owns it. A line for a host the registry does not
+      # know is dropped, so nothing is ever written under a name a stranger chose.
+      - ./registry:/etc/hostd/registry:ro
+      # The agent's holding pages, served to NPM while a site is down. Read-only: the agent writes them.
+      # The same path inside as outside, because it is the path the agent's own setting names.
+      - /var/www/hostd-maintenance:/var/www/hostd-maintenance:ro
+      # The one place edge writes: a log file per site, from NPM's syslog stream. The agent reads it back
+      # read-only. On the host, not a volume, so logrotate can rotate it and the operator can read it.
+      - /var/log/hostd:/var/log/hostd
+    healthcheck:
+      test: ["CMD", "node", "--import", "tsx", "src/shared/healthcheck.ts", "/tmp/hostd-status.json"]
+      interval: 60s
+      timeout: 15s
+      retries: 3
+      start_period: 120s
+    restart: unless-stopped
+
 networks:
   hostd:
     name: hostd
@@ -174,3 +239,4 @@ volumes:
   hostd-agent-state:
   hostd-sock:
   hostd-fetch-sock:
+  hostd-edge-sock:

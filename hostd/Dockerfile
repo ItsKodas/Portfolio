@@ -29,3 +29,7 @@ CMD ["node", "--import", "tsx", "src/agent/index.ts"]
 FROM base AS fetcher
 RUN apk add --no-cache git
 CMD ["node", "--import", "tsx", "src/fetcher/index.ts"]
+
+FROM base AS edge
+# Nothing extra: it speaks to NPM over HTTP and writes logs with node's own fs.
+CMD ["node", "--import", "tsx", "src/edge/index.ts"]

@@ -7,3 +7,4 @@ registry/projects.yaml
 .env.*
 .env.fetcher
 .env.agent
+.env.edge
