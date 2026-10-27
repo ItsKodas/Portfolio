@@ -262,6 +262,8 @@ type Undo = () => Promise<string | null>
 export async function applyHosts(deps: HostsDeps, owner: Owner, ids: NpmIds | null, spec: HostsSpec, adopt: boolean): Promise<EdgeReply> {
     const primary = spec.proxy.domain_names[0]
     if (primary === undefined) return refuse('The proxy host has no domain names')
+    // hostd must never point an NPM host at another machine on the LAN, so every apply forwards to the upstream only.
+    if (spec.proxy.forward_host !== deps.upstreamHost) return refuse(`hostd only forwards to ${deps.upstreamHost}; refusing a proxy host that forwards to ${spec.proxy.forward_host}`)
     // Adopt takes over a host that exists; with nothing to take over it must not quietly create one.
     if (adopt && ids === null) return refuse(`Adopt needs the NPM proxy host to take over for ${ownerName(owner)}`)
     const proxyDomains = spec.proxy.domain_names.map(hostname)

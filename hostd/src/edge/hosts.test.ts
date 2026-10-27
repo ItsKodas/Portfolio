@@ -499,6 +499,23 @@ test('refuses a spec that puts one domain on both hosts', async () => {
     assert.deepEqual(writes(npm), [])
 })
 
+test('refuses a spec that forwards anywhere but the upstream host', async () => {
+    const elsewhere = '192.168.0.9'
+    const problem = `hostd only forwards to ${UPSTREAM}; refusing a proxy host that forwards to ${elsewhere}`
+    const created = setup()
+    const wanted = spec()
+    wanted.proxy.forward_host = elsewhere
+    assert.deepEqual(await applyHosts(created.deps, OWNER, null, wanted, false), { ok: false, problem })
+    assert.deepEqual(created.npm.calls, [])
+
+    const updated = setup()
+    updated.npm.seed('proxy-hosts', proxyRecord(10))
+    const edit = spec({ aliases: [] })
+    edit.proxy.forward_host = elsewhere
+    assert.deepEqual(await applyHosts(updated.deps, OWNER, { proxyHost: 10, redirectionHost: null }, edit, false), { ok: false, problem })
+    assert.deepEqual(writes(updated.npm), [])
+})
+
 test('an unmarked spec is refused on a create and on an adopt', async () => {
     const { npm, deps } = setup()
     assert.equal((await applyHosts(deps, OWNER, null, handMade(), false)).ok, false)
