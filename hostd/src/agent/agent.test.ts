@@ -1580,7 +1580,7 @@ describe('the domains verb', () => {
 // Left behind, NPM hosts go on claiming their hostnames and proxying to a port choosePort may hand to
 // another project: one client's visitors reaching another client's application.
 describe('removing a project takes its NPM hosts with it', () => {
-    const twoEnvironments = parseRegistry(`
+    const twoEnvironmentsSource = `
 projects:
   acme:
     client: cl_1
@@ -1591,7 +1591,8 @@ projects:
     environments:
       live: { dir: /var/www/acme, port: 5010, domain: acme.com, npm: { proxyHost: 12, redirectionHost: 13 } }
       test: { dir: /var/www/acme-test, port: 5011, domain: test.acme.com, npm: { proxyHost: 14 } }
-`)
+`
+    const twoEnvironments = parseRegistry(twoEnvironmentsSource)
 
     function setup(registry: Registry) {
         const context = fakeDomains(registry)
@@ -1607,6 +1608,23 @@ projects:
         const { agent, edge } = setup(twoEnvironments)
         seedOwned(edge)
         seedOwned(edge, { environment: 'test', domain: 'test.acme.com', port: 5011, proxyHost: 14, redirection: null })
+        const reply = replyOf(await agent.handle({ verb: 'provision', project: 'acme', args: { action: 'remove', environment: null } }))
+        assert.equal(reply?.ok, true, JSON.stringify(reply))
+        assert.deepEqual(edge.npm.snapshot()['proxy-hosts'], [])
+        assert.deepEqual(edge.npm.snapshot()['redirection-hosts'], [])
+    })
+
+    it('takes an environment\'s flexible redirection host with the rest when the whole project goes', async () => {
+        const withFlexible = parseRegistry(twoEnvironmentsSource.replace(
+            'npm: { proxyHost: 12, redirectionHost: 13 }', 'aliases: [www.acme.com, acme.org], npm: { proxyHost: 12, redirectionHost: 13, flexibleRedirectionHost: 15 }',
+        ))
+        assert.equal(withFlexible.projects.get('acme')!.environments.get('live')!.npm?.flexibleRedirectionHost, 15)
+        const { agent, edge } = setup(withFlexible)
+        seedOwned(edge)
+        seedOwned(edge, { environment: 'test', domain: 'test.acme.com', port: 5011, proxyHost: 14, redirection: null })
+        edge.npm.seed('redirection-hosts', {
+            id: 15, domain_names: ['acme.org'], forward_domain_name: 'acme.com', certificate_id: 0, advanced_config: `${markerFor({ project: 'acme', environment: 'live' })}\n`,
+        })
         const reply = replyOf(await agent.handle({ verb: 'provision', project: 'acme', args: { action: 'remove', environment: null } }))
         assert.equal(reply?.ok, true, JSON.stringify(reply))
         assert.deepEqual(edge.npm.snapshot()['proxy-hosts'], [])

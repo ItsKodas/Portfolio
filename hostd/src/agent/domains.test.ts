@@ -18,10 +18,10 @@ const BROTLI = `if ($http_content_encoding ~* "(^|,)${BS}s*br${BS}s*(,|$)") {
     return 415;
 }`
 
-function registryText(options: { aliases?: string[], certificates?: boolean, flexibleSsl?: boolean, port?: number } = {}): string {
+function registryText(options: { aliases?: string[], certificates?: boolean, extraCertificates?: string, flexibleSsl?: boolean, port?: number } = {}): string {
     const aliases = options.aliases ?? ['www.acme.com']
     return `
-${options.certificates === false ? '' : 'certificates:\n  acme.com: 16\n'}
+${options.certificates === false ? '' : `certificates:\n  acme.com: 16\n${options.extraCertificates ?? ''}`}
 projects:
   acme:
     client: cl_1
@@ -52,10 +52,10 @@ function memoryStore(): AdoptedStore & { records: Map<string, unknown> } {
     }
 }
 
-function setup(options: Parameters<typeof registryText>[0] = {}) {
+function setup(options: Parameters<typeof registryText>[0] & { text?: string } = {}) {
     const edge = new FakeEdge()
     edge.npm.certificates = [16]
-    let text = registryText(options)
+    let text = options.text ?? registryText(options)
     const changes: Change[] = []
     const order: string[] = []
     const adopted = memoryStore()
@@ -402,12 +402,35 @@ describe('setAliases', () => {
         assert.deepEqual(current().environment.npm, { proxyHost: 100, redirectionHost: 101 })
     })
 
-    it('refuses an alias no certificate covers before the registry takes it', async () => {
-        const { deps, edge, current, changes } = setup()
+    // Under a Full SSL primary an alias no certificate covers is no longer refused: it is redirected
+    // from the flexible redirection host, which has no certificate.
+    it('takes an alias no certificate covers as a flexible one', async () => {
+        const { deps, npm, current } = setup()
         const result = await setAliases(deps, current().project, current().environment, ['www.acme.com', 'acme.org'], 'abc123')
-        assert.deepEqual(result, { ok: false, code: 'bad-request', message: 'No certificate in Nginx Proxy Manager covers acme.org.' })
+        assert.equal(result.ok, true, JSON.stringify(result))
+        assert.deepEqual(current().environment.aliases, ['www.acme.com', 'acme.org'])
+        assert.deepEqual(current().environment.npm, { proxyHost: 100, redirectionHost: 101, flexibleRedirectionHost: 102 })
+        assert.deepEqual(npm.snapshot()['redirection-hosts'].map(host => [host.id, host.domain_names, host.certificate_id]), [
+            [101, ['www.acme.com'], 16], [102, ['acme.org'], 0],
+        ])
+    })
+
+    it('refuses an alias under another certificate than the primary\'s before the registry takes it', async () => {
+        const { deps, edge, current, changes } = setup({ extraCertificates: '  acme.org: 17\n' })
+        const result = await setAliases(deps, current().project, current().environment, ['www.acme.com', 'acme.org'], 'abc123')
+        assert.deepEqual(result, {
+            ok: false, code: 'bad-request', message: 'These names need different certificates (acme.com and acme.org), and one site gets only one.',
+        })
         assert.deepEqual(changes, [])
         assert.deepEqual(current().environment.aliases, ['www.acme.com'])
+        assert.deepEqual(edge.writes(), [])
+    })
+
+    it('still refuses before the registry takes the list when no certificate covers the primary', async () => {
+        const { deps, edge, current, changes } = setup({ certificates: false })
+        const result = await setAliases(deps, current().project, current().environment, ['www.acme.com', 'acme.org'], 'abc123')
+        assert.deepEqual(result, { ok: false, code: 'bad-request', message: 'No certificate in Nginx Proxy Manager covers acme.com.' })
+        assert.deepEqual(changes, [])
         assert.deepEqual(edge.writes(), [])
     })
 
@@ -654,4 +677,146 @@ describe('currentToken', () => {
         edge.failNext('get', 'before')
         await assert.rejects(currentToken(deps, current().project, current().environment))
     })
+})
+
+// spotondrones live, the case flexible aliases exist for: a Full SSL primary on Origin certificate 18,
+// and four .au and .net.au names whose zones have no certificate and are on Flexible in Cloudflare.
+describe('flexible aliases, spotondrones live end to end', () => {
+    const SPOTON: Owner = { project: 'spotondrones', environment: 'live' }
+    const AU = ['spotondrones.com.au', 'www.spotondrones.com.au', 'spotondrones.net.au', 'www.spotondrones.net.au']
+    const text = `
+certificates:
+  spotondrones.com: 18
+projects:
+  spotondrones:
+    client: cl_1
+    name: Spot On Drones
+    capabilities: [domains]
+    services: { web: { role: site } }
+    environments:
+      live:
+        dir: /var/www/spotondrones
+        port: 5007
+        domain: www.spotondrones.com
+`
+    function spotSetup() {
+        const context = setup({ text })
+        context.npm.certificates = [16, 18]
+        const live = async () => {
+            const project = (await context.deps.reloadRegistry()).projects.get('spotondrones')!
+            return { project, environment: project.environments.get('live')! }
+        }
+        return { ...context, live }
+    }
+    const hostsOf = (npm: ReturnType<typeof setup>['npm'], kind: 'proxy-hosts' | 'redirection-hosts') =>
+        npm.snapshot()[kind].map(host => ({
+            id: host.id, domains: host.domain_names, certificate: host.certificate_id, forced: Boolean(host.ssl_forced),
+            forward: host.forward_domain_name ?? null, marker: String(host.advanced_config).split('\n')[0],
+        }))
+
+    it('puts the covered alias and the flexible ones on separate redirection hosts, and drops the flexible host with them', async () => {
+        const { deps, npm, live, changes } = spotSetup()
+        const created = await writeHosts(deps, (await live()).project, (await live()).environment, 'abc123')
+        assert.equal(created.ok, true, JSON.stringify(created))
+
+        const aliases = ['spotondrones.com', ...AU]
+        const result = await setAliases(deps, (await live()).project, (await live()).environment, aliases, 'abc123')
+        assert.equal(result.ok, true, JSON.stringify(result))
+        assert.deepEqual(result.ok && result.written.hostnames, ['www.spotondrones.com', ...aliases])
+        const marker = markerFor(SPOTON)
+        assert.deepEqual(hostsOf(npm, 'proxy-hosts'), [
+            { id: 100, domains: ['www.spotondrones.com'], certificate: 18, forced: true, forward: null, marker },
+        ])
+        assert.deepEqual(hostsOf(npm, 'redirection-hosts'), [
+            { id: 101, domains: ['spotondrones.com'], certificate: 18, forced: true, forward: 'www.spotondrones.com', marker },
+            { id: 102, domains: AU, certificate: 0, forced: false, forward: 'www.spotondrones.com', marker },
+        ])
+        assert.deepEqual((await live()).environment.npm, { proxyHost: 100, redirectionHost: 101, flexibleRedirectionHost: 102 })
+        // The flexible host answers verification the same way the others do
+        const flexible = npm.snapshot()['redirection-hosts'].find(host => host.id === 102)!
+        assert.ok(String(flexible.advanced_config).includes('location = /.well-known/hostd/abc123 {'))
+        assert.equal(await currentToken(deps, (await live()).project, (await live()).environment), 'abc123')
+
+        changes.length = 0
+        const removed = await setAliases(deps, (await live()).project, (await live()).environment, ['spotondrones.com'], 'abc123')
+        assert.equal(removed.ok, true, JSON.stringify(removed))
+        assert.deepEqual(hostsOf(npm, 'redirection-hosts').map(host => [host.id, host.domains]), [[101, ['spotondrones.com']]])
+        assert.deepEqual((await live()).environment.npm, { proxyHost: 100, redirectionHost: 101 })
+        assert.deepEqual(changes.at(-1), { kind: 'set-npm', id: 'spotondrones', environment: 'live', npm: { proxyHost: 100, redirectionHost: 101 } })
+    })
+
+    it('removing the environment\'s hosts takes the flexible one too, and clears every id', async () => {
+        const { deps, npm, live } = spotSetup()
+        await setAliases(deps, (await live()).project, (await live()).environment, ['spotondrones.com', ...AU], 'abc123')
+        const result = await removeHosts(deps, (await live()).project, (await live()).environment)
+        assert.equal(result.ok, true, JSON.stringify(result))
+        assert.deepEqual(npm.snapshot()['proxy-hosts'], [])
+        assert.deepEqual(npm.snapshot()['redirection-hosts'], [])
+        assert.equal((await live()).environment.npm, null)
+    })
+
+    it('records the flexible id when the reply was lost but NPM shows the hosts were written', async () => {
+        const { deps, edge, live } = spotSetup()
+        edge.failNext('apply', 'after')
+        const result = await setAliases(deps, (await live()).project, (await live()).environment, ['spotondrones.com', ...AU], 'abc123')
+        assert.equal(result.ok, true, JSON.stringify(result))
+        assert.deepEqual((await live()).environment.npm, { proxyHost: 100, redirectionHost: 101, flexibleRedirectionHost: 102 })
+
+        // An update whose reply is lost is read back by id, the flexible host compared too
+        edge.failNext('apply', 'after')
+        const again = await writeHosts(deps, (await live()).project, (await live()).environment, 'def456')
+        assert.equal(again.ok, true, JSON.stringify(again))
+        assert.ok(edge.requests.at(-1)?.verb === 'get')
+        assert.deepEqual((await live()).environment.npm, { proxyHost: 100, redirectionHost: 101, flexibleRedirectionHost: 102 })
+    })
+
+    it('a lost reply on a write that only makes the flexible host finds it rather than guessing', async () => {
+        const { deps, edge, live } = spotSetup()
+        await setAliases(deps, (await live()).project, (await live()).environment, ['spotondrones.com'], 'abc123')
+        edge.failNext('apply', 'after')
+        const result = await setAliases(deps, (await live()).project, (await live()).environment, ['spotondrones.com', ...AU], 'abc123')
+        assert.equal(result.ok, true, JSON.stringify(result))
+        assert.deepEqual((await live()).environment.npm, { proxyHost: 100, redirectionHost: 101, flexibleRedirectionHost: 102 })
+    })
+
+    it('adopt keeps the hand-made proxy host and makes both redirection hosts; the undo deletes both', async () => {
+        const { deps, npm, live, adopted } = spotSetup()
+        const textWithAliases = await setAliasesInRegistry(deps, ['spotondrones.com', ...AU])
+        assert.equal(textWithAliases, true)
+        const original = npm.seed('proxy-hosts', handMade(12, { domain_names: ['www.spotondrones.com', 'spotondrones.com', ...AU], forward_port: 5007, certificate_id: 18 }))
+
+        const preview = await previewAdopt(deps, (await live()).project, (await live()).environment, 'abc123')
+        assert.equal(preview.ok && preview.preview.adoptable, true, JSON.stringify(preview))
+        assert.ok(preview.ok && preview.preview.proposed.includes('Flexible redirection host'))
+
+        const result = await adopt(deps, (await live()).project, (await live()).environment, 'abc123', [])
+        assert.equal(result.ok, true, JSON.stringify(result))
+        assert.deepEqual((await live()).environment.npm, { proxyHost: 12, redirectionHost: 100, flexibleRedirectionHost: 101 })
+        assert.deepEqual((await adopted.read(SPOTON))?.ids, { proxyHost: 12, redirectionHost: 100, flexibleRedirectionHost: 101 })
+        assert.deepEqual(hostsOf(npm, 'redirection-hosts').map(host => [host.id, host.domains, host.certificate]), [[100, ['spotondrones.com'], 18], [101, AU, 0]])
+
+        const restored = await restoreAdopted(deps, (await live()).project, (await live()).environment, [])
+        assert.equal(restored.ok, true, JSON.stringify(restored))
+        assert.deepEqual(npm.snapshot()['redirection-hosts'], [])
+        assert.deepEqual(npm.snapshot()['proxy-hosts'][0]!.domain_names, original.domain_names)
+        assert.equal((await live()).environment.npm, null)
+    })
+
+    it('recreates all three hosts from a spec read earlier and records the new ids', async () => {
+        const { deps, live } = spotSetup()
+        await setAliases(deps, (await live()).project, (await live()).environment, ['spotondrones.com', ...AU], 'abc123')
+        const read = await deps.edge.call({ verb: 'get', owner: SPOTON, ids: (await live()).environment.npm! })
+        const spec = read.ok && read.verb === 'get' ? read.current! : null
+        assert.ok(spec?.flexibleRedirection)
+        assert.equal((await removeEdgeHosts(deps, (await live()).project, (await live()).environment)).ok, true)
+        const result = await recreateHosts(deps, (await live()).project, (await live()).environment, spec)
+        assert.deepEqual(result, { ok: true })
+        assert.deepEqual((await live()).environment.npm, { proxyHost: 103, redirectionHost: 104, flexibleRedirectionHost: 105 })
+    })
+
+    // The registry takes the aliases without any hosts written, as Koda's hand edit before an adopt does
+    async function setAliasesInRegistry(deps: DomainsDeps, aliases: string[]): Promise<boolean> {
+        const written = await deps.writeRegistry({ kind: 'set-aliases', id: 'spotondrones', environment: 'live', aliases })
+        return written.ok
+    }
 })

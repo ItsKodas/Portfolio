@@ -30,10 +30,10 @@ projects:
 const config: DomainsConfig = { upstreamHost: FAKE_UPSTREAM, edgeHost: FAKE_UPSTREAM, edgeHttpPort: 8790 }
 
 // Writes live's hosts through the real domains code, so the render under test is the one hostd made
-async function written() {
+async function written(text: string = REGISTRY) {
     const edge = new FakeEdge()
     edge.npm.certificates = [16]
-    const registry = parseRegistry(REGISTRY)
+    const registry = parseRegistry(text)
     const project = registry.projects.get('acme')!
     const deps = {
         edge,
@@ -115,5 +115,43 @@ describe('driftWarnings', () => {
         const warnings = await driftWarnings(registry, edge, config)
         assert.equal(warnings.length, 1)
         assert.match(warnings[0]!, /could not be checked for drift/)
+    })
+})
+
+// live with acme.org, which no certificate covers, on the flexible redirection host
+const FLEXIBLE = REGISTRY
+    .replace('aliases: [www.acme.com]', 'aliases: [www.acme.com, acme.org]')
+    .replace('npm: { proxyHost: 100, redirectionHost: 101 }', 'npm: { proxyHost: 100, redirectionHost: 101, flexibleRedirectionHost: 102 }')
+
+describe('driftWarnings and the flexible redirection host', () => {
+    const flexibleOf = (edge: FakeEdge) => edge.npm.snapshot()['redirection-hosts'].find(host => host.id === 102)!
+
+    it('reports nothing when all three hosts match', async () => {
+        const { edge, registry } = await written(FLEXIBLE)
+        assert.deepEqual(flexibleOf(edge).domain_names, ['acme.org'])
+        assert.deepEqual(await driftWarnings(registry, edge, config), [])
+    })
+
+    it('reports an edited flexible host by field', async () => {
+        const { edge, registry } = await written(FLEXIBLE)
+        edge.npm.seed('redirection-hosts', { ...flexibleOf(edge), certificate_id: 16, ssl_forced: true })
+        const warnings = await driftWarnings(registry, edge, config)
+        assert.equal(warnings.length, 1, warnings.join('; '))
+        assert.match(warnings[0]!, /flexible redirection host 102 for acme live was edited in NPM .*: certificate_id, ssl_forced/)
+    })
+
+    it('reports a flexible host that is missing, or there with no flexible alias to serve', async () => {
+        const missing = await written(FLEXIBLE)
+        await missing.edge.npm.remove('redirection-hosts', 102)
+        const gone = await driftWarnings(missing.registry, missing.edge, config)
+        assert.equal(gone.length, 1, gone.join('; '))
+        assert.match(gone[0]!, /flexible redirection host for acme live is missing, so its flexible aliases are not redirected/)
+
+        // The registry lost acme.org (or its zone got a certificate) and nothing has rewritten the hosts since
+        const { edge } = await written(FLEXIBLE)
+        const stale = parseRegistry(FLEXIBLE.replace('aliases: [www.acme.com, acme.org]', 'aliases: [www.acme.com]'))
+        const extra = await driftWarnings(stale, edge, config)
+        assert.equal(extra.length, 1, extra.join('; '))
+        assert.match(extra[0]!, /flexible redirection host 102 for acme live exists but the environment has no flexible aliases/)
     })
 })

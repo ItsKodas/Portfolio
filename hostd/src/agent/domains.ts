@@ -7,7 +7,7 @@
 // before, and answers ok: false only after putting it back. What is left here is the one case edge
 // cannot settle, a reply that never arrived, where the write may or may not have happened.
 
-import { hostnamesOf, type EnvironmentEntry, type NpmIds, type ProjectEntry, type Registry } from '../shared/registry.ts'
+import { hostnamesOf, npmIds, type EnvironmentEntry, type NpmIds, type ProjectEntry, type Registry } from '../shared/registry.ts'
 import { refuse, type AdoptPreview, type DomainsWritten, type Refusal } from '../shared/protocol.ts'
 import type { Change } from '../shared/registry-write.ts'
 import { describeError } from '../shared/formats.ts'
@@ -16,7 +16,7 @@ import {
 } from '../shared/edge-protocol.ts'
 import { EDGE_CONFIRM_TIMEOUT_MS, type EdgeClient } from './edge-client.ts'
 import type { AdoptedStore } from './adopted-store.ts'
-import { BROTLI, certificateFor, describeHosts, renderHosts, tokenFromHosts } from './npm-render.ts'
+import { BROTLI, aliasCertificates, describeHosts, describeRedirection, renderHosts, tokenFromHosts } from './npm-render.ts'
 
 export type DomainsConfig = { upstreamHost: string, edgeHost: string, edgeHttpPort: number }
 
@@ -47,11 +47,12 @@ const pathOf = (proxyHost: number): string => `npm:proxy-host/${proxyHost}`
 // Hand-made hosts in NPM may carry names in any case, or with a trailing dot; the registry's never do.
 const hostname = (name: string): string => name.toLowerCase().replace(/\.$/, '')
 const sameOwner = (a: Owner | null, b: Owner): boolean => a !== null && a.project === b.project && a.environment === b.environment
+const flexibleIdOf = (ids: NpmIds): number | null => ids.flexibleRedirectionHost ?? null
 const sameIds = (a: NpmIds | null, b: NpmIds | null): boolean =>
-    a === b || (a !== null && b !== null && a.proxyHost === b.proxyHost && a.redirectionHost === b.redirectionHost)
+    a === b || (a !== null && b !== null && a.proxyHost === b.proxyHost && a.redirectionHost === b.redirectionHost && flexibleIdOf(a) === flexibleIdOf(b))
 
 function allDomains(spec: HostsSpec): string[] {
-    return [...spec.proxy.domain_names, ...(spec.redirection?.domain_names ?? [])]
+    return [...spec.proxy.domain_names, ...(spec.redirection?.domain_names ?? []), ...(spec.flexibleRedirection?.domain_names ?? [])]
 }
 
 // Field by field, with the domain names as a set: NPM may hand them back in another order.
@@ -68,13 +69,18 @@ async function ensureHoldingPage(deps: DomainsDeps, project: ProjectEntry, envir
 }
 
 // The certificate comes from a fresh read of the registry's certificates map rather than anything the
-// caller holds, for the same reason the entry itself is reloaded before every write.
+// caller holds, for the same reason the entry itself is reloaded before every write. The map also says
+// which aliases it covers; the rest go on the flexible redirection host.
 async function render(deps: DomainsDeps, project: ProjectEntry, environment: EnvironmentEntry, token: string): Promise<{ ok: true, spec: HostsSpec } | Refusal> {
     let certificateId: number | null = null
+    let aliases = environment.aliases
+    let flexibleAliases: string[] = []
     if (!environment.flexibleSsl) {
-        const chosen = certificateFor((await deps.reloadRegistry()).certificates, hostnamesOf(environment))
+        const chosen = aliasCertificates((await deps.reloadRegistry()).certificates, environment.domain!, environment.aliases)
         if (!chosen.ok) return refuse('bad-request', chosen.problem)
         certificateId = chosen.id
+        aliases = chosen.covered
+        flexibleAliases = chosen.flexible
     }
     return {
         ok: true,
@@ -82,7 +88,8 @@ async function render(deps: DomainsDeps, project: ProjectEntry, environment: Env
             id: project.id,
             environment: environment.name,
             primary: environment.domain!,
-            aliases: environment.aliases,
+            aliases,
+            flexibleAliases,
             port: environment.port,
             flexibleSsl: environment.flexibleSsl,
             token,
@@ -126,11 +133,13 @@ async function confirmApply(deps: DomainsDeps, owner: Owner, ids: NpmIds | null,
         `${why}, and NPM does not show the change to the hosts for ${nameOf(owner)}. It may still be waiting behind `
         + 'another write, or it may have failed and been put back; check the hosts in NPM before trying again.',
     )
-    // A known set of ids is read back directly, unless the write was to create a redirection host,
-    // whose id only a search can find, or to release the proxy host (the adoption undo writes it back
-    // without the marker), which get would then refuse as no longer this environment's.
+    // A known set of ids is read back directly, unless the write was to create a redirection host (either
+    // one), whose id only a search can find, or to release the proxy host (the adoption undo writes it
+    // back without the marker), which get would then refuse as no longer this environment's.
     const releasing = !sameOwner(ownerOfConfig(spec.proxy.advanced_config), owner)
-    if (ids !== null && !releasing && (ids.redirectionHost !== null || spec.redirection === null)) {
+    const flexible = spec.flexibleRedirection ?? null
+    const creating = ids !== null && ((spec.redirection !== null && ids.redirectionHost === null) || (flexible !== null && flexibleIdOf(ids) === null))
+    if (ids !== null && !releasing && !creating) {
         let reply
         try {
             reply = await deps.edge.call({ verb: 'get', owner, ids }, { timeoutMs: EDGE_CONFIRM_TIMEOUT_MS })
@@ -141,8 +150,14 @@ async function confirmApply(deps: DomainsDeps, owner: Owner, ids: NpmIds | null,
         if (reply.verb !== 'get') return unknownOutcome(owner, why, `edge answered a get with ${reply.verb}`)
         const current = reply.current
         if (current === null || !sameSpec(current.proxy, spec.proxy)) return notYet
-        if (spec.redirection === null ? current.redirection !== null : current.redirection === null || !sameSpec(current.redirection, spec.redirection)) return notYet
-        return { ok: true, ids: { proxyHost: ids.proxyHost, redirectionHost: spec.redirection === null ? null : ids.redirectionHost }, previous: null }
+        const matches = (now: RedirectionHostSpec | null, wanted: RedirectionHostSpec | null) =>
+            wanted === null ? now === null : now !== null && sameSpec(now, wanted)
+        if (!matches(current.redirection, spec.redirection) || !matches(current.flexibleRedirection ?? null, flexible)) return notYet
+        return {
+            ok: true,
+            ids: npmIds(ids.proxyHost, spec.redirection === null ? null : ids.redirectionHost, flexible === null ? null : flexibleIdOf(ids)),
+            previous: null,
+        }
     }
     const found = await find(deps, allDomains(spec), EDGE_CONFIRM_TIMEOUT_MS)
     if (!found.ok) return unknownOutcome(owner, why, found.message)
@@ -150,17 +165,22 @@ async function confirmApply(deps: DomainsDeps, owner: Owner, ids: NpmIds | null,
     const proxy = found.hosts.find(host => host.kind === 'proxy' && host.spec !== null && sameSpec(host.spec, spec.proxy)
         && (ids === null ? sameOwner(host.owner, owner) : host.id === ids.proxyHost))
     if (!proxy) return notYet
-    let redirectionHost: number | null = null
-    if (spec.redirection) {
-        const wanted = spec.redirection
-        const redirection = found.hosts.find(host => host.kind === 'redirection' && sameOwner(host.owner, owner) && host.spec !== null && sameSpec(host.spec, wanted))
-        if (!redirection) return notYet
-        redirectionHost = redirection.id
-    } else if (found.hosts.some(host => host.kind === 'redirection' && sameOwner(host.owner, owner))) {
-        // The redirection host this write deletes is still there
-        return notYet
+    // Each redirection host this spec wants is there as rendered, and no other of this owner's is: one
+    // the write deletes still being there means it has not landed. The two never match each other, since
+    // only the covered one has a certificate.
+    const ours = found.hosts.filter(host => host.kind === 'redirection' && sameOwner(host.owner, owner))
+    const placed: (number | null)[] = []
+    for (const wanted of [spec.redirection, flexible]) {
+        if (wanted === null) {
+            placed.push(null)
+            continue
+        }
+        const host = ours.find(candidate => candidate.spec !== null && sameSpec(candidate.spec, wanted))
+        if (!host) return notYet
+        placed.push(host.id)
     }
-    return { ok: true, ids: { proxyHost: proxy.id, redirectionHost }, previous: null }
+    if (ours.some(host => !placed.includes(host.id))) return notYet
+    return { ok: true, ids: npmIds(proxy.id, placed[0]!, placed[1]!), previous: null }
 }
 
 async function apply(deps: DomainsDeps, owner: Owner, ids: NpmIds | null, spec: HostsSpec, adopt: boolean, restoreFixed?: ProxyFixed): Promise<Applied | Refusal> {
@@ -209,7 +229,12 @@ async function recordIds(deps: DomainsDeps, project: ProjectEntry, environment: 
     const written = await deps.writeRegistry({ kind: 'set-npm', id: project.id, environment: environment.name, npm: ids })
     if (written.ok) return { ok: true }
     const owner = ownerOf(project, environment)
-    const hosts = `NPM proxy host ${ids.proxyHost}${ids.redirectionHost === null ? '' : ` and redirection host ${ids.redirectionHost}`}`
+    const redirections = [
+        ...(ids.redirectionHost === null ? [] : [`redirection host ${ids.redirectionHost}`]),
+        ...(flexibleIdOf(ids) === null ? [] : [`flexible redirection host ${flexibleIdOf(ids)}`]),
+    ]
+    const names = [`NPM proxy host ${ids.proxyHost}`, ...redirections]
+    const hosts = names.length === 1 ? names[0]! : `${names.slice(0, -1).join(', ')} and ${names.at(-1)}`
     if (environment.npm !== null) {
         return refuse('failed', `the hosts for ${nameOf(owner)} were written, but the registry could not record their ids (${written.problem}); it should name ${hosts}`)
     }
@@ -324,10 +349,12 @@ export async function setAliases(
     // No maxDomains check. Adding a hostname is admin-only (see ADMIN_ONLY in api's policy.ts), and the
     // admin may give an environment as many as they like.
 
-    // The certificate too, before the registry takes the list: writeHosts would refuse a name no zone
-    // covers, but only after the registry had recorded it, leaving an alias NPM does not serve.
+    // The certificate too, before the registry takes the list: writeHosts would refuse a primary no zone
+    // covers, or an alias under another certificate or too deep below its zone, but only after the
+    // registry had recorded it, leaving an alias NPM does not serve. An alias no zone in the map reaches
+    // is accepted: it goes on the flexible redirection host, which needs no certificate.
     if (!environment.flexibleSsl) {
-        const chosen = certificateFor((await deps.reloadRegistry()).certificates, [environment.domain, ...aliases])
+        const chosen = aliasCertificates((await deps.reloadRegistry()).certificates, environment.domain, aliases)
         if (!chosen.ok) return refuse('bad-request', chosen.problem)
     }
 
@@ -369,24 +396,10 @@ export async function setAliases(
     return writeHosts(deps, registry.projects.get(project.id)!, fresh, token)
 }
 
-const yesNo = (value: boolean): string => (value ? 'yes' : 'no')
-
 // A found host in the same plain lines describeHosts gives the proposal, so the two read side by side.
 function describeFound(host: FoundHost): string {
     if (host.kind === 'proxy' && host.spec !== null) return describeHosts({ proxy: host.spec as ProxyHostSpec, redirection: null })
-    if (host.kind === 'redirection' && host.spec !== null) {
-        const spec = host.spec as RedirectionHostSpec
-        return [
-            'Redirection host',
-            `Domains: ${spec.domain_names.join(', ')}`,
-            `Redirects to: ${spec.forward_domain_name}`,
-            `Certificate: ${spec.certificate_id === 0 ? 'none' : spec.certificate_id}`,
-            `SSL forced: ${yesNo(spec.ssl_forced)}`,
-            `HTTP/2: ${yesNo(spec.http2_support)}`,
-            'Advanced config:',
-            ...spec.advanced_config.trimEnd().split('\n').map(line => `    ${line}`),
-        ].join('\n')
-    }
+    if (host.kind === 'redirection' && host.spec !== null) return describeRedirection('Redirection host', host.spec as RedirectionHostSpec).join('\n')
     return ['404 host', `Domains: ${host.domain_names.join(', ')}`].join('\n')
 }
 
@@ -515,7 +528,8 @@ export async function adopt(
     await ensureHoldingPage(deps, project, environment)
 
     // The same proxy host id, so NPM's own logs and stats for it carry on; edge makes the redirection
-    // host for the aliases, taking them off the proxy host first.
+    // hosts for the aliases (covered and flexible, as the certificates map splits them), taking them off
+    // the proxy host first.
     const owner = ownerOf(project, environment)
     const applied = await apply(deps, owner, { proxyHost: host.id, redirectionHost: null }, spec, true)
     if (!applied.ok) return applied
@@ -539,7 +553,8 @@ export async function adopt(
 }
 
 // Adoption undone: the proxy host goes back to the fields Koda made it with, without the marker, so
-// hostd no longer owns it, and the redirection host hostd made goes away because the spec has none.
+// hostd no longer owns it, and the redirection hosts hostd made (covered and flexible) go away because
+// the spec has neither.
 // edge's guard passes because it checks the hosts as they are now, which the adopt marked. This is the
 // rollback api reaches for when the hostname stops answering after an adopt.
 //

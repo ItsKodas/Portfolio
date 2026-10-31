@@ -85,8 +85,8 @@ export function rolledBackReason(
     hostname: string, before: Answer, after: Answer, restored: string[], problem: string | null,
 ): string {
     const files = restored.length === 0
-        ? 'hostd put the hand-made NPM proxy host back as it was before the adopt and deleted the redirection host it had made.'
-        : `hostd put ${restored.join(', ')} back as it was before the adopt and deleted the redirection host it had made.`
+        ? 'hostd put the hand-made NPM proxy host back as it was before the adopt and deleted any redirection hosts it had made.'
+        : `hostd put ${restored.join(', ')} back as it was before the adopt and deleted any redirection hosts it had made.`
     const undone = problem === null
         ? `${files} Nginx Proxy Manager has reloaded, so the site should be answering as it was.`
         : `${files} That did not fully work: ${problem}`
