@@ -916,6 +916,24 @@ projects:
         assert.deepEqual(withEnvironment(', npm: { proxyHost: 10 }')!.npm, { proxyHost: 10, redirectionHost: null })
     })
 
+    // The flexible redirection host's id is optional, so the registry written before it existed reads
+    // as it did, and is only present on an environment that has such a host.
+    it("parses an environment's flexible redirection host id", () => {
+        assert.deepEqual(
+            withEnvironment(', npm: { proxyHost: 10, redirectionHost: 4, flexibleRedirectionHost: 5 }')!.npm,
+            { proxyHost: 10, redirectionHost: 4, flexibleRedirectionHost: 5 },
+        )
+        assert.deepEqual(withEnvironment(', npm: { proxyHost: 10, flexibleRedirectionHost: 5 }')!.npm, { proxyHost: 10, redirectionHost: null, flexibleRedirectionHost: 5 })
+        assert.equal('flexibleRedirectionHost' in withEnvironment(', npm: { proxyHost: 10, redirectionHost: 4 }')!.npm!, false)
+        for (const bad of ['0', '"5"', '1.5']) {
+            assert.match(
+                invalidEnvironmentReason(`environments: { live: { dir: /var/www/a, port: 5010, npm: { proxyHost: 10, flexibleRedirectionHost: ${bad} } } }`) ?? '',
+                /npm\.flexibleRedirectionHost/, bad,
+            )
+        }
+        assert.match(invalidEnvironmentReason('environments: { live: { dir: /var/www/a, port: 5010, npm: { proxyHost: 10, flexibleHost: 5 } } }') ?? '', /npm may only contain/)
+    })
+
     it('refuses npm ids that are not positive integers', () => {
         for (const bad of ['0', '-1', '"10"', '1.5']) {
             assert.match(invalidEnvironmentReason(`environments: { live: { dir: /var/www/a, port: 5010, npm: { proxyHost: ${bad} } } }`) ?? '', /npm\.proxyHost/, bad)

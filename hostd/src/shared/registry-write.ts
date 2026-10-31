@@ -74,7 +74,8 @@ export type Change =
     // idempotent and lets the existing conflict check do its job.
     | { kind: 'set-aliases', id: string, environment: EnvironmentName, aliases: string[] }
     // The NPM host ids hostd created for this environment. null removes the key; a null redirectionHost
-    // writes no key of its own, the same way an absent alias list leaves no empty list behind.
+    // or flexibleRedirectionHost writes no key of its own, the same way an absent alias list leaves no
+    // empty list behind.
     | { kind: 'set-npm', id: string, environment: EnvironmentName, npm: NpmIds | null }
     | { kind: 'set-flag', id: string, environment: EnvironmentName, flag: EnvironmentFlag, enabled: boolean }
     // Written once per environment, by the deploy that moves it into the nested layout. Both keys at
@@ -308,10 +309,17 @@ function edit(doc: Document, change: Change): EditResult {
                 return { problem: `${change.id} has no ${change.environment} environment` }
             }
             const path = ['projects', change.id, 'environments', change.environment, 'npm']
-            if (change.npm === null) doc.deleteIn(path)
-            else doc.setIn(path, change.npm.redirectionHost === null
-                ? { proxyHost: change.npm.proxyHost }
-                : { proxyHost: change.npm.proxyHost, redirectionHost: change.npm.redirectionHost })
+            if (change.npm === null) {
+                doc.deleteIn(path)
+                return null
+            }
+            // Each optional id only when there is a host for it, so a registry with no flexible aliases
+            // reads exactly as one written before the flexible host existed.
+            const node: Record<string, number> = { proxyHost: change.npm.proxyHost }
+            if (change.npm.redirectionHost !== null) node.redirectionHost = change.npm.redirectionHost
+            const flexible = change.npm.flexibleRedirectionHost ?? null
+            if (flexible !== null) node.flexibleRedirectionHost = flexible
+            doc.setIn(path, node)
             return null
         }
         case 'set-flag':

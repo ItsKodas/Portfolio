@@ -4,7 +4,7 @@
 // is strict (unknown keys and wrong types give null) because a malformed spec must never reach NPM.
 
 import { isRecord, isEnvironmentName, PROJECT_ID } from './formats.ts'
-import type { EnvironmentName, NpmIds } from './registry.ts'
+import { npmIds, type EnvironmentName, type NpmIds } from './registry.ts'
 
 export type Owner = { project: string, environment: EnvironmentName }
 
@@ -16,7 +16,11 @@ export type RedirectionHostSpec = {
     domain_names: string[], forward_domain_name: string, certificate_id: number,
     ssl_forced: boolean, http2_support: boolean, advanced_config: string,
 }
-export type HostsSpec = { proxy: ProxyHostSpec, redirection: RedirectionHostSpec | null }
+// flexibleRedirection is the second redirection host: the aliases no certificate covers, under a Full SSL
+// primary, with no certificate and no Force SSL. Optional, absent meaning null, for the reason NpmIds'
+// flexibleRedirectionHost is: every message and record written before it existed has no such key, and
+// nothing writes it as null.
+export type HostsSpec = { proxy: ProxyHostSpec, redirection: RedirectionHostSpec | null, flexibleRedirection?: RedirectionHostSpec | null }
 
 // The proxy host fields hostd always writes the same way, as one particular host had them. A normal render
 // never carries these (hostd's own values always apply); they exist so the adoption undo can give a
@@ -87,11 +91,15 @@ function parseOwner(value: unknown): Owner | null {
     return { project: value.project, environment: value.environment }
 }
 
+// The flexible key may be absent (a message from before it existed) or null, and either reads as no
+// such host; what comes out carries the key only when there is one, as every writer emits it.
 function parseIds(value: unknown): NpmIds | null {
-    if (!isRecord(value) || !onlyKeys(value, ['proxyHost', 'redirectionHost'])) return null
+    if (!isRecord(value) || !onlyKeys(value, ['proxyHost', 'redirectionHost', 'flexibleRedirectionHost'])) return null
     if (!isInt(value.proxyHost)) return null
     if (value.redirectionHost !== null && !isInt(value.redirectionHost)) return null
-    return { proxyHost: value.proxyHost, redirectionHost: value.redirectionHost }
+    const flexible = value.flexibleRedirectionHost ?? null
+    if (flexible !== null && !isInt(flexible)) return null
+    return npmIds(value.proxyHost, value.redirectionHost, flexible)
 }
 
 function parseProxy(value: unknown): ProxyHostSpec | null {
@@ -130,7 +138,7 @@ function parseFixed(value: unknown): ProxyFixed | null {
 // A missing proxyFixed reads as null rather than refusing: the adopted store's records are parsed here
 // too, and one saved before the field existed must still be undoable.
 function parsePrevious(value: unknown): PreviousHosts | null {
-    if (!isRecord(value) || !onlyKeys(value, ['proxy', 'redirection', 'proxyFixed'])) return null
+    if (!isRecord(value) || !onlyKeys(value, ['proxy', 'redirection', 'flexibleRedirection', 'proxyFixed'])) return null
     const { proxyFixed: rawFixed, ...rest } = value
     const spec = parseSpec(rest)
     if (!spec) return null
@@ -139,13 +147,17 @@ function parsePrevious(value: unknown): PreviousHosts | null {
     return proxyFixed ? { ...spec, proxyFixed } : null
 }
 
+// flexibleRedirection absent or null reads as none and comes out absent, like parseIds' flexible key.
 function parseSpec(value: unknown): HostsSpec | null {
-    if (!isRecord(value) || !onlyKeys(value, ['proxy', 'redirection'])) return null
+    if (!isRecord(value) || !onlyKeys(value, ['proxy', 'redirection', 'flexibleRedirection'])) return null
     const proxy = parseProxy(value.proxy)
     if (!proxy) return null
-    if (value.redirection === null) return { proxy, redirection: null }
-    const redirection = parseRedirection(value.redirection)
-    return redirection ? { proxy, redirection } : null
+    const redirection = value.redirection === null ? null : parseRedirection(value.redirection)
+    if (value.redirection !== null && !redirection) return null
+    const rawFlexible = value.flexibleRedirection ?? null
+    if (rawFlexible === null) return { proxy, redirection }
+    const flexibleRedirection = parseRedirection(rawFlexible)
+    return flexibleRedirection ? { proxy, redirection, flexibleRedirection } : null
 }
 
 export function parseEdgeRequest(value: unknown): EdgeRequest | null {

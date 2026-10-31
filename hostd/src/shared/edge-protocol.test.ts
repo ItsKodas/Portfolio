@@ -108,3 +108,47 @@ describe('parseEdgeReply', () => {
         assert.deepEqual(parseEdgeReply({ ok: true, verb: 'apply', ids, previous: spec }), { ok: true, verb: 'apply', ids, previous: { ...spec, proxyFixed: null } })
     })
 })
+
+// The flexible redirection host (aliases no certificate covers, under a Full SSL primary) is a third
+// host. Its keys are optional both ways: a message or record written before it existed has neither, and
+// one written now carries them only when there is such a host, so absent and null read the same.
+describe('the flexible redirection host', () => {
+    const flexible = {
+        domain_names: ['spotondrones.com.au'], forward_domain_name: 'spotondrones.com', certificate_id: 0,
+        ssl_forced: false, http2_support: false, advanced_config: markerFor(owner),
+    }
+    const withFlexible: HostsSpec = { proxy, redirection, flexibleRedirection: flexible }
+    const allIds = { proxyHost: 4, redirectionHost: 5, flexibleRedirectionHost: 6 }
+
+    it('round-trips in every request and reply that carries hosts or ids', () => {
+        const requests: EdgeRequest[] = [
+            { verb: 'get', owner, ids: allIds },
+            { verb: 'remove', owner, ids: allIds },
+            { verb: 'apply', owner, ids: allIds, spec: withFlexible, adopt: false },
+        ]
+        for (const request of requests) assert.deepEqual(parseEdgeRequest(JSON.parse(JSON.stringify(request))), request)
+        const replies: EdgeReply[] = [
+            { ok: true, verb: 'get', current: withFlexible },
+            { ok: true, verb: 'apply', ids: allIds, previous: { ...withFlexible, proxyFixed: null } },
+        ]
+        for (const reply of replies) assert.deepEqual(parseEdgeReply(JSON.parse(JSON.stringify(reply))), reply)
+    })
+
+    it('reads an explicit null the same as an absent key, and answers neither', () => {
+        assert.deepEqual(parseEdgeRequest({ verb: 'get', owner, ids: { ...ids, flexibleRedirectionHost: null } }), { verb: 'get', owner, ids })
+        assert.deepEqual(parseEdgeReply({ ok: true, verb: 'get', current: { ...spec, flexibleRedirection: null } }), { ok: true, verb: 'get', current: spec })
+        assert.deepEqual(
+            parseEdgeReply({ ok: true, verb: 'apply', ids: { ...ids, flexibleRedirectionHost: null }, previous: { ...spec, flexibleRedirection: null, proxyFixed: null } }),
+            { ok: true, verb: 'apply', ids, previous: { ...spec, proxyFixed: null } },
+        )
+    })
+
+    it('stays strict about what the new keys hold', () => {
+        assert.equal(parseEdgeRequest({ verb: 'get', owner, ids: { ...ids, flexibleRedirectionHost: 1.5 } }), null)
+        assert.equal(parseEdgeRequest({ verb: 'get', owner, ids: { ...ids, flexibleRedirectionHost: '6' } }), null)
+        assert.equal(parseEdgeRequest({ verb: 'get', owner, ids: { ...ids, flexibleHost: 6 } }), null)
+        assert.equal(parseEdgeRequest({ verb: 'apply', owner, ids: null, spec: { ...spec, flexibleRedirection: { ...flexible, extra: 1 } }, adopt: false }), null)
+        assert.equal(parseEdgeRequest({ verb: 'apply', owner, ids: null, spec: { ...spec, flexibleRedirection: { ...flexible, certificate_id: -1 } }, adopt: false }), null)
+        assert.equal(parseEdgeReply({ ok: true, verb: 'get', current: { ...spec, flexible } }), null)
+    })
+})

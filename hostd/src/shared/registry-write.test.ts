@@ -921,6 +921,19 @@ describe('set-npm', () => {
         assert.doesNotMatch(cleared.ok ? cleared.text : '', /npm/)
     })
 
+    it('writes the flexible redirection host id only when there is one', () => {
+        const npm = { proxyHost: 10, redirectionHost: 4, flexibleRedirectionHost: 5 }
+        const written = applyChange(BASE, { kind: 'set-npm', id: 'acme', environment: 'live', npm })
+        assert.equal(written.ok, true)
+        const text = written.ok ? written.text : ''
+        assert.deepEqual(parseRegistry(text).projects.get('acme')?.environments.get('live')?.npm, npm)
+
+        const dropped = applyChange(text, { kind: 'set-npm', id: 'acme', environment: 'live', npm: { proxyHost: 10, redirectionHost: 4, flexibleRedirectionHost: null } })
+        const after = dropped.ok ? dropped.text : ''
+        assert.doesNotMatch(after, /flexibleRedirectionHost/)
+        assert.deepEqual(parseRegistry(after).projects.get('acme')?.environments.get('live')?.npm, { proxyHost: 10, redirectionHost: 4 })
+    })
+
     it('refuses an environment the project does not have', () => {
         assert.equal(applyChange(BASE, { kind: 'set-npm', id: 'acme', environment: 'test', npm: { proxyHost: 10, redirectionHost: 4 } }).ok, false)
     })

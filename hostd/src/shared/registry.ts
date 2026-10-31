@@ -37,8 +37,17 @@ export const CERTIFICATE_MODES = ['cloudflare-origin'] as const
 export type CertificateMode = typeof CERTIFICATE_MODES[number]
 
 // The ids of the NPM hosts hostd manages for an environment. The proxy host serves the domain and its
-// aliases; the redirection host, when there is one, sends the aliases on to the domain.
-export type NpmIds = { proxyHost: number, redirectionHost: number | null }
+// aliases; the redirection host, when there is one, sends the aliases on to the domain. The flexible
+// redirection host does the same for the aliases no certificate covers (under a Full SSL primary), with
+// no certificate of its own. Its key is optional, and absent means null: the registry, edge's replies and
+// the adopted store were all written without it before it existed, and nothing writes it as null.
+export type NpmIds = { proxyHost: number, redirectionHost: number | null, flexibleRedirectionHost?: number | null }
+
+// The ids with the flexible key present only when there is such a host, which is the one shape every
+// writer emits.
+export function npmIds(proxyHost: number, redirectionHost: number | null, flexibleRedirectionHost: number | null = null): NpmIds {
+    return flexibleRedirectionHost === null ? { proxyHost, redirectionHost } : { proxyHost, redirectionHost, flexibleRedirectionHost }
+}
 
 export type EnvironmentEntry = {
     name: EnvironmentName
@@ -552,14 +561,17 @@ function parseEnvironment(id: string, name: EnvironmentName, raw: unknown, rules
 
     let npm: NpmIds | null = null
     if (raw.npm !== undefined) {
-        if (!isRecord(raw.npm) || !onlyKeys(raw.npm, ['proxyHost', 'redirectionHost'])) {
-            problems.push(`${where}.npm may only contain proxyHost and redirectionHost`)
+        if (!isRecord(raw.npm) || !onlyKeys(raw.npm, ['proxyHost', 'redirectionHost', 'flexibleRedirectionHost'])) {
+            problems.push(`${where}.npm may only contain proxyHost, redirectionHost and flexibleRedirectionHost`)
         } else {
             const proxyHost = wholeNumber(raw.npm.proxyHost, 1, Number.MAX_SAFE_INTEGER)
             const redirectionHost = raw.npm.redirectionHost === undefined ? null : wholeNumber(raw.npm.redirectionHost, 1, Number.MAX_SAFE_INTEGER)
+            const flexible = raw.npm.flexibleRedirectionHost === undefined ? null : wholeNumber(raw.npm.flexibleRedirectionHost, 1, Number.MAX_SAFE_INTEGER)
             if (proxyHost === null) problems.push(`${where}.npm.proxyHost must be a positive whole number`)
             if (raw.npm.redirectionHost !== undefined && redirectionHost === null) problems.push(`${where}.npm.redirectionHost must be a positive whole number`)
-            if (proxyHost !== null && (redirectionHost !== null || raw.npm.redirectionHost === undefined)) npm = { proxyHost, redirectionHost }
+            if (raw.npm.flexibleRedirectionHost !== undefined && flexible === null) problems.push(`${where}.npm.flexibleRedirectionHost must be a positive whole number`)
+            const sound = (redirectionHost !== null || raw.npm.redirectionHost === undefined) && (flexible !== null || raw.npm.flexibleRedirectionHost === undefined)
+            if (proxyHost !== null && sound) npm = npmIds(proxyHost, redirectionHost, flexible)
         }
     }
 

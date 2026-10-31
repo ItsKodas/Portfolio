@@ -34,6 +34,21 @@ describe('adoptedStore', () => {
         assert.equal(await store.read(OWNER), null)
     })
 
+    it('keeps the flexible redirection host, and reads a record saved before it existed', async () => {
+        const { dir, store } = await scratch()
+        const flexible = {
+            domain_names: ['acme.com.au'], forward_domain_name: 'acme.com', certificate_id: 0,
+            ssl_forced: false, http2_support: false, advanced_config: '',
+        }
+        const record = { ids: { proxyHost: 12, redirectionHost: 104, flexibleRedirectionHost: 105 }, previous: { ...PREVIOUS, flexibleRedirection: flexible } }
+        await store.save(OWNER, record)
+        assert.deepEqual(await store.read(OWNER), record)
+        // What the store held before the flexible host existed: no key for it in either place
+        const old = { ids: { proxyHost: 12, redirectionHost: null }, previous: PREVIOUS }
+        await writeFile(join(dir, 'adopted', 'acme-live.json'), JSON.stringify(old))
+        assert.deepEqual(await store.read(OWNER), old)
+    })
+
     it('names the file after the project and environment', async () => {
         const { dir, store } = await scratch()
         await store.save(OWNER, { ids: { proxyHost: 12, redirectionHost: null }, previous: PREVIOUS })
