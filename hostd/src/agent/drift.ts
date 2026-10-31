@@ -77,7 +77,8 @@ async function driftOf(
     const currentFlexible = current.flexibleRedirection ?? null
     const flexibleId = ids.flexibleRedirectionHost ?? null
     if (wantedFlexible !== null && currentFlexible === null) {
-        warnings.push(`NPM flexible redirection host for ${who} is missing, so its flexible aliases are not redirected`)
+        // The recorded id when there is one, as the other hosts' messages name theirs
+        warnings.push(`NPM flexible redirection host ${flexibleId === null ? '' : `${flexibleId} `}for ${who} is missing, so its flexible aliases are not redirected`)
     } else if (wantedFlexible === null && currentFlexible !== null) {
         warnings.push(`NPM flexible redirection host ${flexibleId} for ${who} exists but the environment has no flexible aliases`)
     } else if (wantedFlexible !== null && currentFlexible !== null) {

@@ -622,6 +622,10 @@ export async function applyHosts(
                 written[slot] = sameDomains(remaining, target.domain_names)
                 const interim = written[slot] ? target : { ...redirectionSpecOf(flavour, record), domain_names: remaining }
                 await update('redirection-hosts', record, redirectionBody(flavour, interim))
+                // The host as it now is, so the full write below registers an undo back to this trimmed
+                // state rather than to the original. The original would hand back names another host has
+                // just gained, which NPM refuses; this step's own undo restores the original afterwards.
+                if (!written[slot]) current[slot] = { ...record, domain_names: remaining }
             }
         }
 

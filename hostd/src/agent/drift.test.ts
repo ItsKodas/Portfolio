@@ -145,7 +145,7 @@ describe('driftWarnings and the flexible redirection host', () => {
         await missing.edge.npm.remove('redirection-hosts', 102)
         const gone = await driftWarnings(missing.registry, missing.edge, config)
         assert.equal(gone.length, 1, gone.join('; '))
-        assert.match(gone[0]!, /flexible redirection host for acme live is missing, so its flexible aliases are not redirected/)
+        assert.match(gone[0]!, /flexible redirection host 102 for acme live is missing, so its flexible aliases are not redirected/)
 
         // The registry lost acme.org (or its zone got a certificate) and nothing has rewritten the hosts since
         const { edge } = await written(FLEXIBLE)

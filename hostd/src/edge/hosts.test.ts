@@ -1184,6 +1184,33 @@ for (const flavour of FLAVOURS) {
             afterEach(second.npm)
         })
 
+        // A host trimmed first and written in full last has two undo steps. Each must put back the host as
+        // it was just before its own write, or the later one hands back a name another host has just
+        // gained, NPM refuses it, and the reply wrongly says the put-back failed.
+        test('a host trimmed then filled whose last write fails is put back cleanly, step by step', async () => {
+            const { npm, deps } = setupFor(flavour)
+            npm.seed('proxy-hosts', records.proxy(10))
+            npm.seed('redirection-hosts', records.redirection(4, { domain_names: ['a.spotondrones.com'] }))
+            npm.seed('redirection-hosts', flexRecord(5, { domain_names: ['c.au', 'd.au'] }))
+            const start = npm.snapshot()
+            // Only the fourth write, the flexible host's full one, lands offline
+            let updates = 0
+            const update = npm.update.bind(npm)
+            npm.update = async (kind, id, body) => {
+                if (++updates === 4) npm.breakNext('redirection-hosts', 'update', 'bad flexible')
+                return update(kind, id, body)
+            }
+            const wanted = flexSpec({ aliases: ['a.spotondrones.com', 'c.au'], flexible: ['d.au', 'e.au'] })
+            const reply = await applyHosts(deps, OWNER, { proxyHost: 10, redirectionHost: 4, flexibleRedirectionHost: 5 }, wanted, false)
+            assert.deepEqual(reply, { ok: false, problem: 'NPM refused the configuration for spotondrones live', output: 'bad flexible' })
+            assert.deepEqual(writes(npm), [
+                'update redirection-hosts 5', 'update proxy-hosts 10', 'update redirection-hosts 4', 'update redirection-hosts 5',
+                'update redirection-hosts 5', 'update redirection-hosts 4', 'update proxy-hosts 10', 'update redirection-hosts 5',
+            ])
+            assert.deepEqual(normalised(npm.snapshot()), normalised(start))
+            afterEach(npm)
+        })
+
         test('refuses to touch a flexible host without this owner\'s marker', async () => {
             for (const config of ['', 'hand made', `${markerFor({ project: 'spotondrones', environment: 'staging' })}\n`, `# note\n${MARKER}\n`]) {
                 const { npm, deps } = setupFor(flavour)
