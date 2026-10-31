@@ -1807,10 +1807,19 @@ snippet, the verification location, the holding page and the access log line), a
 one **redirection host** sending the aliases to the primary with a 301 (path and query kept). Under
 Flexible SSL there is no certificate and no Force SSL, so Cloudflare's own https side does the work.
 
+Under Full SSL, an alias no zone in the `certificates` map covers (spotondrones' `.com.au` and `.net.au`
+names, whose zones have no Origin certificate and are on Flexible in Cloudflare) is a **flexible alias**: it
+goes on a second, **flexible redirection host** with no certificate and no Force SSL, redirecting to the
+primary over https like the first. The split comes from the map alone, so adding a zone's certificate to the
+map moves its aliases to the covered redirection host on the next domain action, and removing one moves them
+back. The primary must still be covered, and an alias in a zone the map gives a different certificate is
+still refused.
+
 **hostd only touches hosts it owns.** The first line of every host's `advanced_config` is
 `# hostd: <project>/<environment>. Managed by hostd; edits here are overwritten.` and `edge` refuses to
 update or delete a host unless both that marker and the id recorded in the registry
-(`npm: { proxyHost: 10, redirectionHost: 4 }` on the environment) match. Everything else in NPM
+(`npm: { proxyHost: 10, redirectionHost: 4 }` on the environment, plus `flexibleRedirectionHost: 5` when it
+has flexible aliases) match. Everything else in NPM
 (`horizons.gg` itself, wg, dns, proxmox and so on) is out of hostd's reach. The one exception is
 **adopt**, which may take over a host Koda made by hand, and only when `edge` re-reads it and finds it
 plainly this environment's (it serves the primary and forwards to this environment's upstream).
@@ -2023,7 +2032,7 @@ were skipped.
      the second answer is materially worse (a page that became a redirect, an error, nothing at all), api
      itself puts the hand-made proxy host back as it was (without the hostd marker, and with its own Block
      Exploits, Websockets Support, HSTS and Cache Assets settings, which the adopt had set to hostd's),
-     deletes the redirection host hostd made, and clears the registry ids. The adopt then answers 502 saying what both requests got.
+     deletes the redirection hosts hostd made (covered and flexible), and clears the registry ids. The adopt then answers 502 saying what both requests got.
    - **A bad adopt the probe missed** (the page still answers but something else is wrong). Recover it by
      hand from the copy the agent saved before adopting, on the VM:
 
@@ -2044,8 +2053,8 @@ were skipped.
         Cache Assets (`caching_enabled`) and the scheme (`forward_scheme`). pmpcgroup's host, for one, had
         Block Exploits off. If `proxyFixed` is `null` (the adopt's reply was lost and NPM was read back
         instead), the file does not know them: compare with how the other hand-made hosts are set.
-     2. Delete the redirection host hostd created (the id is in that file's saved ids, and its Advanced tab
-        starts with the same `# hostd: <id>/<environment>` marker). Do this after step 1, because NPM
+     2. Delete the redirection host hostd created, and the flexible one if there is one (the ids are in that
+        file's saved ids, and each one's Advanced tab starts with the same `# hostd: <id>/<environment>` marker). Do this after step 1, because NPM
         refuses a name that is on two hosts.
      3. Remove that environment's `npm:` block from `/opt/horizons/hostd/registry/projects.yaml`, so hostd
         stops treating the host as its own and the environment can be adopted again.
@@ -2158,8 +2167,9 @@ Adopt with no matching host is refused rather than falling back to a create.
    it by hand before adopting.
 3. **Adopt.** `hc -X POST http://hostd-api:8080/projects/<id>/<env>/adopt -d '{"confirm":"<project name>"}'`,
    typing the project's name back. The rendered spec is written onto the **same proxy host id**, so NPM's own
-   logs and stats carry on; the redirection host for the aliases is created, the aliases leaving the proxy
-   host first (NPM refuses a name on two hosts), and both ids are recorded in the registry. api requests
+   logs and stats carry on; the redirection host for the aliases is created (and the flexible redirection
+   host for any flexible aliases), the aliases leaving the proxy host first (NPM refuses a name on two hosts),
+   and every id is recorded in the registry. api requests
    `https://<domain>/` once just before and once just after, and if the second answer is materially worse
    than the first (a page that became a redirect, an error or nothing at all) it undoes the adoption itself
    and answers 502 saying what both requests got.
@@ -2173,9 +2183,11 @@ Undoing an adoption is described in step 8 of **1. Rollout, done once**.
 | Symptom | Cause |
 | --- | --- |
 | `/health` warns that `edge` or NPM is not answering, or a domain action fails with `NPM could not be searched` or a timeout | Read `docker logs hostd-edge` first. If it is not running or logged a `FATAL`, fix that (usually `.env.edge`). If it is running, check NPM from the VM: `curl -sI http://192.168.0.6:81/` and `ssh proxmox "pct exec 101 -- systemctl status npm openresty"` (the CT's units are `npm.service` and `openresty.service`). A `401` from NPM makes `edge` log in again once and retry; a persistent one means the `hostd@horizons.gg` password in `.env.edge` is wrong or the user was removed. Recreate after editing: `docker compose -f hostd/docker-compose.yml up -d --force-recreate edge`. |
-| A domain action is refused for a zone with no certificate | The hostname's zone is not in the registry's `certificates` map. Upload that zone's Cloudflare Origin certificate in NPM (Certificates), note its id, add `<zone>: <id>` to the map, wait ten seconds. A name two labels below the zone is refused whatever the map says: choose a name one label below it. |
+| A domain action is refused for a zone with no certificate | The primary's zone is not in the registry's `certificates` map (an alias's no longer needs to be: it becomes a flexible alias). Upload that zone's Cloudflare Origin certificate in NPM (Certificates), note its id, add `<zone>: <id>` to the map, wait ten seconds. A name two labels below the zone is refused whatever the map says: choose a name one label below it. An alias whose zone the map gives a different certificate than the primary's is refused too: one site gets one certificate. |
+| A flexible alias stays at `failed` verification | Its Cloudflare zone is on Full (or Full strict), so Cloudflare reaches NPM on 443, where the flexible redirection host serves nothing. Set that zone's SSL mode to Flexible in Cloudflare, or upload its Origin certificate in NPM and add the zone to the `certificates` map, which moves the alias to the covered redirection host on the next domain action. |
 | A domain action is refused `is already served by NPM proxy host <n>` (or redirection or 404 host) | NPM already has that name on a host hostd does not own. Remove the name there, or adopt that host if it is this environment's. |
-| A domain action is refused `<alias> is already on NPM redirection host <n>`, and that host's Advanced tab starts with this environment's own `# hostd: <id>/<env>.` marker | The registry's `redirectionHost` id was stale (an earlier change lost its reply, or `edge` put the redirection host back under a new id). `edge` now takes a redirection host carrying this environment's exact marker as its own and records its id, so retrying the action heals it. If it is still refused, the marker is not exactly this environment's (another environment's, or not on the first line): fix it in NPM, or delete that redirection host if nothing else uses it, and retry. |
+| A domain action is refused `<alias> is already on NPM redirection host <n>`, and that host's Advanced tab starts with this environment's own `# hostd: <id>/<env>.` marker | The registry's `redirectionHost` id was stale (an earlier change lost its reply, or `edge` put the redirection host back under a new id). `edge` now takes a redirection host carrying this environment's exact marker as its own and records its id, so retrying the action heals it. If it is still refused, the marker is not exactly this environment's (another environment's, or not on the first line): fix it in NPM, or delete that redirection host if nothing else uses it, and retry. The same goes for the flexible redirection host's `flexibleRedirectionHost` id. |
+| A domain action is refused `NPM redirection host <n> carries the marker for <id>/<env> and serves aliases of both its redirection hosts`, or `NPM redirection hosts <n> and <m> both carry the marker` | A recorded redirection host id was stale and the hosts carrying this environment's marker cannot be matched to the covered and flexible slots without guessing. Delete the extra host (or hosts) in NPM, keeping at most one per slot, and retry. |
 | A domain action is refused because a host `does not carry` its marker | The first line of the host's Advanced tab is no longer `# hostd: <id>/<env>. ...`, so hostd will not overwrite it. See **3. Drift, ownership and health**. |
 | `/health` warns of drift on an environment | Someone edited the owned host in NPM. Look at the Advanced tab and the fields against the registry; the next domain action on that environment rewrites it. |
 | A site goes offline for a moment after a domain change, and the reply says NPM rejected the config | NPM reported `nginx_online: false` for that host and hostd wrote the previous state back. The reply carries NPM's own error text (`meta.nginx_err`). `ssh proxmox "pct exec 101 -- nginx -t"` shows the same. |
