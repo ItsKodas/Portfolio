@@ -1039,3 +1039,273 @@ describe('npmplus only', () => {
         assertOnlyAllowedKeys(npm)
     })
 })
+
+// The flexible redirection host: aliases no certificate covers under a Full SSL primary (spotondrones'
+// .com.au names), redirected from a second host with certificate 0 and no Force SSL. The same guard,
+// undo and ordering as the other two hosts, under both flavours.
+const AU = ['spotondrones.com.au', 'www.spotondrones.com.au']
+
+function flexSpec(over: { aliases?: string[], flexible?: string[] } = {}): HostsSpec {
+    const base = spec({ aliases: over.aliases })
+    const flexible = over.flexible ?? AU
+    if (flexible.length === 0) return base
+    return {
+        ...base,
+        flexibleRedirection: {
+            domain_names: flexible, forward_domain_name: 'spotondrones.com', certificate_id: 0,
+            ssl_forced: false, http2_support: false, advanced_config: `${MARKER}\n`,
+        },
+    }
+}
+
+for (const flavour of FLAVOURS) {
+    describe(`flexible redirection host on ${flavour}`, () => {
+        const records = recordsFor(flavour)
+        const flexRecord = (id: number, over: Record<string, unknown> = {}) =>
+            records.redirection(id, { domain_names: AU, certificate_id: 0, ssl_forced: false, ...over })
+        const afterEach = (npm: FakeNpm) => { if (flavour === 'npmplus') assertOnlyAllowedKeys(npm) }
+        const ids = (reply: unknown) => (reply as { ids: unknown }).ids
+        const problem = (reply: unknown) => (reply as { problem: string }).problem
+        const domainsOf = (npm: FakeNpm, id: number) => npm.snapshot()['redirection-hosts'].find(record => record.id === id)?.domain_names
+
+        test('creates all three hosts, the flexible one without a certificate, and answers its id', async () => {
+            const { npm, deps } = setupFor(flavour)
+            const reply = await applyHosts(deps, OWNER, null, flexSpec(), false)
+            assert.deepEqual(reply, { ok: true, verb: 'apply', ids: { proxyHost: 100, redirectionHost: 101, flexibleRedirectionHost: 102 }, previous: null })
+            assert.deepEqual(writes(npm), ['create proxy-hosts', 'create redirection-hosts', 'create redirection-hosts'])
+            const flexible = npm.snapshot()['redirection-hosts'].find(record => record.id === 102)!
+            assert.deepEqual(flexible.domain_names, AU)
+            assert.equal(flexible.certificate_id, 0)
+            assert.equal(Boolean(flexible.ssl_forced), false)
+            assert.deepEqual([flexible.forward_scheme, flexible.forward_http_code, Boolean(flexible.preserve_path)], ['https', 301, true])
+            assert.equal(flexible.advanced_config.split('\n')[0], MARKER)
+            afterEach(npm)
+        })
+
+        test('an alias moving from the covered host to the flexible one leaves the covered host first', async () => {
+            // A certificate left the map: spotondrones.com.au was covered, and is flexible now.
+            const { npm, deps } = setupFor(flavour)
+            npm.seed('proxy-hosts', records.proxy(10))
+            npm.seed('redirection-hosts', records.redirection(4, { domain_names: ['www.spotondrones.com', 'spotondrones.com.au'] }))
+            const reply = await applyHosts(deps, OWNER, { proxyHost: 10, redirectionHost: 4 }, flexSpec({ flexible: ['spotondrones.com.au'] }), false)
+            assert.equal(reply.ok, true, JSON.stringify(reply))
+            assert.deepEqual(ids(reply), { proxyHost: 10, redirectionHost: 4, flexibleRedirectionHost: 100 })
+            assert.deepEqual(writes(npm), ['update redirection-hosts 4', 'update proxy-hosts 10', 'create redirection-hosts'])
+            assert.deepEqual(domainsOf(npm, 4), ['www.spotondrones.com'])
+            assert.deepEqual(domainsOf(npm, 100), ['spotondrones.com.au'])
+
+            // Every alias was covered, and none is now: the covered host goes before the flexible one is made.
+            const second = setupFor(flavour)
+            second.npm.seed('proxy-hosts', records.proxy(10))
+            second.npm.seed('redirection-hosts', records.redirection(4, { domain_names: AU }))
+            const moved = await applyHosts(second.deps, OWNER, { proxyHost: 10, redirectionHost: 4 }, flexSpec({ aliases: [] }), false)
+            assert.equal(moved.ok, true, JSON.stringify(moved))
+            assert.deepEqual(ids(moved), { proxyHost: 10, redirectionHost: null, flexibleRedirectionHost: 100 })
+            assert.deepEqual(writes(second.npm), ['remove redirection-hosts 4', 'update proxy-hosts 10', 'create redirection-hosts'])
+            afterEach(npm)
+            afterEach(second.npm)
+        })
+
+        test('an alias moving from the flexible host to the covered one leaves the flexible host first', async () => {
+            // A certificate was added to the map: spotondrones.com.au is covered now.
+            const { npm, deps } = setupFor(flavour)
+            npm.seed('proxy-hosts', records.proxy(10))
+            npm.seed('redirection-hosts', records.redirection(4))
+            npm.seed('redirection-hosts', flexRecord(5))
+            const wanted = flexSpec({ aliases: ['www.spotondrones.com', 'spotondrones.com.au'], flexible: ['www.spotondrones.com.au'] })
+            const reply = await applyHosts(deps, OWNER, { proxyHost: 10, redirectionHost: 4, flexibleRedirectionHost: 5 }, wanted, false)
+            assert.equal(reply.ok, true, JSON.stringify(reply))
+            assert.deepEqual(ids(reply), { proxyHost: 10, redirectionHost: 4, flexibleRedirectionHost: 5 })
+            assert.deepEqual(writes(npm), ['update redirection-hosts 5', 'update proxy-hosts 10', 'update redirection-hosts 4'])
+            assert.deepEqual(domainsOf(npm, 4), ['www.spotondrones.com', 'spotondrones.com.au'])
+            assert.deepEqual(domainsOf(npm, 5), ['www.spotondrones.com.au'])
+
+            // Every flexible alias is covered now: the flexible host is deleted before the covered one takes them.
+            const second = setupFor(flavour)
+            second.npm.seed('proxy-hosts', records.proxy(10))
+            second.npm.seed('redirection-hosts', records.redirection(4))
+            second.npm.seed('redirection-hosts', flexRecord(5))
+            const all = flexSpec({ aliases: ['www.spotondrones.com', ...AU], flexible: [] })
+            const moved = await applyHosts(second.deps, OWNER, { proxyHost: 10, redirectionHost: 4, flexibleRedirectionHost: 5 }, all, false)
+            assert.equal(moved.ok, true, JSON.stringify(moved))
+            assert.deepEqual(ids(moved), { proxyHost: 10, redirectionHost: 4 })
+            assert.deepEqual(writes(second.npm), ['remove redirection-hosts 5', 'update proxy-hosts 10', 'update redirection-hosts 4'])
+            afterEach(npm)
+            afterEach(second.npm)
+        })
+
+        test('aliases trading places between the two hosts are released by both before either gains', async () => {
+            const { npm, deps } = setupFor(flavour)
+            npm.seed('proxy-hosts', records.proxy(10))
+            npm.seed('redirection-hosts', records.redirection(4, { domain_names: ['www.spotondrones.com', 'spotondrones.com.au'] }))
+            npm.seed('redirection-hosts', flexRecord(5, { domain_names: ['www.spotondrones.com.au', 'shop.spotondrones.com'] }))
+            const wanted = flexSpec({ aliases: ['www.spotondrones.com', 'shop.spotondrones.com'], flexible: AU })
+            const reply = await applyHosts(deps, OWNER, { proxyHost: 10, redirectionHost: 4, flexibleRedirectionHost: 5 }, wanted, false)
+            assert.equal(reply.ok, true, JSON.stringify(reply))
+            assert.deepEqual(writes(npm), [
+                'update redirection-hosts 4', 'update redirection-hosts 5', 'update proxy-hosts 10', 'update redirection-hosts 4', 'update redirection-hosts 5',
+            ])
+            assert.deepEqual(domainsOf(npm, 4), ['www.spotondrones.com', 'shop.spotondrones.com'])
+            assert.deepEqual(domainsOf(npm, 5), AU)
+            afterEach(npm)
+        })
+
+        test('a failed write is undone in reverse, the alias back on the covered host only after the flexible one lets go', async () => {
+            const { npm, deps } = setupFor(flavour)
+            npm.seed('proxy-hosts', records.proxy(10))
+            npm.seed('redirection-hosts', records.redirection(4, { domain_names: ['www.spotondrones.com', 'spotondrones.com.au'] }))
+            const start = npm.snapshot()
+            npm.breakNext('redirection-hosts', 'create', 'bad flexible')
+            const reply = await applyHosts(deps, OWNER, { proxyHost: 10, redirectionHost: 4 }, flexSpec({ flexible: ['spotondrones.com.au'] }), false)
+            assert.deepEqual(reply, { ok: false, problem: 'NPM refused the configuration for spotondrones live', output: 'bad flexible' })
+            assert.deepEqual(writes(npm), [
+                'update redirection-hosts 4', 'update proxy-hosts 10', 'create redirection-hosts',
+                'remove redirection-hosts 100', 'update proxy-hosts 10', 'update redirection-hosts 4',
+            ])
+            assert.deepEqual(normalised(npm.snapshot()), normalised(start))
+
+            // The other way: the flexible host deleted first is recreated last, and its new id named.
+            const second = setupFor(flavour)
+            second.npm.seed('proxy-hosts', records.proxy(10))
+            second.npm.seed('redirection-hosts', records.redirection(4))
+            second.npm.seed('redirection-hosts', flexRecord(5))
+            second.npm.breakNext('redirection-hosts', 'update', 'bad covered')
+            const all = flexSpec({ aliases: ['www.spotondrones.com', ...AU], flexible: [] })
+            const failed = await applyHosts(second.deps, OWNER, { proxyHost: 10, redirectionHost: 4, flexibleRedirectionHost: 5 }, all, false)
+            assert.equal(failed.ok, false)
+            assert.match(problem(failed), /NPM redirection host 5 was put back as NPM redirection host 100/)
+            assert.deepEqual(writes(second.npm), [
+                'remove redirection-hosts 5', 'update proxy-hosts 10', 'update redirection-hosts 4',
+                'update redirection-hosts 4', 'update proxy-hosts 10', 'create redirection-hosts',
+            ])
+            assert.deepEqual(domainsOf(second.npm, 4), ['www.spotondrones.com'])
+            assert.deepEqual(domainsOf(second.npm, 100), AU)
+            afterEach(npm)
+            afterEach(second.npm)
+        })
+
+        test('refuses to touch a flexible host without this owner\'s marker', async () => {
+            for (const config of ['', 'hand made', `${markerFor({ project: 'spotondrones', environment: 'staging' })}\n`, `# note\n${MARKER}\n`]) {
+                const { npm, deps } = setupFor(flavour)
+                npm.seed('proxy-hosts', records.proxy(10))
+                npm.seed('redirection-hosts', records.redirection(4))
+                npm.seed('redirection-hosts', flexRecord(5, { advanced_config: config }))
+                const all = { proxyHost: 10, redirectionHost: 4, flexibleRedirectionHost: 5 }
+                const reply = await applyHosts(deps, OWNER, all, flexSpec(), false)
+                assert.match(problem(reply), /NPM redirection host 5 does not carry the marker for spotondrones\/live/, config)
+                assert.equal((await removeHosts(deps, OWNER, all)).ok, false, config)
+                assert.equal((await getHosts(deps, OWNER, all)).ok, false, config)
+                assert.deepEqual(writes(npm), [], config)
+            }
+        })
+
+        test('a stale or missing flexible id takes the orphan carrying this owner\'s marker for its own slot', async () => {
+            for (const flexibleRedirectionHost of [9, null]) {
+                const { npm, deps } = setupFor(flavour)
+                npm.seed('proxy-hosts', records.proxy(10))
+                npm.seed('redirection-hosts', records.redirection(4))
+                npm.seed('redirection-hosts', flexRecord(7))
+                const reply = await applyHosts(deps, OWNER, { proxyHost: 10, redirectionHost: 4, flexibleRedirectionHost }, flexSpec(), false)
+                assert.equal(reply.ok, true, JSON.stringify(reply))
+                assert.deepEqual(ids(reply), { proxyHost: 10, redirectionHost: 4, flexibleRedirectionHost: 7 })
+                assert.equal(npm.snapshot()['redirection-hosts'].length, 2)
+                afterEach(npm)
+            }
+            // Both ids stale: each orphan goes to the slot whose aliases it serves, whatever order NPM lists them in
+            const { npm, deps } = setupFor(flavour)
+            npm.seed('proxy-hosts', records.proxy(10))
+            npm.seed('redirection-hosts', flexRecord(6))
+            npm.seed('redirection-hosts', records.redirection(7))
+            const reply = await applyHosts(deps, OWNER, { proxyHost: 10, redirectionHost: 4, flexibleRedirectionHost: 5 }, flexSpec(), false)
+            assert.equal(reply.ok, true, JSON.stringify(reply))
+            assert.deepEqual(ids(reply), { proxyHost: 10, redirectionHost: 7, flexibleRedirectionHost: 6 })
+            afterEach(npm)
+        })
+
+        test('an orphan that could be either redirection host, or two competing for one, is refused by name', async () => {
+            const { npm, deps } = setupFor(flavour)
+            npm.seed('proxy-hosts', records.proxy(10))
+            npm.seed('redirection-hosts', records.redirection(7, { domain_names: ['www.spotondrones.com', 'spotondrones.com.au'] }))
+            const both = await applyHosts(deps, OWNER, { proxyHost: 10, redirectionHost: null }, flexSpec(), false)
+            assert.match(problem(both), /NPM redirection host 7 carries the marker for spotondrones\/live and serves aliases of both its redirection hosts/)
+            assert.deepEqual(writes(npm), [])
+
+            const second = setupFor(flavour)
+            second.npm.seed('proxy-hosts', records.proxy(10))
+            second.npm.seed('redirection-hosts', records.redirection(4))
+            second.npm.seed('redirection-hosts', flexRecord(7, { domain_names: ['spotondrones.com.au'] }))
+            second.npm.seed('redirection-hosts', flexRecord(8, { domain_names: ['www.spotondrones.com.au'] }))
+            const competing = await applyHosts(second.deps, OWNER, { proxyHost: 10, redirectionHost: 4 }, flexSpec(), false)
+            assert.match(problem(competing), /NPM redirection hosts 7 and 8 both carry the marker for spotondrones\/live/)
+            assert.deepEqual(writes(second.npm), [])
+        })
+
+        test('an orphan without this owner\'s exact marker is never taken for the flexible slot', async () => {
+            for (const advanced_config of ['', `${markerFor({ project: 'spotondrones', environment: 'redesign' })}\n`, `# note\n${MARKER}\n`]) {
+                const { npm, deps } = setupFor(flavour)
+                npm.seed('proxy-hosts', records.proxy(10))
+                npm.seed('redirection-hosts', flexRecord(7, { advanced_config }))
+                const reply = await applyHosts(deps, OWNER, { proxyHost: 10, redirectionHost: null }, flexSpec({ aliases: [] }), false)
+                assert.deepEqual(reply, { ok: false, problem: 'spotondrones.com.au is already on NPM redirection host 7' }, advanced_config)
+                assert.deepEqual(writes(npm), [], advanced_config)
+            }
+        })
+
+        test('remove deletes both redirection hosts first, then the proxy host', async () => {
+            const { npm, deps } = setupFor(flavour)
+            npm.seed('proxy-hosts', records.proxy(10))
+            npm.seed('redirection-hosts', records.redirection(4))
+            npm.seed('redirection-hosts', flexRecord(5))
+            const all = { proxyHost: 10, redirectionHost: 4, flexibleRedirectionHost: 5 }
+            assert.deepEqual(await removeHosts(deps, OWNER, all), { ok: true, verb: 'remove' })
+            assert.deepEqual(writes(npm), ['remove redirection-hosts 4', 'remove redirection-hosts 5', 'remove proxy-hosts 10'])
+        })
+
+        test('get answers the flexible host with the other two', async () => {
+            const { npm, deps } = setupFor(flavour)
+            npm.seed('proxy-hosts', records.proxy(10))
+            npm.seed('redirection-hosts', flexRecord(5))
+            const reply = await getHosts(deps, OWNER, { proxyHost: 10, redirectionHost: null, flexibleRedirectionHost: 5 })
+            assert.equal(reply.ok, true, JSON.stringify(reply))
+            const current = (reply as { current: HostsSpec }).current
+            assert.equal(current.redirection, null)
+            assert.deepEqual(current.flexibleRedirection?.domain_names, AU)
+            assert.equal(current.flexibleRedirection?.certificate_id, 0)
+            // None recorded: the key is absent, as it was before the flexible host existed
+            const none = await getHosts(deps, OWNER, { proxyHost: 10, redirectionHost: null })
+            assert.equal('flexibleRedirection' in (none as { current: HostsSpec }).current, false)
+        })
+
+        test('adopt makes both redirection hosts from a hand-made proxy host, and the release deletes both', async () => {
+            const { npm, deps } = setupFor(flavour)
+            npm.seed('proxy-hosts', records.proxy(10, { domain_names: ['spotondrones.com', 'www.spotondrones.com', ...AU], advanced_config: BROTLI }))
+            const reply = await applyHosts(deps, OWNER, { proxyHost: 10, redirectionHost: null }, flexSpec(), true)
+            assert.equal(reply.ok, true, JSON.stringify(reply))
+            assert.deepEqual(ids(reply), { proxyHost: 10, redirectionHost: 100, flexibleRedirectionHost: 101 })
+            assert.deepEqual(writes(npm), ['update proxy-hosts 10', 'create redirection-hosts', 'create redirection-hosts'])
+            assert.equal('flexibleRedirection' in (reply as { previous: HostsSpec }).previous, false)
+
+            const release: HostsSpec = { ...handMade(), proxy: { ...handMade().proxy, domain_names: ['spotondrones.com', 'www.spotondrones.com', ...AU] } }
+            const released = await applyHosts(deps, OWNER, { proxyHost: 10, redirectionHost: 100, flexibleRedirectionHost: 101 }, release, false)
+            assert.equal(released.ok, true, JSON.stringify(released))
+            assert.deepEqual(ids(released), { proxyHost: 10, redirectionHost: null })
+            assert.deepEqual(writes(npm).slice(3), ['remove redirection-hosts 100', 'remove redirection-hosts 101', 'update proxy-hosts 10'])
+            assert.deepEqual(npm.snapshot()['redirection-hosts'], [])
+            assert.deepEqual(npm.snapshot()['proxy-hosts'][0]!.domain_names, ['spotondrones.com', 'www.spotondrones.com', ...AU])
+            afterEach(npm)
+        })
+
+        test('refuses a spec that puts a name on two hosts, an unmarked flexible host, or one id for both', async () => {
+            const { npm, deps } = setupFor(flavour)
+            const doubled = flexSpec({ aliases: ['www.spotondrones.com', 'spotondrones.com.au'] })
+            assert.match(problem(await applyHosts(deps, OWNER, null, doubled, false)), /spotondrones\.com\.au is on both/)
+            const unmarked = flexSpec()
+            unmarked.flexibleRedirection!.advanced_config = 'hand made'
+            assert.match(problem(await applyHosts(deps, OWNER, null, unmarked, false)), /must start with its marker/)
+            npm.seed('proxy-hosts', records.proxy(10))
+            npm.seed('redirection-hosts', records.redirection(4))
+            assert.match(problem(await applyHosts(deps, OWNER, { proxyHost: 10, redirectionHost: 4, flexibleRedirectionHost: 4 }, flexSpec(), false)), /same NPM redirection host/)
+            assert.deepEqual(writes(npm), [])
+        })
+    })
+}

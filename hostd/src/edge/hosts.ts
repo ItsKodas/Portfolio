@@ -19,7 +19,7 @@ import { describeError } from '../shared/formats.ts'
 import {
     markerFor, ownerOf, type EdgeReply, type FoundHost, type HostsSpec, type Owner, type PreviousHosts, type ProxyFixed, type ProxyHostSpec, type RedirectionHostSpec,
 } from '../shared/edge-protocol.ts'
-import type { NpmIds } from '../shared/registry.ts'
+import { npmIds, type NpmIds } from '../shared/registry.ts'
 import { NpmError, type NpmClient, type NpmFlavour, type NpmHostKind, type NpmRecord } from './npm-client.ts'
 
 // flavour defaults to stock NPM, which is what every caller that does not say meant before NPMplus.
@@ -288,8 +288,19 @@ function redirectionClaimProblem(record: NpmRecord, owner: Owner, spec: HostsSpe
     return null
 }
 
+// The two redirection hosts an environment may have: the covered one, with the environment's
+// certificate, and the flexible one, with none, for aliases no certificate covers (Full SSL primary).
+// They are the same kind of NPM host, so the guard, adopt rules and undo are the same for both.
+type Slot = 'covered' | 'flexible'
+const SLOTS: Slot[] = ['covered', 'flexible']
+const SLOT_NAMES: Record<Slot, string> = { covered: 'redirection host', flexible: 'flexible redirection host' }
+
+function slotSpec(spec: HostsSpec, slot: Slot): RedirectionHostSpec | null {
+    return slot === 'covered' ? spec.redirection : spec.flexibleRedirection ?? null
+}
+
 function allDomains(spec: HostsSpec): string[] {
-    return [...spec.proxy.domain_names, ...(spec.redirection?.domain_names ?? [])]
+    return [...spec.proxy.domain_names, ...SLOTS.flatMap(slot => slotSpec(spec, slot)?.domain_names ?? [])]
 }
 
 function foundHost(flavour: NpmFlavour, kind: NpmHostKind, record: NpmRecord): FoundHost {
@@ -352,7 +363,15 @@ function firstLine(config: string): string {
 
 function carriesMarker(spec: HostsSpec, owner: Owner): boolean {
     const marker = markerFor(owner)
-    return firstLine(spec.proxy.advanced_config) === marker && (!spec.redirection || firstLine(spec.redirection.advanced_config) === marker)
+    return firstLine(spec.proxy.advanced_config) === marker && SLOTS.every(slot => {
+        const redirection = slotSpec(spec, slot)
+        return !redirection || firstLine(redirection.advanced_config) === marker
+    })
+}
+
+// "7 and 8", "7, 8 and 9"
+function idList(ids: number[]): string {
+    return ids.length === 1 ? String(ids[0]) : `${ids.slice(0, -1).join(', ')} and ${ids[ids.length - 1]}`
 }
 
 function sameDomains(a: string[], b: string[]): boolean {
@@ -369,12 +388,54 @@ function mayHaveCreated(kind: NpmHostKind, error: unknown): unknown {
     return error instanceof NpmError ? new NpmError(message, error.status, error.body) : new Error(message)
 }
 
-// This owner's redirection host that the registry's id does not name, if there is one. Several (which
-// hostd never makes on purpose) prefer the one sharing a name with the spec; the rest still clash.
-async function orphanedRedirection(deps: HostsDeps, owner: Owner, spec: HostsSpec): Promise<NpmRecord | null> {
-    const ours = (await deps.npm.list('redirection-hosts')).filter(record => sameOwner(ownerOf(text(record.advanced_config)), owner))
-    const wanted = allDomains(spec).map(hostname)
-    return ours.find(record => record.domain_names.some(name => wanted.includes(hostname(name)))) ?? ours[0] ?? null
+type Orphans = { ok: true, found: Partial<Record<Slot, NpmRecord>> } | { ok: false, problem: string }
+
+// This owner's redirection hosts that no recorded id names, matched to the slots (open) whose id named
+// nothing. Only a host carrying this owner's exact marker is ever considered. Each is taken for the slot
+// whose aliases it serves; one serving aliases of both, or two serving one slot's, is a guess hostd will
+// not make, so it refuses and names them for Koda to sort out in NPM.
+async function orphanedRedirections(deps: HostsDeps, owner: Owner, spec: HostsSpec, open: Slot[], known: number[]): Promise<Orphans> {
+    if (open.length === 0) return { ok: true, found: {} }
+    const ours = (await deps.npm.list('redirection-hosts'))
+        .filter(record => !known.includes(record.id) && sameOwner(ownerOf(text(record.advanced_config)), owner))
+    const serves = (record: NpmRecord, slot: Slot): boolean => {
+        const wanted = (slotSpec(spec, slot)?.domain_names ?? []).map(hostname)
+        return record.domain_names.some(name => wanted.includes(hostname(name)))
+    }
+    const claims: Record<Slot, NpmRecord[]> = { covered: [], flexible: [] }
+    const unplaced: NpmRecord[] = []
+    for (const record of ours) {
+        const slots = open.filter(slot => serves(record, slot))
+        if (slots.length > 1) {
+            return {
+                ok: false,
+                problem: `NPM redirection host ${record.id} carries the marker for ${ownerName(owner)} and serves aliases of both its redirection hosts, `
+                    + 'so hostd cannot tell which one it is; delete it in NPM and try again',
+            }
+        }
+        if (slots.length === 1) claims[slots[0]!].push(record)
+        else unplaced.push(record)
+    }
+    for (const slot of open) {
+        const competing = claims[slot]
+        if (competing.length > 1) {
+            return {
+                ok: false,
+                problem: `NPM redirection hosts ${idList(competing.map(record => record.id))} ${competing.length === 2 ? 'both' : 'all'} carry the marker for `
+                    + `${ownerName(owner)} and serve the aliases of its ${SLOT_NAMES[slot]}; delete all but one in NPM and try again`,
+            }
+        }
+    }
+    // One sharing no alias with either slot (it holds the primary, or names since removed) was taken for
+    // the redirection host before the flexible one existed, to be trimmed or deleted, and still is. The
+    // flexible slot only ever takes a host serving its own aliases: every environment recorded before it
+    // existed has that slot open, and it must not start sweeping up other marked hosts. Any other is left
+    // alone, and one holding a name this spec wants then clashes as any other host would.
+    const leftover = unplaced[0]
+    if (leftover && open.includes('covered') && claims.covered.length === 0) claims.covered.push(leftover)
+    const found: Partial<Record<Slot, NpmRecord>> = {}
+    for (const slot of open) if (claims[slot][0]) found[slot] = claims[slot][0]
+    return { ok: true, found }
 }
 
 // This owner's proxy host when the registry's id names none: a migration (NPM to NPMplus) or a restore
@@ -399,9 +460,23 @@ export async function applyHosts(
     if (spec.proxy.forward_host !== deps.upstreamHost) return refuse(`hostd only forwards to ${deps.upstreamHost}; refusing a proxy host that forwards to ${spec.proxy.forward_host}`)
     // Adopt takes over a host that exists; with nothing to take over it must not quietly create one.
     if (adopt && ids === null) return refuse(`Adopt needs the NPM proxy host to take over for ${ownerName(owner)}`)
+    const recorded: Record<Slot, number | null> = { covered: ids?.redirectionHost ?? null, flexible: ids?.flexibleRedirectionHost ?? null }
+    if (recorded.covered !== null && recorded.covered === recorded.flexible) {
+        return refuse(`The ids for ${ownerName(owner)} name the same NPM redirection host ${recorded.covered} as both of its redirection hosts`)
+    }
     const proxyDomains = spec.proxy.domain_names.map(hostname)
-    const doubled = spec.redirection?.domain_names.find(name => proxyDomains.includes(hostname(name)))
-    if (doubled !== undefined) return refuse(`${doubled} is on both the proxy host and the redirection host`)
+    // NPM refuses one name on two hosts, and so does the spec, between any two of the three
+    const named: [string, string[]][] = [
+        ['proxy host', spec.proxy.domain_names],
+        ...SLOTS.map(slot => [SLOT_NAMES[slot], slotSpec(spec, slot)?.domain_names ?? []] as [string, string[]]),
+    ]
+    for (const [at, [first, firstNames]] of named.entries()) {
+        for (const [second, secondNames] of named.slice(at + 1)) {
+            const taken = firstNames.map(hostname)
+            const doubled = secondNames.find(name => taken.includes(hostname(name)))
+            if (doubled !== undefined) return refuse(`${doubled} is on both the ${first} and the ${second}`)
+        }
+    }
     // A host created or adopted without its marker could never be touched again. An update of a host
     // that already carries the marker may drop it: that is how the adoption undo hands a host back, and
     // the guard that matters, the current host's marker, is checked below before anything is written.
@@ -415,7 +490,7 @@ export async function applyHosts(
     const flavour = flavourOf(deps)
     const undo: Undo[] = []
     try {
-        const certificates = [spec.proxy.certificate_id, spec.redirection?.certificate_id ?? 0].filter(id => id !== 0)
+        const certificates = [spec.proxy.certificate_id, ...SLOTS.map(slot => slotSpec(spec, slot)?.certificate_id ?? 0)].filter(id => id !== 0)
         if (certificates.length > 0) {
             const known = await deps.npm.certificateIds()
             const missing = certificates.find(id => !known.includes(id))
@@ -423,7 +498,7 @@ export async function applyHosts(
         }
 
         let proxyRecord: NpmRecord | null = null
-        let redirectionRecord: NpmRecord | null = null
+        const records: Record<Slot, NpmRecord | null> = { covered: null, flexible: null }
         if (ids) {
             proxyRecord = await deps.npm.get('proxy-hosts', ids.proxyHost)
             // A recorded id that is gone, while this environment's host lives on under another id, is taken
@@ -434,21 +509,32 @@ export async function applyHosts(
             const proxyProblem = proxyClaimProblem(deps, proxyRecord, owner, spec, adopt)
             if (proxyProblem) return refuse(proxyProblem)
             // A redirection host deleted by hand leaves nothing to protect: a new one is created below.
-            if (ids.redirectionHost !== null) redirectionRecord = await deps.npm.get('redirection-hosts', ids.redirectionHost)
-            // The id may be stale while this environment's redirection host lives on under another: edge's
+            for (const slot of SLOTS) {
+                const id = recorded[slot]
+                if (id !== null) records[slot] = await deps.npm.get('redirection-hosts', id)
+            }
+            // An id may be stale while this environment's redirection host lives on under another: edge's
             // own undo recreated it, a reply on the delete-then-create path was lost, or the agent could not
             // record the new id. Left alone it would clash with every write from now on. One carrying this
             // owner's exact marker is provably this environment's, so it is taken as the record and its id
             // answered for the agent to record. Nothing without that marker is ever taken this way.
-            if (!redirectionRecord) redirectionRecord = await orphanedRedirection(deps, owner, spec)
-            const redirectionProblem = redirectionRecord && redirectionClaimProblem(redirectionRecord, owner, spec, adopt)
-            if (redirectionProblem) return refuse(redirectionProblem)
+            const open = SLOTS.filter(slot => records[slot] === null)
+            const known = SLOTS.flatMap(slot => records[slot] ? [records[slot]!.id] : [])
+            const orphans = await orphanedRedirections(deps, owner, spec, open, known)
+            if (!orphans.ok) return refuse(orphans.problem)
+            for (const slot of open) records[slot] = orphans.found[slot] ?? null
+            for (const slot of SLOTS) {
+                const record = records[slot]
+                const redirectionProblem = record && redirectionClaimProblem(record, owner, spec, adopt)
+                if (redirectionProblem) return refuse(redirectionProblem)
+            }
         }
+        const ownIds = SLOTS.flatMap(slot => records[slot] ? [records[slot]!.id] : [])
 
         // NPM refuses a domain that another host has; checking first gives an error the portal can show,
         // and means no write is attempted that would have to be undone.
         const elsewhere = (await find(deps, allDomains(spec))).filter(({ kind, host }) =>
-            !(kind === 'proxy-hosts' && host.id === proxyRecord?.id) && !(kind === 'redirection-hosts' && host.id === redirectionRecord?.id))
+            !(kind === 'proxy-hosts' && host.id === proxyRecord?.id) && !(kind === 'redirection-hosts' && ownIds.includes(host.id)))
         const clash = elsewhere[0]
         if (clash) {
             const taken = clash.host.domain_names.map(hostname)
@@ -457,9 +543,11 @@ export async function applyHosts(
         }
 
         const previous: PreviousHosts | null = proxyRecord
-            // NPMplus has no fixed fields for the adoption undo to put back, so none are kept.
+            // NPMplus has no fixed fields for the adoption undo to put back, so none are kept. The flexible
+            // host only when there was one, as every writer emits it.
             ? {
-                proxy: proxySpecOf(flavour, proxyRecord), redirection: redirectionRecord ? redirectionSpecOf(flavour, redirectionRecord) : null,
+                proxy: proxySpecOf(flavour, proxyRecord), redirection: records.covered ? redirectionSpecOf(flavour, records.covered) : null,
+                ...(records.flexible ? { flexibleRedirection: redirectionSpecOf(flavour, records.flexible) } : {}),
                 proxyFixed: flavour === 'npmplus' ? null : fixedOf(proxyRecord),
             }
             : null
@@ -509,22 +597,31 @@ export async function applyHosts(
             await deps.npm.remove(kind, before.id)
         }
 
-        // NPM will not let two hosts hold one domain, so whichever host gives a domain up is written
-        // first. Usually that is the proxy (aliases move off it onto the redirection host). When the proxy
-        // takes domains back from the redirection host (the adoption undo puts the aliases back on a
-        // hand-made proxy host), the redirection host lets go of them first: trimmed, or deleted if
-        // nothing is left.
-        let redirection = redirectionRecord
-        let redirectionWritten = false
-        if (redirection && redirection.domain_names.some(name => proxyDomains.includes(hostname(name)))) {
-            const remaining = redirection.domain_names.filter(name => !proxyDomains.includes(hostname(name)))
-            if (!spec.redirection || remaining.length === 0) {
-                await remove('redirection-hosts', redirection)
-                redirection = null
+        // NPM will not let two hosts hold one domain, so every host that gives a domain up is written
+        // before any host that gains it, in three steps. First each redirection host lets go of whatever
+        // another host is to hold (the adoption undo puts the aliases back on a hand-made proxy host; a
+        // certificate added to or dropped from the map moves an alias between the covered and flexible
+        // hosts): trimmed, or deleted if nothing it should keep is left, and gaining nothing yet. Then the
+        // proxy, which gives up what the redirection hosts are to gain (aliases moving off a hand-made host
+        // on adopt) and gains only what step one released. Last, each redirection host takes its full
+        // spec, every name it gains now free. The undo runs in reverse, so it releases before it restores
+        // in the same way.
+        const current: Record<Slot, NpmRecord | null> = { ...records }
+        const written: Record<Slot, boolean> = { covered: false, flexible: false }
+        for (const slot of SLOTS) {
+            const record = current[slot]
+            if (!record) continue
+            const others = [...proxyDomains, ...SLOTS.filter(other => other !== slot).flatMap(other => (slotSpec(spec, other)?.domain_names ?? []).map(hostname))]
+            if (!record.domain_names.some(name => others.includes(hostname(name)))) continue
+            const remaining = record.domain_names.filter(name => !others.includes(hostname(name)))
+            const target = slotSpec(spec, slot)
+            if (!target || remaining.length === 0) {
+                await remove('redirection-hosts', record)
+                current[slot] = null
             } else {
-                redirectionWritten = sameDomains(remaining, spec.redirection.domain_names)
-                const interim = redirectionWritten ? spec.redirection : { ...redirectionSpecOf(flavour, redirection), domain_names: remaining }
-                await update('redirection-hosts', redirection, redirectionBody(flavour, interim))
+                written[slot] = sameDomains(remaining, target.domain_names)
+                const interim = written[slot] ? target : { ...redirectionSpecOf(flavour, record), domain_names: remaining }
+                await update('redirection-hosts', record, redirectionBody(flavour, interim))
             }
         }
 
@@ -537,18 +634,22 @@ export async function applyHosts(
             proxyHost = await create('proxy-hosts', proxyBody(flavour, spec.proxy))
         }
 
-        let redirectionHost: number | null = null
-        if (spec.redirection) {
-            if (redirection) {
-                if (!redirectionWritten) await update('redirection-hosts', redirection, redirectionBody(flavour, spec.redirection))
-                redirectionHost = redirection.id
-            } else {
-                redirectionHost = await create('redirection-hosts', redirectionBody(flavour, spec.redirection))
+        const placed: Record<Slot, number | null> = { covered: null, flexible: null }
+        for (const slot of SLOTS) {
+            const target = slotSpec(spec, slot)
+            const record = current[slot]
+            if (target) {
+                if (record) {
+                    if (!written[slot]) await update('redirection-hosts', record, redirectionBody(flavour, target))
+                    placed[slot] = record.id
+                } else {
+                    placed[slot] = await create('redirection-hosts', redirectionBody(flavour, target))
+                }
+            } else if (record) {
+                await remove('redirection-hosts', record)
             }
-        } else if (redirection) {
-            await remove('redirection-hosts', redirection)
         }
-        return { ok: true, verb: 'apply', ids: { proxyHost, redirectionHost }, previous }
+        return { ok: true, verb: 'apply', ids: npmIds(proxyHost, placed.covered, placed.flexible), previous }
     } catch (error) {
         const notes: string[] = []
         const undoProblems: string[] = []
@@ -572,14 +673,34 @@ export async function applyHosts(
     }
 }
 
-// Both hosts are checked before either is deleted, so a refusal deletes nothing.
+// The recorded redirection hosts that still exist, covered then flexible.
+async function redirectionsOf(deps: HostsDeps, ids: NpmIds): Promise<Record<Slot, NpmRecord | null>> {
+    const recorded: Record<Slot, number | null> = { covered: ids.redirectionHost, flexible: ids.flexibleRedirectionHost ?? null }
+    const out: Record<Slot, NpmRecord | null> = { covered: null, flexible: null }
+    for (const slot of SLOTS) {
+        const id = recorded[slot]
+        if (id !== null) out[slot] = await deps.npm.get('redirection-hosts', id)
+    }
+    return out
+}
+
+// Every host is checked before any is deleted, so a refusal deletes nothing. The redirection hosts go
+// first, as they always have.
 export async function removeHosts(deps: HostsDeps, owner: Owner, ids: NpmIds): Promise<EdgeReply> {
     try {
-        const redirection = ids.redirectionHost === null ? null : await deps.npm.get('redirection-hosts', ids.redirectionHost)
+        const redirections = await redirectionsOf(deps, ids)
         const proxy = await deps.npm.get('proxy-hosts', ids.proxyHost)
-        const problem = (redirection && notOwned('redirection-hosts', redirection, owner)) || (proxy && notOwned('proxy-hosts', proxy, owner))
-        if (problem) return refuse(problem)
-        if (redirection) await deps.npm.remove('redirection-hosts', redirection.id)
+        for (const slot of SLOTS) {
+            const record = redirections[slot]
+            const problem = record && notOwned('redirection-hosts', record, owner)
+            if (problem) return refuse(problem)
+        }
+        const proxyProblem = proxy && notOwned('proxy-hosts', proxy, owner)
+        if (proxyProblem) return refuse(proxyProblem)
+        for (const slot of SLOTS) {
+            const record = redirections[slot]
+            if (record) await deps.npm.remove('redirection-hosts', record.id)
+        }
         if (proxy) await deps.npm.remove('proxy-hosts', proxy.id)
         return { ok: true, verb: 'remove' }
     } catch (error) {
@@ -595,11 +716,17 @@ export async function getHosts(deps: HostsDeps, owner: Owner, ids: NpmIds): Prom
         if (!proxy) return { ok: true, verb: 'get', current: null }
         const proxyProblem = notOwned('proxy-hosts', proxy, owner)
         if (proxyProblem) return refuse(proxyProblem)
-        const redirection = ids.redirectionHost === null ? null : await deps.npm.get('redirection-hosts', ids.redirectionHost)
-        const redirectionProblem = redirection && notOwned('redirection-hosts', redirection, owner)
-        if (redirectionProblem) return refuse(redirectionProblem)
+        const redirections = await redirectionsOf(deps, ids)
+        for (const slot of SLOTS) {
+            const record = redirections[slot]
+            const problem = record && notOwned('redirection-hosts', record, owner)
+            if (problem) return refuse(problem)
+        }
         const flavour = flavourOf(deps)
-        return { ok: true, verb: 'get', current: { proxy: proxySpecOf(flavour, proxy), redirection: redirection ? redirectionSpecOf(flavour, redirection) : null } }
+        const current: HostsSpec = { proxy: proxySpecOf(flavour, proxy), redirection: redirections.covered ? redirectionSpecOf(flavour, redirections.covered) : null }
+        // Only when there is one, as every writer emits it
+        if (redirections.flexible) current.flexibleRedirection = redirectionSpecOf(flavour, redirections.flexible)
+        return { ok: true, verb: 'get', current }
     } catch (error) {
         return failure(error)
     }
