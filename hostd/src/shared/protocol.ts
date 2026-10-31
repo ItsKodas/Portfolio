@@ -206,7 +206,7 @@ export type DomainsRemoveArgs = { action: 'remove', environment: EnvironmentName
 // what adopt will actually write, rather than differing from it in every security-relevant line.
 export type DomainsPreviewArgs = { action: 'preview', environment: EnvironmentName, token: string }
 export type DomainsAdoptArgs = { action: 'adopt', environment: EnvironmentName, token: string, disable: string[] }
-// Adoption undone: the adopted NPM proxy host goes back to how it was and hostd's redirection host goes
+// Adoption undone: the adopted NPM proxy host goes back to how it was and hostd's redirection hosts go
 // away. `restore` carries the same NPM claim paths adopt was given as `disable`.
 //
 // It exists because an adoption can pass Apache's configtest, reload cleanly, be reported a success and

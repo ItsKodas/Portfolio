@@ -7,7 +7,7 @@ import { describeError } from '../shared/formats.ts'
 import type { HostsSpec, ProxyHostSpec, RedirectionHostSpec } from '../shared/edge-protocol.ts'
 import type { EdgeClient } from './edge-client.ts'
 import type { DomainsConfig } from './domains.ts'
-import { certificateFor, renderHosts, tokenFromHosts } from './npm-render.ts'
+import { aliasCertificates, renderHosts, tokenFromHosts } from './npm-render.ts'
 
 const name = (project: ProjectEntry, environment: EnvironmentEntry): string => `${project.id} ${environment.name}`
 // Hand-made hosts may carry names in any case or with a trailing dot; the registry's never do.
@@ -45,14 +45,19 @@ async function driftOf(
     const token = tokenFromHosts(current)
     if (token === null) return [`NPM proxy host ${ids.proxyHost} for ${who} no longer carries its verification token`]
 
+    // The same split of the aliases writeHosts makes, so the flexible host is compared against its render
     let certificateId: number | null = null
+    let aliases = environment.aliases
+    let flexibleAliases: string[] = []
     if (!environment.flexibleSsl) {
-        const chosen = certificateFor(registry.certificates, hostnamesOf(environment))
+        const chosen = aliasCertificates(registry.certificates, environment.domain, environment.aliases)
         if (!chosen.ok) return [`NPM hosts for ${who} cannot be compared: ${chosen.problem}`]
         certificateId = chosen.id
+        aliases = chosen.covered
+        flexibleAliases = chosen.flexible
     }
     const wanted: HostsSpec = renderHosts({
-        id: project.id, environment: environment.name, primary: environment.domain, aliases: environment.aliases,
+        id: project.id, environment: environment.name, primary: environment.domain, aliases, flexibleAliases,
         port: environment.port, flexibleSsl: environment.flexibleSsl, token, certificateId,
         upstreamHost: config.upstreamHost, edgeHost: config.edgeHost, edgeHttpPort: config.edgeHttpPort,
     })
@@ -67,6 +72,18 @@ async function driftOf(
     } else if (wanted.redirection !== null && current.redirection !== null) {
         const fields = differing(current.redirection, wanted.redirection)
         if (fields.length) warnings.push(`NPM redirection host ${ids.redirectionHost} for ${who} was edited in NPM and differs from what hostd would write: ${fields.join(', ')}`)
+    }
+    const wantedFlexible = wanted.flexibleRedirection ?? null
+    const currentFlexible = current.flexibleRedirection ?? null
+    const flexibleId = ids.flexibleRedirectionHost ?? null
+    if (wantedFlexible !== null && currentFlexible === null) {
+        // The recorded id when there is one, as the other hosts' messages name theirs
+        warnings.push(`NPM flexible redirection host ${flexibleId === null ? '' : `${flexibleId} `}for ${who} is missing, so its flexible aliases are not redirected`)
+    } else if (wantedFlexible === null && currentFlexible !== null) {
+        warnings.push(`NPM flexible redirection host ${flexibleId} for ${who} exists but the environment has no flexible aliases`)
+    } else if (wantedFlexible !== null && currentFlexible !== null) {
+        const fields = differing(currentFlexible, wantedFlexible)
+        if (fields.length) warnings.push(`NPM flexible redirection host ${flexibleId} for ${who} was edited in NPM and differs from what hostd would write: ${fields.join(', ')}`)
     }
     return warnings
 }
@@ -83,6 +100,8 @@ export async function driftWarnings(registry: Registry, edge: EdgeClient, config
                 if (environment.npm !== null) {
                     known.add(`proxy ${environment.npm.proxyHost}`)
                     if (environment.npm.redirectionHost !== null) known.add(`redirection ${environment.npm.redirectionHost}`)
+                    const flexible = environment.npm.flexibleRedirectionHost ?? null
+                    if (flexible !== null) known.add(`redirection ${flexible}`)
                 }
             }
         }

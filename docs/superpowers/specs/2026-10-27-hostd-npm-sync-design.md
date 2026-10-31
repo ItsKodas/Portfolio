@@ -316,6 +316,53 @@ again: when the recorded proxy host id is gone, it takes the proxy host that car
 exact marker as its own (the same rule it already applies to an orphaned redirection host), and the
 agent records the new ids. A host without that exact marker is never taken this way.
 
+### Flexible aliases (added 2026-10-31)
+
+**Why.** spotondrones live is a Full SSL environment (its primary, `www.spotondrones.com`, uses Origin
+certificate 18), but Koda also wants `spotondrones.com.au`, `www.spotondrones.com.au`, `spotondrones.net.au`
+and `www.spotondrones.net.au` to redirect to it through hostd. Those zones have no Origin certificate and are
+on Flexible in Cloudflare, so Cloudflare reaches NPM over plain HTTP for them. A redirect needs no certificate
+there. Until now every alias went on one redirection host with the environment's certificate and Force SSL,
+so `setAliases` refused any alias outside a zone in the `certificates` map ("No certificate in Nginx Proxy
+Manager covers ...").
+
+**Rule.** In a Full SSL environment (`flexibleSsl` false), each alias is either *covered* (its zone is in the
+`certificates` map, under the existing zone/one-label rule, and maps to the environment's certificate) or
+*flexible* (no zone in the map covers it). Covered aliases stay on the existing redirection host. Flexible
+aliases go on a **second redirection host** with no certificate and no Force SSL. The primary must still be
+covered (that refusal stays). A Flexible SSL environment is unchanged: all its aliases are already on one
+redirection host without a certificate. An alias whose zone is in the map with a *different* certificate
+than the primary's is still refused, as today. *My call:* the split is automatic, from the map, with no new
+registry flag: a flexible alias whose Cloudflare zone is actually Full fails verification in the portal (the
+probe reaches NPM on 443 where nothing serves the name), which is a visible signal, and the fix is to add the
+zone's Origin certificate to the map, which moves the alias to the covered host on the next write.
+
+**Rendering.** The flexible redirection host: `domain_names` = the flexible aliases, `forward_domain_name` =
+the primary, `forward_scheme` `https`, `forward_http_code` 301, `preserve_path` true, `certificate_id` 0,
+`ssl_forced` false, `http2_support` false, `advanced_config` = the marker line and the verification location
+(exactly what the covered redirection host carries). `HostsSpec` gains `flexibleRedirection:
+RedirectionHostSpec | null`; `NpmIds` gains `flexibleRedirectionHost: number | null`. Both new keys are
+optional on the wire and in the registry (absent reads as null), so the live registry, adopted-store records
+and edge replies written before this change still parse. The registry writes the key only when it is not null.
+
+**Edge.** `applyHosts` handles the third host with the same guard (owner marker; adopt rules; forward_host
+check on the proxy), the same revert-on-`nginx_online`-false, and undo before each call. Write order is
+generalised: before any host gains a domain, every owned host that loses it is written first (trimmed, or
+deleted if nothing would remain), so NPM never sees one name on two hosts; undo runs in reverse. Orphan
+recovery for redirection hosts (the recorded id is gone) now has two slots: an orphan carrying this owner's
+exact marker is taken for the slot whose expected domains it overlaps; if it could belong to both, or two
+orphans compete for one slot, refuse with a message naming them. `removeHosts` deletes all three, redirection
+hosts first. `getHosts` returns all three.
+
+**Adoption.** A hand-made proxy host may hold aliases of both kinds; adopt keeps the primary on the proxy
+host and creates the covered and flexible redirection hosts as needed. The adoption undo deletes both
+redirection hosts. The rule that names on the NPM host but not in the registry block adoption is unchanged.
+
+**Health and drift.** Drift compares the flexible redirection host too. Nothing else changes in health.
+
+**Runbook.** A troubleshooting row: a flexible alias stuck at "failed" verification means its Cloudflare zone
+is Full; set the zone to Flexible, or add its Origin certificate to NPM and the `certificates` map.
+
 ### Adoption
 
 Every registry environment with a domain has an NPM host today (the eight in the table, `pmpcold`
