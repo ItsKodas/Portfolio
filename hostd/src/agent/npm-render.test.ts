@@ -1,7 +1,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { markerFor } from '../shared/edge-protocol.ts'
-import { certificateFor, describeHosts, renderHosts, tokenFromHosts, type HostsInput } from './npm-render.ts'
+import { aliasCertificates, certificateFor, describeHosts, renderHosts, tokenFromHosts, type HostsInput } from './npm-render.ts'
 
 const BS = String.fromCharCode(92)
 const BROTLI = `if ($http_content_encoding ~* "(^|,)${BS}s*br${BS}s*(,|$)") {
@@ -96,4 +96,53 @@ test('describeHosts lists domains, upstream, certificate, flags, redirect target
     }
     assert.ok(!describeHosts(renderHosts(input({ flexibleSsl: true, certificateId: null }))).includes('Redirection host'))
     assert.ok(describeHosts(renderHosts(input({ flexibleSsl: true, certificateId: null }))).includes('Certificate: none'))
+})
+
+// spotondrones live: a Full SSL primary whose .au and .net.au aliases have no Origin certificate, so
+// Cloudflare reaches NPM over plain HTTP for them. They go on a second redirection host with none.
+test('flexible aliases go to a second redirection host with no certificate and no Force SSL', () => {
+    const spec = renderHosts(input({
+        primary: 'www.spotondrones.com', certificateId: 18, aliases: ['spotondrones.com'], flexibleAliases: ['spotondrones.com.au', 'www.spotondrones.com.au'],
+    }))
+    assert.deepEqual(spec.redirection?.domain_names, ['spotondrones.com'])
+    assert.equal(spec.redirection?.certificate_id, 18)
+    assert.deepEqual(spec.flexibleRedirection, {
+        domain_names: ['spotondrones.com.au', 'www.spotondrones.com.au'], forward_domain_name: 'www.spotondrones.com', certificate_id: 0,
+        ssl_forced: false, http2_support: false, advanced_config: spec.redirection!.advanced_config,
+    })
+    // Only flexible aliases: no covered redirection host at all
+    const only = renderHosts(input({ primary: 'www.spotondrones.com', certificateId: 18, flexibleAliases: ['spotondrones.com.au'] }))
+    assert.equal(only.redirection, null)
+    assert.deepEqual(only.flexibleRedirection?.domain_names, ['spotondrones.com.au'])
+    // None: the key is not there at all, as before the flexible host existed
+    assert.equal('flexibleRedirection' in renderHosts(input({ aliases: ['www.1stcanzukbrigade.com'] })), false)
+    assert.equal('flexibleRedirection' in renderHosts(input({ flexibleAliases: [] })), false)
+})
+
+test('aliasCertificates splits aliases into covered and flexible by the certificates map', () => {
+    const certs = new Map([['spotondrones.com', 18], ['horizons.gg', 3]])
+    const aliases = ['spotondrones.com', 'spotondrones.com.au', 'www.spotondrones.com.au', 'spotondrones.net.au', 'www.spotondrones.net.au']
+    assert.deepEqual(aliasCertificates(certs, 'www.spotondrones.com', aliases), {
+        ok: true, id: 18, covered: ['spotondrones.com'], flexible: ['spotondrones.com.au', 'www.spotondrones.com.au', 'spotondrones.net.au', 'www.spotondrones.net.au'],
+    })
+    assert.deepEqual(aliasCertificates(certs, 'www.spotondrones.com', []), { ok: true, id: 18, covered: [], flexible: [] })
+    // The primary must still be covered
+    const primary = aliasCertificates(certs, 'spotondrones.com.au', ['spotondrones.com'])
+    assert.ok(!primary.ok && primary.problem === 'No certificate in Nginx Proxy Manager covers spotondrones.com.au.')
+    // An alias in a zone the map names, but under a different certificate, is still refused
+    const other = aliasCertificates(certs, 'www.spotondrones.com', ['acme.horizons.gg'])
+    assert.ok(!other.ok && other.problem.includes('different certificates (spotondrones.com and horizons.gg)'))
+    // And so is a name two labels below a zone the map names: its zone is Full, so a flexible host would not serve it
+    const deep = aliasCertificates(certs, 'www.spotondrones.com', ['a.b.spotondrones.com'])
+    assert.ok(!deep.ok && deep.problem.includes('two labels below spotondrones.com'))
+})
+
+test('describeHosts lists the flexible redirection host too', () => {
+    const spec = renderHosts(input({ primary: 'www.spotondrones.com', certificateId: 18, aliases: ['spotondrones.com'], flexibleAliases: ['spotondrones.com.au'] }))
+    const text = describeHosts(spec)
+    const flexible = text.slice(text.indexOf('Flexible redirection host'))
+    assert.ok(text.includes('Flexible redirection host'))
+    for (const wanted of ['Domains: spotondrones.com.au', 'Redirects to: www.spotondrones.com', 'Certificate: none', 'SSL forced: no', 'HTTP/2: no']) {
+        assert.ok(flexible.includes(wanted), wanted)
+    }
 })
