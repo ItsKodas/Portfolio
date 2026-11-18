@@ -14,7 +14,7 @@ describe('rendered hosts under nginx -t', { skip: process.env.HOSTD_NGINX_CHECK 
     it('are accepted by nginx', async () => {
         const spec = renderHosts({
             id: 'acme', environment: 'production', primary: 'acme.com', aliases: ['www.acme.com'], port: 3000,
-            flexibleSsl: true, token: 'a'.repeat(32), certificateId: null,
+            flexibleSsl: true, noindex: true, token: 'a'.repeat(32), certificateId: null,
             upstreamHost: '192.168.0.8', edgeHost: '192.168.0.8', edgeHttpPort: 8790,
         })
         assert.ok(spec.redirection)

@@ -33,7 +33,7 @@ const environmentRequests = (environment: string): unknown[] => [
     { verb: 'ports', args: { port: 5012, own: { project: 'acme', environment } } },
     { verb: 'configure', project: 'acme', args: { branches: { [environment]: 'main' } } },
     { verb: 'configure', project: 'acme', args: { domains: { [environment]: 'acme.com' } } },
-    { verb: 'configure', project: 'acme', args: { websockets: { [environment]: true }, flexibleSsl: { [environment]: false } } },
+    { verb: 'configure', project: 'acme', args: { websockets: { [environment]: true }, flexibleSsl: { [environment]: false }, noindex: { [environment]: true } } },
 ]
 
 describe('environment names', () => {
@@ -405,7 +405,7 @@ describe('parseAgentRequest', () => {
         assert.equal(refusalOf({ verb: 'configure', project: 'acme', args: { capabilities: ['teleport'] } }), 'bad-request: capabilities must be a list of known capabilities')
         assert.equal(refusalOf({ verb: 'configure', project: 'acme', args: { branches: { live: 'a branch' } } }), 'bad-request: live branch must be null or a plain branch name')
         assert.equal(refusalOf({ verb: 'configure', project: 'acme', args: { branches: { next: 'main' } } }), 'bad-request: next is not an environment name')
-        assert.equal(refusalOf({ verb: 'configure', project: 'acme', args: { capabilities: [], extra: true } }), 'bad-request: configure takes only capabilities, repo, credential, branches, domains, websockets, flexibleSsl, contact and rootDomain')
+        assert.equal(refusalOf({ verb: 'configure', project: 'acme', args: { capabilities: [], extra: true } }), 'bad-request: configure takes only capabilities, repo, credential, branches, domains, websockets, flexibleSsl, noindex, contact and rootDomain')
     })
 
     it('parses a branches request', () => {

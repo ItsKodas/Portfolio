@@ -516,6 +516,23 @@ projects:
         assert.match(invalidEnvironmentReason('environments: { live: { dir: /var/www/a, port: 5010, flexibleSsl: 1 } }')!, /flexibleSsl/)
     })
 
+    it('reads noindex as off unless an environment says true, and refuses anything else', () => {
+        const registry = parseRegistry(`
+projects:
+  acme:
+    client: cl_1
+    name: Acme
+    services: { web: { role: site } }
+    environments:
+      live: { dir: /var/www/acme, port: 5010 }
+      redesign: { dir: /var/www/acme-redesign, port: 5110, noindex: true }
+`)
+        const acme = registry.projects.get('acme')!
+        assert.equal(acme.environments.get('live')!.noindex, false)
+        assert.equal(acme.environments.get('redesign')!.noindex, true)
+        assert.match(invalidEnvironmentReason('environments: { live: { dir: /var/www/a, port: 5010, noindex: "yes" } }')!, /noindex/)
+    })
+
     it('refuses websockets that is not true or false', () => {
         assert.match(invalidEnvironmentReason('environments: { live: { dir: /var/www/a, port: 5010, websockets: "yes" } }')!, /websockets/)
     })

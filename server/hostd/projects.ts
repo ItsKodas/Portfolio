@@ -50,6 +50,9 @@ export type Environment = {
     // Whether the origin serves the site on port 80 for a CDN in Flexible mode. Optional for the same
     // reason as websockets.
     flexibleSsl?: boolean
+    // Whether search engines are told not to list the environment. Optional for the same reason as
+    // websockets.
+    noindex?: boolean
     // Every hostname beside the primary, each redirecting to it. Optional because a hostd from before
     // named environments does not send it.
     aliases?: string[]

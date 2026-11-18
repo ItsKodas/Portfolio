@@ -92,6 +92,7 @@ async function render(deps: DomainsDeps, project: ProjectEntry, environment: Env
             flexibleAliases,
             port: environment.port,
             flexibleSsl: environment.flexibleSsl,
+            noindex: environment.noindex,
             token,
             certificateId,
             upstreamHost: deps.config.upstreamHost,

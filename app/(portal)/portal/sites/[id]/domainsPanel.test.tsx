@@ -103,12 +103,23 @@ describe('DomainsPanel, for the operator', () => {
         const flexible = screen.getByRole('switch', { name: 'live Cloudflare Flexible SSL' })
         expect(flexible).toHaveAttribute('aria-checked', 'true')
         expect(screen.queryByRole('switch', { name: 'live WebSockets' })).toBeNull()
-        expect(screen.getAllByRole('switch')).toHaveLength(1)
+        expect(screen.getAllByRole('switch')).toHaveLength(2)
         expect(screen.getByText('redirects to acme.com')).toBeInTheDocument()
 
         fireEvent.click(flexible)
         await vi.waitFor(() => expect(saveSettings).toHaveBeenCalledWith('acme', { flexibleSsl: { live: false } }))
         expect(flexible).toHaveAttribute('aria-checked', 'false')
+    })
+
+    it('draws the No index switch beside Flexible and flips it on its own', async () => {
+        render(<DomainsPanel {...props} domains={[domain(), domain({ hostname: 'www.acme.com', primary: false })]} />)
+        const noindex = screen.getByRole('switch', { name: 'live Hide from search engines' })
+        expect(noindex).toHaveAttribute('aria-checked', 'false')
+        expect(screen.getByRole('switch', { name: 'live Cloudflare Flexible SSL' })).toHaveAttribute('aria-checked', 'false')
+
+        fireEvent.click(noindex)
+        await vi.waitFor(() => expect(saveSettings).toHaveBeenCalledWith('acme', { noindex: { live: true } }))
+        expect(noindex).toHaveAttribute('aria-checked', 'true')
     })
 
     // The swap: an alias row offers to become the main address, and the main address row does not.

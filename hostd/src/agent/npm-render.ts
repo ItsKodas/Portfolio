@@ -20,6 +20,9 @@ export type HostsInput = {
     flexibleAliases?: string[]
     port: number
     flexibleSsl: boolean
+    // Whether search engines are told not to index the site. Left out, they are not, and the config is
+    // exactly what it was before the switch existed.
+    noindex?: boolean
     token: string
     // The NPM certificate covering these names, or null under Flexible SSL where the CDN terminates TLS
     certificateId: number | null
@@ -37,6 +40,14 @@ export const HOSTD_EDGE_SYSLOG_PORT = 5514
 export const BROTLI = String.raw`if ($http_content_encoding ~* "(^|,)\s*br\s*(,|$)") {
     return 415;
 }`
+
+// Tells every search engine not to list the site or follow its links. Set at server level so the
+// proxied pages and the holding page both carry it; always, so a 404 or 500 carries it too. Neither
+// stock NPM nor NPMplus puts an add_header in the proxy host's location / for the hosts hostd writes
+// (no HSTS, no access list, no auth provider), so nginx inherits this one there. Deliberately not a
+// robots.txt Disallow: a crawler that may not fetch a page never sees the header, and a page already
+// in the index stays listed.
+export const NOINDEX = 'add_header X-Robots-Tag "noindex, nofollow" always;'
 
 // The verification token, answered by nginx itself so it works while the upstream is down or deploying.
 function tokenLocation(token: string): string {
@@ -61,6 +72,7 @@ function proxyConfig(input: HostsInput): string {
     return [
         markerFor({ project: input.id, environment: input.environment }),
         BROTLI,
+        ...(input.noindex ? [NOINDEX] : []),
         tokenLocation(input.token),
         holdingPage(input),
         `access_log syslog:server=${input.edgeHost}:${HOSTD_EDGE_SYSLOG_PORT},tag=hostd,nohostname hostd;`,

@@ -175,6 +175,7 @@ export function EnvironmentsTab({ view, isAdmin, canEditEnv, selected, lifecycle
                                             projectName={view.name}
                                             rootDomain={view.rootDomain ?? null}
                                             flexibleSsl={shown?.flexibleSsl ?? false}
+                                            noindex={shown?.noindex ?? false}
                                             trouble={domains.trouble}
                                         />
                                         : <Callout title="Not set up for this site">

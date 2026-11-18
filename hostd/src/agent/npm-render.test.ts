@@ -52,6 +52,19 @@ test('advanced_config starts with the marker and carries the brotli snippet, the
     assert.ok(!config.includes('proxy_pass http://192.168.0.8:8790/'))
 })
 
+test('noindex adds the X-Robots-Tag header to the proxy host only, and leaves the config untouched when off', () => {
+    const header = 'add_header X-Robots-Tag "noindex, nofollow" always;'
+    const off = renderHosts(input({ aliases: ['www.1stcanzukbrigade.com'] }))
+    assert.ok(!off.proxy.advanced_config.includes('X-Robots-Tag'))
+    // Left out and false are the same render, so turning the switch on is the only thing that moves drift
+    assert.deepEqual(renderHosts(input({ aliases: ['www.1stcanzukbrigade.com'], noindex: false })), off)
+    const on = renderHosts(input({ aliases: ['www.1stcanzukbrigade.com'], noindex: true }))
+    assert.ok(on.proxy.advanced_config.split('\n').includes(header))
+    // Still the marker first, so edge goes on recognising the host as hostd's
+    assert.equal(on.proxy.advanced_config.split('\n')[0], markerFor({ project: 'spotondrones', environment: 'live' }))
+    assert.equal(on.redirection!.advanced_config, off.redirection!.advanced_config)
+})
+
 test('aliases go to a redirection host', () => {
     const spec = renderHosts(input({ primary: 'www.spotondrones.com', aliases: ['spotondrones.com'] }))
     const redirect = spec.redirection

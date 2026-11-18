@@ -1814,6 +1814,15 @@ snippet, the verification location, the holding page and the access log line), a
 one **redirection host** sending the aliases to the primary with a 301 (path and query kept). Under
 Flexible SSL there is no certificate and no Force SSL, so Cloudflare's own https side does the work.
 
+**No index** (the second switch on the main address's row in an environment's Domains section, `noindex`
+in the registry, off by default) adds `add_header X-Robots-Tag "noindex, nofollow" always;` to the proxy
+host's advanced config, so every page, error and holding page tells search engines not to list the site
+or follow its links. It is for previews and client work that must stay out of Google. Flipping it rewrites
+the proxy host straight away when hostd owns it; on a host hostd has not adopted yet it is only recorded.
+Search engines drop a page the next time they crawl it, which can take weeks; Search Console's
+**Removals** tool hides a site from Google within a day while that happens. Never also add a `robots.txt`
+`Disallow`: a crawler that may not fetch a page never sees the header, and the page stays listed.
+
 Under Full SSL, an alias no zone in the `certificates` map covers (spotondrones' `.com.au` and `.net.au`
 names, whose zones have no Origin certificate and are on Flexible in Cloudflare) is a **flexible alias**: it
 goes on a second, **flexible redirection host** with no certificate and no Force SSL, redirecting to the

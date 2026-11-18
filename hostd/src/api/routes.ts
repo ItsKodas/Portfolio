@@ -570,6 +570,7 @@ function environmentsFor(project: ProjectEntry, actor: Actor): Array<Record<stri
         certificate: environment.certificate,
         websockets: environment.websockets,
         flexibleSsl: environment.flexibleSsl,
+        noindex: environment.noindex,
         deployed: environment.deployed,
     }))
 }
@@ -1313,7 +1314,7 @@ export function createHandler(deps: ApiDeps): (req: IncomingMessage, res: Server
                 if ('ok' in args) return refuseRoute(400, 'bad-request', args.message, route.project, 'configure', target)
                 // The parser takes any environment name, so whether this project has each one is asked
                 // here, against the entry just authorised, rather than left for the writer to fail on.
-                const named = [args.branches, args.domains, args.websockets, args.flexibleSsl].flatMap(map => Object.keys(map ?? {}))
+                const named = [args.branches, args.domains, args.websockets, args.flexibleSsl, args.noindex].flatMap(map => Object.keys(map ?? {}))
                 const missing = named.find(name => !entry.environments.has(name))
                 if (missing !== undefined) return refuseRoute(400, 'bad-request', `${route.project} has no ${missing} environment`, route.project, 'configure', target)
 
