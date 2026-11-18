@@ -58,7 +58,7 @@ async function driftOf(
     }
     const wanted: HostsSpec = renderHosts({
         id: project.id, environment: environment.name, primary: environment.domain, aliases, flexibleAliases,
-        port: environment.port, flexibleSsl: environment.flexibleSsl, token, certificateId,
+        port: environment.port, flexibleSsl: environment.flexibleSsl, noindex: environment.noindex, token, certificateId,
         upstreamHost: config.upstreamHost, edgeHost: config.edgeHost, edgeHttpPort: config.edgeHttpPort,
     })
 

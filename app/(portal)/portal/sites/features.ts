@@ -26,8 +26,10 @@ export const NOT_BUILT = 'files, backups and provision are designed but not buil
 // on a proxy host hostd did not make, because those are different and the operator may have either.
 // websockets stays a registry flag but has no switch: every NPM proxy host hostd writes passes WebSockets
 // through, so the switch would change nothing.
-export type SwitchKey = 'websockets' | 'flexibleSsl'
-export const SWITCHES: ReadonlyArray<{ key: SwitchKey, label: string, note: string }> = [
+// noindex has a switch on the Domains panel only, not on the New site form: a site is created before it
+// has an address anyone could find, so there is nothing to hide yet.
+export type SwitchKey = 'websockets' | 'flexibleSsl' | 'noindex'
+export const SWITCHES: ReadonlyArray<{ key: Exclude<SwitchKey, 'noindex'>, label: string, note: string }> = [
     {
         key: 'flexibleSsl',
         label: 'Cloudflare Flexible SSL',

@@ -217,6 +217,7 @@ export function RowSwitch({ id, environment, flag, on }: SwitchProps) {
 const SWITCH_LABELS: Record<SwitchKey, { label: string, short: string }> = {
     websockets: { label: 'WebSockets', short: 'WebSockets' },
     flexibleSsl: { label: 'Cloudflare Flexible SSL', short: 'Flexible' },
+    noindex: { label: 'Hide from search engines', short: 'No index' },
 }
 
 type ActionProps = {

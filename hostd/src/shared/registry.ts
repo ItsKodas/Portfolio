@@ -72,13 +72,17 @@ export type EnvironmentEntry = {
     // calls this Flexible). Off unless the registry says so; adoption turns it on for a site whose own
     // file had no port 443 block, since that is what the site was relying on.
     flexibleSsl: boolean
+    // Whether every response from this environment carries X-Robots-Tag: noindex, nofollow, which tells
+    // search engines to drop it from their results the next time they crawl it. For a client's preview or
+    // redesign that must not show up in Google. Off unless the registry says so.
+    noindex: boolean
     // Null until hostd has created (or adopted) this environment's hosts in NPM
     npm: NpmIds | null
 }
 
 // The per-environment switches that change nothing but how the vhost is rendered. Each is off unless
 // the registry says true, and each is written and cleared the same way.
-export const ENVIRONMENT_FLAGS = ['websockets', 'flexibleSsl'] as const
+export const ENVIRONMENT_FLAGS = ['websockets', 'flexibleSsl', 'noindex'] as const
 export type EnvironmentFlag = typeof ENVIRONMENT_FLAGS[number]
 
 // A git ref or branch name that cannot be read as an option or a path traversal. Git itself also
@@ -185,7 +189,7 @@ const PROJECT_KEYS = new Set([
     'client', 'name', 'dir', 'compose', 'upstream', 'services', 'storage', 'capabilities', 'maxDomains', 'backups',
     'repo', 'credential', 'portEnv', 'limits', 'networks', 'environments', 'contact', 'rootDomain',
 ])
-const ENVIRONMENT_KEYS = new Set(['dir', 'compose', 'composeName', 'branch', 'domain', 'aliases', 'port', 'certificate', 'deployed', 'websockets', 'flexibleSsl', 'npm'])
+const ENVIRONMENT_KEYS = new Set(['dir', 'compose', 'composeName', 'branch', 'domain', 'aliases', 'port', 'certificate', 'deployed', 'websockets', 'flexibleSsl', 'noindex', 'npm'])
 const DIR = /^\/var\/www\/[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/
 const UPSTREAM = /^(localhost|\d{1,3}(?:\.\d{1,3}){3}):(\d{1,5})$/
 const MEMORY_LIMIT = /^[0-9]+(b|k|m|g)$/i
@@ -589,11 +593,12 @@ function parseEnvironment(id: string, name: EnvironmentName, raw: unknown, rules
     }
     const websockets = flag('websockets')
     const flexibleSsl = flag('flexibleSsl')
+    const noindex = flag('noindex')
 
     if (!dir || port === null) return null
     return {
         name, dir, composePaths: compose.map(file => posix.join(dir, file)), composeName: composeName ?? defaultComposeName(id, name, dir),
-        branch, domain, aliases, port, certificate, deployed, websockets, flexibleSsl, npm,
+        branch, domain, aliases, port, certificate, deployed, websockets, flexibleSsl, noindex, npm,
     }
 }
 
@@ -687,7 +692,7 @@ function parseProject(id: string, raw: unknown, rules: HostRules): ParsedProject
             environments.set('live', {
                 name: 'live', dir, composePaths: compose.map(file => posix.join(dir, file)), composeName: flatComposeName(dir),
                 branch: null, domain: null, aliases: [], port: upstream.port, certificate: null, deployed: null,
-                websockets: false, flexibleSsl: false, npm: null,
+                websockets: false, flexibleSsl: false, noindex: false, npm: null,
             })
         }
     }

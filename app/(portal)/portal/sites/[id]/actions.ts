@@ -247,12 +247,12 @@ export async function rollbackAction(id: string, environment: string): Promise<S
 // only thing allowed to set an address is makePrimaryDomainAction below, which builds its own object.
 function isSettings(value: unknown): value is SiteSettings {
     if (typeof value !== 'object' || value === null) return false
-    const { capabilities, repo, credential, branches, websockets, flexibleSsl, ...rest } = value as Record<string, unknown>
+    const { capabilities, repo, credential, branches, websockets, flexibleSsl, noindex, ...rest } = value as Record<string, unknown>
     if (Object.keys(rest).length > 0) return false
     if (capabilities !== undefined && !(Array.isArray(capabilities) && capabilities.every(one => typeof one === 'string'))) return false
     if (repo !== undefined && repo !== null && typeof repo !== 'string') return false
     if (credential !== undefined && credential !== null && typeof credential !== 'string') return false
-    for (const flags of [websockets, flexibleSsl]) {
+    for (const flags of [websockets, flexibleSsl, noindex]) {
         if (flags === undefined) continue
         if (typeof flags !== 'object' || flags === null || Array.isArray(flags)) return false
         if (!Object.values(flags).every(enabled => typeof enabled === 'boolean')) return false

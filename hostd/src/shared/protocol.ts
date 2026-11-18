@@ -276,6 +276,9 @@ export type ConfigureArgs = {
     // Whether each environment's origin serves the site on port 80 for a CDN in Flexible mode, rather than
     // redirecting it to https. Rewrites the vhost exactly as websockets does.
     flexibleSsl?: Record<EnvironmentName, boolean>
+    // Whether each environment tells search engines not to index it (X-Robots-Tag: noindex, nofollow).
+    // Rewrites the NPM proxy host exactly as websockets does.
+    noindex?: Record<EnvironmentName, boolean>
     // Who the holding page tells a visitor to reach. null takes the contact away.
     contact?: Contact | null
     // The site's own domain, the base new environments' addresses sit under. One of live's addresses;
@@ -887,8 +890,8 @@ export function parseDomainsArgs(args: unknown): { ok: true, args: DomainsArgs }
 // body it could not read is refused in exactly one place. See policy.ts and routes.ts in api for how the
 // route bridges this Refusal shape onto its own parsers' { ok: false, message }.
 export function parseConfigureArgs(raw: unknown): ConfigureArgs | Refusal {
-    if (!isRecord(raw) || !onlyKeys(raw, ['capabilities', 'repo', 'credential', 'branches', 'domains', 'websockets', 'flexibleSsl', 'contact', 'rootDomain'])) {
-        return refuse('bad-request', 'configure takes only capabilities, repo, credential, branches, domains, websockets, flexibleSsl, contact and rootDomain')
+    if (!isRecord(raw) || !onlyKeys(raw, ['capabilities', 'repo', 'credential', 'branches', 'domains', 'websockets', 'flexibleSsl', 'noindex', 'contact', 'rootDomain'])) {
+        return refuse('bad-request', 'configure takes only capabilities, repo, credential, branches, domains, websockets, flexibleSsl, noindex, contact and rootDomain')
     }
 
     let capabilities: Capability[] | undefined
@@ -944,7 +947,7 @@ export function parseConfigureArgs(raw: unknown): ConfigureArgs | Refusal {
         domains = parsed
     }
 
-    // Both render-only switches share one shape: a mapping of environment to true or false.
+    // Every render-only switch shares one shape: a mapping of environment to true or false.
     const flags: Partial<Record<EnvironmentFlag, Record<EnvironmentName, boolean>>> = {}
     for (const key of ENVIRONMENT_FLAGS) {
         const value = raw[key]
